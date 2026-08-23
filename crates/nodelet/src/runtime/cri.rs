@@ -178,6 +178,10 @@ pub struct CriRuntime {
     cluster_dns: Vec<String>,
     cluster_domain: String,
     rx: Mutex<Option<UnboundedReceiver<String>>>,
+    /// Device-health changes use a separate channel so a busy CRI event
+    /// stream cannot delay the Pod status update that exposes them through
+    /// `allocatedResourcesStatus`.
+    priority_rx: Mutex<Option<UnboundedReceiver<String>>>,
     // sandbox_id -> the owning Pod's restartPolicy ("Always"/"OnFailure"/"Never"),
     // recorded whenever ensure_pod() runs. build_status() needs this to decide
     // whether an all-exited container set means the pod is genuinely done
@@ -545,6 +549,7 @@ impl CriRuntime {
 
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
+        let (priority_tx, priority_rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx.clone()));
 
         // Best-effort: a malformed/unreadable CredentialProviderConfig
@@ -563,13 +568,13 @@ impl CriRuntime {
         };
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
-        // Round 124: shares the same event channel event_loop above feeds
-        // — a device health transition is exactly the same shape of
-        // "real state change that never touches the Pod object" as a
-        // container exit event, so it re-triggers pods.rs's
-        // on_runtime_event() the same way. See DevicePlugins::owners'
+        // Device health transitions use the priority event channel rather
+        // than sharing the ordinary CRI container-event queue. They are the
+        // same shape of "real state change that never touches the Pod
+        // object" as a container exit, but the Pod status update must not
+        // wait behind unrelated container churn. See DevicePlugins::owners'
         // own doc comment for the full story.
-        let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new(tx.clone()));
+        let device_plugins = Arc::new(crate::device_plugins::DevicePlugins::new(priority_tx));
         let dra = Arc::new(crate::dra::DraDrivers::new());
         let service_cache = Arc::new(RwLock::new(env::ServiceCache::default()));
         tokio::spawn(env::service_cache_loop(client.clone(), service_cache.clone()));
@@ -596,6 +601,7 @@ impl CriRuntime {
             cluster_dns,
             cluster_domain,
             rx: Mutex::new(Some(rx)),
+            priority_rx: Mutex::new(Some(priority_rx)),
             restart_policies: Mutex::new(HashMap::new()),
             container_log_paths: Mutex::new(HashMap::new()),
             pod_ensure_locks: Mutex::new(HashMap::new()),

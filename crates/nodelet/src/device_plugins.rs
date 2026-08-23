@@ -203,10 +203,10 @@ pub struct DevicePlugins {
     /// (container_create.rs), cleared by `release()`.
     owners: Mutex<HashMap<(String, String), String>>,
     /// Poked with a pod key whenever an owned device's health changes —
-    /// the exact same general-purpose "something changed outside a watch
-    /// event, please re-sync this pod's status" channel `events_gc.rs`'s
-    /// CRI event loop already feeds into `pods.rs`'s `on_runtime_event()`
-    /// (see `CriRuntime::new()`, which clones its own `tx` into here).
+    /// the priority "something changed outside a watch event, please
+    /// re-sync this pod's status" channel that `pods.rs` services ahead of
+    /// the general CRI event queue, so a health transition is not delayed by
+    /// unrelated container churn.
     notify: UnboundedSender<String>,
 }
 
@@ -224,6 +224,12 @@ impl DevicePlugins {
         for id in device_ids {
             owners.insert((resource_name.to_string(), id.clone()), pod_key.to_string());
         }
+        // Allocation itself changes the Pod status surface: the next status
+        // build must include allocatedResourcesStatus even if the CRI event
+        // stream emits no event for a successful Create/StartContainer.
+        // Health transitions use this same channel later; enqueueing once at
+        // ownership time closes the initial Healthy-status race as well.
+        let _ = self.notify.send(pod_key.to_string());
     }
 
     /// Register a device plugin and start tracking its device inventory.

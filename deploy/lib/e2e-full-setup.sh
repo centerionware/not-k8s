@@ -100,6 +100,47 @@ reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 EOF
 
+# Do not merely apply the reference manifests and assume the CSI sidecars
+# are usable. A PVC that never leaves Pending is exactly what release run 50
+# reported, and the suite otherwise spends a minute per test rediscovering
+# the same broken provisioning path. This deliberately exercises the real
+# external-provisioner -> apiserver -> nodecontroller path before the tests
+# start, including the replacement controller's shared PV/PVC watches.
+wait_for_csi_provisioning() {
+    local name="nodebootstrap-csi-readiness"
+    kubectl delete pvc "$name" --ignore-not-found --wait=true --timeout=30s >/dev/null 2>&1 || true
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $name
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Mi
+  storageClassName: csi-hostpath-sc
+EOF
+
+    local phase
+    for i in $(seq 1 60); do
+        phase="$(kubectl get pvc "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        if [[ "$phase" == "Bound" ]]; then
+            log "CSI readiness PVC bound successfully"
+            kubectl delete pvc "$name" --wait=false >/dev/null 2>&1 || true
+            return 0
+        fi
+        sleep 2
+    done
+    kubectl describe pvc "$name" || true
+    kubectl delete pvc "$name" --wait=false >/dev/null 2>&1 || true
+    echo "CSI readiness PVC never reached Bound; refusing to run CSI/DRA e2e tests" >&2
+    return 1
+}
+
+wait_for_csi_provisioning
+
 # ── DRA: kubernetes-sigs/dra-example-driver's own Helm chart ───────────────
 log "fetching dra-example-driver..."
 git clone --depth 1 https://github.com/kubernetes-sigs/dra-example-driver.git "$WORK_DIR/dra-example-driver"
@@ -128,6 +169,36 @@ wait_for_dra_pod_ready() {
     kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=kubeletplugin -n dra-example-driver --timeout=120s
 }
 
+wait_for_nodelet_dra_registration() {
+    local since="$1" line
+    for i in $(seq 1 60); do
+        if command -v journalctl &>/dev/null; then
+            if journalctl -u nodelet --since "$since" --no-pager -o cat 2>/dev/null \
+                | sed $'s/\\033\\[[0-9;]*m//g' \
+                | grep -q 'plugin registered.*gpu.example.com'; then
+                log "nodelet confirmed DRA plugin registration"
+                return 0
+            fi
+        elif [[ -f /var/log/nodelet.log ]] \
+            && sed $'s/\\033\\[[0-9;]*m//g' /var/log/nodelet.log \
+                | grep -q 'plugin registered.*gpu.example.com'; then
+            log "nodelet confirmed DRA plugin registration"
+            return 0
+        fi
+        sleep 2
+    done
+    if command -v journalctl &>/dev/null; then
+        line="$(journalctl -u nodelet --since "$since" --no-pager -o cat 2>&1 \
+            | sed $'s/\\033\\[[0-9;]*m//g' | tail -80 || true)"
+    else
+        line="$(sed $'s/\\033\\[[0-9;]*m//g' /var/log/nodelet.log 2>&1 \
+            | tail -80 || true)"
+    fi
+    printf '%s\n' "$line" >&2
+    echo "DRA ResourceSlice appeared, but nodelet never confirmed plugin registration" >&2
+    return 1
+}
+
 log "waiting for the DRA driver pod to be ready..."
 wait_for_dra_pod_ready
 
@@ -138,15 +209,36 @@ wait_for_dra_pod_ready
 # from-scratch cluster, but on a from-scratch cluster it's already correct
 # from the start, so this is just making sure a stale pod from a prior
 # partial run doesn't linger with an old token.
+# Record the boundary before replacing the pod so a stale registration line
+# from a previous partial setup cannot satisfy the readiness check below.
+DRA_REGISTRATION_SINCE="$(date -u '+%Y-%m-%d %H:%M:%S')"
 kubectl delete pod -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin --ignore-not-found
+# The old registrar socket is not removed synchronously with pod deletion.
+# Leaving it behind makes nodelet retry a dead endpoint forever, which was the
+# recurring warning in release run 50 and also masked the new driver's
+# registration. The driver owns these sockets, so remove only its stale
+# registration endpoints before the replacement pod starts.
+find "$NODELET_DATA_DIR/plugins_registry" -maxdepth 1 -type s \
+    -name 'gpu.example.com-*-reg.sock' -delete 2>/dev/null || true
 wait_for_dra_pod_ready
 
 log "confirming both drivers actually registered with nodelet..."
+drivers_registered=false
 for i in $(seq 1 15); do
-    kubectl get csinodes -o jsonpath='{.items[0].spec.drivers[*].name}' 2>/dev/null | grep -q hostpath.csi.k8s.io && \
-        kubectl get resourceslices -o name 2>/dev/null | grep -q resourceslice && break
+    if kubectl get csinodes -o jsonpath='{.items[0].spec.drivers[*].name}' 2>/dev/null | grep -q hostpath.csi.k8s.io \
+        && kubectl get resourceslices -o name 2>/dev/null | grep -q resourceslice; then
+        drivers_registered=true
+        break
+    fi
     sleep 4
 done
+[[ "$drivers_registered" == true ]] || {
+    kubectl get csinodes -o yaml || true
+    kubectl get resourceslices -o yaml || true
+    echo "reference CSI/DRA resources never appeared in the apiserver" >&2
+    exit 1
+}
+wait_for_nodelet_dra_registration "$DRA_REGISTRATION_SINCE"
 
 # ── env vars the e2e suite's CSI/DRA-gated tests key off ───────────────────
 ENV_FILE="${GITHUB_ENV:-$WORK_DIR/e2e-setup.env}"

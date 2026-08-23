@@ -107,6 +107,20 @@
 //! already has other access to, not which resources it can touch at all,
 //! so the per-controller blast-radius isolation Finding #3 introduced
 //! impersonation for is unaffected.
+//!
+//! **Finding #5 (2026-08-23, release pipeline run 50):** the replacement
+//! scheduler and controller-manager also use their base identities for the
+//! shared informer reads that feed their controllers. The built-in
+//! `system:kube-scheduler` role did not include the storage/CSI resources
+//! (`persistentvolumeclaims`, `csinodes`, `csidrivers`, and friends), and
+//! `system:kube-controller-manager` did not include the PV/PVC and storage
+//! resources nodecontroller watches. DRA's three resources were already
+//! supplemented for the scheduler by Finding #2, but the rest of the
+//! scheduler's unconditional watch set was not. Against release run 50
+//! this produced a storm of 403/410 reflector warnings, prevented CSI PVCs
+//! from binding, and left DRA pods unschedulable. The narrowly-scoped read
+//! supplements below grant only the exact shared watch inputs each binary
+//! opens; they do not broaden either component's write permissions.
 
 use anyhow::{Context, Result};
 
@@ -173,6 +187,50 @@ const CONTROLLER_PATCH_GRANTS: &[(&str, &str, &str)] = &[
     ("pv-protection-controller", "", "persistentvolumeclaims"),
 ];
 
+/// Shared informer inputs read directly as `system:kube-scheduler` by
+/// `crates/nodescheduler/src/watch.rs`. Upstream's scheduler has its own
+/// complete bootstrap policy; this replacement has an intentionally
+/// smaller, unconditional watch set and therefore needs this supplement.
+const NODESCHEDULER_READ_GRANTS: &[(&str, &str)] = &[
+    ("", "namespaces"),
+    ("", "nodes"),
+    ("", "pods"),
+    ("", "services"),
+    ("", "replicationcontrollers"),
+    ("", "persistentvolumes"),
+    ("", "persistentvolumeclaims"),
+    ("apps", "replicasets"),
+    ("apps", "statefulsets"),
+    ("policy", "poddisruptionbudgets"),
+    ("storage.k8s.io", "storageclasses"),
+    ("storage.k8s.io", "csinodes"),
+    ("storage.k8s.io", "csidrivers"),
+    ("storage.k8s.io", "csistoragecapacities"),
+    ("storage.k8s.io", "volumeattachments"),
+    ("resource.k8s.io", "deviceclasses"),
+    ("resource.k8s.io", "resourceclaims"),
+    ("resource.k8s.io", "resourceslices"),
+];
+
+/// Shared informer inputs read directly as
+/// `system:kube-controller-manager` by `crates/nodecontroller/src/watch.rs`.
+/// Controller-specific writes still use the impersonated ServiceAccounts
+/// and their existing narrow grants above.
+const NODECONTROLLER_READ_GRANTS: &[(&str, &str)] = &[
+    ("", "configmaps"),
+    ("", "nodes"),
+    ("", "resourcequotas"),
+    ("", "services"),
+    ("", "persistentvolumes"),
+    ("", "persistentvolumeclaims"),
+    ("apps", "deployments"),
+    ("apps", "replicasets"),
+    ("policy", "poddisruptionbudgets"),
+    ("storage.k8s.io", "storageclasses"),
+    ("storage.k8s.io", "volumeattachments"),
+    ("resource.k8s.io", "resourceclaimtemplates"),
+];
+
 /// Supplements (does not replace) the built-in bootstrap roles -- see the
 /// findings in this module's doc comment. Separate ClusterRoles/Bindings
 /// rather than editing the built-in ones directly: those are reconciled by
@@ -181,6 +239,22 @@ const CONTROLLER_PATCH_GRANTS: &[(&str, &str, &str)] = &[
 fn supplemental_grants() -> String {
     let sa_resource_names: String =
         CONTROLLER_SA_NAMES.iter().map(|n| format!("    - {n}\n")).collect();
+    let scheduler_read_rules: String = NODESCHEDULER_READ_GRANTS
+        .iter()
+        .map(|(group, resource)| {
+            format!(
+                "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [\"get\", \"list\", \"watch\"]\n"
+            )
+        })
+        .collect();
+    let controller_read_rules: String = NODECONTROLLER_READ_GRANTS
+        .iter()
+        .map(|(group, resource)| {
+            format!(
+                "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [\"get\", \"list\", \"watch\"]\n"
+            )
+        })
+        .collect();
     // Finding #4: bind each impersonated SA to the real, already-existing
     // `system:controller:<name>` ClusterRole by name -- not re-deriving its
     // rules -- under a binding name of this module's own, so this applies
@@ -256,9 +330,25 @@ kind: ClusterRole
 metadata:
   name: nodebootstrap:nodescheduler-dra
 rules:
-- apiGroups: ["resource.k8s.io"]
-  resources: ["deviceclasses", "resourceclaims", "resourceslices"]
-  verbs: ["get", "list", "watch"]
+{scheduler_read_rules}---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:nodecontroller-watches
+rules:
+{controller_read_rules}---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:nodecontroller-watches
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:nodecontroller-watches
+subjects:
+- kind: User
+  name: system:kube-controller-manager
+  apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
