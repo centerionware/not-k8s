@@ -118,6 +118,12 @@ test_combined_binary_contains_every_component() {
     # what a given node enabled, so it's the one worth asserting.
     while read -r name; do
         [[ -n "$name" ]] || continue
+        # nodebootstrap is an installer/app-bootstrap applet in notk8s, not a
+        # runtime component in deploy/lib/components.sh. It is intentionally
+        # absent from that table because no service unit is installed for it;
+        # the shell-side component table must still cover every runtime applet
+        # without pretending the installer is one of them.
+        [[ "$name" == "nodebootstrap" ]] && continue
         assert_not_empty "$(component_row "$name" || true)" \
             "the combined binary contains '$name', which has no row in deploy/lib/components.sh — add it there, or the shell side will never build, install, or service it"
     done <<< "$components"

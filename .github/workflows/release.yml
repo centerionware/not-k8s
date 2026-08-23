@@ -344,20 +344,10 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build (debug + release, both profiles)
-        # CARGO_PROFILE_RELEASE_LTO=thin/CODEGEN_UNITS=16 here trades a
-        # bit of the smallest-possible-binary optimization Cargo.toml's
-        # committed [profile.release] (lto=true, codegen-units=1) gives
-        # real edge-device installs, for much faster CI turnaround — the
-        # full-LTO profile's whole appeal is minimizing an edge device's
-        # own resource footprint, a concern that doesn't apply to a
-        # GitHub-hosted runner building the binary, only to the device
-        # eventually running it. nodelet-build.sh already defines this
-        # exact "lighter" preset for RAM-constrained devices
-        # (release_lto_settings_for_this_device()); reused here for a
-        # different reason (CI speed, not memory) but the same trade-off.
-        env:
-          CARGO_PROFILE_RELEASE_LTO: thin
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        # Use Cargo.toml's complete release profile for published artifacts:
+        # size optimization, full LTO, one codegen unit, stripping, and
+        # abort-on-panic. Debug builds remain ordinary debug builds for the
+        # e2e gate; only the release half pays the full optimization cost.
         run: |
           set -e
           # Always explicit: the host triple is *-linux-gnu even on the

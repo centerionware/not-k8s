@@ -5,12 +5,10 @@
 //! `build_go_from_source`, `build_protoc_from_source`) -- slow (30-90+ min
 //! for gcc/Go), rare in practice (CI builds centrally), but real, not
 //! `bail!`'d out. `ensure_c_toolchain`/`ensure_go` are public but **not**
-//! called from `run_with` unconditionally, matching the shell version:
-//! they're only needed on-demand, by whichever from-source fallback
-//! actually needs a C compiler or Go (`containerd.rs`'s/`cni.rs`'s
-//! from-source tiers, and `build_go_from_source`/`build_protoc_from_source`
-//! here). The low-memory Cargo fallback is applied by fetch.rs to the actual
-//! build; this module only ensures the tools are available.
+//! called by the ordinary runtime path except that source builds must have a
+//! static musl C compiler ready before Cargo is invoked. The low-memory Cargo
+//! fallback is applied by fetch.rs to the actual build; this module only
+//! ensures the tools are available.
 
 use anyhow::{Context, Result};
 
@@ -26,6 +24,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         tracing::info!("skipping toolchain setup (NODEBOOTSTRAP_SKIP_TOOLCHAIN)");
         return Ok(());
     }
+    ensure_c_toolchain(cfg)?;
     ensure_rust(cfg)?;
     ensure_protoc(cfg)?;
     Ok(())
@@ -56,48 +55,88 @@ fn cargo_is_new_enough() -> bool {
         .is_some_and(|minor| minor >= MIN_CARGO_MINOR)
 }
 
-fn rustup_target(arch: &str) -> Option<&'static str> {
+pub(crate) fn rust_target(arch: &str) -> Option<&'static str> {
     Some(match arch {
-        "x86_64" => "x86_64-unknown-linux-gnu",
-        "aarch64" => "aarch64-unknown-linux-gnu",
-        "armv7l" => "armv7-unknown-linux-gnueabihf",
-        "armv6l" => "arm-unknown-linux-gnueabihf",
-        "i686" => "i686-unknown-linux-gnu",
-        "riscv64" => "riscv64gc-unknown-linux-gnu",
-        "ppc64le" => "powerpc64le-unknown-linux-gnu",
-        "s390x" => "s390x-unknown-linux-gnu",
-        "loongarch64" => "loongarch64-unknown-linux-gnu",
+        "x86_64" => "x86_64-unknown-linux-musl",
+        "aarch64" => "aarch64-unknown-linux-musl",
+        "armv7l" => "armv7-unknown-linux-musleabihf",
+        "armv6l" => "arm-unknown-linux-musleabihf",
+        "i686" => "i686-unknown-linux-musl",
+        "riscv64" => "riscv64gc-unknown-linux-musl",
+        "ppc64le" => "powerpc64le-unknown-linux-musl",
+        "s390x" => "s390x-unknown-linux-musl",
         _ => return None,
     })
 }
 
+fn rust_target_is_installed(target: &str) -> bool {
+    if let Some(output) = std::process::Command::new("rustup").args(["target", "list", "--installed"]).output().ok() {
+        return output.status.success()
+            && String::from_utf8_lossy(&output.stdout).lines().any(|line| line.trim() == target);
+    }
+    std::process::Command::new("rustc")
+        .args(["--print", "target-libdir", "--target", target])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| std::path::Path::new(String::from_utf8_lossy(&output.stdout).trim()).is_dir())
+        .unwrap_or(false)
+}
+
 pub fn ensure_rust(cfg: &Config) -> Result<()> {
     put_toolchain_bin_on_path(cfg);
+    let arch = cfg.arch();
+    let target = rust_target(&arch).with_context(|| {
+        format!(
+            "no known static musl Rust target for arch '{arch}' -- no way to build rustc from nothing but a \
+             C compiler for an unsupported architecture; the only real path is mrustc \
+             (https://github.com/thepowersgang/mrustc), out of scope here"
+        )
+    })?;
     if cargo_is_new_enough() {
-        tracing::info!(
-            version = command_version_output("cargo", "--version").unwrap_or_default(),
-            "Rust present and new enough"
-        );
-        return Ok(());
+        if rust_target_is_installed(target) {
+            tracing::info!(
+                version = command_version_output("cargo", "--version").unwrap_or_default(),
+                target,
+                "Rust present with static musl target"
+            );
+            return Ok(());
+        }
+        tracing::warn!(target, "Rust is present but its static musl target is missing");
     }
     if let Some(v) = command_version_output("cargo", "--version") {
         tracing::warn!("found {v} but this project needs >=1.{MIN_CARGO_MINOR} -- looking for a newer one");
     }
 
-    let names = PkgNames { apt: "cargo rustc", dnf: "cargo rustc", pacman: "rust", apk: "cargo", zypper: "cargo rustc", xbps: "rust" };
-    if pkg_install("rust", &names)? && cargo_is_new_enough() {
-        tracing::info!("Rust installed via the system package manager");
-        return Ok(());
+    if command_present("rustup") {
+        let status = std::process::Command::new("rustup")
+            .args(["target", "add", target])
+            .status()
+            .context("running rustup target add")?;
+        if status.success() {
+            if let Ok(cargo_path) = std::process::Command::new("rustup").args(["which", "cargo"]).output() {
+                if cargo_path.status.success() {
+                    if let Ok(path) = String::from_utf8(cargo_path.stdout) {
+                        if let Some(parent) = std::path::Path::new(path.trim()).parent() {
+                            prepend_path(parent);
+                        }
+                    }
+                }
+            }
+            if cargo_is_new_enough() && rust_target_is_installed(target) {
+                tracing::info!(target, "Rust static target ready via rustup");
+                return Ok(());
+            }
+        } else {
+            tracing::warn!(target, "rustup could not install the static musl target; trying the remaining toolchain tiers");
+        }
     }
 
-    let arch = cfg.arch();
-    let target = rustup_target(&arch).with_context(|| {
-        format!(
-            "no known rustup target for arch '{arch}' -- no way to build rustc from nothing but a \
-             C compiler for an unsupported architecture; the only real path is mrustc \
-             (https://github.com/thepowersgang/mrustc), out of scope here"
-        )
-    })?;
+    let names = PkgNames { apt: "cargo rustc", dnf: "cargo rustc", pacman: "rust", apk: "cargo", zypper: "cargo rustc", xbps: "rust" };
+    if pkg_install("rust", &names)? && cargo_is_new_enough() && rust_target_is_installed(target) {
+        tracing::info!(target, "Rust installed via the system package manager");
+        return Ok(());
+    }
 
     tracing::info!(target, "installing Rust via rustup");
     let src_dir = cfg.src_dir();
@@ -193,7 +232,7 @@ fn try_musl_cc_toolchain(cfg: &Config) -> Result<bool> {
         return Ok(false);
     }
     let toolchain_dir = cfg.toolchain_dir();
-    run_cmd("tar", &["xzf", &tarball.to_string_lossy(), "-C"], &toolchain_dir)?;
+    run_cmd("tar", &["xzf", &tarball.to_string_lossy(), "-C", "."], &toolchain_dir)?;
     let cc = toolchain_dir.join(format!("{triple}-cross/bin/{triple}-gcc"));
     if !cc.exists() {
         return Ok(false);
@@ -285,25 +324,89 @@ fn num_jobs() -> String {
 
 pub fn ensure_c_toolchain(cfg: &Config) -> Result<()> {
     put_toolchain_bin_on_path(cfg);
-    if command_present("cc") || command_present("gcc") || command_present("clang") {
-        tracing::info!("C compiler present");
+    let arch = cfg.arch();
+    let target = rust_target(&arch).with_context(|| format!("no supported static musl Rust target for arch '{arch}' -- refusing a glibc-linked compiler path"))?;
+    if let Some(compiler) = find_musl_cc(cfg) {
+        configure_musl_cargo(target, &compiler);
         return Ok(());
     }
+
     let names = PkgNames {
-        apt: "build-essential",
-        dnf: "gcc make",
-        pacman: "base-devel",
-        apk: "build-base",
-        zypper: "gcc make",
-        xbps: "base-devel",
+        apt: "musl-tools musl-dev",
+        dnf: "musl-gcc musl-libc-devel",
+        pacman: "musl",
+        apk: "musl-dev gcc",
+        zypper: "musl-devel gcc",
+        xbps: "musl-devel",
     };
-    if pkg_install("C toolchain", &names)? && command_present("cc") {
-        return Ok(());
+    if pkg_install("musl C toolchain", &names)? {
+        put_toolchain_bin_on_path(cfg);
+        if let Some(compiler) = find_musl_cc(cfg) {
+            configure_musl_cargo(target, &compiler);
+            return Ok(());
+        }
     }
     if try_musl_cc_toolchain(cfg)? {
-        return Ok(());
+        if let Some(compiler) = find_musl_cc(cfg) {
+            configure_musl_cargo(target, &compiler);
+            return Ok(());
+        }
     }
-    build_gcc_from_source(cfg)
+    anyhow::bail!(
+        "no usable musl C compiler is available for {arch}; refusing the generic glibc compiler fallback because it would make the deployed Rust binaries depend on the host's glibc. Install a musl development toolchain or make the matching musl.cc toolchain reachable"
+    )
+}
+
+fn find_musl_cc(cfg: &Config) -> Option<String> {
+    let arch = cfg.arch();
+    let triple = musl_cc_triple(&arch)?;
+    let mut candidates = vec![
+        cfg.toolchain_dir().join(format!("{triple}-cross/bin/{triple}-gcc")).to_string_lossy().into_owned(),
+        cfg.toolchain_dir().join("bin/gcc").to_string_lossy().into_owned(),
+        cfg.toolchain_dir().join("bin/cc").to_string_lossy().into_owned(),
+    ];
+    let names = ["musl-gcc".to_string(), format!("{triple}-gcc"), "gcc".to_string(), "cc".to_string()];
+    for name in names {
+        if let Some(path) = which(&name) {
+            candidates.push(path);
+        }
+    }
+    candidates.into_iter().find(|candidate| {
+        let path = std::path::Path::new(candidate);
+        if !path.is_file() {
+            return false;
+        }
+        let machine = std::process::Command::new(candidate)
+            .arg("-dumpmachine")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        let basename_is_musl_wrapper = path.file_name().is_some_and(|name| name.to_string_lossy() == "musl-gcc");
+        let resolved_is_musl = std::fs::canonicalize(path).ok().is_some_and(|resolved| resolved.to_string_lossy().contains("musl"));
+        machine.contains("musl") || basename_is_musl_wrapper || resolved_is_musl
+    })
+}
+
+fn which(bin: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        let path = dir.join(bin);
+        path.is_file().then(|| path.to_string_lossy().into_owned())
+    })
+}
+
+fn configure_musl_cargo(target: &str, compiler: &str) {
+    let key = target.replace('-', "_");
+    let upper = key.to_ascii_uppercase();
+    std::env::set_var(format!("CC_{key}"), compiler);
+    std::env::set_var(format!("CARGO_TARGET_{upper}_LINKER"), compiler);
+    let rustflags = format!("{}-C target-feature=+crt-static", std::env::var(format!("CARGO_TARGET_{upper}_RUSTFLAGS")).map(|v| format!("{v} ")).unwrap_or_default());
+    std::env::set_var(format!("CARGO_TARGET_{upper}_RUSTFLAGS"), rustflags);
+    std::env::set_var("MUSL_C_COMPILER", compiler);
+    std::env::set_var("MUSL_RUST_TARGET", target);
+    tracing::info!(compiler, target, "using static musl C compiler");
 }
 
 fn go_arch(arch: &str) -> Option<&'static str> {

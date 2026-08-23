@@ -36,11 +36,13 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 rustls = { version = "0.23", features = ["ring"] }
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+debug = false
+incremental = false
 
 # Optimized like release, but keeps DWARF symbols for Linux perf/FlameGraph
 # captures. The normal release profile stays stripped for deployment.

@@ -49,21 +49,25 @@ build_gcc_from_source() {
 # musl.cc publishes static, self-contained cross/native toolchains for a
 # wide arch matrix. They run on the target arch with zero shared-lib deps,
 # so they work even on distros with no package manager at all (BusyBox-only
-# initramfs, etc.) — a good middle tier before resorting to a from-source
-# gcc build.
-try_musl_cc_toolchain() {
-    local triple=""
+# initramfs, etc.). A generic glibc compiler is never accepted for the Rust
+# target: it would put the host libc back into an otherwise static binary.
+MUSL_CC_TRIPLE() {
     case "$ARCH" in
-        x86_64)   triple=x86_64-linux-musl ;;
-        aarch64)  triple=aarch64-linux-musl ;;
-        armv7l)   triple=armv7l-linux-musleabihf ;;
-        armv6l)   triple=arm-linux-musleabihf ;;
-        i686)     triple=i686-linux-musl ;;
-        riscv64)  triple=riscv64-linux-musl ;;
-        ppc64le)  triple=powerpc64le-linux-musl ;;
-        s390x)    triple=s390x-linux-musl ;;
-        *)        return 1 ;;
+        x86_64)  echo x86_64-linux-musl ;;
+        aarch64) echo aarch64-linux-musl ;;
+        armv7l)  echo armv7l-linux-musleabihf ;;
+        armv6l)  echo arm-linux-musleabihf ;;
+        i686)    echo i686-linux-musl ;;
+        riscv64) echo riscv64-linux-musl ;;
+        ppc64le) echo powerpc64le-linux-musl ;;
+        s390x)   echo s390x-linux-musl ;;
+        *)        echo "" ;;
     esac
+}
+
+try_musl_cc_toolchain() {
+    local triple="$(MUSL_CC_TRIPLE)"
+    [[ -n "$triple" ]] || return 1
     log "Trying static musl.cc toolchain for $triple..."
     local tarball="$triple-cross.tgz"
     fetch "https://musl.cc/$tarball" "$SRC_DIR/$tarball" || return 1
@@ -75,14 +79,59 @@ try_musl_cc_toolchain() {
     log "Static toolchain ready: $ccbin"
 }
 
+find_musl_cc() {
+    local triple="$(MUSL_CC_TRIPLE)" candidate machine resolved
+    local -a candidates=(
+        "$TOOLCHAIN_DIR/$triple-cross/bin/$triple-gcc"
+        "$TOOLCHAIN_DIR/bin/gcc"
+        "$TOOLCHAIN_DIR/bin/cc"
+        "$(command -v musl-gcc 2>/dev/null || true)"
+        "$(command -v "${triple}-gcc" 2>/dev/null || true)"
+        "$(command -v gcc 2>/dev/null || true)"
+        "$(command -v cc 2>/dev/null || true)"
+    )
+    for candidate in "${candidates[@]}"; do
+        [[ -x "$candidate" ]] || continue
+        machine="$($candidate -dumpmachine 2>/dev/null || true)"
+        resolved="$(readlink -f "$candidate" 2>/dev/null || true)"
+        if [[ "$machine" == *musl* || "${candidate##*/}" == musl-gcc || "$resolved" == *musl* ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+configure_musl_cargo() {
+    local compiler="$1" target key upper cc_var linker_var rustflags_var flags
+    target="$(RUSTUP_TARGET_MAP)"
+    key="${target//-/_}"
+    upper="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+    cc_var="CC_$key"
+    linker_var="CARGO_TARGET_${upper}_LINKER"
+    rustflags_var="CARGO_TARGET_${upper}_RUSTFLAGS"
+    printf -v "$cc_var" '%s' "$compiler"
+    printf -v "$linker_var" '%s' "$compiler"
+    flags="${!rustflags_var:-}"
+    [[ "$flags" == *'target-feature=+crt-static'* ]] || flags="${flags:+$flags }-C target-feature=+crt-static"
+    printf -v "$rustflags_var" '%s' "$flags"
+    export "$cc_var" "$linker_var" "$rustflags_var"
+    export MUSL_C_COMPILER="$compiler" MUSL_RUST_TARGET="$target"
+    log "Using static musl compiler $compiler for Rust target $target"
+}
+
 ensure_c_toolchain() {
-    if command -v cc &>/dev/null || command -v gcc &>/dev/null || command -v clang &>/dev/null; then
-        log "C compiler present: $(command -v cc || command -v gcc || command -v clang)"
+    local compiler
+    if compiler="$(find_musl_cc)"; then
+        configure_musl_cargo "$compiler"
         return 0
     fi
-    pkg_install "C toolchain" \
-        "build-essential" "gcc make" "base-devel" "build-base" "gcc make" "base-devel" \
-        && command -v cc &>/dev/null && return 0
-    try_musl_cc_toolchain && return 0
-    build_gcc_from_source
+    pkg_install "musl C toolchain" \
+        "musl-tools musl-dev" "musl-gcc musl-libc-devel" "musl" "musl-dev gcc" "musl-devel gcc" "musl-devel" \
+        && compiler="$(find_musl_cc)" && { configure_musl_cargo "$compiler"; return 0; }
+    if try_musl_cc_toolchain && compiler="$(find_musl_cc)"; then
+        configure_musl_cargo "$compiler"
+        return 0
+    fi
+    die "No usable musl C compiler is available for $ARCH. Refusing the generic glibc compiler fallback because it would make the deployed Rust binaries depend on the host's glibc. Install a musl development toolchain or make the matching musl.cc toolchain reachable."
 }

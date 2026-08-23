@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 
 use crate::components::COMPONENTS;
 use crate::config::{Config, Layout, Source};
+use crate::toolchain;
 
 /// This repo's own GitHub coordinates -- used to fetch `VERSION` off the
 /// `version` branch (`stamp_version_from_release_branch`) and to resolve
@@ -127,7 +128,8 @@ fn build_from_source(cfg: &Config) -> Result<()> {
 
     let dest_dir = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
-    let target_release = repo_root.join("target/release");
+    let target = toolchain::rust_target(&cfg.arch()).with_context(|| format!("no supported static musl Rust target for arch '{}'", cfg.arch()))?;
+    let target_release = repo_root.join("target").join(target).join("release");
 
     // Stages every built binary into Config::toolchain_dir()/bin -- the one
     // canonical location `services.rs`'s installers look for a component
@@ -163,7 +165,7 @@ fn build_from_source(cfg: &Config) -> Result<()> {
                 let link = dest_dir.join(component.name);
                 let _ = std::fs::remove_file(&link);
                 #[cfg(unix)]
-                std::os::unix::fs::symlink(dest_dir.join("notk8s"), &link)
+                std::os::unix::fs::symlink("notk8s", &link)
                     .with_context(|| format!("symlinking {}", link.display()))?;
             }
         }
@@ -290,11 +292,24 @@ fn cargo_build(cfg: &Config, repo_root: &std::path::Path, extra_args: &[&str]) -
     let package = extra_args.iter().position(|arg| *arg == "-p").and_then(|index| extra_args.get(index + 1)).copied();
     tracing::info!(args = ?extra_args, with_cri = cfg.with_cri, "cargo build");
     let mut command = std::process::Command::new("cargo");
-    command.arg("build").arg("--release").args(extra_args);
+    command.arg("build").arg("--release").arg("--target").arg(toolchain::rust_target(&cfg.arch()).context("no supported static musl Rust target")?).args(extra_args);
+    // This is the on-device source-build path. Keep its guarantees explicit
+    // at the command boundary even if the workspace release profile changes:
+    // the installer itself must be a small, fast, stripped static musl
+    // binary, just like the runtime binaries it builds and stages.
+    command.env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s");
+    command.env("CARGO_PROFILE_RELEASE_LTO", "fat");
+    command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
+    command.env("CARGO_PROFILE_RELEASE_STRIP", "symbols");
+    command.env("CARGO_PROFILE_RELEASE_PANIC", "abort");
     if cfg.with_cri && matches!(package, Some("nodelet" | "notk8s")) {
         command.args(["--features", "cri"]);
     }
-    if low_memory_host() {
+    // Keep the installer itself on the full size/speed profile even on a
+    // small device. The surrounding runtime builds may use the documented
+    // thin-LTO fallback there, but the binary that will be invoked on every
+    // future bootstrap is worth the one full optimized build.
+    if low_memory_host() && package != Some("nodebootstrap") {
         command.env("CARGO_BUILD_JOBS", "1");
         command.env("CARGO_PROFILE_RELEASE_LTO", "thin");
         command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16");
