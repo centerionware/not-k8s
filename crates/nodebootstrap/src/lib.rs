@@ -112,6 +112,30 @@ pub fn run_embedded(args: &[String]) -> Result<()> {
     run_cli(args, true)
 }
 
+/// Returns the arguments for an embedded bootstrap invocation, if `argv` names
+/// this applet directly or selects it through the combined binary. This check
+/// belongs outside the async entrypoint: `parse_args` deliberately updates
+/// environment variables before the rest of the bootstrap is configured.
+pub fn embedded_args(argv: &[String]) -> Option<Vec<String>> {
+    let arg0 = argv
+        .first()
+        .and_then(|arg| arg.rsplit('/').next())
+        .unwrap_or_default();
+    if matches!(arg0, "bootstrap" | "nodebootstrap") {
+        return Some(argv.get(1..).unwrap_or_default().to_vec());
+    }
+    if matches!(argv.get(1).map(String::as_str), Some("bootstrap" | "nodebootstrap")) {
+        return Some(argv.get(2..).unwrap_or_default().to_vec());
+    }
+    None
+}
+
+/// Runs the embedded bootstrap before Tokio is initialized by the combined
+/// binary. Returns `None` when this is an ordinary component invocation.
+pub fn run_embedded_from_argv(argv: &[String]) -> Option<Result<()>> {
+    embedded_args(argv).map(|args| run_embedded(&args))
+}
+
 fn run_cli(args: &[String], embedded: bool) -> Result<()> {
     install_tls_provider()?;
     let command = parse_args(args)?;

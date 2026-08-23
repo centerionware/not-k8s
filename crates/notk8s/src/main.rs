@@ -74,20 +74,28 @@ struct Applet {
     summary: &'static str,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().collect();
+    #[cfg(feature = "nodebootstrap")]
+    if let Some(result) = nodebootstrap::run_embedded_from_argv(&argv) {
+        return result;
+    }
+    run_async(argv)
+}
+
+#[tokio::main]
+async fn run_async(argv: Vec<String>) -> Result<()> {
     let arg0 = argv
         .first()
         .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
         .unwrap_or_default();
 
     // argv[0] first (symlink/hardlink install), then an explicit subcommand.
-    let (applet, app_args) = if is_applet(&arg0) {
-        (canonical_applet(&arg0), argv[1..].to_vec())
+    let applet = if is_applet(&arg0) {
+        arg0
     } else {
         match argv.get(1).map(String::as_str) {
-            Some(name) if is_applet(name) => (canonical_applet(name), argv[2..].to_vec()),
+            Some(name) if is_applet(name) => name.to_string(),
             Some("components") => {
                 for a in APPLETS {
                     println!("{}", a.name);
@@ -117,22 +125,14 @@ async fn main() -> Result<()> {
         .with(fmt::layer().with_target(false))
         .init();
 
-    run_applet(&applet, &app_args).await
+    run_applet(&applet).await
 }
 
 fn is_applet(name: &str) -> bool {
-    (cfg!(feature = "nodebootstrap") && name == "bootstrap") || APPLETS.iter().any(|a| a.name == name)
+    APPLETS.iter().any(|a| a.name == name)
 }
 
-fn canonical_applet(name: &str) -> String {
-    if name == "bootstrap" {
-        "nodebootstrap".to_string()
-    } else {
-        name.to_string()
-    }
-}
-
-async fn run_applet(name: &str, args: &[String]) -> Result<()> {
+async fn run_applet(name: &str) -> Result<()> {
     match name {
         #[cfg(feature = "nodelet")]
         "nodelet" => nodelet::app::run().await,
@@ -144,8 +144,6 @@ async fn run_applet(name: &str, args: &[String]) -> Result<()> {
         "nodescheduler" => nodescheduler::run().await,
         #[cfg(feature = "nodecontroller")]
         "nodecontroller" => nodecontroller::run().await,
-        #[cfg(feature = "nodebootstrap")]
-        "nodebootstrap" => nodebootstrap::run_embedded(args),
         // Unreachable via main() — is_applet() gates every path here — but
         // cheaper to answer honestly than to unwrap.
         other => bail!("component '{other}' was not built into this binary (see `notk8s components`)"),
@@ -196,7 +194,7 @@ mod tests {
         #[cfg(feature = "nodebootstrap")]
         assert!(is_applet("nodebootstrap"));
         #[cfg(feature = "nodebootstrap")]
-        assert!(is_applet("bootstrap"));
+        assert!(nodebootstrap::embedded_args(&["notk8s".into(), "bootstrap".into(), "--help".into()]).is_some());
     }
 
     #[test]

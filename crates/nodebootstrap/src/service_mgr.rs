@@ -201,6 +201,10 @@ fn install_fallback(cfg: &Config, svc: &SupervisedService) -> Result<()> {
             .context("making the supervisor script executable")?;
     }
 
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", &supervisor.to_string_lossy()])
+        .status();
+
     let pid_path = work_dir.join(format!("{}.pid", svc.name));
     if let Ok(pid) = std::fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid.trim().parse::<i32>() {

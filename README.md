@@ -3,9 +3,9 @@ Started because I wanted to run a dev cluster on my phone without destroying the
 # not-k8s
 
 **A drop-in kubelet replacement small enough to run where kubelet won't fit.**
-**Another rust based Kubernetes clone **
+**Another Rust-based Kubernetes clone.**
 
-`not-k8s` is **becomming** a kubernetes distro
+`not-k8s` is **becoming** a Kubernetes distro.
 
 Older Measured idle, no pods scheduled, 120s window, 3 replicates per agent:
 
