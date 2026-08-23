@@ -73,23 +73,40 @@
 //!
 //! **Finding #4 (2026-08-23, found live in `release.yml`'s e2e against the
 //! still-current k3s-based bootstrap path):** "already-existing" above was
-//! an unverified assumption, and it doesn't hold everywhere. Every one of
-//! nodecontroller's impersonated writes 403'd -- `replicasets/status`,
-//! `endpointslices`, everything -- because the `system:controller:<name>`
-//! *ClusterRoleBindings* (not the ClusterRoles, which the apiserver does
-//! create) that upstream expects to bind each `system:serviceaccount:
-//! kube-system:<name>` to its matching bootstrap role are not reliably
-//! present under this stack the way they are on a plain upstream
-//! `kube-apiserver` -- `SENTINEL_CLUSTER_ROLES` above never actually probed
-//! one of the narrow `system:controller:*` names, only generic ones, so
-//! this gap shipped invisibly. Every status-reporting e2e test
-//! (Deployment/ReplicaSet/DaemonSet/StatefulSet/CronJob/Job/PDB) failed the
-//! same way: pods ran fine, the owning controller's own status patch never
-//! landed. Fixed the same way the DRA gap above was: supplement, don't
-//! duplicate -- bind each impersonated SA to the real, already-existing
-//! `system:controller:<name>` ClusterRole (by name, not by re-deriving its
-//! rules) under a binding name of this module's own, so it applies whether
-//! or not upstream's own binding also exists.
+//! an unverified assumption. Every one of nodecontroller's impersonated
+//! writes 403'd -- `replicasets/status`, `endpointslices`, everything --
+//! while pods ran fine underneath, so every status-reporting e2e test
+//! (Deployment/ReplicaSet/DaemonSet/StatefulSet/CronJob/Job/PDB) timed out
+//! instead of failing immediately. First hypothesis (wrong, but left as a
+//! harmless belt-and-suspenders supplement below): that the `system:
+//! controller:<name>` ClusterRoleBindings were themselves missing. Verified
+//! live against a real deployed cluster instead of guessing further --
+//! both the `system:controller:replicaset-controller` ClusterRole *and*
+//! its binding to the `replicaset-controller` ServiceAccount were present
+//! and correct. `kubectl auth can-i patch replicasets/status --as=system:
+//! serviceaccount:kube-system:replicaset-controller` said `no`; `... can-i
+//! update replicasets/status ...` said `yes`. **The real bootstrap policy
+//! only ever grants `update` on `*/status` subresources (and on a few main
+//! resources like `endpointslices`) for these narrowly-scoped controller
+//! identities -- it never grants `patch` -- because real upstream
+//! `kube-controller-manager` writes those with a full status `Update()`
+//! call, never a JSON merge patch.** `nodecontroller` uses
+//! `Patch::Merge`/`patch_status()` throughout instead, which is what every
+//! one of these writes actually 403'd on. Rewriting every impersonated
+//! write in `nodecontroller` to use `replace`/`replace_status()` instead
+//! would match upstream's real verb usage most faithfully, but touches
+//! ~15 call sites across nearly every controller with no way to compile
+//! or test locally on this project's own constrained dev boxes -- too much
+//! surface to get right blind. Fixed the lower-risk way instead, matching
+//! this crate's own "supplement, don't duplicate" precedent (Finding #2):
+//! grant exactly the `patch` verb, on exactly the resources/subresources
+//! each controller's own code (`crates/nodecontroller/src/controllers/
+//! *.rs`) is observed to `.patch()`/`.patch_status()`, on top of the real
+//! role's own resource list -- `CONTROLLER_PATCH_GRANTS` below, one entry
+//! per call site found. Widens each identity's verbs on resources it
+//! already has other access to, not which resources it can touch at all,
+//! so the per-controller blast-radius isolation Finding #3 introduced
+//! impersonation for is unaffected.
 
 use anyhow::{Context, Result};
 
@@ -124,6 +141,38 @@ const CONTROLLER_SA_NAMES: &[&str] = &[
     "disruption-controller",
 ];
 
+/// `(sa_name, apiGroup, resource)` -- Finding #4's `patch` verb supplement.
+/// One entry per `.patch()`/`.patch_status()` call site found in
+/// `crates/nodecontroller/src/controllers/*.rs`, traced to the exact
+/// `Api<T>` (and, for `patch_status`, the `/status` subresource) each call
+/// targets. Controllers with no entry here (`service-account-controller`,
+/// `namespace-controller`, `generic-garbage-collector`, `ttl-after-
+/// finished-controller`, `attachdetach-controller`) have no `.patch()`
+/// call in their own file -- nothing to grant.
+const CONTROLLER_PATCH_GRANTS: &[(&str, &str, &str)] = &[
+    ("cronjob-controller", "batch", "cronjobs/status"),
+    ("certificate-controller", "certificates.k8s.io", "certificatesigningrequests/status"),
+    ("daemon-set-controller", "apps", "daemonsets/status"),
+    ("endpointslice-controller", "discovery.k8s.io", "endpointslices"),
+    ("disruption-controller", "policy", "poddisruptionbudgets/status"),
+    ("node-controller", "", "nodes"),
+    ("resource-claim-controller", "", "pods/status"),
+    ("persistent-volume-binder", "", "persistentvolumes"),
+    ("persistent-volume-binder", "", "persistentvolumes/status"),
+    ("persistent-volume-binder", "", "persistentvolumeclaims"),
+    ("persistent-volume-binder", "", "persistentvolumeclaims/status"),
+    ("replicaset-controller", "apps", "replicasets/status"),
+    ("deployment-controller", "apps", "replicasets"),
+    ("deployment-controller", "apps", "deployments/status"),
+    ("root-ca-cert-publisher", "", "configmaps"),
+    ("job-controller", "batch", "jobs/status"),
+    ("job-controller", "batch", "jobs"),
+    ("resourcequota-controller", "", "resourcequotas/status"),
+    ("statefulset-controller", "apps", "statefulsets/status"),
+    ("pv-protection-controller", "", "persistentvolumes"),
+    ("pv-protection-controller", "", "persistentvolumeclaims"),
+];
+
 /// Supplements (does not replace) the built-in bootstrap roles -- see the
 /// findings in this module's doc comment. Separate ClusterRoles/Bindings
 /// rather than editing the built-in ones directly: those are reconciled by
@@ -156,6 +205,48 @@ subjects:
   namespace: kube-system
 "#
             )
+        })
+        .collect();
+    // Finding #4's actual fix: one ClusterRole+Binding per SA that appears
+    // in CONTROLLER_PATCH_GRANTS, one rule per (apiGroup, resource) entry
+    // for that SA.
+    let patch_grants: String = CONTROLLER_SA_NAMES
+        .iter()
+        .filter_map(|sa| {
+            let rules: String = CONTROLLER_PATCH_GRANTS
+                .iter()
+                .filter(|(entry_sa, _, _)| entry_sa == sa)
+                .map(|(_, group, resource)| {
+                    format!(
+                        "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [\"patch\"]\n"
+                    )
+                })
+                .collect();
+            if rules.is_empty() {
+                return None;
+            }
+            Some(format!(
+                r#"---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:controller-patch-{sa}
+rules:
+{rules}---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:controller-patch-{sa}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:controller-patch-{sa}
+subjects:
+- kind: ServiceAccount
+  name: {sa}
+  namespace: kube-system
+"#
+            ))
         })
         .collect();
     format!(
@@ -243,7 +334,7 @@ subjects:
 - kind: User
   name: system:kube-controller-manager
   apiGroup: rbac.authorization.k8s.io
-{controller_bindings}"#
+{controller_bindings}{patch_grants}"#
     )
 }
 
