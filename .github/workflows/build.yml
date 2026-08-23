@@ -267,16 +267,10 @@ jobs:
 
       - name: Build
         if: steps.want.outputs.build == 'true'
-        # Thin LTO / 16 codegen units for CI turnaround, same trade-off
-        # release.yml's build-release stage makes: the committed
-        # [profile.release] (lto=true, codegen-units=1) exists to shrink
-        # the binary a real edge device runs, which is not a property a
-        # runner building it cares about. A device that wants the smallest
-        # possible binary should still build locally with the committed
-        # profile.
-        env:
-          CARGO_PROFILE_RELEASE_LTO: thin
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        # Use Cargo.toml's complete release profile: size optimization,
+        # full LTO, one codegen unit, stripping, and abort-on-panic. These
+        # artifacts are the installable binaries, so CI must verify the same
+        # profile a device will receive.
         run: |
           set -e
           # Always explicit now. The host triple is *-linux-gnu even on the

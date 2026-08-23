@@ -22,18 +22,7 @@ NODESTORE_TEST_PORT="${NODESTORE_TEST_PORT:-23790}"
 NODESTORE_TEST_ADDR="127.0.0.1:${NODESTORE_TEST_PORT}"
 
 _nodestore_binary() {
-    local candidate
-    for candidate in "$REPO_ROOT/bin/nodestore" "$REPO_ROOT/target/release/nodestore" \
-                     "$REPO_ROOT/target/debug/nodestore"; do
-        [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
-    done
-    # The combined layout may hold it without a symlink if only nodelet and
-    # nodeproxy were linked (DATASTORE unset at deploy time).
-    if [[ -x "$REPO_ROOT/bin/notk8s" ]] && "$REPO_ROOT/bin/notk8s" components 2>/dev/null | grep -qx nodestore; then
-        echo "$REPO_ROOT/bin/notk8s"
-        return 0
-    fi
-    echo ""
+    test_component_binary nodestore || true
 }
 
 # Start a throwaway nodestore. Sets $ns_pid, $ns_dir, $ns_log — plain

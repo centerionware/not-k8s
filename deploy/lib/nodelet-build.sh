@@ -46,7 +46,8 @@ install_built_binary() {
 # release_lto_settings_for_this_device — echoes env-var assignments
 # (CARGO_PROFILE_RELEASE_LTO=... CARGO_PROFILE_RELEASE_CODEGEN_UNITS=...) to
 # eval before cargo build. Cargo.toml's committed [profile.release] uses
-# lto=true, codegen-units=1 for the smallest/fastest edge binary — right for
+# opt-level=s, full LTO, and codegen-units=1 for the smallest/fastest edge
+# binary — right for
 # a well-resourced build machine/CI, but it means nearly all of the actual
 # compiling (every dependency crate: tokio, kube, and with --features cri
 # also tonic/prost/rustls) happens fine, and then the *entire* dependency
@@ -176,7 +177,7 @@ cargo_build_component() {
     # Confirmed for real: this is the actual failure being retried here —
     # see release_lto_settings_for_this_device()'s comment for why a
     # big-enough device still tries the expensive profile first.
-    warn "cargo build --release failed — if this device is memory-constrained, the likely cause is the final whole-program LTO step (Cargo.toml's [profile.release] uses lto=true, codegen-units=1 for the smallest edge binary, which needs the most memory right at the end). Retrying once with lighter LTO settings (thin LTO, 16 codegen units) that trade a slightly larger binary for much lower peak memory..."
+    warn "cargo build --release failed — if this device is memory-constrained, the likely cause is the final whole-program LTO step (Cargo.toml's [profile.release] uses opt-level=s, full LTO, and codegen-units=1 for the smallest edge binary, which needs the most memory right at the end). Retrying once with lighter LTO settings (thin LTO, 16 codegen units) that trade a slightly larger binary for much lower peak memory..."
     # Whatever made the full profile fail applies to every later build in
     # this run too, so latch it rather than re-discovering it per component.
     LTO_OVERRIDE="$LTO_FALLBACK"
@@ -185,25 +186,25 @@ cargo_build_component() {
 }
 
 build_split_layout() {
-    local profile_flag="$1" out_dir="$2"
+    local profile_flag="$1" out_dir="$2" target="$3"
     local name features
     while read -r name; do
         features="$(component_cargo_features "$name")"
         log "Building $name (cargo build ${profile_flag:-} -p $name ${features:-})..."
         # shellcheck disable=SC2086  # features is a flag string to split
-        cargo_build_component "$profile_flag" -p "$name" $features \
+        cargo_build_component "$profile_flag" -p "$name" $features --target "$target" \
             || die "cargo build -p $name failed — check $LOG_DIR.$([[ -n "$LTO_OVERRIDE" ]] && echo " This was already the lighter-LTO settings ($LTO_OVERRIDE); if this is memory exhaustion (dmesg will show an oom-kill of rustc/cc1plus/ld), adding swap or building on a bigger box are the remaining options.")"
         [[ -x "$out_dir/$name" ]] || die "Build finished but $out_dir/$name isn't there."
     done < <(enabled_components)
 }
 
 build_combined_layout() {
-    local profile_flag="$1" out_dir="$2"
+    local profile_flag="$1" out_dir="$2" target="$3"
     local features
     features="$(combined_cargo_features)"
     log "Building combined binary (cargo build ${profile_flag:-} -p notk8s ${features:-})..."
     # shellcheck disable=SC2086  # features is a flag string to split
-    cargo_build_component "$profile_flag" -p notk8s $features \
+    cargo_build_component "$profile_flag" -p notk8s $features --target "$target" \
         || die "cargo build -p notk8s failed — check $LOG_DIR. This is the combined single-binary layout; NOTK8S_BUILD_LAYOUT=split builds one binary per component instead."
     [[ -x "$out_dir/notk8s" ]] || die "Build finished but $out_dir/notk8s isn't there."
 }
@@ -242,8 +243,10 @@ install_layout_output() {
 # it), this builds *every* component this run wants, in whichever layout(s)
 # NOTK8S_BUILD_LAYOUT asks for.
 build_nodelet() {
-    local layout
+    local layout target
     layout="$(resolve_build_layout)"
+    target="$(RUSTUP_TARGET_MAP)"
+    [[ -n "$target" ]] || die "No supported static musl Rust target for arch '$ARCH' — refusing to build a glibc-linked binary."
 
     # A prebuilt drop-in decides the layout by itself — you can't assemble a
     # combined binary out of per-component ones, or split a combined one
@@ -276,7 +279,7 @@ build_nodelet() {
     log "Build layout: $layout ($(enabled_components | tr '\n' ' ')|combined=$(layout_builds_combined "$layout" && echo yes || echo no))"
 
     # NOTK8S_BUILD_PROFILE=debug skips the optimized release profile
-    # entirely (Cargo.toml's lto=true/codegen-units=1 is what makes a
+    # entirely (Cargo.toml's opt-level=s/full-LTO/codegen-units=1 is what makes a
     # release build take ~5 minutes vs. cargo test's ~1 — worthwhile for
     # an actual deployed binary, pure waste for e2e testing, which only
     # needs correctness, not runtime performance). Not the default: a real
@@ -284,15 +287,15 @@ build_nodelet() {
     local out_dir profile_flag=--release
     if [[ "${NOTK8S_BUILD_PROFILE:-release}" == "debug" ]]; then
         profile_flag=""
-        out_dir="$REPO_ROOT/target/debug"
+        out_dir="$REPO_ROOT/target/$target/debug"
     else
-        out_dir="$REPO_ROOT/target/release"
+        out_dir="$REPO_ROOT/target/$target/release"
         LTO_OVERRIDE="$(release_lto_settings_for_this_device)"
         [[ -n "$LTO_OVERRIDE" ]] \
-            && log "This device has under 4GB RAM — building with lighter LTO settings ($LTO_OVERRIDE) from the start instead of risking the full lto=true/codegen-units=1 profile's memory spike."
+            && log "This device has under 4GB RAM — building with lighter LTO settings ($LTO_OVERRIDE) from the start instead of risking the full opt-level=s/full-LTO/codegen-units=1 profile's memory spike."
     fi
 
-    layout_builds_split "$layout" && build_split_layout "$profile_flag" "$out_dir"
-    layout_builds_combined "$layout" && build_combined_layout "$profile_flag" "$out_dir"
+    layout_builds_split "$layout" && build_split_layout "$profile_flag" "$out_dir" "$target"
+    layout_builds_combined "$layout" && build_combined_layout "$profile_flag" "$out_dir" "$target"
     install_layout_output "$layout" "$out_dir"
 }

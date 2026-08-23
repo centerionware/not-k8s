@@ -42,10 +42,11 @@ source "$REPO_ROOT/deploy/lib/components.sh"
 # pointing at a missing bin/notk8s is precisely the breakage these tests
 # exist to catch; skipping it as "not installed" would hide it.
 every_installed_component() {
-    local row name
+    local row name path
     for row in "${NOTK8S_COMPONENTS[@]}"; do
         name="$(component_field "$row" 1)"
-        [[ -e "$REPO_ROOT/bin/$name" || -L "$REPO_ROOT/bin/$name" ]] && printf '%s\n' "$name"
+        path="$(test_component_binary "$name" || true)"
+        [[ -x "$path" ]] && printf '%s\n' "$name"
     done
     return 0
 }
@@ -69,9 +70,10 @@ every_installed_component() {
 # the same test still run, and the layout that actually depends on argv[0]
 # dispatch is the one this covers.
 every_dispatched_component() {
-    local name
+    local name path
     while read -r name; do
-        [[ -L "$REPO_ROOT/bin/$name" ]] && printf '%s\n' "$name"
+        path="$(test_component_binary "$name" || true)"
+        [[ -L "$path" ]] && printf '%s\n' "$name"
     done < <(every_installed_component)
     return 0
 }
@@ -79,11 +81,7 @@ every_dispatched_component() {
 # The combined binary, wherever this deployment put it, or "" if this is a
 # split install.
 _combined_binary() {
-    local candidate
-    for candidate in "$REPO_ROOT/bin/notk8s" "$REPO_ROOT/target/release/notk8s" "$REPO_ROOT/target/debug/notk8s"; do
-        [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
-    done
-    echo ""
+    test_component_binary notk8s || true
 }
 
 test_combined_binary_contains_every_component() {
@@ -120,6 +118,12 @@ test_combined_binary_contains_every_component() {
     # what a given node enabled, so it's the one worth asserting.
     while read -r name; do
         [[ -n "$name" ]] || continue
+        # nodebootstrap is an installer/app-bootstrap applet in notk8s, not a
+        # runtime component in deploy/lib/components.sh. It is intentionally
+        # absent from that table because no service unit is installed for it;
+        # the shell-side component table must still cover every runtime applet
+        # without pretending the installer is one of them.
+        [[ "$name" == "nodebootstrap" ]] && continue
         assert_not_empty "$(component_row "$name" || true)" \
             "the combined binary contains '$name', which has no row in deploy/lib/components.sh — add it there, or the shell side will never build, install, or service it"
     done <<< "$components"
@@ -156,7 +160,7 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
     # — everything is env-driven), so this checks the file, not the output.
     local name
     while read -r name; do
-        local path="$REPO_ROOT/bin/$name"
+        local path="$(test_component_binary "$name" || true)"
         assert_true test -x "$path"
 
         if [[ -L "$path" ]]; then
@@ -167,9 +171,10 @@ test_installed_component_binaries_are_runnable_whatever_the_layout() {
             local target
             target="$(readlink "$path")"
             assert_eq "$target" "notk8s" "bin/$name should be a relative symlink to the combined binary"
-            assert_true test -x "$REPO_ROOT/bin/notk8s"
+            local combined="$(dirname "$path")/notk8s"
+            assert_true test -x "$combined"
             # argv[0] dispatch is what makes the symlink mean anything.
-            assert_contains "$("$REPO_ROOT/bin/notk8s" components)" "$name" \
+            assert_contains "$("$combined" components)" "$name" \
                 "the combined binary bin/$name points at should actually contain '$name'"
         fi
     done < <(every_installed_component)
@@ -186,7 +191,8 @@ test_a_failing_component_says_why_before_it_exits() {
     #
     # Deliberately layout-agnostic: bin/nodeproxy is the same entry point
     # either way, which is the point.
-    local bin="$REPO_ROOT/bin/nodeproxy"
+    local bin
+    bin="$(test_component_binary nodeproxy || true)"
     [[ -x "$bin" ]] || skip_test "no nodeproxy binary here (--proxy=none?)"
 
     local scratch output rc=0

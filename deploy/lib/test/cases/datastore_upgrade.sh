@@ -25,15 +25,7 @@ UPGRADE_ROOT=""
 UPGRADE_SIZE=3
 
 _upgrade_binary() {
-    local candidate
-    for candidate in "$REPO_ROOT/bin/nodestore" "$REPO_ROOT/target/release/nodestore" \
-                     "$REPO_ROOT/target/debug/nodestore"; do
-        [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
-    done
-    if [[ -x "$REPO_ROOT/bin/notk8s" ]] && "$REPO_ROOT/bin/notk8s" components 2>/dev/null | grep -qx nodestore; then
-        echo "$REPO_ROOT/bin/notk8s"; return 0
-    fi
-    echo ""
+    test_component_binary nodestore || true
 }
 
 _upgrade_prepare() {

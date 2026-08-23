@@ -12,12 +12,7 @@ _nodecontroller_is_running_dc() {
 }
 
 _k3s_controller_manager_disabled_dc() {
-    local args=""
-    if command -v systemctl >/dev/null 2>&1; then
-        args="$(systemctl show k3s -p ExecStart --value 2>/dev/null || true)"
-    fi
-    [[ "$args" == *--disable-controller-manager* ]] && return 0
-    ps -eo args= 2>/dev/null | grep -E '[k]3s( server)?' | grep -q -- '--disable-controller-manager'
+    test_controller_manager_is_exclusive
 }
 
 _require_nodecontroller_dc() {

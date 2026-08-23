@@ -13,15 +13,14 @@
 
 RUSTUP_TARGET_MAP() {
     case "$ARCH" in
-        x86_64)      echo x86_64-unknown-linux-gnu ;;
-        aarch64)     echo aarch64-unknown-linux-gnu ;;
-        armv7l)      echo armv7-unknown-linux-gnueabihf ;;
-        armv6l)      echo arm-unknown-linux-gnueabihf ;;
-        i686)        echo i686-unknown-linux-gnu ;;
-        riscv64)     echo riscv64gc-unknown-linux-gnu ;;
-        ppc64le)     echo powerpc64le-unknown-linux-gnu ;;
-        s390x)       echo s390x-unknown-linux-gnu ;;
-        loongarch64) echo loongarch64-unknown-linux-gnu ;;
+        x86_64)      echo x86_64-unknown-linux-musl ;;
+        aarch64)     echo aarch64-unknown-linux-musl ;;
+        armv7l)      echo armv7-unknown-linux-musleabihf ;;
+        armv6l)      echo arm-unknown-linux-musleabihf ;;
+        i686)        echo i686-unknown-linux-musl ;;
+        riscv64)     echo riscv64gc-unknown-linux-musl ;;
+        ppc64le)     echo powerpc64le-unknown-linux-musl ;;
+        s390x)       echo s390x-unknown-linux-musl ;;
         *)           echo "" ;;
     esac
 }
@@ -48,26 +47,60 @@ cargo_is_new_enough() {
     (( minor >= MIN_CARGO_MINOR ))
 }
 
+rust_target_is_installed() {
+    local target="$1"
+    if command -v rustup &>/dev/null; then
+        rustup target list --installed 2>/dev/null | awk '{print $1}' | grep -Fxq "$target"
+        return $?
+    fi
+    # A distro cargo without rustup can still be used when that exact target
+    # stdlib was provisioned by the distro. Do not infer this from the target
+    # name: check the actual target libdir instead.
+    local libdir
+    libdir="$(rustc --print target-libdir --target "$target" 2>/dev/null || true)"
+    [[ -n "$libdir" && -d "$libdir" ]]
+}
+
+use_rustup_cargo() {
+    local cargo_path
+    cargo_path="$(rustup which cargo 2>/dev/null || true)"
+    [[ -x "$cargo_path" ]] || return 1
+    export PATH="$(dirname "$cargo_path"):$PATH"
+    command -v cargo &>/dev/null
+}
+
 ensure_rust() {
+    local target; target="$(RUSTUP_TARGET_MAP)"
     if cargo_is_new_enough; then
-        log "Rust present and new enough: $(cargo --version)"
-        return 0
+        if rust_target_is_installed "$target"; then
+            log "Rust present with static target $target: $(cargo --version)"
+            return 0
+        fi
+        warn "Rust is new enough but its static musl target is missing — installing $target."
     fi
     if command -v cargo &>/dev/null; then
         warn "Found $(cargo --version) but this project needs >=1.$MIN_CARGO_MINOR — looking for a newer one."
     fi
 
-    pkg_install "rust" "cargo rustc" "cargo rustc" "rust" "cargo" "cargo rustc" "rust" \
-        && cargo_is_new_enough && { log "Rust installed via $PKG_MGR: $(cargo --version)"; return 0; }
+    [[ -n "$target" ]] || die "No supported static musl Rust target for arch '$ARCH'. \
+This source bootstrap refuses a glibc target because installed binaries must \
+run without the host distro's libc; add a musl target/toolchain for this \
+architecture before building it from source."
 
-    local target; target="$(RUSTUP_TARGET_MAP)"
-    [[ -n "$target" ]] || die "No known rustup target for arch '$ARCH'. \
-There is no way to build rustc from nothing but a C compiler for an \
-unsupported architecture — the only real path is mrustc \
-(https://github.com/thepowersgang/mrustc), a from-scratch multi-stage \
-bootstrap that is out of scope for a single test script. If you hit this, \
-please open an issue with your arch — we may be able to add a cross build."
-
+    if command -v rustup &>/dev/null; then
+        rustup target add "$target" \
+            || die "rustup could not install the static musl target $target."
+        use_rustup_cargo || true
+        if cargo_is_new_enough && rust_target_is_installed "$target"; then
+            log "Rust static target ready via rustup: $target"
+            return 0
+        fi
+    fi
+    if pkg_install "rust" "cargo rustc" "cargo rustc" "rust" "cargo" "cargo rustc" "rust" \
+        && cargo_is_new_enough && rust_target_is_installed "$target"; then
+        log "Rust installed via $PKG_MGR with static target $target: $(cargo --version)"
+        return 0
+    fi
     log "Installing Rust via rustup (target: $target)..."
     export RUSTUP_HOME="$TOOLCHAIN_DIR/rustup"
     export CARGO_HOME="$TOOLCHAIN_DIR/cargo"

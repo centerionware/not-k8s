@@ -118,7 +118,7 @@ _reorder_env_reconfiguring_tests_last() {
         # its watches (cases/watch_recovery.sh, which is the test that does
         # this deliberately). Left in place, it would look exactly like a
         # flaky unrelated test rather than a disruption someone chose.
-        if declare -f "$name" 2>/dev/null | grep -qE 'nodelet_restart_with_env|nodeproxy_(restart|restore)_|nodescheduler_(restart|restore)_|sudo (systemctl (restart|stop|start) (containerd|k3s|nodelet)|swapon|mkswap)'; then
+        if declare -f "$name" 2>/dev/null | grep -qE 'test_control_plane_unit|apiserver_unit|nodelet_restart_with_env|nodeproxy_(restart|restore)_|nodescheduler_(restart|restore)_|sudo (systemctl (restart|stop|start) (containerd|kube-apiserver|k3s|nodelet)|swapon|mkswap)'; then
             deferred+=("$name")
         else
             normal+=("$name")

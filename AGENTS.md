@@ -100,12 +100,14 @@ at them via `NOTK8S_NODELET_PREBUILT` / `NOTK8S_NODEPROXY_PREBUILT` (or
 `release.yml`'s e2e shards use, so no toolchain is installed on the device.
 
 **Release profile is expensive on purpose**: `Cargo.toml`'s `[profile.release]`
-uses `lto=true, codegen-units=1` for the smallest edge binary — a real build
+uses `opt-level="s"`, fat LTO, one codegen unit, stripped symbols, and
+`panic="abort"` for the smallest self-contained edge binary — a real build
 takes ~5x longer than debug. Never needed for iterating on correctness (use a
-debug build); CI's e2e stage builds with `NOTK8S_BUILD_PROFILE=debug` and its
-release-artifact stage overrides to `CARGO_PROFILE_RELEASE_LTO=thin
-CODEGEN_UNITS=16` purely for CI turnaround (edge devices still get full LTO
-from a local `cargo build --release`).
+debug build); CI's e2e stage builds with `NOTK8S_BUILD_PROFILE=debug`, while
+release artifacts use the same complete profile. Both the shell bootstrap and
+nodebootstrap's from-source path target static musl and apply these settings
+to every binary they build; only the documented constrained-host fallback may
+trade fat LTO for thin LTO to avoid taking down a small device.
 
 **Memory-constrained build hosts** (this repo has been developed partly on a
 resource-constrained phone VM): `deploy/lib/nodelet-build.sh`'s
