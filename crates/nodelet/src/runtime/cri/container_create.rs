@@ -686,6 +686,7 @@ impl CriRuntime {
         // definitive proof a different, stale container is what's
         // actually running (a duplicate/orphaned creation), not this one.
         info!(container = %container.name, container_id = %created.container_id, "CreateContainer succeeded");
+        let had_allocated_devices = !allocated_devices.is_empty();
         self.record_device_allocations(sandbox_id, &container.name, &crate::runtime::pod_key(&id.namespace, &id.name), allocated_devices);
 
         if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
@@ -697,7 +698,7 @@ impl CriRuntime {
         // event. Notify only after the allocation checkpoint and the running
         // container are both in place, so the status read cannot race either
         // the in-memory allocation record or the container lifecycle.
-        if !allocated_devices.is_empty() {
+        if had_allocated_devices {
             self.device_plugins
                 .notify_pod_status(&crate::runtime::pod_key(&id.namespace, &id.name));
         }
