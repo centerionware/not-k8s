@@ -75,7 +75,7 @@ fn try_prebuilt(cfg: &Config) -> Result<bool> {
             let link = dest_dir.join(component.name);
             let _ = std::fs::remove_file(&link);
             #[cfg(unix)]
-            std::os::unix::fs::symlink(&dest, &link).with_context(|| format!("symlinking {}", link.display()))?;
+            std::os::unix::fs::symlink("notk8s", &link).with_context(|| format!("symlinking {}", link.display()))?;
         }
         return Ok(true);
     }
@@ -235,7 +235,7 @@ fn download_release(cfg: &Config) -> Result<()> {
             let link = dest_dir.join(component.name);
             let _ = std::fs::remove_file(&link);
             #[cfg(unix)]
-            std::os::unix::fs::symlink(dest_dir.join("notk8s"), &link)
+            std::os::unix::fs::symlink("notk8s", &link)
                 .with_context(|| format!("symlinking {}", link.display()))?;
         }
     }
