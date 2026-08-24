@@ -134,6 +134,26 @@ EOF
         sleep 2
     done
     kubectl describe pvc "$name" || true
+    echo "=== CSI readiness objects ===" >&2
+    kubectl get pvc,pv,storageclass -o wide 2>&1 || true
+    echo "=== external-provisioner service-account permissions ===" >&2
+    external_provisioner="system:serviceaccount:default:csi-hostpathplugin-sa"
+    kubectl auth can-i get persistentvolumeclaims --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i watch persistentvolumeclaims --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i get persistentvolumes --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i create persistentvolumes --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i get storageclasses --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i get leases --namespace=default --as="$external_provisioner" 2>&1 || true
+    prov_pod="$(kubectl get pods --all-namespaces --no-headers 2>/dev/null \
+        | awk '$2 ~ /csi-hostpathplugin/ { print $1 "/" $2; exit }')"
+    if [[ -n "$prov_pod" ]]; then
+        prov_ns="${prov_pod%%/*}"
+        prov_name="${prov_pod#*/}"
+        echo "=== csi-provisioner pod describe ($prov_pod) ===" >&2
+        kubectl describe pod "$prov_name" -n "$prov_ns" 2>&1 || true
+        echo "=== csi-provisioner logs ($prov_pod) ===" >&2
+        kubectl logs "$prov_name" -n "$prov_ns" -c csi-provisioner --tail=160 2>&1 || true
+    fi
     kubectl delete pvc "$name" --wait=false >/dev/null 2>&1 || true
     echo "CSI readiness PVC never reached Bound; refusing to run CSI/DRA e2e tests" >&2
     return 1
