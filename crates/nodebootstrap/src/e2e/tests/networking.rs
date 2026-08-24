@@ -28,6 +28,21 @@ async fn pod_running(context: &E2eContext, name: &str) -> Result<bool> {
         == Some("Running"))
 }
 
+async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.container_statuses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|status| status.name == "app")
+        .and_then(|status| status.state)
+        .and_then(|state| state.terminated)
+        .and_then(|terminated| terminated.message))
+}
+
 pub(super) async fn host_network_pod_uses_the_node_network_namespace(
     context: &E2eContext,
 ) -> Result<()> {
@@ -135,4 +150,91 @@ pub(super) async fn host_port_reaches_the_container_on_the_node_ip(
         .await?;
     let _ = pods.delete(name, &DeleteParams::default()).await;
     Ok(())
+}
+
+pub(super) async fn custom_dns_config_reaches_resolv_conf(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "custom-dns-config";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "dnsPolicy": "None",
+            "dnsConfig": {"nameservers": ["1.1.1.1"]},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "grep -q '^nameserver 1.1.1.1$' /etc/resolv.conf && echo configured > /dev/termination-log"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("custom DNS configuration", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "configured"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn spec_hostname_overrides_the_container_hostname(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "hostname-override";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "hostname": "custom-hostname",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "hostname > /dev/termination-log"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("spec.hostname override", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "custom-hostname"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn set_hostname_as_fqdn_reports_the_full_fqdn(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "hostname-fqdn";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "hostname": "fqdn-host",
+            "subdomain": "fqdn-subdomain",
+            "setHostnameAsFQDN": true,
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "case \"$(hostname)\" in fqdn-host.fqdn-subdomain.*.svc*) echo fqdn > /dev/termination-log;; esac"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("setHostnameAsFQDN hostname", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "fqdn"))
+            }
+        })
+        .await
 }

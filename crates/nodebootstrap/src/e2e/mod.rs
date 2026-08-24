@@ -260,6 +260,18 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_custom_dns_config_reaches_resolv_conf",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_spec_hostname_overrides_the_container_hostname",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_set_hostname_as_fqdn_reports_the_full_fqdn",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pod_resources_socket_is_created_on_a_cri_node",
         group: TestGroup::General,
     },
@@ -728,6 +740,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_port_reaches_the_container_on_the_node_ip" => {
             networking::host_port_reaches_the_container_on_the_node_ip(context).await
+        }
+        "test_custom_dns_config_reaches_resolv_conf" => {
+            networking::custom_dns_config_reaches_resolv_conf(context).await
+        }
+        "test_spec_hostname_overrides_the_container_hostname" => {
+            networking::spec_hostname_overrides_the_container_hostname(context).await
+        }
+        "test_set_hostname_as_fqdn_reports_the_full_fqdn" => {
+            networking::set_hostname_as_fqdn_reports_the_full_fqdn(context).await
         }
         "test_pod_resources_socket_is_created_on_a_cri_node" => {
             pod_resources::pod_resources_socket_is_created_on_a_cri_node(context).await
