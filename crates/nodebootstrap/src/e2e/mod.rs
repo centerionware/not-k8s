@@ -22,6 +22,8 @@ mod daemonset;
 mod disruption;
 #[path = "tests/deployment.rs"]
 mod deployment;
+#[path = "tests/ephemeral_containers.rs"]
+mod ephemeral_containers;
 #[path = "tests/endpoint_slice.rs"]
 mod endpoint_slice;
 #[path = "tests/garbage_collection.rs"]
@@ -107,6 +109,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_disruption_controller_computes_pdb_status",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_kubectl_debug_adds_and_starts_an_ephemeral_container",
         group: TestGroup::General,
     },
     TestCase {
@@ -382,6 +388,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_disruption_controller_computes_pdb_status" => {
             disruption::disruption_controller_computes_pdb_status(context).await
+        }
+        "test_kubectl_debug_adds_and_starts_an_ephemeral_container" => {
+            ephemeral_containers::kubectl_debug_adds_and_starts_an_ephemeral_container(context).await
         }
         "test_node_is_ready_with_capacity_advertised" => {
             node_status::node_is_ready_with_capacity_advertised(context).await
