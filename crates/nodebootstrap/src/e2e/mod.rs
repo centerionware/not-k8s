@@ -48,6 +48,8 @@ mod pods;
 mod process;
 #[path = "tests/pod_resources.rs"]
 mod pod_resources;
+#[path = "tests/pod_status.rs"]
+mod pod_status;
 #[path = "tests/probes.rs"]
 mod probes;
 #[path = "tests/readiness_gates.rs"]
@@ -238,6 +240,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_env_resource_field_ref_reports_the_containers_own_limits",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_endpointslice_is_produced_for_a_selected_pod",
         group: TestGroup::General,
     },
@@ -310,6 +316,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_condition_reports_observed_generation",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_container_status_reports_a_real_image_id",
         group: TestGroup::General,
     },
@@ -363,6 +373,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_host_path_directory_or_create_creates_missing_directory",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_sub_path_expr_expands_a_downward_api_env_var",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_path_directory_type_rejects_a_nonexistent_path",
         group: TestGroup::General,
     },
     TestCase {
@@ -684,6 +702,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_besteffort_pod_gets_no_cgroup_limit" => {
             resources::besteffort_pod_gets_no_cgroup_limit(context).await
         }
+        "test_env_resource_field_ref_reports_the_containers_own_limits" => {
+            resources::env_resource_field_ref_reports_the_containers_own_limits(context).await
+        }
         "test_endpointslice_is_produced_for_a_selected_pod" => {
             endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await
         }
@@ -738,6 +759,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_pod_status_reports_host_ips_plural" => {
             lifecycle::pod_status_reports_host_ips_plural(context).await
         }
+        "test_pod_condition_reports_observed_generation" => {
+            pod_status::pod_condition_reports_observed_generation(context).await
+        }
         "test_container_status_reports_a_real_image_id" => {
             lifecycle::container_status_reports_a_real_image_id(context).await
         }
@@ -779,6 +803,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_path_directory_or_create_creates_missing_directory" => {
             volumes::host_path_directory_or_create_creates_missing_directory(context).await
+        }
+        "test_sub_path_expr_expands_a_downward_api_env_var" => {
+            volumes::sub_path_expr_expands_a_downward_api_env_var(context).await
+        }
+        "test_host_path_directory_type_rejects_a_nonexistent_path" => {
+            volumes::host_path_directory_type_rejects_a_nonexistent_path(context).await
         }
         "test_read_only_root_filesystem_blocks_writes" => {
             security::read_only_root_filesystem_blocks_writes(context).await

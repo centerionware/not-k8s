@@ -343,3 +343,83 @@ pub(super) async fn host_path_directory_or_create_creates_missing_directory(
     anyhow::ensure!(directory_exists, "DirectoryOrCreate did not create the host directory");
     Ok(())
 }
+
+pub(super) async fn sub_path_expr_expands_a_downward_api_env_var(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "subpath-expr";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "shared", "emptyDir": {}}],
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "env": [{"name": "POD_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}}],
+                "command": ["sh", "-c", "echo expanded > /data/marker; cat /base/$(POD_NAME)/marker > /dev/termination-log"],
+                "volumeMounts": [
+                    {"name": "shared", "mountPath": "/base"},
+                    {"name": "shared", "mountPath": "/data", "subPathExpr": "$(POD_NAME)"}
+                ]
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("subPathExpr expansion", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "expanded"))
+            }
+        })
+        .await
+}
+
+async fn container_waiting_reason(context: &E2eContext, name: &str) -> Result<Option<String>> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.container_statuses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|status| status.name == "app")
+        .and_then(|status| status.state)
+        .and_then(|state| state.waiting)
+        .and_then(|waiting| waiting.reason))
+}
+
+pub(super) async fn host_path_directory_type_rejects_a_nonexistent_path(
+    context: &E2eContext,
+) -> Result<()> {
+    let host_path = host_path_test_dir("missing-directory");
+    let name = "hostpath-missing-directory";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"], "volumeMounts": [{"name": "host", "mountPath": "/host"}] }]
+        }),
+    )
+    .await?;
+    let wait_result = context
+        .wait_until("missing Directory hostPath rejection", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(container_waiting_reason(&context, name)
+                    .await?
+                    .as_deref()
+                    == Some("CreateContainerConfigError"))
+            }
+        })
+        .await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    wait_result
+}

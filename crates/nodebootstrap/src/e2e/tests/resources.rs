@@ -18,6 +18,40 @@ async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -
     Ok(())
 }
 
+pub(super) async fn env_resource_field_ref_reports_the_containers_own_limits(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "resource-field-ref";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "resources": {"limits": {"cpu": "1500m", "memory": "536870912"}},
+                "env": [
+                    {"name": "CPU_LIMIT_CORES", "valueFrom": {"resourceFieldRef": {"resource": "limits.cpu"}}},
+                    {"name": "MEM_LIMIT_MI", "valueFrom": {"resourceFieldRef": {"resource": "limits.memory", "divisor": "1Mi"}}}
+                ],
+                "command": ["sh", "-c", "echo \"$CPU_LIMIT_CORES:$MEM_LIMIT_MI\" > /dev/termination-log"]
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("resourceFieldRef values", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "2:512"))
+            }
+        })
+        .await
+}
+
 async fn terminal_phase(context: &E2eContext, name: &str) -> Result<bool> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods
