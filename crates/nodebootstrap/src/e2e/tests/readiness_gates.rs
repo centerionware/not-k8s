@@ -5,14 +5,14 @@ use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
 
-fn condition_status(pod: &Pod, condition_type: &str) -> Option<&str> {
+fn condition_status(pod: &Pod, condition_type: &str) -> Option<String> {
     pod.status
         .as_ref()
         .and_then(|status| status.conditions.as_ref())
         .into_iter()
         .flatten()
         .find(|condition| condition.type_ == condition_type)
-        .map(|condition| condition.status.as_str())
+        .map(|condition| condition.status.clone())
 }
 
 pub(super) async fn pod_stays_not_ready_until_its_readiness_gate_condition_is_set(
@@ -51,12 +51,12 @@ pub(super) async fn pod_stays_not_ready_until_its_readiness_gate_condition_is_se
         .wait_until("readiness-gated Pod ContainersReady", Duration::from_secs(30), || {
             let pods = pods.clone();
             async move {
-                Ok(condition_status(&pods.get(name).await?, "ContainersReady") == Some("True"))
+                Ok(condition_status(&pods.get(name).await?, "ContainersReady").as_deref() == Some("True"))
             }
         })
         .await?;
     anyhow::ensure!(
-        condition_status(&pods.get(name).await?, "Ready") == Some("False"),
+        condition_status(&pods.get(name).await?, "Ready").as_deref() == Some("False"),
         "Ready must be False while the readiness gate is unset"
     );
 
@@ -68,7 +68,7 @@ pub(super) async fn pod_stays_not_ready_until_its_readiness_gate_condition_is_se
         .wait_until("readiness-gated Pod Ready remains False", Duration::from_secs(30), || {
             let pods = pods.clone();
             async move {
-                Ok(condition_status(&pods.get(name).await?, "Ready") == Some("False"))
+                Ok(condition_status(&pods.get(name).await?, "Ready").as_deref() == Some("False"))
             }
         })
         .await?;
@@ -81,12 +81,12 @@ pub(super) async fn pod_stays_not_ready_until_its_readiness_gate_condition_is_se
         .wait_until("readiness-gated Pod Ready=True", Duration::from_secs(90), || {
             let pods = pods.clone();
             async move {
-                Ok(condition_status(&pods.get(name).await?, "Ready") == Some("True"))
+                Ok(condition_status(&pods.get(name).await?, "Ready").as_deref() == Some("True"))
             }
         })
         .await?;
     anyhow::ensure!(
-        condition_status(&pods.get(name).await?, gate) == Some("True"),
+        condition_status(&pods.get(name).await?, gate).as_deref() == Some("True"),
         "the external readiness-gate condition was lost during nodelet status updates"
     );
     let _ = pods.delete(name, &DeleteParams::default()).await;

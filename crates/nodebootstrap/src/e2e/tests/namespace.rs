@@ -63,6 +63,7 @@ pub(super) async fn namespace_controller_deletes_contents_before_finalizing(
     context
         .wait_until("namespace-controller removes the Namespace", Duration::from_secs(120), || {
             let namespaces = namespaces.clone();
+            let name = name.clone();
             async move { Ok(namespaces.get_opt(&name).await?.is_none()) }
         })
         .await
