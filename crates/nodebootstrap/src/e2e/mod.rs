@@ -44,6 +44,8 @@ mod lifecycle;
 mod pods;
 #[path = "tests/pod_resources.rs"]
 mod pod_resources;
+#[path = "tests/probes.rs"]
+mod probes;
 #[path = "tests/readiness_gates.rs"]
 mod readiness_gates;
 #[path = "tests/replicaset.rs"]
@@ -52,6 +54,8 @@ mod replicaset;
 mod resource_quota;
 #[path = "tests/runtime_class.rs"]
 mod runtime_class;
+#[path = "tests/scheduler.rs"]
+mod scheduler;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
 
@@ -257,6 +261,22 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_container_status_id_has_runtime_scheme",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_readiness_probe_gates_ready_condition",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_liveness_probe_failure_restarts_container",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_startup_probe_gates_readiness_until_server_starts",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_wrong_port_readiness_probe_keeps_pod_not_ready",
         group: TestGroup::General,
     },
 ];
@@ -555,6 +575,18 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_container_status_id_has_runtime_scheme" => {
             lifecycle::container_status_id_has_runtime_scheme(context).await
+        }
+        "test_readiness_probe_gates_ready_condition" => {
+            probes::readiness_probe_gates_ready_condition(context).await
+        }
+        "test_liveness_probe_failure_restarts_container" => {
+            probes::liveness_probe_failure_restarts_container(context).await
+        }
+        "test_startup_probe_gates_readiness_until_server_starts" => {
+            probes::startup_probe_gates_readiness_until_server_starts(context).await
+        }
+        "test_wrong_port_readiness_probe_keeps_pod_not_ready" => {
+            probes::wrong_port_readiness_probe_keeps_pod_not_ready(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
