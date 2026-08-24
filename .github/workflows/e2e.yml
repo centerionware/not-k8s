@@ -191,6 +191,20 @@ jobs:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: sudo chmod 644 "$KUBECONFIG"
 
+      - name: Run bootstrap-native e2e checks
+        # This is the 0.7.1 runner from nodebootstrap itself. Keep it before
+        # the optional CSI/DRA setup so the bootstrap applet's own checks are
+        # validated independently of the legacy shell suite and its drivers.
+        env:
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+        run: |
+          set -e
+          if [[ -x "$GITHUB_WORKSPACE/target/debug/notk8s" ]]; then
+            "$GITHUB_WORKSPACE/target/debug/notk8s" bootstrap --e2e
+          else
+            "$GITHUB_WORKSPACE/target/debug/nodebootstrap" --e2e
+          fi
+
       - name: Install reference CSI + DRA drivers
         if: matrix.needs_drivers
         env:
