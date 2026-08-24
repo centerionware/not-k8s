@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn only_matches_test_name_substrings_and_comma_separates() {
         assert_eq!(
-            select_tests(Some("node_ready,kubernetes_service")).unwrap(),
+            select_tests(Some("node_is_ready,kubernetes_service")).unwrap(),
             vec!["node_is_ready", "kubernetes_service_has_reachable_endpoint"]
         );
     }
