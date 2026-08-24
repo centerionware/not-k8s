@@ -112,6 +112,9 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
     spec.advertise_address = advertise_address.clone();
     install_apiserver(cfg, &spec, &bin_dir, Some(&cert_path))?;
     wait_for_readyz(&spec);
+    crate::service_reconciler::reset_and_wait_for_reachable_endpoint(
+        &cfg.kubeconfig_dir().join("admin.kubeconfig"),
+    )?;
     tracing::info!(address = %advertise_address, "kube-apiserver now advertises the reachable CNI gateway");
     Ok(())
 }
