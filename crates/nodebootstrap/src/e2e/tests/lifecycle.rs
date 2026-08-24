@@ -156,3 +156,69 @@ pub(super) async fn container_status_id_has_runtime_scheme(
         })
         .await
 }
+
+pub(super) async fn crash_loop_backoff_reports_waiting_reason(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "crash-loop-backoff";
+    create_pod(
+        context,
+        name,
+        json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "exit 1"]}]}),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("CrashLoopBackOff waiting reason", Duration::from_secs(120), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.container_statuses)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|status| {
+                        status
+                            .state
+                            .and_then(|state| state.waiting)
+                            .is_some_and(|waiting| waiting.reason.as_deref() == Some("CrashLoopBackOff"))
+                    }))
+            }
+        })
+        .await
+}
+
+pub(super) async fn image_pull_policy_never_fails_when_image_is_absent(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "image-pull-never";
+    create_pod(
+        context,
+        name,
+        json!({"restartPolicy": "Never", "containers": [{"name": "app", "image": "not-k8s-e2e/image-that-does-not-exist:never", "imagePullPolicy": "Never", "command": ["sleep", "30"]}]}),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("ErrImageNeverPull status", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.container_statuses)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|status| {
+                        status
+                            .state
+                            .and_then(|state| state.waiting)
+                            .is_some_and(|waiting| waiting.reason.as_deref() == Some("ErrImageNeverPull"))
+                    }))
+            }
+        })
+        .await
+}
