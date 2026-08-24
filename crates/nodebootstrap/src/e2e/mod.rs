@@ -352,6 +352,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_exceeding_its_active_deadline_is_terminated",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_container_status_id_has_runtime_scheme",
         group: TestGroup::General,
     },
@@ -865,6 +869,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_status_reports_qos_class" => {
             lifecycle::pod_status_reports_qos_class(context).await
+        }
+        "test_pod_exceeding_its_active_deadline_is_terminated" => {
+            lifecycle::pod_exceeding_its_active_deadline_is_terminated(context).await
         }
         "test_container_status_id_has_runtime_scheme" => {
             lifecycle::container_status_id_has_runtime_scheme(context).await

@@ -162,6 +162,37 @@ pub(super) async fn pod_status_reports_qos_class(context: &E2eContext) -> Result
         .await
 }
 
+pub(super) async fn pod_exceeding_its_active_deadline_is_terminated(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "active-deadline";
+    create_pod(
+        context,
+        name,
+        json!({
+            "activeDeadlineSeconds": 5,
+            "restartPolicy": "Never",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+        }),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("activeDeadlineSeconds termination", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                let status = pods.get(name).await?.status;
+                Ok(status
+                    .as_ref()
+                    .and_then(|status| status.phase.as_deref())
+                    == Some("Failed")
+                    && status.and_then(|status| status.reason).as_deref()
+                        == Some("DeadlineExceeded"))
+            }
+        })
+        .await
+}
+
 pub(super) async fn container_status_id_has_runtime_scheme(
     context: &E2eContext,
 ) -> Result<()> {
