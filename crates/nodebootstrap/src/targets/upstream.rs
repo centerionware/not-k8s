@@ -87,6 +87,35 @@ pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
     )
 }
 
+/// The first apiserver start happens before CNI has created `cni0`, so
+/// `target_spec()` has to fall back to loopback. That address is valid for
+/// nodebootstrap's own kubeconfigs but invalid as the `default/kubernetes`
+/// Service endpoint: the apiserver rejects loopback Endpoints, and pods then
+/// cannot reach the ClusterIP used by CSI/DRA sidecars. Once nodelet has
+/// started the bootstrap pods and flannel has written its subnet, `cni0`
+/// exists and its address is the bridge gateway for every pod on this node.
+/// Reinstall the unit once with that address so the apiserver's own
+/// bootstrap-controller publishes a usable endpoint.
+pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
+    if !cfg.with_cri || cfg.skip_nodelet || cfg.cni_provider.as_deref() != Some("flannel") {
+        return Ok(());
+    }
+
+    let advertise_address = wait_for_cni_address()?;
+    let bin_dir = cfg.toolchain_dir().join("bin");
+    let bin = bin_dir.join("kube-apiserver");
+    anyhow::ensure!(bin.exists(), "no kube-apiserver binary at {}", bin.display());
+    let cert_path = cfg.nodelet_server_ca_path();
+    anyhow::ensure!(cert_path.is_file(), "nodelet server CA is missing at {}", cert_path.display());
+
+    let mut spec = target_spec(cfg);
+    spec.advertise_address = advertise_address.clone();
+    install_apiserver(cfg, &spec, &bin_dir, Some(&cert_path))?;
+    wait_for_readyz(&spec);
+    tracing::info!(address = %advertise_address, "kube-apiserver now advertises the reachable CNI gateway");
+    Ok(())
+}
+
 fn target_spec(cfg: &Config) -> TargetSpec {
     TargetSpec {
         pki_dir: cfg.pki_dir(),
@@ -255,6 +284,10 @@ fn nodestore_etcd_servers() -> String {
 /// was confirmed live). Falls back to loopback when no `cni0` exists yet
 /// (e.g. `--cni=none`).
 fn detect_advertise_address() -> String {
+    detect_cni_address().unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn detect_cni_address() -> Option<String> {
     std::process::Command::new("ip")
         .args(["-4", "-o", "addr", "show", "cni0"])
         .output()
@@ -267,7 +300,19 @@ fn detect_advertise_address() -> String {
                 .and_then(|cidr| cidr.split('/').next())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn wait_for_cni_address() -> Result<String> {
+    tracing::info!("waiting for CNI bridge cni0 before publishing the apiserver Service endpoint...");
+    for _ in 0..30 {
+        if let Some(address) = detect_cni_address() {
+            return Ok(address);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    anyhow::bail!(
+        "CNI bridge cni0 never appeared within 30s after flannel became ready -- the apiserver cannot publish a reachable kubernetes Service endpoint; check: ip addr show cni0; journalctl -u flanneld -n 100"
+    )
 }
 
 struct TargetSpec {

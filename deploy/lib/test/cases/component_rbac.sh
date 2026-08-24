@@ -66,3 +66,16 @@ test_replacement_control_plane_identities_can_read_all_watch_inputs() {
 }
 
 register_test test_replacement_control_plane_identities_can_read_all_watch_inputs
+
+test_kubernetes_service_has_a_reachable_endpoint() {
+    node_uses_cri_runtime \
+        || skip_test "the ClusterIP endpoint check applies to real CRI pods, not the mock runtime"
+
+    local endpoint
+    endpoint="$(kubectl get endpoints kubernetes -n default -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
+    [[ -n "$endpoint" ]] || die "default/kubernetes has no endpoint — the apiserver bootstrap-controller did not publish its advertised address"
+    [[ "$endpoint" != 127.* && "$endpoint" != ::1 ]] \
+        || die "default/kubernetes advertises loopback '$endpoint', which pods cannot use; bootstrap must publish the CNI bridge gateway"
+}
+
+register_test test_kubernetes_service_has_a_reachable_endpoint

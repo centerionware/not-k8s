@@ -26,7 +26,8 @@ use anyhow::{bail, Context, Result};
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
-/// and nodecontroller -> CNI readiness -> nodescheduler and the remaining
+/// and nodecontroller -> CNI readiness -> apiserver network endpoint refresh
+/// -> nodescheduler and the remaining
 /// replacement services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
@@ -85,6 +86,7 @@ pub fn run_all() -> Result<()> {
         services::ensure_nodecontroller(&cfg)?;
         if !cfg.skip_nodelet && cfg.with_cri {
             cni::wait_for_flannel_subnet(&cfg)?;
+            targets::refresh_network_advertise_address(&cfg)?;
         }
         services::ensure_nodescheduler(&cfg)?;
     }
