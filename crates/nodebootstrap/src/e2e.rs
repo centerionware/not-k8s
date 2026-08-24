@@ -136,13 +136,12 @@ fn select_tests(only: Option<&str>, shard: Option<&str>) -> Result<Vec<&'static 
             None => true,
             Some(shard) => match test.group {
                 TestGroup::General => {
-                    let selected = general_position % shard.total == shard.index - 1;
+                    let selected = assigned_to_shard(test.group, general_position, shard);
                     general_position += 1;
                     selected
                 }
                 TestGroup::CsiDra => {
-                    let selected = shard.index <= CSI_DRA_SHARDS
-                        && csi_dra_position % CSI_DRA_SHARDS == shard.index - 1;
+                    let selected = assigned_to_shard(test.group, csi_dra_position, shard);
                     csi_dra_position += 1;
                     selected
                 }
@@ -153,6 +152,13 @@ fn select_tests(only: Option<&str>, shard: Option<&str>) -> Result<Vec<&'static 
         }
     }
     Ok(selected)
+}
+
+fn assigned_to_shard(group: TestGroup, position: usize, shard: Shard) -> bool {
+    match group {
+        TestGroup::General => position % shard.total == shard.index - 1,
+        TestGroup::CsiDra => shard.index <= CSI_DRA_SHARDS && position % CSI_DRA_SHARDS == shard.index - 1,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -265,5 +271,16 @@ mod tests {
         assert_eq!(parse_shard("2/5").unwrap(), Shard { index: 2, total: 5 });
         assert!(parse_shard("0/5").is_err());
         assert!(parse_shard("1/4").is_err());
+    }
+
+    #[test]
+    fn csi_and_dra_tests_only_use_the_first_two_shards() {
+        let shard_one = Shard { index: 1, total: 5 };
+        let shard_two = Shard { index: 2, total: 5 };
+        let shard_three = Shard { index: 3, total: 5 };
+        assert!(assigned_to_shard(TestGroup::CsiDra, 0, shard_one));
+        assert!(assigned_to_shard(TestGroup::CsiDra, 1, shard_two));
+        assert!(!assigned_to_shard(TestGroup::CsiDra, 0, shard_three));
+        assert!(!assigned_to_shard(TestGroup::CsiDra, 1, shard_three));
     }
 }
