@@ -44,6 +44,8 @@ mod networking;
 mod lifecycle;
 #[path = "tests/pods.rs"]
 mod pods;
+#[path = "tests/process.rs"]
+mod process;
 #[path = "tests/pod_resources.rs"]
 mod pod_resources;
 #[path = "tests/probes.rs"]
@@ -373,6 +375,18 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_run_as_user_is_applied",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_containers_get_isolated_pid_namespaces_by_default",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_share_process_namespace_puts_every_container_in_one_pid_namespace",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_pid_sees_host_processes",
         group: TestGroup::General,
     },
     TestCase {
@@ -775,6 +789,13 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_run_as_user_is_applied" => {
             security::run_as_user_is_applied(context).await
         }
+        "test_containers_get_isolated_pid_namespaces_by_default" => {
+            process::containers_get_isolated_pid_namespaces_by_default(context).await
+        }
+        "test_share_process_namespace_puts_every_container_in_one_pid_namespace" => {
+            process::share_process_namespace_puts_every_container_in_one_pid_namespace(context).await
+        }
+        "test_host_pid_sees_host_processes" => process::host_pid_sees_host_processes(context).await,
         "test_poststart_hook_runs_before_container_exit" => {
             hooks::poststart_hook_runs_before_container_exit(context).await
         }
