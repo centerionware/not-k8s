@@ -42,8 +42,18 @@ Common commands after downloading the release binary:
 `--e2e` does not install or restart anything. It uses `$KUBECONFIG` when set,
 otherwise it discovers the admin kubeconfig written by nodebootstrap at
 `/etc/nodebootstrap/admin.kubeconfig` (or `NODEBOOTSTRAP_KUBECONFIG_DIR`).
-The e2e checks are being migrated from the legacy shell suite as part of the
-0.7.1 target in [issue #242](https://github.com/centerionware/not-k8s/issues/242).
+The bootstrap applet is the only repository e2e entrypoint: it uses the Rust
+Kubernetes client directly and currently checks API resource serving, node
+readiness, and the default Kubernetes Service endpoint. The former installer
+and shell e2e tree is preserved on the
+[`archive-shell-scripts-0.7.1`](https://github.com/centerionware/not-k8s/tree/archive-shell-scripts-0.7.1)
+branch while the remaining checks move into the applet under
+[issue #242](https://github.com/centerionware/not-k8s/issues/242).
+
+There is no shell installer or shell e2e command in the 0.7.1 tree. Download
+the combined `notk8s` binary, symlink it to `bootstrap`, and use the commands
+above. Performance-only helpers remain temporarily for the 0.7.4 profiling
+migration.
 
 ## Scope
 

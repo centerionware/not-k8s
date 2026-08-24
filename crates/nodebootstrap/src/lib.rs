@@ -320,6 +320,7 @@ fn dispatch(subcommand: Option<&str>) -> Result<()> {
         Some("toolchain") => toolchain::run_with(&cfg),
         Some("containerd") => containerd::run_with(&cfg),
         Some("cni") => cni::run_with(&cfg),
+        Some("flanneld") => cni::run_flanneld(),
         Some("fetch") => fetch::run_with(&cfg),
         Some("pki") => pki::run_with(&cfg),
         Some("kubeconfig") => kubeconfig::run_with(&cfg),
@@ -360,7 +361,7 @@ fn print_help() {
     println!("  --skip-nodelet         do not install nodelet");
     println!("  -h, --help             show this help");
     println!();
-    println!("Subcommands: all, toolchain, containerd, cni, fetch, pki, kubeconfig,");
+    println!("Subcommands: all, toolchain, containerd, cni, flanneld, fetch, pki, kubeconfig,");
     println!("targets, rbac, service-reconciler, manifests, services, nodestore,");
     println!("nodelet, nodeproxy, nodescheduler, nodecontroller");
 }

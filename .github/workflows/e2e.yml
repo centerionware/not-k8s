@@ -1,324 +1,69 @@
-name: E2E tests
+name: Bootstrap e2e
 
-# Manual, ad-hoc utility — release.yml's own e2e stage is the real gate
-# (runs on every push to main, no --only filter, must pass to reach the
-# release stages). This workflow is for on-demand debugging: rerun just
-# the e2e suite (optionally filtered to one test) without waiting on the
-# rest of the pipeline. Builds a full not-k8s cluster from source
-# (nodebootstrap applet: upstream kube-apiserver, real
-# containerd/runc, nodelet built with the cri feature) on the runner
-# itself, installs the same reference CSI + DRA drivers release.yml's e2e
-# stage does (deploy/lib/e2e-full-setup.sh) so CSI/DRA-gated tests
-# actually run instead of skipping, runs deploy/test-e2e.sh against it,
-# and pushes the results to a dedicated branch (creating it if it doesn't
-# exist yet, replacing its contents otherwise) regardless of whether the
-# run passed.
+# Manual real-infrastructure validation for the Rust bootstrap applet. The
+# former shell harness and its shard matrix were removed in the 0.7.1
+# cutover; `bootstrap --e2e` is now the only repository-owned e2e entrypoint.
 on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Optional --only=<pattern> filter (substring match on test function names; comma-separate multiple patterns to run several specific tests in one dispatch). Leave empty to run everything.'
+        description: 'Optional test-name substring or comma-separated substrings'
         required: false
         default: ''
-      layout:
-        description: 'Which build layout to deploy and test against: combined (the single multi-call notk8s binary, the release default) or split (separate per-component binaries, for layout isolation).'
-        required: false
-        default: combined
-        type: choice
-        options: [split, combined]
-      scheduler:
-        description: 'Which scheduler places pods: nodescheduler (the not-k8s scheduler) or none (unsupported by the full bootstrap path). Full-suite runs use nodescheduler.'
-        required: false
-        default: nodescheduler
-        type: choice
-        options: [none, nodescheduler]
-      debug_scheduler_log:
-        description: 'Set RUST_LOG=nodescheduler=debug on the deployed nodescheduler service, for chasing a live flake whose only lead is a reason string with no numbers behind it (node_resources_fit.rs is the case this exists for). Off by default — this is chattier than the normal info level and only useful when actively diagnosing something.'
-        required: false
-        default: false
-        type: boolean
-      controller_manager:
-        description: 'Which controller manager runs the suite: nodecontroller (the not-k8s controller manager) or none (unsupported by the full bootstrap path). Full-suite runs use nodecontroller.'
-        required: false
-        default: nodecontroller
-        type: choice
-        options: [none, nodecontroller]
       proxy:
-        description: 'Whether to install nodeproxy (the default Service/ClusterIP routing path) or run the controller-manager test without it. The none option is for isolating apiserver/watch failures from nftables churn.'
+        description: 'Install nodeproxy or omit it for an apiserver-only check'
         required: false
         default: nodeproxy
         type: choice
         options: [nodeproxy, none]
-      datastore:
-        description: 'Which control-plane datastore to use: nodestore (the required datastore for the upstream apiserver target).'
-        required: false
-        default: nodestore
-        type: choice
-        options: [nodestore, none]
-      nodecontroller_disabled_controllers:
-        description: 'Optional comma-separated nodecontroller names to disable for diagnosis (for example garbage-collector); leave empty for the normal controller set.'
-        required: false
-        default: ''
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # Plan the shard matrix without touching a cluster. Registration and
-  # filtering are pure shell, so an --only dispatch that lands on only one or
-  # two shards no longer spends the other runners' time bootstrapping and
-  # compiling a cluster just to run zero tests.
-  plan:
+  e2e:
     runs-on: ubuntu-latest
-    outputs:
-      has_tests: ${{ steps.plan.outputs.has_tests }}
-      shards: ${{ steps.plan.outputs.shards }}
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Select non-empty shards
-        id: plan
-        env:
-          ONLY_PATTERN: ${{ inputs.only || '' }}
-        run: |
-          set -euo pipefail
-          entries=()
-          for shard in 1 2 3 4 5; do
-            args=(--list --shard="$shard/5")
-            [[ -z "$ONLY_PATTERN" ]] || args+=(--only="$ONLY_PATTERN")
-            selected="$(./deploy/test-e2e.sh "${args[@]}")"
-            count="$(printf '%s\n' "$selected" | sed -n 's/^selected_tests=//p')"
-            [[ "$count" =~ ^[0-9]+$ ]] || {
-              echo "planner did not return a selected_tests count for shard $shard" >&2
-              exit 1
-            }
-            if (( count > 0 )); then
-              needs_drivers=false
-              (( shard <= 2 )) && needs_drivers=true
-              entries+=("{\"shard\":$shard,\"needs_drivers\":$needs_drivers}")
-            fi
-          done
-
-          if ((${#entries[@]} == 0)); then
-            # Keep the JSON valid even when the e2e job is skipped by its
-            # job-level condition below. No runner is allocated in this case.
-            echo 'has_tests=false' >> "$GITHUB_OUTPUT"
-            echo 'shards=[{"shard":1,"needs_drivers":false}]' >> "$GITHUB_OUTPUT"
-          else
-            shards_json="$(IFS=,; printf '[%s]' "${entries[*]}")"
-            echo 'has_tests=true' >> "$GITHUB_OUTPUT"
-            echo "shards=$shards_json" >> "$GITHUB_OUTPUT"
-          fi
-
-  # Sharded 5 ways, exactly like release.yml's own e2e stage — same
-  # test-e2e.sh --shard=N/M and harness.sh _filter_shard() machinery, same
-  # needs_drivers split, and needs_drivers MUST keep matching harness.sh's
-  # NUM_DRIVER_SHARDS (they are not wired together).
-  #
-  # Not a speed optimisation: unsharded, this workflow could not finish an
-  # unfiltered run at all. Confirmed live — a full suite here ran for
-  # exactly 90 minutes and was killed by the cap, reporting "cancelled",
-  # which looks identical to someone having pressed cancel and says nothing
-  # about whether anything passed. That made the documented "run the full
-  # suite on your branch before merging" step impossible to actually
-  # perform, so every unfiltered dispatch was a 90-minute way of learning
-  # nothing.
-  #
-  # --only dispatches now allocate only the shards whose filtered test list
-  # is non-empty; a filter that matches one test no longer creates four
-  # unrelated clusters just to report four empty summaries.
-  e2e:
-    needs: plan
-    if: needs.plan.outputs.has_tests == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.shards) }}
-    runs-on: ubuntu-latest
-    # The nodecontroller full suite can legitimately exceed the old 40-minute
-    # cap while it drains the sharded CSI/DRA workload.  Let a genuinely
-    # stalled runner time out without cutting off a slow but still progressing
-    # shard.
-    timeout-minutes: 60
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        # Exercise nodebootstrap itself. The combined path is the normal
-        # release layout; the split branch uses the same prebuilt seam without
-        # invoking the deprecated shell bootstrap entry point.
+      - name: Build the combined bootstrap applet
+        run: cargo build --features cri -p notk8s
+
+      - name: Bootstrap a real cluster with Rust
         env:
-          LAYOUT: ${{ inputs.layout }}
           PROXY: ${{ inputs.proxy }}
-          NODECONTROLLER_DISABLED_CONTROLLERS: ${{ inputs.nodecontroller_disabled_controllers }}
         run: |
-          set -e
-          cargo build --features cri -p notk8s
-          if [[ -z "$LAYOUT" || "$LAYOUT" == combined ]]; then
-            sudo -E ./target/debug/notk8s nodebootstrap --layout=combined --proxy="$PROXY" \
-              --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller
-          else
-            cargo build --features cri -p nodelet
-            cargo build -p nodeproxy
-            cargo build -p nodestore
-            cargo build -p nodescheduler
-            cargo build -p nodecontroller
-            cargo build -p nodebootstrap
-            sudo -E env \
-              NOTK8S_NODELET_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodelet" \
-              NOTK8S_NODEPROXY_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodeproxy" \
-              NOTK8S_NODESTORE_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodestore" \
-              NOTK8S_NODESCHEDULER_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodescheduler" \
-              NOTK8S_NODECONTROLLER_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodecontroller" \
-              ./target/debug/nodebootstrap --layout=split --proxy="$PROXY" \
-                --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller
-          fi
+          set -euo pipefail
+          sudo -E ./target/debug/notk8s bootstrap \
+            --layout=combined \
+            --proxy="$PROXY" \
+            --datastore=nodestore \
+            --scheduler=nodescheduler \
+            --controller-manager=nodecontroller
 
-      - name: Install misc e2e prerequisites (hugepages, grpcurl)
-        # Round 124: split out of e2e-full-setup.sh — these aren't
-        # CSI/DRA-gated at all (see e2e-misc-prereqs.sh's own header).
-        run: sudo -E bash deploy/lib/e2e-misc-prereqs.sh
-
-      - name: Make the kubeconfig readable
-        # Every shard needs this, including the ones that skip the driver
-        # install below — same split release.yml already makes.
-        env:
-          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-        run: sudo chmod 644 "$KUBECONFIG"
+      - name: Make the admin kubeconfig readable
+        run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
 
       - name: Run bootstrap-native e2e checks
-        # This is the 0.7.1 runner from nodebootstrap itself. Keep it before
-        # the optional CSI/DRA setup so the bootstrap applet's own checks are
-        # validated independently of the legacy shell suite and its drivers.
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+          ONLY: ${{ inputs.only }}
         run: |
-          set -e
-          if [[ -x "$GITHUB_WORKSPACE/target/debug/notk8s" ]]; then
-            "$GITHUB_WORKSPACE/target/debug/notk8s" bootstrap --e2e
-          else
-            "$GITHUB_WORKSPACE/target/debug/nodebootstrap" --e2e
-          fi
+          set -euo pipefail
+          args=(bootstrap --e2e)
+          [[ -z "$ONLY" ]] || args+=("--only=$ONLY")
+          ./target/debug/notk8s "${args[@]}"
 
-      - name: Install reference CSI + DRA drivers
-        if: matrix.needs_drivers
-        env:
-          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+      - name: Dump bootstrap service state on failure
+        if: failure()
         run: |
-          # See release.yml's own e2e job for why this has an external
-          # ceiling well below the drivers' own internal ~5min timeout.
-          sudo -E timeout 180 bash deploy/lib/e2e-full-setup.sh
-
-      - name: Run this shard's e2e tests (${{ matrix.shard }}/5)
-        id: e2e
-        env:
-          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-          TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
-          TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
-          TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
-          TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
-          TEST_CSI_STORAGE_CLASS_WAIT: csi-hostpath-sc-wait
-          NOTK8S_E2E_DEBUG_ON_FAIL: "1"
-          NOTK8S_E2E_MAX_FAILURES: "3"
-        run: |
-          set +e
-          # Round 123 (found live in CI): every kubectl invocation in this
-          # job was printing "kuberc: no preferences loaded from
-          # ~/.kube/kuberc: ... permission denied" to stderr — the earlier
-          # 'Build and deploy' step runs under sudo -E (HOME preserved as
-          # /home/runner but the process itself is root), so kubectl's own
-          # kuberc preferences-file lookup there created ~/.kube root-owned;
-          # this step's own kubectl calls run as the unprivileged runner
-          # user and can't read it. Harmless on its own, but multiple
-          # tests capture a command's combined stdout+stderr (2>&1) and
-          # got this warning silently prepended to their real value,
-          # corrupting numeric/uid assertions in a way that took several
-          # rounds to actually trace back to this. Fixing ownership here
-          # is cheaper than auditing every kubectl-output capture in the
-          # suite for the same latent bug.
-          sudo chown -R "$(id -u):$(id -g)" ~/.kube 2>/dev/null || sudo rm -rf ~/.kube
-          ONLY_FLAG=""
-          if [ -n "${{ inputs.only }}" ]; then
-            ONLY_FLAG="--only=${{ inputs.only }}"
-          fi
-          # shellcheck disable=SC2086
-          ./deploy/test-e2e.sh --shard=${{ matrix.shard }}/5 $ONLY_FLAG 2>&1 | tee /tmp/e2e-raw.txt
-          exit_code=${PIPESTATUS[0]}
-          # Strip ANSI color codes for a clean plain-text results file.
-          sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
-          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      # Runs if driver setup timed out/failed, or the e2e suite itself
-      # reported a failing/erroring test — node/taint status, disk
-      # space, and nodelet's own service status + logs weren't visible
-      # anywhere before this. See e2e-debug-dump.sh's own doc comment.
-      - name: Dump debug info (node/taints/disk/nodelet logs) on failure
-        if: failure() || steps.e2e.outputs.exit_code != '0'
-        env:
-          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-        run: bash deploy/lib/e2e-debug-dump.sh
-
-      - name: Publish results to the e2e-results branch
-        if: always()
-        env:
-          RESULTS_BRANCH: e2e-results
-          RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
-          SHARD: ${{ matrix.shard }}
-        run: |
-          {
-            echo "commit: $GITHUB_SHA"
-            echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "shard: ${SHARD}/5"
-            echo "exit code: ${RUN_EXIT_CODE:-unknown}"
-            echo "----------------------------------------"
-            cat /tmp/e2e-results.txt 2>/dev/null || echo "(no results captured — the run failed before test-e2e.sh could produce output)"
-          } > /tmp/e2e-results-final.txt
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Found live: the run itself dirties the working tree — a build
-          # updates Cargo.lock — and `git checkout -B` then refuses with
-          # "your local changes would be overwritten", failing an e2e run
-          # that had already produced its results. Publishing results must
-          # not depend on the tree being pristine, so discard whatever the
-          # build touched first. Nothing here is worth keeping: this job
-          # publishes a text file and then the runner is destroyed.
-          git reset --hard HEAD
-
-          if git ls-remote --exit-code --heads origin "$RESULTS_BRANCH" >/dev/null 2>&1; then
-            git fetch origin "$RESULTS_BRANCH"
-            git checkout -B "$RESULTS_BRANCH" "origin/$RESULTS_BRANCH"
-          else
-            git checkout --orphan "$RESULTS_BRANCH"
-            git rm -rf . >/dev/null 2>&1 || true
-          fi
-
-          # One file per shard, and a merge-rather-than-force push: five jobs
-          # finish at unpredictable times, and --force from each of them would
-          # leave whichever pushed last as the only surviving result. Retry
-          # around the race where two shards push between one's fetch and its
-          # own push.
-          cp /tmp/e2e-results-final.txt "results-shard-${SHARD}.txt"
-          git add "results-shard-${SHARD}.txt"
-          git commit -m "e2e results (shard ${SHARD}/5) for ${GITHUB_SHA:0:12}" --allow-empty
-          for attempt in 1 2 3 4 5; do
-            if git push origin "HEAD:$RESULTS_BRANCH"; then
-              break
-            fi
-            echo "push rejected (another shard got there first); rebasing onto it — attempt $attempt"
-            git fetch origin "$RESULTS_BRANCH"
-            git rebase "origin/$RESULTS_BRANCH" || git rebase --abort
-            sleep $((attempt * 5))
+          sudo systemctl --no-pager --full status kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld || true
+          for unit in kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld; do
+            sudo journalctl -u "$unit" -n 80 --no-pager || true
           done
-
-      - name: Fail the job if the e2e suite failed
-        if: steps.e2e.outputs.exit_code != '0'
-        run: exit 1
