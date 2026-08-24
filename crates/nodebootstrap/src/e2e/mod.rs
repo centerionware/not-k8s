@@ -274,6 +274,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_crash_loop_backoff_reports_waiting_reason",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_image_pull_policy_never_fails_when_image_is_absent",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_readiness_probe_gates_ready_condition",
         group: TestGroup::General,
     },
@@ -637,6 +645,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_container_status_id_has_runtime_scheme" => {
             lifecycle::container_status_id_has_runtime_scheme(context).await
+        }
+        "test_crash_loop_backoff_reports_waiting_reason" => {
+            lifecycle::crash_loop_backoff_reports_waiting_reason(context).await
+        }
+        "test_image_pull_policy_never_fails_when_image_is_absent" => {
+            lifecycle::image_pull_policy_never_fails_when_image_is_absent(context).await
         }
         "test_readiness_probe_gates_ready_condition" => {
             probes::readiness_probe_gates_ready_condition(context).await
