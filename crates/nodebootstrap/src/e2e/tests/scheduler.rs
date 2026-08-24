@@ -1,7 +1,8 @@
 use super::context::E2eContext;
+use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod};
-use kube::api::{Api, ListParams, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
@@ -27,9 +28,37 @@ async fn create_pod(context: &E2eContext, name: &str, spec: Value) -> Result<()>
     Ok(())
 }
 
+async fn create_labeled_pod(
+    context: &E2eContext,
+    name: &str,
+    labels: Value,
+    spec: Value,
+) -> Result<()> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name, "labels": labels},
+        "spec": spec
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    Ok(())
+}
+
 async fn pod_is_scheduled(context: &E2eContext, name: &str) -> Result<bool> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods.get(name).await?.spec.and_then(|spec| spec.node_name).is_some())
+}
+
+async fn require_single_node(context: &E2eContext) -> Result<()> {
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let count = nodes.list(&ListParams::default()).await?.items.len();
+    if count != 1 {
+        return Err(skip_test(format!(
+            "scheduler topology checks require one node, found {count}"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) async fn scheduler_places_an_ordinary_pod(context: &E2eContext) -> Result<()> {
@@ -183,6 +212,130 @@ pub(super) async fn scheduler_ignores_a_pod_for_another_scheduler(
     anyhow::ensure!(
         pod.spec.and_then(|spec| spec.node_name).is_none(),
         "the configured scheduler bound a Pod assigned to another scheduler"
+    );
+    Ok(())
+}
+
+pub(super) async fn scheduler_honours_pod_affinity(context: &E2eContext) -> Result<()> {
+    require_single_node(context).await?;
+    let follower = "scheduler-affinity-follower";
+    let anchor = "scheduler-affinity-anchor";
+    create_pod(
+        context,
+        follower,
+        json!({
+            "affinity": {"podAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {"matchLabels": {"scheduler-test": "anchor"}},
+                "topologyKey": "kubernetes.io/hostname"
+            }]}},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+        }),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    anyhow::ensure!(
+        !pod_is_scheduled(context, follower).await?,
+        "a pod affinity rule with no matching pod was satisfied"
+    );
+    create_labeled_pod(
+        context,
+        anchor,
+        json!({"scheduler-test": "anchor"}),
+        json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]}),
+    )
+    .await?;
+    context
+        .wait_until("pod affinity anchor to be scheduled", Duration::from_secs(60), || {
+            pod_is_scheduled(context, anchor)
+        })
+        .await?;
+    context
+        .wait_until("pod affinity follower to be scheduled", Duration::from_secs(60), || {
+            pod_is_scheduled(context, follower)
+        })
+        .await
+}
+
+pub(super) async fn scheduler_honours_pod_anti_affinity(context: &E2eContext) -> Result<()> {
+    require_single_node(context).await?;
+    let first = "scheduler-anti-affinity-first";
+    let second = "scheduler-anti-affinity-second";
+    create_labeled_pod(
+        context,
+        first,
+        json!({"scheduler-test": "anti"}),
+        json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]}),
+    )
+    .await?;
+    context
+        .wait_until("pod anti-affinity first Pod", Duration::from_secs(60), || {
+            pod_is_scheduled(context, first)
+        })
+        .await?;
+    create_labeled_pod(
+        context,
+        second,
+        json!({"scheduler-test": "anti"}),
+        json!({
+            "affinity": {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {"matchLabels": {"scheduler-test": "anti"}},
+                "topologyKey": "kubernetes.io/hostname"
+            }]}},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+        }),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    anyhow::ensure!(
+        !pod_is_scheduled(context, second).await?,
+        "pod anti-affinity allowed a second matching Pod onto the same node"
+    );
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    pods.delete(first, &DeleteParams::default()).await?;
+    context
+        .wait_until("pod anti-affinity second Pod to be scheduled", Duration::from_secs(60), || {
+            pod_is_scheduled(context, second)
+        })
+        .await
+}
+
+pub(super) async fn scheduler_honours_topology_spread(context: &E2eContext) -> Result<()> {
+    require_single_node(context).await?;
+    let first = "scheduler-spread-first";
+    let second = "scheduler-spread-second";
+    let spec = json!({
+        "topologySpreadConstraints": [{
+            "maxSkew": 1,
+            "minDomains": 2,
+            "topologyKey": "kubernetes.io/hostname",
+            "whenUnsatisfiable": "DoNotSchedule",
+            "labelSelector": {"matchLabels": {"scheduler-test": "spread"}}
+        }],
+        "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+    });
+    create_labeled_pod(
+        context,
+        first,
+        json!({"scheduler-test": "spread"}),
+        spec.clone(),
+    )
+    .await?;
+    context
+        .wait_until("first topology-spread Pod", Duration::from_secs(60), || {
+            pod_is_scheduled(context, first)
+        })
+        .await?;
+    create_labeled_pod(
+        context,
+        second,
+        json!({"scheduler-test": "spread"}),
+        spec,
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    anyhow::ensure!(
+        !pod_is_scheduled(context, second).await?,
+        "topology spread allowed skew 2 in the only eligible topology domain"
     );
     Ok(())
 }
