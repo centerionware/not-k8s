@@ -82,6 +82,8 @@ mod service_proxy;
 mod statefulset;
 #[path = "tests/storage.rs"]
 mod storage;
+#[path = "tests/streaming.rs"]
+mod streaming;
 #[path = "tests/volumes.rs"]
 mod volumes;
 
@@ -592,6 +594,26 @@ const TESTS: &[TestCase] = &[
     TestCase {
         name: "test_pod_mounts_a_persistent_volume_claim",
         group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_kubectl_logs_returns_real_output",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_kubectl_logs_follow_streams_new_output",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_kubectl_exec_runs_a_command_and_returns_its_output",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_kubectl_attach_streams_the_containers_stdout",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_kubectl_port_forward_reaches_a_real_container_port",
+        group: TestGroup::General,
     },
 ];
 
@@ -1113,6 +1135,21 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_mounts_a_persistent_volume_claim" => {
             storage::pod_mounts_a_persistent_volume_claim(context).await
+        }
+        "test_kubectl_logs_returns_real_output" => {
+            streaming::kubectl_logs_returns_real_output(context).await
+        }
+        "test_kubectl_logs_follow_streams_new_output" => {
+            streaming::kubectl_logs_follow_streams_new_output(context).await
+        }
+        "test_kubectl_exec_runs_a_command_and_returns_its_output" => {
+            streaming::kubectl_exec_runs_a_command_and_returns_its_output(context).await
+        }
+        "test_kubectl_attach_streams_the_containers_stdout" => {
+            streaming::kubectl_attach_streams_the_containers_stdout(context).await
+        }
+        "test_kubectl_port_forward_reaches_a_real_container_port" => {
+            streaming::kubectl_port_forward_reaches_a_real_container_port(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
