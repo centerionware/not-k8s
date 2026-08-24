@@ -43,6 +43,9 @@ use kube::{Client, ResourceExt};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
+#[cfg(test)]
+const SUPPORTED_KEYS: &[&str] = &["pods", "services"];
+
 fn counts_toward_pod_quota(pod: &Pod) -> bool {
     !matches!(
         pod.status

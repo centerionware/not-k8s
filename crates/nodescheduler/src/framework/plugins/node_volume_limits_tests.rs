@@ -28,19 +28,6 @@ fn csi_pv(name: &str, driver: &str) -> PvInfo {
     }
 }
 
-fn cluster(csi_node_limit: Option<i32>, placed: &[(&str, Arc<PodInfo>)]) -> Snapshot {
-    let mut cache = Cache::new();
-    cache.upsert_node(&api_node("n1"));
-    let mut drivers = std::collections::BTreeMap::new();
-    drivers.insert("disk.example.com".to_string(), csi_node_limit);
-    cache.upsert_csi_node("n1".to_string(), CsiNodeInfo { drivers });
-    for (node_name, p) in placed {
-        cache.upsert_node(&api_node(node_name));
-        cache.add_pod(p.clone());
-    }
-    cache.snapshot()
-}
-
 fn pod_with_pvc(name: &str, uid: &str, pvc: &str) -> Arc<PodInfo> {
     let mut p = pod(name);
     p.uid = uid.to_string();

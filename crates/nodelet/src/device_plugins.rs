@@ -158,12 +158,14 @@ fn is_valid_preferred_allocation(ids: &[String], devices: &[DeviceInfo], allocat
 /// "self-contained module, shared filesystem contract, no cross-module
 /// type coupling" precedent `csi.rs`'s own `MountMeta` sidecar already
 /// set for CSI volumes.
+#[cfg(not(test))]
 const DEVICE_ALLOC_CHECKPOINT_DIR: &str = "/var/lib/nodelet/device-plugins/allocations";
 
 /// The subset of `container_support.rs`'s `DeviceAllocMeta` fields this
 /// module actually needs — deserializing the exact same on-disk JSON,
 /// just ignoring `container_name`, which restoring `DevicePlugins`' own
 /// `allocated`/`owners` state has no use for.
+#[cfg(not(test))]
 #[derive(serde::Deserialize)]
 struct RestoredAllocation {
     resource_name: String,
