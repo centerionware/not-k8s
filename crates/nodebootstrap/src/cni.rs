@@ -27,7 +27,8 @@ pub fn run() -> Result<()> {
 
 pub fn run_with(cfg: &Config) -> Result<()> {
     let Some(provider) = &cfg.cni_provider else {
-        tracing::info!("skipping CNI setup (NODEBOOTSTRAP_CNI=none) -- bring-your-own");
+        disable_flannel(cfg);
+        tracing::info!("skipping CNI setup (external CNI) -- bring-your-own");
         return Ok(());
     };
     if provider != "flannel" {
@@ -43,15 +44,18 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     start_flanneld(cfg)
 }
 
+fn disable_flannel(cfg: &Config) {
+    service_mgr::remove(cfg, "flanneld");
+    tracing::info!("flannel service disabled; external CNI owns pod networking");
+}
+
 fn start_flanneld(cfg: &Config) -> Result<()> {
     let flanneld_bin = resolve_executable("flanneld", cfg).context("resolving flanneld's absolute path")?;
     let flanneld_bin_value = flanneld_bin.to_string_lossy().into_owned();
     let bootstrap_bin = std::env::current_exe().context("resolving nodebootstrap executable for flanneld")?;
     let command = service_command(&bootstrap_bin);
-    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string();
-    let node_name = std::env::var("NODELET_NODE_NAME").unwrap_or_else(|_| {
-        std::process::Command::new("uname").arg("-n").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-    });
+    let kubeconfig = cfg.cluster_kubeconfig()?.to_string_lossy().to_string();
+    let node_name = cfg.node_name();
     let ip_family = cfg.ip_family();
     let ipv4_cidr = cfg.ipv4_cluster_cidr();
     let ipv6_cidr = cfg.ipv6_cluster_cidr();

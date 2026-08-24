@@ -122,7 +122,6 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
 fn target_spec(cfg: &Config) -> TargetSpec {
     TargetSpec {
         pki_dir: cfg.pki_dir(),
-        etcd_pki_dir: nodestore_client_pki_dir(),
         etcd_servers: nodestore_etcd_servers(),
         advertise_address: detect_advertise_address(),
         service_cidr: "10.43.0.0/16".to_string(),
@@ -276,6 +275,22 @@ fn nodestore_client_pki_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(data_dir).join("pki/client")
 }
 
+fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let configured = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
+    (
+        configured("NODEBOOTSTRAP_JOIN_CA_FILE")
+            .or_else(|| configured("NODESTORE_CLIENT_CA_FILE"))
+            .or_else(|| configured("NODESTORE_TRUSTED_CA_FILE"))
+            .unwrap_or_else(|| nodestore_client_pki_dir().join("ca.crt")),
+        configured("NODEBOOTSTRAP_JOIN_CERT_FILE")
+            .or_else(|| configured("NODESTORE_CLIENT_CERT_FILE"))
+            .unwrap_or_else(|| nodestore_client_pki_dir().join("client.crt")),
+        configured("NODEBOOTSTRAP_JOIN_KEY_FILE")
+            .or_else(|| configured("NODESTORE_CLIENT_KEY_FILE"))
+            .unwrap_or_else(|| nodestore_client_pki_dir().join("client.key")),
+    )
+}
+
 fn nodestore_etcd_servers() -> String {
     std::env::var("NODEBOOTSTRAP_ETCD_SERVERS").unwrap_or_else(|_| "https://127.0.0.1:2379".to_string())
 }
@@ -320,7 +335,6 @@ fn wait_for_cni_address() -> Result<String> {
 
 struct TargetSpec {
     pki_dir: std::path::PathBuf,
-    etcd_pki_dir: std::path::PathBuf,
     etcd_servers: String,
     advertise_address: String,
     service_cidr: String,
@@ -329,12 +343,12 @@ struct TargetSpec {
 
 fn apiserver_args(spec: &TargetSpec, nodelet_ca: Option<&std::path::Path>) -> Vec<String> {
     let pki = |name: &str| spec.pki_dir.join(name).display().to_string();
-    let etcd = |name: &str| spec.etcd_pki_dir.join(name).display().to_string();
+    let (etcd_ca, etcd_cert, etcd_key) = nodestore_client_pki_paths();
     let mut args = vec![
         format!("--etcd-servers={}", spec.etcd_servers),
-        format!("--etcd-cafile={}", etcd("ca.crt")),
-        format!("--etcd-certfile={}", etcd("client.crt")),
-        format!("--etcd-keyfile={}", etcd("client.key")),
+        format!("--etcd-cafile={}", etcd_ca.display()),
+        format!("--etcd-certfile={}", etcd_cert.display()),
+        format!("--etcd-keyfile={}", etcd_key.display()),
         "--secure-port=6443".to_string(),
         "--bind-address=0.0.0.0".to_string(),
         format!("--advertise-address={}", spec.advertise_address),
@@ -374,7 +388,6 @@ mod tests {
     fn test_spec() -> TargetSpec {
         TargetSpec {
             pki_dir: "/var/lib/nodebootstrap/pki".into(),
-            etcd_pki_dir: "/var/lib/nodestore/pki/client".into(),
             etcd_servers: "https://127.0.0.1:2379".to_string(),
             advertise_address: "10.42.0.1".to_string(),
             service_cidr: "10.43.0.0/16".to_string(),

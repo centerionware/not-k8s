@@ -8,6 +8,7 @@
 pub mod config;
 pub mod containerd;
 pub mod cni;
+pub mod cluster;
 pub mod components;
 pub mod e2e;
 pub mod fetch;
@@ -55,6 +56,33 @@ use anyhow::{bail, Context, Result};
 /// subnet.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
+    if cfg.remove_control_plane {
+        cluster::remove_existing(&cfg)?;
+        services::remove_control_plane(&cfg);
+        return Ok(());
+    }
+    cfg.persist_preferences()?;
+
+    // A worker never creates a CA, kubeconfig, datastore, apiserver, or
+    // controller. It consumes the operator-supplied kubeconfig and installs
+    // only the node-side services. The optional flannel path is explicit;
+    // the normal worker path leaves CNI entirely to the existing cluster.
+    if cfg.worker {
+        if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
+            toolchain::run_with(&cfg)?;
+        }
+        if cfg.with_cri && !cfg.skip_containerd {
+            containerd::run_with(&cfg)?;
+        }
+        fetch::run_with(&cfg)?;
+        if cfg.with_cri {
+            cni::run_with(&cfg)?;
+        }
+        services::ensure_nodelet(&cfg)?;
+        services::ensure_nodeproxy(&cfg)?;
+        return Ok(());
+    }
+
     if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
         toolchain::run_with(&cfg)?;
     }
@@ -62,17 +90,26 @@ pub fn run_all() -> Result<()> {
         containerd::run_with(&cfg)?;
     }
     fetch::run_with(&cfg)?;
-    pki::run_with(&cfg)?;
+    if cfg.control_plane {
+        // A joining apiserver must share the existing cluster CA and
+        // ServiceAccount signing key. It may not create a parallel cluster.
+        cluster::join_existing(&cfg)?;
+        pki::require_existing(&cfg)?;
+    } else {
+        pki::run_with(&cfg)?;
+    }
     kubeconfig::run_with(&cfg)?;
 
     if !cfg.skip_control_plane {
         services::ensure_nodestore(&cfg)?;
         targets::run_with(&cfg)?;
-        if cfg.with_cri {
+        if cfg.with_cri && !cfg.control_plane {
             cni::run_with(&cfg)?;
         }
-        service_reconciler::run_with(&cfg)?;
-        manifests::run_with(&cfg)?;
+        if !cfg.control_plane {
+            service_reconciler::run_with(&cfg)?;
+            manifests::run_with(&cfg)?;
+        }
     }
 
     if !cfg.skip_nodelet {
@@ -199,6 +236,70 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
         if let Some(value) = arg.strip_prefix("--shard=") {
             anyhow::ensure!(!value.is_empty(), "--shard requires N/5");
             parsed.shard = Some(value.to_string());
+            continue;
+        }
+        if arg == "--worker" {
+            std::env::set_var("NODEBOOTSTRAP_WORKER", "1");
+            continue;
+        }
+        if arg == "--control-plane" {
+            std::env::set_var("NODEBOOTSTRAP_CONTROL_PLANE", "1");
+            continue;
+        }
+        if arg == "--remove-control-plane" {
+            std::env::set_var("NODEBOOTSTRAP_REMOVE_CONTROL_PLANE", "1");
+            continue;
+        }
+        if arg == "--without-flannel" {
+            std::env::set_var("NODEBOOTSTRAP_WITHOUT_FLANNEL", "1");
+            std::env::set_var("NODEBOOTSTRAP_CNI", "none");
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kubeconfig=") {
+            anyhow::ensure!(!value.is_empty(), "--kubeconfig requires a path");
+            std::env::set_var("NODEBOOTSTRAP_WORKER_KUBECONFIG", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--bootstrap-kubeconfig=") {
+            anyhow::ensure!(!value.is_empty(), "--bootstrap-kubeconfig requires a path");
+            std::env::set_var("NODEBOOTSTRAP_WORKER_BOOTSTRAP_KUBECONFIG", value);
+            std::env::set_var("NODEBOOTSTRAP_WORKER_KUBECONFIG", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join=") {
+            anyhow::ensure!(!value.is_empty(), "--join requires an existing nodestore endpoint");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_ENDPOINT", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--peer-url=") {
+            anyhow::ensure!(!value.is_empty(), "--peer-url requires the new node's https peer URL");
+            std::env::set_var("NODEBOOTSTRAP_PEER_URL", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join-ca=") {
+            anyhow::ensure!(!value.is_empty(), "--join-ca requires a CA bundle path");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_CA_FILE", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join-cert=") {
+            anyhow::ensure!(!value.is_empty(), "--join-cert requires a client certificate path");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_CERT_FILE", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join-key=") {
+            anyhow::ensure!(!value.is_empty(), "--join-key requires a client key path");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_KEY_FILE", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--member-id=") {
+            anyhow::ensure!(!value.is_empty(), "--member-id requires an integer");
+            value.parse::<u64>().context("--member-id must be an integer")?;
+            std::env::set_var("NODEBOOTSTRAP_MEMBER_ID", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--node-name=") {
+            anyhow::ensure!(!value.is_empty(), "--node-name requires a Kubernetes node name");
+            std::env::set_var("NODELET_NODE_NAME", value);
             continue;
         }
         if arg == "--without-cri" {
@@ -351,9 +452,10 @@ fn print_help() {
     println!();
     println!("Usage: bootstrap [options] [subcommand]");
     println!();
-    println!("The default command installs/updates nodestore, upstream kube-apiserver,");
-    println!("nodescheduler, nodecontroller, nodelet, nodeproxy, containerd, CNI, PKI,");
-    println!("RBAC, kubeconfigs, and CoreDNS. Existing services are restarted.");
+    println!("With no role flag, the command installs/updates a single-node cluster");
+    println!("including nodestore, upstream kube-apiserver, nodecontroller,");
+    println!("nodescheduler, nodelet, nodeproxy, containerd, CNI, PKI, and CoreDNS.");
+    println!("Existing services are restarted.");
     println!();
     println!("Options:");
     println!("  --without-cri          skip containerd/CNI and use nodelet's mock runtime");
@@ -361,11 +463,24 @@ fn print_help() {
     println!("  --release [--tag=TAG]  fetch published component binaries");
     println!("  --layout=combined|split|both");
     println!("  --proxy=none           omit nodeproxy service");
-    println!("  --cni=none             use an externally-managed CNI");
+    println!("  --without-flannel      skip flannel and remember external CNI for updates");
+    println!("  --cni=none             use an externally-managed CNI for this run");
+    println!("  --worker               install nodelet+nodeproxy against --kubeconfig only");
+    println!("  --kubeconfig=PATH      existing control-plane kubeconfig for --worker");
+    println!("  --bootstrap-kubeconfig=PATH  TLS bootstrap kubeconfig for --worker");
+    println!("  --control-plane        join nodestore and install control-plane services only");
+    println!("  --join=URL             existing nodestore endpoint for control-plane membership");
+    println!("  --peer-url=URL         this node's advertised nodestore peer URL");
+    println!("  --join-ca=PATH         CA for nodestore membership RPCs");
+    println!("  --join-cert=PATH       client certificate for membership RPCs");
+    println!("  --join-key=PATH        client key for membership RPCs");
+    println!("  --remove-control-plane remove this member and its local control-plane services");
+    println!("  --member-id=N          member id to remove with --remove-control-plane");
+    println!("  --node-name=NAME       Kubernetes node name (defaults to hostname)");
     println!("  --e2e                  run bootstrap-native end-to-end checks");
     println!("  --only=TEST[,TEST...]  select e2e tests by name substring");
     println!("  --shard=N/5            run one of the five CI e2e shards");
-    println!("  --skip-control-plane   only stage services against an existing cluster");
+    println!("  --skip-control-plane   legacy: stage services against an existing cluster");
     println!("  --skip-nodelet         do not install nodelet");
     println!("  -h, --help             show this help");
     println!();

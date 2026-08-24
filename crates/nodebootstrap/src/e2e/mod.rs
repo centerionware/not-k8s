@@ -16,6 +16,8 @@ use std::time::Instant;
 
 #[path = "tests/batch.rs"]
 mod batch;
+#[path = "tests/bootstrap.rs"]
+mod bootstrap;
 #[path = "tests/context.rs"]
 mod context;
 #[path = "tests/csi.rs"]
@@ -109,6 +111,10 @@ struct TestCase {
 }
 
 const TESTS: &[TestCase] = &[
+    TestCase {
+        name: "external_cni_mode_disables_flannel",
+        group: TestGroup::General,
+    },
     TestCase {
         name: "apiserver_serves_resources",
         group: TestGroup::General,
@@ -731,6 +737,7 @@ fn test_names() -> Vec<&'static str> {
 
 async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
     match name {
+        "external_cni_mode_disables_flannel" => bootstrap::external_cni_mode_disables_flannel(context).await,
         "apiserver_serves_resources" => apiserver_serves_resources(context.client.clone()).await,
         "node_is_ready" => node_is_ready(context.client.clone()).await,
         "kubernetes_service_has_reachable_endpoint" => {

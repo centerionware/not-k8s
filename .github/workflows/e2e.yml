@@ -16,6 +16,12 @@ on:
         default: nodeproxy
         type: choice
         options: [nodeproxy, none]
+      network:
+        description: 'Use flannel or exercise the external-CNI bootstrap path'
+        required: false
+        default: flannel
+        type: choice
+        options: [flannel, external]
 
 permissions:
   contents: read
@@ -52,14 +58,19 @@ jobs:
       - name: Bootstrap a real cluster with Rust
         env:
           PROXY: ${{ inputs.proxy }}
+          NETWORK: ${{ inputs.network }}
         run: |
           set -euo pipefail
-          sudo -E ./target/debug/notk8s bootstrap \
+          args=(bootstrap \
             --layout=combined \
             --proxy="$PROXY" \
             --datastore=nodestore \
             --scheduler=nodescheduler \
-            --controller-manager=nodecontroller
+            --controller-manager=nodecontroller)
+          if [[ "$NETWORK" == external ]]; then
+            args+=(--without-flannel --proxy=none)
+          fi
+          sudo -E ./target/debug/notk8s "${args[@]}"
 
       - name: Make the admin kubeconfig readable
         run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
@@ -71,8 +82,21 @@ jobs:
         run: |
           set -euo pipefail
           args=(bootstrap --e2e --shard=${{ matrix.shard }}/5)
+          if [[ "${{ inputs.network }}" == external && -z "$ONLY" ]]; then
+            ONLY=external_cni
+          fi
           [[ -z "$ONLY" ]] || args+=("--only=$ONLY")
           ./target/debug/notk8s "${args[@]}"
+
+      - name: Validate worker bootstrap without flannel or proxy
+        run: |
+          set -euo pipefail
+          sudo -E ./target/debug/notk8s bootstrap \
+            --worker \
+            --kubeconfig=/etc/nodebootstrap/admin.kubeconfig \
+            --without-flannel \
+            --proxy=none \
+            --skip-nodelet
 
       - name: Dump bootstrap service state on failure
         if: failure()

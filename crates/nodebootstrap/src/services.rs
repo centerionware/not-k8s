@@ -38,10 +38,6 @@ fn binary_path(cfg: &Config, name: &str) -> std::path::PathBuf {
     cfg.toolchain_dir().join("bin").join(name)
 }
 
-fn admin_kubeconfig(cfg: &Config) -> String {
-    cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string()
-}
-
 /// Forwards every `<prefix>_*` env var already set in nodebootstrap's own
 /// process environment into the installed unit, plus `RUST_LOG` if set --
 /// same `<PREFIX>_*` convention `nodescheduler-service.sh`'s/
@@ -141,27 +137,49 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     }
     let bin = binary_path(cfg, "nodelet");
     anyhow::ensure!(bin.exists(), "no nodelet binary at {} -- run `nodebootstrap fetch` first", bin.display());
-    let kubeconfig = admin_kubeconfig(cfg);
+    let kubeconfig = if cfg.worker {
+        cfg.worker_bootstrap_kubeconfig
+            .clone()
+            .or_else(|| cfg.worker_kubeconfig.clone())
+            .context("worker mode requires a kubeconfig for the existing control plane")?
+    } else {
+        cfg.cluster_kubeconfig()?
+    };
+    let kubeconfig = kubeconfig.to_string_lossy().to_string();
     let runtime = cfg.nodelet_runtime();
     let server_cert_dir = cfg.nodelet_server_cert_dir().to_string_lossy().to_string();
-    let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE")
-        .unwrap_or_else(|_| cfg.pki_dir().join("ca.crt").to_string_lossy().to_string());
+    let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE").ok().or_else(|| {
+        (!cfg.worker).then(|| cfg.pki_dir().join("ca.crt").to_string_lossy().to_string())
+    });
+    let nodelet_kubeconfig = cfg.worker_nodelet_kubeconfig().to_string_lossy().to_string();
+    let bootstrap_kubeconfig = cfg
+        .worker_bootstrap_kubeconfig
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let node_name = cfg.node_name();
     let binary = bin.to_string_lossy().to_string();
-    let env = [
+    let mut env = vec![
         ("KUBECONFIG", kubeconfig.as_str()),
         ("NODELET_RUNTIME", runtime.as_str()),
         ("NODELET_SERVER_CERT_DIR", server_cert_dir.as_str()),
-        ("NODELET_CLIENT_CA_FILE", client_ca_file.as_str()),
+        ("NODELET_NODE_NAME", node_name.as_str()),
         ("NOTK8S_COMPONENT", "nodelet"),
         ("NOTK8S_COMPONENT_BINARY", binary.as_str()),
     ];
+    if let Some(client_ca_file) = client_ca_file.as_deref() {
+        env.push(("NODELET_CLIENT_CA_FILE", client_ca_file));
+    }
+    if let Some(bootstrap) = bootstrap_kubeconfig.as_deref() {
+        env.push(("NODELET_BOOTSTRAP_KUBECONFIG", bootstrap));
+        env.push(("NODELET_KUBECONFIG", nodelet_kubeconfig.as_str()));
+    }
     service_mgr::install(
         cfg,
         &SupervisedService {
             name: "nodelet",
             description: "nodelet -- not-k8s node agent (kubelet replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: Some("kube-apiserver.service"),
+            after: (!cfg.worker).then_some("kube-apiserver.service"),
             env: &env,
         },
     )
@@ -181,7 +199,12 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
     }
     let bin = binary_path(cfg, "nodeproxy");
     anyhow::ensure!(bin.exists(), "no nodeproxy binary at {} -- run `nodebootstrap fetch` first", bin.display());
-    let kubeconfig = admin_kubeconfig(cfg);
+    let kubeconfig = if cfg.worker_bootstrap_kubeconfig.is_some() {
+        cfg.worker_nodelet_kubeconfig()
+    } else {
+        cfg.cluster_kubeconfig()?
+    };
+    let kubeconfig = kubeconfig.to_string_lossy().to_string();
     let ip_family = cfg.ip_family();
     let lb_method = std::env::var("NODEBOOTSTRAP_LB_METHOD").unwrap_or_else(|_| "round-robin".to_string());
     let binary = bin.to_string_lossy().to_string();
@@ -191,7 +214,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
             name: "nodeproxy",
             description: "nodeproxy -- not-k8s Service routing (kube-proxy replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: Some("kube-apiserver.service"),
+            after: (!cfg.worker).then_some("kube-apiserver.service"),
             env: &[
                 ("KUBECONFIG", &kubeconfig),
                 ("NODEPROXY_IP_FAMILY", &ip_family),
@@ -202,6 +225,17 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
         },
     )
     .context("installing nodeproxy as a supervised service")
+}
+
+/// Remove only this host's control-plane services. The caller removes the
+/// nodestore member first when this host is part of a replicated cluster.
+/// Data and PKI remain on disk so an operator can recover or rejoin
+/// deliberately.
+pub fn remove_control_plane(cfg: &Config) {
+    for name in ["kube-apiserver", "nodestore", "nodescheduler", "nodecontroller"] {
+        service_mgr::remove(cfg, name);
+    }
+    tracing::info!("removed local control-plane services; retained control-plane data and PKI");
 }
 
 /// Wired into `run_all()` right after `targets::run_with` -- replaces

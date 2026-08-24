@@ -92,6 +92,8 @@ jobs:
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: ./dist-bin/notk8s bootstrap --e2e --shard=${{ matrix.shard }}/5
+      - name: Validate worker bootstrap without flannel or proxy
+        run: sudo -E ./dist-bin/notk8s bootstrap --worker --kubeconfig=/etc/nodebootstrap/admin.kubeconfig --without-flannel --proxy=none --skip-nodelet
       - name: Dump bootstrap service state on failure
         if: failure()
         run: |
