@@ -7,7 +7,7 @@
 //! Cluster RPCs to add a learner before the local service starts.
 
 use anyhow::{bail, Context, Result};
-use nodestore::pb::etcdserverpb as pb;
+use prost::Message;
 use std::path::PathBuf;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::Request;
@@ -19,6 +19,118 @@ struct TlsPaths {
     ca: PathBuf,
     cert: PathBuf,
     key: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct Member {
+    #[prost(uint64, tag = "1")]
+    id: u64,
+    #[prost(string, repeated, tag = "3")]
+    peer_urls: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ResponseHeader {
+    #[prost(uint64, tag = "1")]
+    cluster_id: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberListRequest {
+    #[prost(bool, tag = "1")]
+    linearizable: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberListResponse {
+    #[prost(message, optional, tag = "1")]
+    header: Option<ResponseHeader>,
+    #[prost(message, repeated, tag = "2")]
+    members: Vec<Member>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberAddRequest {
+    #[prost(string, repeated, tag = "1")]
+    peer_urls: Vec<String>,
+    #[prost(bool, tag = "2")]
+    is_learner: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberAddResponse {
+    #[prost(message, optional, tag = "1")]
+    header: Option<ResponseHeader>,
+    #[prost(message, optional, tag = "2")]
+    member: Option<Member>,
+    #[prost(message, repeated, tag = "3")]
+    members: Vec<Member>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberRemoveRequest {
+    #[prost(uint64, tag = "1")]
+    id: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberRemoveResponse {
+    #[prost(message, optional, tag = "1")]
+    header: Option<ResponseHeader>,
+    #[prost(message, repeated, tag = "2")]
+    members: Vec<Member>,
+}
+
+struct ClusterClient {
+    grpc: tonic::client::Grpc<Channel>,
+}
+
+impl ClusterClient {
+    fn new(channel: Channel) -> Self {
+        Self {
+            grpc: tonic::client::Grpc::new(channel),
+        }
+    }
+
+    async fn member_list(&mut self) -> Result<MemberListResponse> {
+        self.unary(
+            MemberListRequest { linearizable: true },
+            "/etcdserverpb.Cluster/MemberList",
+        )
+        .await
+    }
+
+    async fn member_add(&mut self, request: MemberAddRequest) -> Result<MemberAddResponse> {
+        self.unary(request, "/etcdserverpb.Cluster/MemberAdd").await
+    }
+
+    async fn member_remove(&mut self, request: MemberRemoveRequest) -> Result<()> {
+        let _: MemberRemoveResponse = self
+            .unary(request, "/etcdserverpb.Cluster/MemberRemove")
+            .await?;
+        Ok(())
+    }
+
+    async fn unary<Req, Res>(&mut self, request: Req, path: &'static str) -> Result<Res>
+    where
+        Req: Message,
+        Res: Message + Default,
+    {
+        self.grpc
+            .ready()
+            .await
+            .map_err(|error| anyhow::anyhow!("nodestore gRPC client is not ready: {error}"))?;
+        let response = self
+            .grpc
+            .unary(
+                Request::new(request),
+                http::uri::PathAndQuery::from_static(path),
+                tonic_prost::ProstCodec::default(),
+            )
+            .await
+            .with_context(|| format!("calling nodestore membership RPC {path}"))?;
+        Ok(response.into_inner())
+    }
 }
 
 /// Add this host to the existing nodestore cluster and export the resulting
@@ -83,29 +195,24 @@ struct AddResult {
 
 async fn add_member(endpoint: &str, peer_url: &str, tls: &TlsPaths) -> Result<AddResult> {
     let mut client = connect(endpoint, tls).await?;
-    let listed = client
-        .member_list(Request::new(pb::MemberListRequest { linearizable: true }))
-        .await
-        .context("listing existing nodestore members")?
-        .into_inner();
+    let listed = client.member_list().await.context("listing existing nodestore members")?;
     let header_cluster_id = listed.header.as_ref().map(|header| header.cluster_id).unwrap_or_default();
     let mut members = member_urls(&listed.members);
 
     let member_id = if let Some(existing) = listed
         .members
         .iter()
-        .find(|member| member.peer_ur_ls.iter().any(|url| url == peer_url))
+        .find(|member| member.peer_urls.iter().any(|url| url == peer_url))
     {
         existing.id
     } else {
         let added = client
-            .member_add(Request::new(pb::MemberAddRequest {
-                peer_ur_ls: vec![peer_url.to_string()],
+            .member_add(MemberAddRequest {
+                peer_urls: vec![peer_url.to_string()],
                 is_learner: true,
-            }))
+            })
             .await
-            .with_context(|| format!("adding nodestore learner {peer_url}"))?
-            .into_inner();
+            .with_context(|| format!("adding nodestore learner {peer_url}"))?;
         let added_member = added
             .member
             .context("nodestore member-add returned no member")?;
@@ -125,19 +232,23 @@ async fn add_member(endpoint: &str, peer_url: &str, tls: &TlsPaths) -> Result<Ad
     if !members.iter().any(|(id, _)| *id == member_id) {
         members.push((member_id, peer_url.to_string()));
     }
-    Ok(AddResult { cluster_id: header_cluster_id, member_id, members })
+    Ok(AddResult {
+        cluster_id: header_cluster_id,
+        member_id,
+        members,
+    })
 }
 
 async fn remove_member(endpoint: &str, member_id: u64, tls: &TlsPaths) -> Result<()> {
     let mut client = connect(endpoint, tls).await?;
     client
-        .member_remove(Request::new(pb::MemberRemoveRequest { id: member_id }))
+        .member_remove(MemberRemoveRequest { id: member_id })
         .await
         .with_context(|| format!("removing nodestore member {member_id}"))?;
     Ok(())
 }
 
-async fn connect(endpoint: &str, tls: &TlsPaths) -> Result<pb::cluster_client::ClusterClient<Channel>> {
+async fn connect(endpoint: &str, tls: &TlsPaths) -> Result<ClusterClient> {
     let host = endpoint
         .parse::<http::Uri>()
         .with_context(|| format!("parsing nodestore endpoint {endpoint}"))?
@@ -158,13 +269,13 @@ async fn connect(endpoint: &str, tls: &TlsPaths) -> Result<pb::cluster_client::C
         .connect()
         .await
         .with_context(|| format!("connecting to nodestore at {endpoint}"))?;
-    Ok(pb::cluster_client::ClusterClient::new(channel))
+    Ok(ClusterClient::new(channel))
 }
 
-fn member_urls(members: &[pb::Member]) -> Vec<(u64, String)> {
+fn member_urls(members: &[Member]) -> Vec<(u64, String)> {
     members
         .iter()
-        .filter_map(|member| member.peer_ur_ls.first().cloned().map(|url| (member.id, url)))
+        .filter_map(|member| member.peer_urls.first().cloned().map(|url| (member.id, url)))
         .collect()
 }
 
@@ -178,13 +289,28 @@ fn join_tls_paths() -> Result<TlsPaths> {
     };
     Ok(TlsPaths {
         ca: path("NODEBOOTSTRAP_JOIN_CA_FILE", "NODESTORE_CLIENT_CA_FILE")
-            .or_else(|| std::env::var("NODESTORE_TRUSTED_CA_FILE").ok().filter(|value| !value.is_empty()).map(PathBuf::from))
+            .or_else(|| {
+                std::env::var("NODESTORE_TRUSTED_CA_FILE")
+                    .ok()
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            })
             .context("control-plane join needs NODEBOOTSTRAP_JOIN_CA_FILE (or NODESTORE_TRUSTED_CA_FILE)")?,
         cert: path("NODEBOOTSTRAP_JOIN_CERT_FILE", "NODESTORE_CLIENT_CERT_FILE")
-            .or_else(|| std::env::var("NODESTORE_CERT_FILE").ok().filter(|value| !value.is_empty()).map(PathBuf::from))
+            .or_else(|| {
+                std::env::var("NODESTORE_CERT_FILE")
+                    .ok()
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            })
             .context("control-plane join needs NODEBOOTSTRAP_JOIN_CERT_FILE (or NODESTORE_CERT_FILE)")?,
         key: path("NODEBOOTSTRAP_JOIN_KEY_FILE", "NODESTORE_CLIENT_KEY_FILE")
-            .or_else(|| std::env::var("NODESTORE_KEY_FILE").ok().filter(|value| !value.is_empty()).map(PathBuf::from))
+            .or_else(|| {
+                std::env::var("NODESTORE_KEY_FILE")
+                    .ok()
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            })
             .context("control-plane join needs NODEBOOTSTRAP_JOIN_KEY_FILE (or NODESTORE_KEY_FILE)")?,
     })
 }

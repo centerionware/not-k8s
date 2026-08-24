@@ -93,8 +93,8 @@ pub fn run_all() -> Result<()> {
     if cfg.control_plane {
         // A joining apiserver must share the existing cluster CA and
         // ServiceAccount signing key. It may not create a parallel cluster.
-        cluster::join_existing(&cfg)?;
         pki::require_existing(&cfg)?;
+        cluster::join_existing(&cfg)?;
     } else {
         pki::run_with(&cfg)?;
     }

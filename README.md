@@ -37,7 +37,7 @@ Common commands after downloading the release binary:
 ./bootstrap --release              # update from the latest published assets
 ./bootstrap --without-flannel      # use an external CNI and remember it on updates
 ./bootstrap --worker --kubeconfig=/path/to/cluster.kubeconfig --proxy=none
-                                     # nodelet only; no local control plane, flannel, or proxy
+                                     # nodelet; no local control plane, flannel, or proxy
 ./bootstrap --control-plane --join=https://cp-1:2379 --peer-url=https://cp-2:2380
                                      # add a nodestore control-plane member
 ./bootstrap --remove-control-plane --join=https://cp-1:2379 --member-id=123
