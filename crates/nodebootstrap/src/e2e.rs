@@ -38,6 +38,12 @@ const TESTS: &[TestCase] = &[
     TestCase { name: "apiserver_serves_resources", group: TestGroup::General },
     TestCase { name: "node_is_ready", group: TestGroup::General },
     TestCase { name: "kubernetes_service_has_reachable_endpoint", group: TestGroup::General },
+    TestCase { name: "test_basic_pod_runs", group: TestGroup::General },
+    TestCase { name: "test_init_containers_run_before_app_container", group: TestGroup::General },
+    TestCase { name: "test_native_sidecar_container_starts_before_app_container_and_keeps_running", group: TestGroup::General },
+    TestCase { name: "test_native_sidecar_container_restarts_on_crash", group: TestGroup::General },
+    TestCase { name: "test_init_container_failure_blocks_app_container_under_restart_policy_never", group: TestGroup::General },
+    TestCase { name: "test_crashing_container_restarts_and_increments_restart_count", group: TestGroup::General },
     TestCase { name: "test_job_controller_runs_pods_to_completion", group: TestGroup::General },
     TestCase { name: "test_job_controller_fails_after_backoff_limit", group: TestGroup::General },
     TestCase { name: "test_cronjob_controller_creates_a_job_on_schedule", group: TestGroup::General },
@@ -269,6 +275,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "apiserver_serves_resources" => apiserver_serves_resources(context.client.clone()).await,
         "node_is_ready" => node_is_ready(context.client.clone()).await,
         "kubernetes_service_has_reachable_endpoint" => kubernetes_service_has_reachable_endpoint(context.client.clone()).await,
+        "test_basic_pod_runs" => basic_pod_runs(context).await,
+        "test_init_containers_run_before_app_container" => init_containers_run_before_app_container(context).await,
+        "test_native_sidecar_container_starts_before_app_container_and_keeps_running" => native_sidecar_starts_before_app_container(context).await,
+        "test_native_sidecar_container_restarts_on_crash" => native_sidecar_restarts_on_crash(context).await,
+        "test_init_container_failure_blocks_app_container_under_restart_policy_never" => init_failure_blocks_app(context).await,
+        "test_crashing_container_restarts_and_increments_restart_count" => crashing_container_restarts(context).await,
         "test_job_controller_runs_pods_to_completion" => job_controller_runs_pods_to_completion(context).await,
         "test_job_controller_fails_after_backoff_limit" => job_controller_fails_after_backoff_limit(context).await,
         "test_cronjob_controller_creates_a_job_on_schedule" => cronjob_controller_creates_a_job_on_schedule(context).await,
@@ -280,6 +292,99 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod" => statefulset_with_a_volume_claim_template_creates_an_accepted_pod(context).await,
         other => bail!("unknown bootstrap e2e test {other}"),
     }
+}
+
+async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1", "kind": "Pod", "metadata": {"name": name}, "spec": spec
+    }))?;
+    pods.create(&PostParams::default(), &pod).await.with_context(|| format!("creating Pod {name}"))?;
+    Ok(())
+}
+
+async fn pod_has_phase(context: &E2eContext, name: &str, phase: &str) -> Result<bool> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some(phase))
+}
+
+async fn basic_pod_runs(context: &E2eContext) -> Result<()> {
+    let name = "basic-pod";
+    create_pod(context, name, json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]})).await?;
+    context.wait_until("basic Pod Running", Duration::from_secs(90), || async { pod_has_phase(context, name, "Running").await }).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod = pods.get(name).await?;
+    let ready = pod.status.and_then(|status| status.conditions).unwrap_or_default().iter().any(|condition| condition.type_ == "Ready" && condition.status == "True");
+    anyhow::ensure!(ready, "basic Pod never reported Ready=True");
+    Ok(())
+}
+
+async fn init_containers_run_before_app_container(context: &E2eContext) -> Result<()> {
+    let name = "init-order";
+    create_pod(context, name, json!({
+        "initContainers": [
+            {"name": "init-one", "image": "busybox:latest", "command": ["sh", "-c", "sleep 2"]},
+            {"name": "init-two", "image": "busybox:latest", "command": ["sh", "-c", "sleep 2"]}
+        ],
+        "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+    })).await?;
+    context.wait_until("init-order Pod Running", Duration::from_secs(120), || async { pod_has_phase(context, name, "Running").await }).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod = pods.get(name).await?;
+    let initialized = pod.status.as_ref().and_then(|status| status.conditions.as_ref()).into_iter().flatten().any(|condition| condition.type_ == "Initialized" && condition.status == "True");
+    anyhow::ensure!(initialized, "Pod ran its app container without reporting Initialized=True");
+    let names: Vec<_> = pod.status.and_then(|status| status.init_container_statuses).unwrap_or_default().into_iter().map(|status| status.name).collect();
+    anyhow::ensure!(names == vec!["init-one".to_string(), "init-two".to_string()], "initContainerStatuses order was {names:?}");
+    Ok(())
+}
+
+async fn native_sidecar_starts_before_app_container(context: &E2eContext) -> Result<()> {
+    let name = "native-sidecar";
+    create_pod(context, name, json!({
+        "initContainers": [{"name": "proxy", "image": "busybox:latest", "restartPolicy": "Always", "command": ["sleep", "3600"]}],
+        "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+    })).await?;
+    context.wait_until("native-sidecar Pod Running", Duration::from_secs(90), || async { pod_has_phase(context, name, "Running").await }).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod = pods.get(name).await?;
+    let initialized = pod.status.as_ref().and_then(|status| status.conditions.as_ref()).into_iter().flatten().any(|condition| condition.type_ == "Initialized" && condition.status == "True");
+    let sidecar_running = pod.status.and_then(|status| status.init_container_statuses).unwrap_or_default().first().and_then(|status| status.state.as_ref()).and_then(|state| state.running.as_ref()).is_some();
+    anyhow::ensure!(initialized && sidecar_running, "native sidecar did not remain running while the app Pod started");
+    Ok(())
+}
+
+async fn native_sidecar_restarts_on_crash(context: &E2eContext) -> Result<()> {
+    let name = "native-sidecar-crash";
+    create_pod(context, name, json!({
+        "initContainers": [{"name": "proxy", "image": "busybox:latest", "restartPolicy": "Always", "command": ["sh", "-c", "sleep 3; exit 1"]}],
+        "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+    })).await?;
+    context.wait_until("native sidecar Pod Running", Duration::from_secs(120), || async { pod_has_phase(context, name, "Running").await }).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context.wait_until("native sidecar restartCount > 0", Duration::from_secs(90), || {
+        let pods = pods.clone();
+        async move { Ok(pods.get(name).await?.status.and_then(|status| status.init_container_statuses).unwrap_or_default().first().is_some_and(|status| status.restart_count > 0)) }
+    }).await
+}
+
+async fn init_failure_blocks_app(context: &E2eContext) -> Result<()> {
+    let name = "init-fail-never";
+    create_pod(context, name, json!({
+        "restartPolicy": "Never",
+        "initContainers": [{"name": "doomed", "image": "busybox:latest", "command": ["sh", "-c", "exit 7"]}],
+        "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+    })).await?;
+    context.wait_until("failed init Pod", Duration::from_secs(90), || async { pod_has_phase(context, name, "Failed").await }).await
+}
+
+async fn crashing_container_restarts(context: &E2eContext) -> Result<()> {
+    let name = "crash-loop";
+    create_pod(context, name, json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "sleep 3; exit 1"]}]})).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context.wait_until("crash-loop restartCount > 0", Duration::from_secs(120), || {
+        let pods = pods.clone();
+        async move { Ok(pods.get(name).await?.status.and_then(|status| status.container_statuses).unwrap_or_default().first().is_some_and(|status| status.restart_count > 0)) }
+    }).await
 }
 
 async fn job_controller_runs_pods_to_completion(context: &E2eContext) -> Result<()> {
@@ -555,7 +660,7 @@ async fn statefulset_creates_ordinal_pods_and_scales_down_highest_first(context:
             "selector": {"matchLabels": {"app": name}},
             "template": {"metadata": {"labels": {"app": name}}, "spec": {
                 "containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sh", "-c", "sleep 15; touch /tmp/release; sleep 3600"],
-                    "readinessProbe": {"exec": {"command": ["test", "-f", "/tmp/release"]}, "periodSeconds": 1}]}
+                    "readinessProbe": {"exec": {"command": ["test", "-f", "/tmp/release"]}, "periodSeconds": 1}}]}
             }}
         }
     }))?;
