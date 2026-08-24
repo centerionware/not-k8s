@@ -335,7 +335,7 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
             "dist/flanneld",
             "-ldflags",
             "-s -w -X github.com/flannel-io/flannel/pkg/version.Version=v0.25.6",
-            "./cmd/flanneld",
+            ".",
         ])
         .env("CGO_ENABLED", "0")
         .current_dir(&flannel_dir)
