@@ -356,6 +356,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_host_path_directory_mounts_the_real_host_directory",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_path_directory_or_create_creates_missing_directory",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_read_only_root_filesystem_blocks_writes",
         group: TestGroup::General,
     },
@@ -747,6 +755,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_configmap_volume_updates_live_without_pod_restart" => {
             volumes::configmap_volume_updates_live_without_pod_restart(context).await
+        }
+        "test_host_path_directory_mounts_the_real_host_directory" => {
+            volumes::host_path_directory_mounts_the_real_host_directory(context).await
+        }
+        "test_host_path_directory_or_create_creates_missing_directory" => {
+            volumes::host_path_directory_or_create_creates_missing_directory(context).await
         }
         "test_read_only_root_filesystem_blocks_writes" => {
             security::read_only_root_filesystem_blocks_writes(context).await

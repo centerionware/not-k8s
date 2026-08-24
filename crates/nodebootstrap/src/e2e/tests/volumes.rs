@@ -268,3 +268,78 @@ pub(super) async fn configmap_volume_updates_live_without_pod_restart(
         })
         .await
 }
+
+fn host_path_test_dir(label: &str) -> String {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("/tmp/nodebootstrap-e2e-{label}-{}-{suffix}", std::process::id())
+}
+
+pub(super) async fn host_path_directory_mounts_the_real_host_directory(
+    context: &E2eContext,
+) -> Result<()> {
+    let host_path = host_path_test_dir("mount");
+    std::fs::create_dir_all(&host_path)?;
+    let marker = format!("{host_path}/marker");
+    let name = "hostpath-directory";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "echo host-path > /host/marker; echo done > /dev/termination-log"], "volumeMounts": [{"name": "host", "mountPath": "/host"}] }]
+        }),
+    )
+    .await?;
+    let wait_result = context
+        .wait_until("hostPath Pod to finish", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "done"))
+            }
+        })
+        .await;
+    let marker_exists = std::path::Path::new(&marker).is_file();
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_dir(&host_path);
+    wait_result?;
+    anyhow::ensure!(marker_exists, "hostPath did not write through to the host directory");
+    Ok(())
+}
+
+pub(super) async fn host_path_directory_or_create_creates_missing_directory(
+    context: &E2eContext,
+) -> Result<()> {
+    let host_path = host_path_test_dir("directory-or-create");
+    let name = "hostpath-directory-or-create";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "DirectoryOrCreate"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "test -d /host && echo created > /dev/termination-log"], "volumeMounts": [{"name": "host", "mountPath": "/host"}] }]
+        }),
+    )
+    .await?;
+    let wait_result = context
+        .wait_until("DirectoryOrCreate hostPath Pod", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "created"))
+            }
+        })
+        .await;
+    let directory_exists = std::path::Path::new(&host_path).is_dir();
+    let _ = std::fs::remove_dir_all(&host_path);
+    wait_result?;
+    anyhow::ensure!(directory_exists, "DirectoryOrCreate did not create the host directory");
+    Ok(())
+}
