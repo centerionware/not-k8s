@@ -737,16 +737,16 @@ EOF
     # shipped in containerd starting v2.0.0-rc.5 (containerd/containerd
     # #10410, Oct 2024); ubuntu-latest's Docker-bundled containerd still
     # tracks the 1.7.x line as of this writing, so the override has
-    # nowhere to land. A warning, not a hard failure, since nodelet has no
-    # way to make containerd 1.7.x implement a containerd-2.0-only code
-    # path.
-    if ! echo "$merge_groups" | grep -qw "4000"; then
-        warn "supplementalGroupsPolicy: Merge should include imagegroup's gid (4000) from the image's own /etc/group membership, got '$merge_groups' — this runtime may not implement Merge's image-group-membership resolution (a newer-than-usual runc feature); not failing outright since nodelet itself only passes the policy through to CRI unchanged"
-    fi
+    # nowhere to land. Keep the explicit-group and Strict checks below as
+    # coverage, but report this runtime capability gap as a clean skip rather
+    # than a warning that makes an otherwise healthy run noisy.
     assert_contains "$merge_groups" "5000" "supplementalGroupsPolicy: Merge should still include the explicit supplementalGroups entry (5000)"
     assert_contains "$strict_groups" "5000" "supplementalGroupsPolicy: Strict should still include the explicit supplementalGroups entry (5000)"
     if echo "$strict_groups" | grep -qw "4000"; then
         die "supplementalGroupsPolicy: Strict must NOT include imagegroup's gid (4000) from image-defined /etc/group membership, but id -G reported: $strict_groups"
+    fi
+    if ! echo "$merge_groups" | grep -qw "4000"; then
+        skip_test "supplementalGroupsPolicy: Merge's image-group-membership step is not implemented by this runtime (expected gid 4000, got '$merge_groups'); explicit supplementalGroups and Strict checks passed"
     fi
 }
 
