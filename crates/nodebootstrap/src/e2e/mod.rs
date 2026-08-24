@@ -90,6 +90,8 @@ mod streaming;
 mod termination;
 #[path = "tests/volumes.rs"]
 mod volumes;
+#[path = "tests/watch_recovery.rs"]
+mod watch_recovery;
 
 use context::E2eContext;
 
@@ -637,6 +639,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_a_recreated_pod_survives_the_old_pods_detached_teardown",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_the_node_still_reconciles_pods_after_an_apiserver_restart",
         group: TestGroup::General,
     },
 ];
@@ -1189,6 +1195,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_a_recreated_pod_survives_the_old_pods_detached_teardown" => {
             termination::recreated_pod_survives_the_old_pods_detached_teardown(context).await
+        }
+        "test_the_node_still_reconciles_pods_after_an_apiserver_restart" => {
+            watch_recovery::node_still_reconciles_pods_after_an_apiserver_restart(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
