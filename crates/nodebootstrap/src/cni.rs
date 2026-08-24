@@ -64,6 +64,10 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
             exec_cmd: &command,
             after: Some("kube-apiserver.service"),
             env: &[
+                // flanneld uses NODE_NAME for host-mode kube-subnet-mgr. If it
+                // is absent, it assumes it is running in a Pod and requires
+                // POD_NAME/POD_NAMESPACE instead.
+                ("NODE_NAME", &node_name),
                 ("NODEBOOTSTRAP_FLANNELD_BIN", &flanneld_bin_value),
                 ("NODEBOOTSTRAP_FLANNELD_NODE_NAME", &node_name),
                 ("KUBECONFIG", &kubeconfig),
