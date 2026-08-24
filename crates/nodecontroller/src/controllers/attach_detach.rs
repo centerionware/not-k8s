@@ -68,6 +68,7 @@
 //! `pv.kubernetes.io/bind-completed` scheduler publication barrier.
 
 use anyhow::Result;
+use crate::controllers::ephemeral_volume::{ephemeral_pvc_name, pvc_owned_by_pod};
 use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod};
@@ -131,12 +132,24 @@ pub fn desired_attachments(
             continue;
         };
         for vol in volumes {
-            let Some(claim) = vol.persistent_volume_claim.as_ref() else {
+            let claim_name = if let Some(claim) = vol.persistent_volume_claim.as_ref() {
+                claim.claim_name.clone()
+            } else if vol
+                .ephemeral
+                .as_ref()
+                .and_then(|source| source.volume_claim_template.as_ref())
+                .is_some()
+            {
+                ephemeral_pvc_name(&pod.name_any(), &vol.name)
+            } else {
                 continue;
             };
-            let Some(pvc) = pvcs.get(&format!("{namespace}/{}", claim.claim_name)) else {
+            let Some(pvc) = pvcs.get(&format!("{namespace}/{claim_name}")) else {
                 continue;
             };
+            if vol.ephemeral.is_some() && !pvc_owned_by_pod(pvc, pod) {
+                continue;
+            }
             let Some((driver, pv_name)) = csi_pv_for_claim(pvc, pvs) else {
                 continue;
             };
@@ -273,9 +286,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::{
-        CSIPersistentVolumeSource, PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource,
-        PersistentVolumeSpec, PodSpec, Volume,
+        CSIPersistentVolumeSource, EphemeralVolumeSource, PersistentVolumeClaimSpec,
+        PersistentVolumeClaimTemplate, PersistentVolumeClaimVolumeSource, PersistentVolumeSpec,
+        PodSpec, Volume,
     };
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 
     fn pod(name: &str, node: Option<&str>, claim: &str) -> Pod {
         Pod {
@@ -354,6 +369,54 @@ mod tests {
         let pods = HashMap::from([("default/p1".to_string(), pod("p1", None, "c1"))]);
         let pvcs = HashMap::from([("default/c1".to_string(), bound_csi_pvc("c1", "pv-1"))]);
         let pvs = HashMap::from([("pv-1".to_string(), csi_pv("pv-1", "disk.csi.example.com"))]);
+        assert!(desired_attachments(&pods, &pvcs, &pvs).is_empty());
+    }
+
+    #[test]
+    fn a_scheduled_pod_with_a_bound_generic_ephemeral_pvc_wants_an_attachment() {
+        let mut pod = pod("p1", Some("node-a"), "unused");
+        pod.metadata.uid = Some("pod-uid".to_string());
+        pod.spec.as_mut().unwrap().volumes = Some(vec![Volume {
+            name: "scratch".to_string(),
+            ephemeral: Some(EphemeralVolumeSource {
+                volume_claim_template: Some(PersistentVolumeClaimTemplate::default()),
+            }),
+            ..Default::default()
+        }]);
+        let pvc_name = ephemeral_pvc_name("p1", "scratch");
+        let mut pvc = bound_csi_pvc(&pvc_name, "pv-1");
+        pvc.metadata.owner_references = Some(vec![OwnerReference {
+            api_version: "v1".to_string(),
+            kind: "Pod".to_string(),
+            name: "p1".to_string(),
+            uid: "pod-uid".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }]);
+        let pods = HashMap::from([("default/p1".to_string(), pod)]);
+        let pvcs = HashMap::from([(format!("default/{pvc_name}"), pvc)]);
+        let pvs = HashMap::from([("pv-1".to_string(), csi_pv("pv-1", "disk.csi.example.com"))]);
+
+        assert_eq!(desired_attachments(&pods, &pvcs, &pvs).len(), 1);
+    }
+
+    #[test]
+    fn a_same_named_unowned_generic_ephemeral_pvc_wants_nothing() {
+        let mut pod = pod("p1", Some("node-a"), "unused");
+        pod.metadata.uid = Some("pod-uid".to_string());
+        pod.spec.as_mut().unwrap().volumes = Some(vec![Volume {
+            name: "scratch".to_string(),
+            ephemeral: Some(EphemeralVolumeSource {
+                volume_claim_template: Some(PersistentVolumeClaimTemplate::default()),
+            }),
+            ..Default::default()
+        }]);
+        let pvc_name = ephemeral_pvc_name("p1", "scratch");
+        let pvc = bound_csi_pvc(&pvc_name, "pv-1");
+        let pods = HashMap::from([("default/p1".to_string(), pod)]);
+        let pvcs = HashMap::from([(format!("default/{pvc_name}"), pvc)]);
+        let pvs = HashMap::from([("pv-1".to_string(), csi_pv("pv-1", "disk.csi.example.com"))]);
+
         assert!(desired_attachments(&pods, &pvcs, &pvs).is_empty());
     }
 

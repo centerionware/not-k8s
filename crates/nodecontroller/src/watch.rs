@@ -29,7 +29,7 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, Resource, ResourceExt};
 use kube::api::{DynamicObject, TypeMeta};
-use kube::core::GroupVersionKind;
+use kube::core::{GroupVersionKind, PartialObjectMeta};
 use kube::discovery::ApiResource;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -384,6 +384,68 @@ shared_watch!(watch_jobs, SHARED_JOBS, Job);
 shared_watch!(watch_cron_jobs, SHARED_CRON_JOBS, CronJob);
 
 shared_watch!(watch_persistent_volume_claims, SHARED_PVCS, PersistentVolumeClaim);
+
+/// PVC consumers that only need existence and ownership must not deserialize
+/// the PVC spec/status on every CSI provisioning or status update. Keep this
+/// informer metadata-only; the API request's negotiated
+/// `PartialObjectMetadata` representation excludes the rest of the object.
+pub fn watch_persistent_volume_claim_metadata(
+    _client: &Client,
+) -> BoxStream<'static, watcher::Result<Event<PartialObjectMeta<PersistentVolumeClaim>>>> {
+    let api: Api<PartialObjectMeta<PersistentVolumeClaim>> = Api::all(base_client());
+    // A busy k3s apiserver can return a raw Status body while a metadata watch
+    // is being re-established. kube-rs reports that as WatchFailed and keeps
+    // the underlying stream in place, so applying the ordinary backoff alone
+    // would repeatedly poll the same poisoned stream forever. Recreate the
+    // watcher after every error; the request remains metadata-only, and the
+    // controller below still decides whether a newly decoded metadata object
+    // is meaningful before replacing its cache entry.
+    type MetadataEvent = watcher::Result<Event<PartialObjectMeta<PersistentVolumeClaim>>>;
+    type MetadataStream = BoxStream<'static, MetadataEvent>;
+
+    futures::stream::unfold(
+        (
+            api,
+            None::<MetadataStream>,
+            WatchBackoffPolicy::default(),
+            None::<std::time::Duration>,
+        ),
+        |(api, mut stream, mut backoff, delay)| async move {
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+
+            loop {
+                if stream.is_none() {
+                    stream = Some(watcher(api.clone(), watch_config()).boxed());
+                }
+                let next = stream
+                    .as_mut()
+                    .expect("metadata watcher stream was just initialized")
+                    .next()
+                    .await;
+
+                match next {
+                    Some(Ok(event)) => {
+                        backoff.reset();
+                        return Some((Ok(event), (api, stream, backoff, None)));
+                    }
+                    Some(Err(error)) => {
+                        let delay = backoff.next().unwrap_or(WATCH_MAX_BACKOFF);
+                        stream = None;
+                        return Some((Err(error), (api, stream, backoff, Some(delay))));
+                    }
+                    None => {
+                        let delay = backoff.next().unwrap_or(WATCH_MAX_BACKOFF);
+                        stream = None;
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        },
+    )
+    .boxed()
+}
 
 shared_watch!(watch_persistent_volumes, SHARED_PVS, PersistentVolume);
 

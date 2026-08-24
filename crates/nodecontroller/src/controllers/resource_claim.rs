@@ -1,5 +1,5 @@
-//! ephemeral-volume-controller / resourceclaim-controller (Group H,
-//! DRA-adjacent): creates a `ResourceClaim` from a Pod's
+//! resourceclaim-controller (Group H, DRA-adjacent): creates a
+//! `ResourceClaim` from a Pod's
 //! `spec.resourceClaims[].resourceClaimTemplateName` entries and records
 //! the generated name in `pod.status.resourceClaimStatuses`. Pairs
 //! directly with nodelet's existing DRA consumer side

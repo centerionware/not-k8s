@@ -7,7 +7,15 @@
 # itself never creates that PVC, only reads it once it exists. Set
 # TEST_CSI_STORAGE_CLASS to exercise this for real.
 
+_require_nodecontroller_ephemeral() {
+    test_component_running nodecontroller \
+        || skip_test "nodecontroller isn't running here — deploy with --controller-manager=nodecontroller to exercise generic ephemeral volumes"
+    test_controller_manager_is_exclusive \
+        || skip_test "k3s's bundled controller-manager is still enabled; this test would not prove nodecontroller's ephemeral-volume controller"
+}
+
 test_pod_mounts_a_generic_ephemeral_volume() {
+    _require_nodecontroller_ephemeral
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     if [[ -z "${TEST_CSI_STORAGE_CLASS:-}" ]]; then
         skip_test "TEST_CSI_STORAGE_CLASS not set — export it to a StorageClass backed by a CSI driver that's also listed in nodelet's NODELET_CSI_DRIVERS to exercise this"
@@ -36,6 +44,9 @@ spec:
     - name: data
       ephemeral:
         volumeClaimTemplate:
+          metadata:
+            labels:
+              not-k8s-e2e: generic-ephemeral
           spec:
             accessModes: ["ReadWriteOnce"]
             storageClassName: $TEST_CSI_STORAGE_CLASS
@@ -43,15 +54,22 @@ spec:
               requests:
                 storage: 64Mi
 EOF
+    trap 'delete_pod_and_pvc "$name" "$expected_claim"' EXIT
 
     if ! try_wait_until 90 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' >/dev/null 2>&1"; then
         delete_pod_if_exists "$name"
-        skip_test "PersistentVolumeClaim '$expected_claim' was never created — this cluster's kube-controller-manager likely doesn't have the ephemeral-volume controller enabled (not something nodelet itself does; nodelet only ever reads a PVC the controller already created)"
+        die "PersistentVolumeClaim '$expected_claim' was never created — nodecontroller's ephemeral-volume-controller did not materialize the Pod's volumeClaimTemplate"
     fi
+
+    local pod_uid owner_uid
+    pod_uid="$(kubectl get pod "$name" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
+    owner_uid="$(kubectl get pvc "$expected_claim" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.ownerReferences[?(@.controller==true)].uid}')"
+    assert_eq "$owner_uid" "$pod_uid" "generic ephemeral PVC controller owner UID"
+    assert_eq "$(kubectl get pvc "$expected_claim" -n "$TEST_NAMESPACE" -o jsonpath='{.metadata.labels.not-k8s-e2e}')" "generic-ephemeral" "generic ephemeral PVC copied template labels"
 
     if ! try_wait_until 90 bash -c "kubectl get pvc '$expected_claim' -n '$TEST_NAMESPACE' -o jsonpath='{.status.phase}' | grep -q Bound"; then
         delete_pod_and_pvc "$name" "$expected_claim"
-        skip_test "PVC '$expected_claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
+        die "PVC '$expected_claim' never became Bound within 60s — needs a working external-provisioner for TEST_CSI_STORAGE_CLASS ($TEST_CSI_STORAGE_CLASS)"
     fi
 
     # Round 124 (found live in CI, full-suite runs only): nodelet's own log
@@ -76,6 +94,7 @@ EOF
     fi
     assert_contains "$(cat "$marker_path")" "hello-from-ephemeral-vol" "marker file content"
 
+    trap - EXIT
     delete_pod_and_pvc "$name" "$expected_claim"
 }
 

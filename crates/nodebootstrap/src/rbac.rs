@@ -151,6 +151,7 @@ const CONTROLLER_SA_NAMES: &[&str] = &[
     "pv-protection-controller",
     "root-ca-cert-publisher",
     "resource-claim-controller",
+    "ephemeral-volume-controller",
     "certificate-controller",
     "disruption-controller",
 ];
@@ -385,6 +386,32 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: nodebootstrap:nodescheduler-dra
+subjects:
+- kind: User
+  name: system:kube-scheduler
+  apiGroup: rbac.authorization.k8s.io
+---
+# nodescheduler's VolumeBinding plugin also watches VolumeAttachments. The
+# upstream bootstrap role on this k3s release omits that read grant, which
+# leaves CSI-backed generic ephemeral volumes waiting for an attachment that
+# the scheduler never observes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:nodescheduler-volumeattachments
+rules:
+- apiGroups: ["storage.k8s.io"]
+  resources: ["volumeattachments"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:nodescheduler-volumeattachments
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:nodescheduler-volumeattachments
 subjects:
 - kind: User
   name: system:kube-scheduler

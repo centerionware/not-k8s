@@ -40,9 +40,12 @@
 //! section and `pv_binder.rs`'s module doc for the diagnostic trail, and
 //! GitHub issue #30 for the closing writeup) — dynamic provisioning,
 //! filesystem/raw-block PVCs, and VolumeAttachment are all e2e-verified.
-//! Group H's `ephemeral-volume-controller`/`resourceclaim-controller`
+//! Group H's DRA `resourceclaim-controller`
 //! (`controllers/resource_claim.rs`) is implemented, pairing with
 //! nodelet's existing DRA consumer side in `runtime/cri/claims.rs`;
+//! generic ephemeral volumes are implemented by
+//! `controllers/ephemeral_volume.rs`, creating the Pod-owned PVC that
+//! nodelet's existing generic-ephemeral resolver consumes;
 //! `device-taint-eviction-controller` is scoped out (no infrastructure in
 //! this project's e2e suite to verify it against). Group I
 //! (`controllers/csr.rs`: `certificatesigningrequest-{approving,signing,cleaner}-controller`)
@@ -162,6 +165,7 @@ fn upstream_controller_sa(name: &str) -> &'static str {
         // Same as daemon-set-controller above: real name has a hyphen
         // between "resource" and "claim".
         "resource-claim" => "resource-claim-controller",
+        "ephemeral-volume" => "ephemeral-volume-controller",
         "csr" => "certificate-controller",
         "disruption" => "disruption-controller",
         other => panic!("upstream_controller_sa: no mapping for controller {other:?} -- add one"),
@@ -258,6 +262,7 @@ pub async fn run() -> Result<()> {
     let storage_protection_client = client_for!("storage-protection");
     let root_ca_publisher_client = client_for!("root-ca-publisher");
     let resource_claim_client = client_for!("resource-claim");
+    let ephemeral_volume_client = client_for!("ephemeral-volume");
     let csr_client = client_for!("csr");
     let disruption_client = client_for!("disruption");
 
@@ -284,6 +289,7 @@ pub async fn run() -> Result<()> {
             start_controller(&cfg, "storage-protection", controllers::storage_protection::run(storage_protection_client, &cfg)),
             start_controller(&cfg, "root-ca-publisher", controllers::root_ca_publisher::run(root_ca_publisher_client, &cfg)),
             start_controller(&cfg, "resource-claim", controllers::resource_claim::run(resource_claim_client, &cfg)),
+            start_controller(&cfg, "ephemeral-volume", controllers::ephemeral_volume::run(ephemeral_volume_client, &cfg)),
             start_controller(&cfg, "csr", controllers::csr::run(csr_client, &cfg)),
             start_controller(&cfg, "disruption", controllers::disruption::run(disruption_client, &cfg)),
         )?;

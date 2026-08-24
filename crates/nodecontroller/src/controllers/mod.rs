@@ -7,6 +7,7 @@ pub mod csr;
 pub mod daemon_set;
 pub mod deployment;
 pub mod disruption;
+pub mod ephemeral_volume;
 pub mod endpoint_slice;
 pub mod garbage_collector;
 pub mod job;
