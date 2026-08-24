@@ -60,6 +60,8 @@ mod runtime_class;
 mod scheduler;
 #[path = "tests/security.rs"]
 mod security;
+#[path = "tests/service_proxy.rs"]
+mod service_proxy;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
 #[path = "tests/volumes.rs"]
@@ -319,6 +321,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_termination_message_path_is_read_back_into_status",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_clusterip_service_routes_to_its_backend_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeport_service_is_reachable_on_the_node_ip",
         group: TestGroup::General,
     },
 ];
@@ -656,6 +666,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_termination_message_path_is_read_back_into_status" => {
             hooks::termination_message_path_is_read_back_into_status(context).await
+        }
+        "test_clusterip_service_routes_to_its_backend_pod" => {
+            service_proxy::clusterip_service_routes_to_its_backend_pod(context).await
+        }
+        "test_nodeport_service_is_reachable_on_the_node_ip" => {
+            service_proxy::nodeport_service_is_reachable_on_the_node_ip(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
