@@ -222,3 +222,55 @@ pub(super) async fn image_pull_policy_never_fails_when_image_is_absent(
         })
         .await
 }
+
+pub(super) async fn pod_status_reports_host_ips_plural(context: &E2eContext) -> Result<()> {
+    let name = "pod-host-ips";
+    create_pod(
+        context,
+        name,
+        json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]}),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("Pod.status.hostIPs", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.host_ips)
+                    .is_some_and(|ips| !ips.is_empty()))
+            }
+        })
+        .await
+}
+
+pub(super) async fn container_status_reports_a_real_image_id(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "container-image-id";
+    create_pod(
+        context,
+        name,
+        json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]}),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("container status imageID", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.container_statuses)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|status| status.name == "app" && !status.image_id.is_empty()))
+            }
+        })
+        .await
+}

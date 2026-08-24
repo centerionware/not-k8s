@@ -1,6 +1,6 @@
 use super::context::E2eContext;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{Node, Pod, Service};
+use k8s_openapi::api::core::v1::{EndpointSlice, Node, Pod, Service};
 use kube::api::{Api, ListParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
@@ -126,6 +126,26 @@ pub(super) async fn nodeport_service_is_reachable_on_the_node_ip(
         .wait_until("NodePort service to route", Duration::from_secs(90), || {
             let address = format!("{node_ip}:30080");
             async move { receives_marker(&address).await }
+        })
+        .await
+}
+
+pub(super) async fn service_with_no_endpoints_does_not_wedge_the_ruleset(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "service-without-endpoints";
+    create_service(context, name, "ClusterIP", 18092, None).await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("empty EndpointSlice for a service without backends", Duration::from_secs(60), || {
+            let slices = slices.clone();
+            async move {
+                let items = slices
+                    .list(&ListParams::default().labels(&format!("kubernetes.io/service-name={name}")))
+                    .await?
+                    .items;
+                Ok(!items.is_empty() && items.iter().all(|slice| slice.endpoints.is_empty()))
+            }
         })
         .await
 }

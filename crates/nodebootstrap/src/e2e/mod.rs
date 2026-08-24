@@ -296,6 +296,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_status_reports_host_ips_plural",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_container_status_reports_a_real_image_id",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_readiness_probe_gates_ready_condition",
         group: TestGroup::General,
     },
@@ -357,6 +365,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_nodeport_service_is_reachable_on_the_node_ip",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_service_with_no_endpoints_does_not_wedge_the_ruleset",
         group: TestGroup::General,
     },
     TestCase {
@@ -679,6 +691,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_image_pull_policy_never_fails_when_image_is_absent" => {
             lifecycle::image_pull_policy_never_fails_when_image_is_absent(context).await
         }
+        "test_pod_status_reports_host_ips_plural" => {
+            lifecycle::pod_status_reports_host_ips_plural(context).await
+        }
+        "test_container_status_reports_a_real_image_id" => {
+            lifecycle::container_status_reports_a_real_image_id(context).await
+        }
         "test_readiness_probe_gates_ready_condition" => {
             probes::readiness_probe_gates_ready_condition(context).await
         }
@@ -726,6 +744,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeport_service_is_reachable_on_the_node_ip" => {
             service_proxy::nodeport_service_is_reachable_on_the_node_ip(context).await
+        }
+        "test_service_with_no_endpoints_does_not_wedge_the_ruleset" => {
+            service_proxy::service_with_no_endpoints_does_not_wedge_the_ruleset(context).await
         }
         "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion" => {
             storage::pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion(context).await
