@@ -22,10 +22,18 @@ mod daemonset;
 mod deployment;
 #[path = "tests/node_status.rs"]
 mod node_status;
+#[path = "tests/namespace.rs"]
+mod namespace;
 #[path = "tests/pods.rs"]
 mod pods;
+#[path = "tests/readiness_gates.rs"]
+mod readiness_gates;
 #[path = "tests/replicaset.rs"]
 mod replicaset;
+#[path = "tests/resource_quota.rs"]
+mod resource_quota;
+#[path = "tests/runtime_class.rs"]
+mod runtime_class;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
 
@@ -84,6 +92,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_runtime_class_handler_is_honored",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_node_is_ready_with_capacity_advertised",
         group: TestGroup::General,
     },
@@ -137,6 +153,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_namespace_controller_deletes_contents_before_finalizing",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_resourcequota_used_pods_tracks_actual_pod_count",
         group: TestGroup::General,
     },
 ];
@@ -332,6 +356,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_crashing_container_restarts_and_increments_restart_count" => {
             pods::crashing_container_restarts(context).await
         }
+        "test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set" => {
+            readiness_gates::pod_stays_not_ready_until_its_readiness_gate_condition_is_set(context).await
+        }
+        "test_runtime_class_handler_is_honored" => {
+            runtime_class::runtime_class_handler_is_honored(context).await
+        }
         "test_node_is_ready_with_capacity_advertised" => {
             node_status::node_is_ready_with_capacity_advertised(context).await
         }
@@ -369,6 +399,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod" => {
             statefulset::statefulset_with_a_volume_claim_template_creates_an_accepted_pod(context).await
+        }
+        "test_namespace_controller_deletes_contents_before_finalizing" => {
+            namespace::namespace_controller_deletes_contents_before_finalizing(context).await
+        }
+        "test_resourcequota_used_pods_tracks_actual_pod_count" => {
+            resource_quota::resourcequota_used_pods_tracks_actual_pod_count(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
