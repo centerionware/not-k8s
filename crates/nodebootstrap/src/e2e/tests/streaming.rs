@@ -226,7 +226,7 @@ async fn port_forward_response(namespace: &str, name: &str) -> Result<String> {
                 {
                     let response = String::from_utf8_lossy(&bytes).into_owned();
                     if response.contains("port-forward-marker") {
-                        return Ok(response);
+                        return Ok::<String, std::io::Error>(response);
                     }
                 }
             }
