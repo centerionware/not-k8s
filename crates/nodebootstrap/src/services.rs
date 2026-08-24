@@ -186,6 +186,12 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     .context("installing nodelet as a supervised service")
 }
 
+/// A control-plane-only join must not leave a worker service from an earlier
+/// single-node install active on a reused host.
+pub fn remove_nodelet(cfg: &Config) {
+    service_mgr::remove(cfg, "nodelet");
+}
+
 /// Called last in `run_all()`, alongside `ensure_nodelet` (same ordering
 /// reasoning). Skipped entirely when `NODEBOOTSTRAP_PROXY=none` (this
 /// project's Service routing may be something else -- Cilium, a real
@@ -194,6 +200,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
 /// site.
 pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
     if cfg.skip_nodeproxy {
+        service_mgr::remove(cfg, "nodeproxy");
         tracing::info!("NODEBOOTSTRAP_PROXY=none -- skipping nodeproxy");
         return Ok(());
     }

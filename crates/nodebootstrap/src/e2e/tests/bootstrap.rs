@@ -26,12 +26,26 @@ pub(super) async fn external_cni_mode_disables_flannel(context: &E2eContext) -> 
         .context("checking that the external-CNI bootstrap still registered a node")?;
     anyhow::ensure!(!nodes.items.is_empty(), "external-CNI bootstrap registered no nodes");
 
+    anyhow::ensure!(
+        std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", "nodelet"])
+            .status()
+            .is_ok_and(|status| status.success()),
+        "nodelet is not active after the external-CNI bootstrap"
+    );
     if std::process::Command::new("systemctl")
         .args(["is-active", "--quiet", "flanneld"])
         .status()
         .is_ok_and(|status| status.success())
     {
         anyhow::bail!("flanneld is active after --without-flannel");
+    }
+    if std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "nodeproxy"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        anyhow::bail!("nodeproxy is active after --proxy=none");
     }
     Ok(())
 }

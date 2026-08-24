@@ -117,6 +117,8 @@ pub fn run_all() -> Result<()> {
         if !cfg.skip_control_plane && cfg.with_cri {
             targets::enable_nodelet_proxy(&cfg)?;
         }
+    } else if cfg.control_plane {
+        services::remove_nodelet(&cfg);
     }
     if !cfg.skip_control_plane {
         rbac::run_with(&cfg)?;
