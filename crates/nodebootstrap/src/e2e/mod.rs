@@ -264,6 +264,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_host_network_pod_needs_no_explicit_port_mapping",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_custom_dns_config_reaches_resolv_conf",
         group: TestGroup::General,
     },
@@ -775,6 +779,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_port_reaches_the_container_on_the_node_ip" => {
             networking::host_port_reaches_the_container_on_the_node_ip(context).await
+        }
+        "test_host_network_pod_needs_no_explicit_port_mapping" => {
+            networking::host_network_pod_needs_no_explicit_port_mapping(context).await
         }
         "test_custom_dns_config_reaches_resolv_conf" => {
             networking::custom_dns_config_reaches_resolv_conf(context).await

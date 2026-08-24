@@ -152,6 +152,61 @@ pub(super) async fn host_port_reaches_the_container_on_the_node_ip(
     Ok(())
 }
 
+pub(super) async fn host_network_pod_needs_no_explicit_port_mapping(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "host-network-port";
+    let port = 18081;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "hostNetwork": true,
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", format!("printf 'HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\nhost-network-marker\\n' > /tmp/response; while true; do nc -l -p {port} < /tmp/response; done")],
+                "ports": [{"containerPort": port}]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("hostNetwork port Pod Running", Duration::from_secs(90), || {
+            pod_running(context, name)
+        })
+        .await?;
+    let node_ip = first_node(context)
+        .await?
+        .status
+        .and_then(|status| status.addresses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|address| address.type_ == "InternalIP")
+        .map(|address| address.address)
+        .context("the Node has no InternalIP")?;
+    let address = format!("{node_ip}:{port}");
+    context
+        .wait_until("hostNetwork port to accept a connection", Duration::from_secs(60), || {
+            let address = address.clone();
+            async move {
+                let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(&address)).await
+                else {
+                    return Ok(false);
+                };
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).await?;
+                Ok(response
+                    .windows(b"host-network-marker".len())
+                    .any(|window| window == b"host-network-marker"))
+            }
+        })
+        .await
+}
+
 pub(super) async fn custom_dns_config_reaches_resolv_conf(
     context: &E2eContext,
 ) -> Result<()> {
