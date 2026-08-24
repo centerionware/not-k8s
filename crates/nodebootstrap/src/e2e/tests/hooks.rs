@@ -1,9 +1,9 @@
 use super::context::E2eContext;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, PostParams};
+use kube::api::{Api, DeleteParams, PostParams};
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -90,4 +90,96 @@ pub(super) async fn termination_message_path_is_read_back_into_status(
             }
         })
         .await
+}
+
+pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -> Result<()> {
+    let name = "prestop-hook";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "terminationGracePeriodSeconds": 15,
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", "trap 'while true; do sleep 1; done' TERM; while true; do sleep 1; done"],
+                "lifecycle": {"preStop": {"exec": {"command": ["sh", "-c", "echo prestop > /dev/termination-log"]}}}
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("preStop Pod Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    pods.delete(name, &DeleteParams::default()).await?;
+    context
+        .wait_until("preStop termination message", Duration::from_secs(30), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "prestop"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn termination_grace_period_is_honored_not_instant(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "grace-period";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "terminationGracePeriodSeconds": 8,
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", "trap 'echo trapped' TERM; while true; do sleep 1; done"]
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("grace-period Pod Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    let started = Instant::now();
+    pods.delete(name, &DeleteParams::default()).await?;
+    context
+        .wait_until("grace-period Pod deletion", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(name).await?.is_none()) }
+        })
+        .await?;
+    anyhow::ensure!(
+        started.elapsed() >= Duration::from_secs(5),
+        "Pod disappeared after {:?}; terminationGracePeriodSeconds was not honored",
+        started.elapsed()
+    );
+    Ok(())
 }

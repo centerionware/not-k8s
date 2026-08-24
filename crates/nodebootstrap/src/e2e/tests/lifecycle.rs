@@ -127,6 +127,41 @@ pub(super) async fn guaranteed_pod_reports_guaranteed_qos(
         .await
 }
 
+pub(super) async fn pod_status_reports_qos_class(context: &E2eContext) -> Result<()> {
+    let name = "qos-class-check";
+    create_pod(
+        context,
+        name,
+        json!({
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "30"],
+                "resources": {
+                    "requests": {"cpu": "100m", "memory": "64Mi"},
+                    "limits": {"cpu": "100m", "memory": "64Mi"}
+                }
+            }]
+        }),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("Pod status qosClass", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.qos_class)
+                    .as_deref()
+                    == Some("Guaranteed"))
+            }
+        })
+        .await
+}
+
 pub(super) async fn container_status_id_has_runtime_scheme(
     context: &E2eContext,
 ) -> Result<()> {

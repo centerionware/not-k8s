@@ -300,6 +300,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_status_reports_qos_class",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_container_status_id_has_runtime_scheme",
         group: TestGroup::General,
     },
@@ -413,6 +417,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_termination_message_path_is_read_back_into_status",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_prestop_hook_runs_before_termination",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_termination_grace_period_is_honored_not_instant",
         group: TestGroup::General,
     },
     TestCase {
@@ -747,6 +759,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_guaranteed_pod_reports_guaranteed_qos" => {
             lifecycle::guaranteed_pod_reports_guaranteed_qos(context).await
         }
+        "test_pod_status_reports_qos_class" => {
+            lifecycle::pod_status_reports_qos_class(context).await
+        }
         "test_container_status_id_has_runtime_scheme" => {
             lifecycle::container_status_id_has_runtime_scheme(context).await
         }
@@ -831,6 +846,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_termination_message_path_is_read_back_into_status" => {
             hooks::termination_message_path_is_read_back_into_status(context).await
+        }
+        "test_prestop_hook_runs_before_termination" => {
+            hooks::prestop_hook_runs_before_termination(context).await
+        }
+        "test_termination_grace_period_is_honored_not_instant" => {
+            hooks::termination_grace_period_is_honored_not_instant(context).await
         }
         "test_clusterip_service_routes_to_its_backend_pod" => {
             service_proxy::clusterip_service_routes_to_its_backend_pod(context).await
