@@ -58,6 +58,8 @@ mod runtime_class;
 mod scheduler;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
+#[path = "tests/volumes.rs"]
+mod volumes;
 
 use context::E2eContext;
 
@@ -277,6 +279,26 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_wrong_port_readiness_probe_keeps_pod_not_ready",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_configmap_and_secret_volumes_are_materialized",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_downward_api_volume_writes_pod_metadata",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_projected_volume_merges_configmap_and_downward_api",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_service_account_token_projected_volume_mints_a_token",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_aliases_are_written_to_etc_hosts",
         group: TestGroup::General,
     },
 ];
@@ -587,6 +609,21 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_wrong_port_readiness_probe_keeps_pod_not_ready" => {
             probes::wrong_port_readiness_probe_keeps_pod_not_ready(context).await
+        }
+        "test_configmap_and_secret_volumes_are_materialized" => {
+            volumes::configmap_and_secret_volumes_are_materialized(context).await
+        }
+        "test_downward_api_volume_writes_pod_metadata" => {
+            volumes::downward_api_volume_writes_pod_metadata(context).await
+        }
+        "test_projected_volume_merges_configmap_and_downward_api" => {
+            volumes::projected_volume_merges_configmap_and_downward_api(context).await
+        }
+        "test_service_account_token_projected_volume_mints_a_token" => {
+            volumes::service_account_token_projected_volume_mints_a_token(context).await
+        }
+        "test_host_aliases_are_written_to_etc_hosts" => {
+            volumes::host_aliases_are_written_to_etc_hosts(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
