@@ -103,10 +103,7 @@ pub fn run_all() -> Result<()> {
     if !cfg.skip_control_plane {
         services::ensure_nodestore(&cfg)?;
         targets::run_with(&cfg)?;
-        if cfg.with_cri && !cfg.control_plane {
-            cni::run_with(&cfg)?;
-        }
-        if cfg.cni_provider.is_none() && cfg.control_plane {
+        if cfg.with_cri || cfg.cni_provider.is_none() {
             cni::run_with(&cfg)?;
         }
         if !cfg.control_plane {
