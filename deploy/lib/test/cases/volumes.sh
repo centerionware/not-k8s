@@ -11,7 +11,7 @@
 test_configmap_and_secret_volumes_are_materialized() {
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="cm-secret-vol"
-    kctl create configmap "$name-cm" --from-literal=greeting=hello >/dev/null
+    kctl create configmap "$name-cm" --save-config --from-literal=greeting=hello >/dev/null
     kctl create secret generic "$name-secret" --from-literal=password=s3cret >/dev/null
     apply_manifest <<EOF
 apiVersion: v1

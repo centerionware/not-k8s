@@ -44,7 +44,7 @@ EOF
     container_id="${container_id#containerd://}"
     assert_not_empty "$container_id" "container ID before deletion"
 
-    kctl delete pod "$name" --wait=false >/dev/null
+    kctl delete pod "$name" --wait=false >/dev/null 2>&1
     # Round 124 (found live in CI, full-suite runs only): 30s wasn't
     # always enough for real pod deletion to complete when the whole
     # unfiltered suite is contending for the same node/containerd —
@@ -110,7 +110,7 @@ EOF
     container_id="${container_id#containerd://}"
     assert_not_empty "$container_id" "container ID before deletion"
 
-    kctl delete pod "$name" --wait=false >/dev/null
+    kctl delete pod "$name" --wait=false >/dev/null 2>&1
 
     # Container teardown must happen regardless of the finalizer. 40s, not
     # the 20s the finalizer-free version of this check uses above — a
@@ -203,7 +203,7 @@ EOF
     # deletionTimestamp'd pod nodelet's ordinary reconcile handles once
     # it's back, never actually exercising the orphan-GC path this test
     # means to check at all.
-    kctl delete pod "$name" --wait=false --grace-period=0 --force >/dev/null
+    kctl delete pod "$name" --wait=false --grace-period=0 --force >/dev/null 2>&1
     wait_until 30 "$name gone from apiserver" pod_gone "$name"
     sudo systemctl start nodelet.service
     _nodelet_wait_ready "node Ready after restarting nodelet post-stop"
@@ -237,7 +237,7 @@ spec:
 EOF
     wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
-    kctl delete pod "$name" --wait=false >/dev/null
+    kctl delete pod "$name" --wait=false >/dev/null 2>&1
     # Round 124 (found live in CI, full-suite runs only): 30s wasn't always
     # enough for real pod teardown to complete when the whole unfiltered
     # suite is contending for the same node/containerd — same reasoning
@@ -321,7 +321,7 @@ spec:
 EOF
     wait_until 90 "$name Running" pod_is_phase "$name" Running
     assert_true bash -c "sudo ctr -n k8s.io images ls -q | grep -q '$image'"
-    kctl delete pod "$name" --wait=false >/dev/null
+    kctl delete pod "$name" --wait=false >/dev/null 2>&1
     wait_until 90 "$name gone" pod_gone "$name"
 
     # Round 124 (found live in CI, full-suite tail-end contention only):

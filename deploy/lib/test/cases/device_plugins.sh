@@ -193,8 +193,8 @@ _fake_device_plugin_teardown() {
     # deregistering plugin). Waiting here for Node.status.capacity to
     # actually drop the resource closes that window — the next test starts
     # from a genuinely clean slate instead of racing this one's teardown.
-    try_wait_until 90 bash -c "! kctl get node -o jsonpath='{.items[0].status.capacity}' 2>/dev/null | grep -q 'fake\.example\.com/testdevice'" \
-        || warn "Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover"
+    try_wait_until 180 bash -c "! kctl get node -o jsonpath='{.items[0].status.capacity}' 2>/dev/null | grep -q 'fake\.example\.com/testdevice'" \
+        || die "Node.status.capacity still listed fake.example.com/testdevice after tearing down this test's fake plugin — device-plugin deregistration did not reach the node status publisher"
     # Round 124: plain `rm -rf` here left a stream of "Permission denied"
     # noise on every run — the fake plugin itself and `grpc_tools.protoc`
     # both run under sudo (line ~161/56), so $FDP_WORK's __pycache__/*.pyc

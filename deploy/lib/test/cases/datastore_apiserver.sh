@@ -285,7 +285,7 @@ test_apiserver_crud_round_trips_through_nodestore() {
     # compare-and-swap on the resourceVersion it read, so a store that got
     # modRevision wrong fails here and nowhere else.
     _kubectl_test create namespace nodestore-crud >/dev/null
-    _kubectl_test -n nodestore-crud create configmap probe --from-literal=k=v1 >/dev/null
+    _kubectl_test -n nodestore-crud create configmap probe --save-config --from-literal=k=v1 >/dev/null
     assert_eq "$(_kubectl_test -n nodestore-crud get configmap probe -o jsonpath='{.data.k}')" "v1" "value after create"
 
     local rv1 rv2
