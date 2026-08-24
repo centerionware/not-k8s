@@ -32,6 +32,8 @@ mod endpoint_slice;
 mod garbage_collection;
 #[path = "tests/generic_ephemeral_volume.rs"]
 mod generic_ephemeral_volume;
+#[path = "tests/hooks.rs"]
+mod hooks;
 #[path = "tests/node_status.rs"]
 mod node_status;
 #[path = "tests/namespace.rs"]
@@ -56,6 +58,8 @@ mod resource_quota;
 mod runtime_class;
 #[path = "tests/scheduler.rs"]
 mod scheduler;
+#[path = "tests/security.rs"]
+mod security;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
 #[path = "tests/volumes.rs"]
@@ -299,6 +303,22 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_host_aliases_are_written_to_etc_hosts",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_read_only_root_filesystem_blocks_writes",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_writable_root_filesystem_allows_writes",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_poststart_hook_runs_before_container_exit",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_termination_message_path_is_read_back_into_status",
         group: TestGroup::General,
     },
 ];
@@ -624,6 +644,18 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_aliases_are_written_to_etc_hosts" => {
             volumes::host_aliases_are_written_to_etc_hosts(context).await
+        }
+        "test_read_only_root_filesystem_blocks_writes" => {
+            security::read_only_root_filesystem_blocks_writes(context).await
+        }
+        "test_writable_root_filesystem_allows_writes" => {
+            security::writable_root_filesystem_allows_writes(context).await
+        }
+        "test_poststart_hook_runs_before_container_exit" => {
+            hooks::poststart_hook_runs_before_container_exit(context).await
+        }
+        "test_termination_message_path_is_read_back_into_status" => {
+            hooks::termination_message_path_is_read_back_into_status(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
