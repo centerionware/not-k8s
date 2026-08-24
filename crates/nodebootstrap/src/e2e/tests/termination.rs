@@ -45,7 +45,7 @@ async fn create_slow_pod(context: &E2eContext, pods: &Api<Pod>, name: &str, grac
         .await
 }
 
-async fn create_sleep_pod(context: &E2eContext, pods: &Api<Pod>, name: &str) -> Result<()> {
+async fn create_sleep_pod(pods: &Api<Pod>, name: &str) -> Result<()> {
     let pod: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -77,7 +77,7 @@ pub(super) async fn slow_terminating_pod_does_not_stall_another_pods_creation(
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let blocker = "term-blocker";
     let victim = "term-victim";
-    let grace = 45_i64;
+    let grace = 45_u32;
     create_slow_pod(context, &pods, blocker, grace).await?;
     let started = Instant::now();
     pods.delete(
@@ -95,7 +95,7 @@ pub(super) async fn slow_terminating_pod_does_not_stall_another_pods_creation(
         })
         .await?;
     tokio::time::sleep(Duration::from_secs(5)).await;
-    create_sleep_pod(context, &pods, victim).await?;
+    create_sleep_pod(&pods, victim).await?;
 
     context
         .wait_until("unrelated Pod to reach Running during teardown", Duration::from_secs(30), || {
@@ -124,7 +124,7 @@ pub(super) async fn recreated_pod_survives_the_old_pods_detached_teardown(
     }
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let name = "term-recreate";
-    let grace = 20_i64;
+    let grace = 20_u32;
     create_slow_pod(context, &pods, name, grace).await?;
     pods.delete(
         name,
@@ -149,7 +149,7 @@ pub(super) async fn recreated_pod_survives_the_old_pods_detached_teardown(
             async move { Ok(pods.get_opt(name).await?.is_none()) }
         })
         .await?;
-    create_sleep_pod(context, &pods, name).await?;
+    create_sleep_pod(&pods, name).await?;
     context
         .wait_until("replacement Pod to reach Running", Duration::from_secs(90), || {
             let pods = pods.clone();
