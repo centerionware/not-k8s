@@ -55,6 +55,7 @@ pub(super) async fn pod_mounts_a_generic_ephemeral_volume(context: &E2eContext) 
                 Duration::from_secs(90),
                 || {
                     let pvcs = pvcs.clone();
+                    let claim_name = claim_name.clone();
                     async move { Ok(pvcs.get_opt(&claim_name).await?.is_some()) }
                 },
             )
@@ -86,6 +87,7 @@ pub(super) async fn pod_mounts_a_generic_ephemeral_volume(context: &E2eContext) 
         context
             .wait_until("generic ephemeral PVC Bound", Duration::from_secs(120), || {
                 let pvcs = pvcs.clone();
+                let claim_name = claim_name.clone();
                 async move {
                     Ok(pvcs
                         .get(&claim_name)
