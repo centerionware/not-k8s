@@ -135,9 +135,7 @@ EOF
     fi
     expected_volume="kubernetes.io/csi/${csi_driver}^${volume_handle}"
     volumes_in_use_contains_expected() {
-        local entries
-        entries="$(kubectl get node "$n" -o jsonpath='{range .status.volumesInUse[*]}{.}{"\n"}{end}' 2>/dev/null)" || return 1
-        grep -Fqx -- "$expected_volume" <<<"$entries"
+        kubectl get node "$n" -o jsonpath='{.status.volumesInUse}' 2>/dev/null | grep -Fq -- "$expected_volume"
     }
     if ! try_wait_until 120 volumes_in_use_contains_expected; then
         delete_pod_and_pvc "$name" "$claim"
