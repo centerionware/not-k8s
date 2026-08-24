@@ -36,6 +36,7 @@ const CSI_DRA_SHARDS: usize = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TestGroup {
     General,
+    #[allow(dead_code)]
     CsiDra,
 }
 
@@ -440,7 +441,8 @@ mod tests {
             select_tests(Some("node_is_ready,kubernetes_service"), None).unwrap(),
             vec![
                 "node_is_ready",
-                "kubernetes_service_has_reachable_endpoint"
+                "kubernetes_service_has_reachable_endpoint",
+                "test_node_is_ready_with_capacity_advertised"
             ]
         );
     }
