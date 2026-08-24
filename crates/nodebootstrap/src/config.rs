@@ -155,7 +155,7 @@ impl Config {
             .ok()
             .filter(|path| !path.is_empty())
             .map(Into::into)
-            .unwrap_or_else(|_| self.kubeconfig_dir().join("nodelet.kubeconfig"))
+            .unwrap_or_else(|| self.kubeconfig_dir().join("nodelet.kubeconfig"))
     }
 
     pub fn node_name(&self) -> String {
