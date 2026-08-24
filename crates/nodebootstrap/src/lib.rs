@@ -45,14 +45,13 @@ use anyhow::{bail, Context, Result};
 /// kube-subnet-manager mode needs a live kubeconfig. Nodelet then generates
 /// its serving certificate; `targets::enable_nodelet_proxy` may restart the
 /// apiserver to trust that CA. The replacement scheduler/controller are
-/// deliberately installed after that final planned restart, not directly
-/// after `targets`: otherwise their fresh watches start into a restart and
-/// produce a burst of 403/EOF/410 warnings before the authorizer and watch
-/// caches settle. `rbac` runs immediately before those services, so its
-/// authorizer barrier checks the apiserver instance they will actually use.
-/// `nodecontroller` is the deliberate exception to the CNI barrier: its
-/// node-ipam controller allocates the PodCIDR that flanneld needs before it
-/// can lease this node a subnet.
+/// deliberately installed only after that first planned restart and after
+/// the RBAC authorizer barrier. The scheduler must be running before the
+/// later network endpoint refresh: otherwise CoreDNS stays Pending and no
+/// CNI bridge is created for that refresh to discover. `nodecontroller` is
+/// the deliberate exception to the CNI barrier: its node-ipam controller
+/// allocates the PodCIDR that flanneld needs before it can lease this node a
+/// subnet.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
@@ -84,11 +83,11 @@ pub fn run_all() -> Result<()> {
     if !cfg.skip_control_plane {
         rbac::run_with(&cfg)?;
         services::ensure_nodecontroller(&cfg)?;
+        services::ensure_nodescheduler(&cfg)?;
         if !cfg.skip_nodelet && cfg.with_cri {
             cni::wait_for_flannel_subnet(&cfg)?;
             targets::refresh_network_advertise_address(&cfg)?;
         }
-        services::ensure_nodescheduler(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())
