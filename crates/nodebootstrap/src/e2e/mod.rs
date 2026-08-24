@@ -38,6 +38,8 @@ mod node_status;
 mod namespace;
 #[path = "tests/networking.rs"]
 mod networking;
+#[path = "tests/lifecycle.rs"]
+mod lifecycle;
 #[path = "tests/pods.rs"]
 mod pods;
 #[path = "tests/pod_resources.rs"]
@@ -223,6 +225,38 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_pod_resources_socket_is_created_on_a_cri_node",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_places_an_ordinary_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_honours_a_matching_node_selector",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_leaves_an_impossible_selector_pending",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_restart_policy_never_exit_zero_is_succeeded",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_restart_policy_never_nonzero_exit_is_failed",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_terminated_container_reports_its_exit_code",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_guaranteed_pod_reports_guaranteed_qos",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_container_status_id_has_runtime_scheme",
         group: TestGroup::General,
     },
 ];
@@ -497,6 +531,30 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_resources_socket_is_created_on_a_cri_node" => {
             pod_resources::pod_resources_socket_is_created_on_a_cri_node(context).await
+        }
+        "test_scheduler_places_an_ordinary_pod" => {
+            scheduler::scheduler_places_an_ordinary_pod(context).await
+        }
+        "test_scheduler_honours_a_matching_node_selector" => {
+            scheduler::scheduler_honours_a_matching_node_selector(context).await
+        }
+        "test_scheduler_leaves_an_impossible_selector_pending" => {
+            scheduler::scheduler_leaves_an_impossible_selector_pending(context).await
+        }
+        "test_restart_policy_never_exit_zero_is_succeeded" => {
+            lifecycle::restart_policy_never_exit_zero_is_succeeded(context).await
+        }
+        "test_restart_policy_never_nonzero_exit_is_failed" => {
+            lifecycle::restart_policy_never_nonzero_exit_is_failed(context).await
+        }
+        "test_terminated_container_reports_its_exit_code" => {
+            lifecycle::terminated_container_reports_its_exit_code(context).await
+        }
+        "test_guaranteed_pod_reports_guaranteed_qos" => {
+            lifecycle::guaranteed_pod_reports_guaranteed_qos(context).await
+        }
+        "test_container_status_id_has_runtime_scheme" => {
+            lifecycle::container_status_id_has_runtime_scheme(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
