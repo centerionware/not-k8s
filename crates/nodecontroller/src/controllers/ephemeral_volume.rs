@@ -369,4 +369,46 @@ mod tests {
         pvc.metadata.owner_references.as_mut().unwrap()[0].uid = "different-uid".to_string();
         assert!(!pvc_owned_by_pod(&pvc, &pod));
     }
+
+    #[test]
+    fn status_only_metadata_events_do_not_rebuild_the_cache() {
+        let old = PartialObjectMeta::<PersistentVolumeClaim> {
+            metadata: ObjectMeta {
+                name: Some("app-config".to_string()),
+                namespace: Some("test".to_string()),
+                resource_version: Some("1".to_string()),
+                managed_fields: Some(Vec::new()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut new = old.clone();
+        new.metadata.resource_version = Some("2".to_string());
+        new.metadata.managed_fields = Some(Vec::new());
+
+        assert!(!metadata_changed(&old, &new));
+    }
+
+    #[test]
+    fn ownership_metadata_changes_rebuild_the_cache() {
+        let old = PartialObjectMeta::<PersistentVolumeClaim> {
+            metadata: ObjectMeta {
+                name: Some("app-config".to_string()),
+                namespace: Some("test".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut new = old.clone();
+        new.metadata.owner_references = Some(vec![OwnerReference {
+            api_version: "v1".to_string(),
+            kind: "Pod".to_string(),
+            name: "app".to_string(),
+            uid: "pod-uid".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }]);
+
+        assert!(metadata_changed(&old, &new));
+    }
 }
