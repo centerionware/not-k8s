@@ -113,8 +113,8 @@ impl ClusterClient {
 
     async fn unary<Req, Res>(&mut self, request: Req, path: &'static str) -> Result<Res>
     where
-        Req: Message,
-        Res: Message + Default,
+        Req: Message + 'static,
+        Res: Message + Default + 'static,
     {
         self.grpc
             .ready()
@@ -125,7 +125,7 @@ impl ClusterClient {
             .unary(
                 Request::new(request),
                 http::uri::PathAndQuery::from_static(path),
-                tonic_prost::ProstCodec::default(),
+                tonic_prost::ProstCodec::<Req, Res>::default(),
             )
             .await
             .with_context(|| format!("calling nodestore membership RPC {path}"))?;
