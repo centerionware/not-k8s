@@ -25,14 +25,22 @@ pub(super) async fn node_is_ready_with_capacity_advertised(
         .iter()
         .any(|condition| condition.type_ == "Ready" && condition.status == "True");
     anyhow::ensure!(ready, "the test Node did not report Ready=True");
+    let capacity = status
+        .capacity
+        .as_ref()
+        .context("Node.status.capacity is missing")?;
+    let allocatable = status
+        .allocatable
+        .as_ref()
+        .context("Node.status.allocatable is missing")?;
     for resource in ["cpu", "memory", "pods", "ephemeral-storage"] {
         anyhow::ensure!(
-            status.capacity.contains_key(resource),
+            capacity.contains_key(resource),
             "Node.status.capacity is missing {resource}"
         );
     }
     anyhow::ensure!(
-        status.allocatable.get("ephemeral-storage") == status.capacity.get("ephemeral-storage"),
+        allocatable.get("ephemeral-storage") == capacity.get("ephemeral-storage"),
         "ephemeral-storage allocatable must equal capacity"
     );
     Ok(())
@@ -66,13 +74,11 @@ pub(super) async fn node_reports_real_kernel_and_os_image(
         .node_info
         .context("Node has no nodeInfo")?;
     anyhow::ensure!(
-        info.kernel_version
-            .as_deref()
-            .is_some_and(|value| !value.is_empty() && value != "unknown"),
+        !info.kernel_version.is_empty() && info.kernel_version != "unknown",
         "Node.status.nodeInfo.kernelVersion is empty or a placeholder"
     );
     anyhow::ensure!(
-        info.os_image.as_deref().is_some_and(|value| !value.is_empty()),
+        !info.os_image.is_empty(),
         "Node.status.nodeInfo.osImage is empty"
     );
     Ok(())
