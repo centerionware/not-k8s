@@ -249,11 +249,6 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
     let toolchain_bin = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&toolchain_bin).context("creating toolchain bin dir")?;
 
-    if !crate::pkg::command_exists("flanneld") {
-        let names = PkgNames { apt: "flannel", dnf: "flannel", pacman: "flannel", apk: "flannel", zypper: "flannel", xbps: "flannel" };
-        let _ = pkg_install("flannel", &names);
-    }
-
     // flanneld shells out to iptables for --ip-masq -- see cni.sh's comment
     // on why this bites Alpine specifically (no iptables in a base image).
     if !crate::pkg::command_exists("iptables") {
@@ -334,6 +329,7 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
         anyhow::ensure!(status.success(), "git clone flannel-io/flannel failed");
     }
     let mut command = std::process::Command::new("go");
+    let cgo_cflags = linux_uapi_cgo_flags(&compiler);
     command
         .args([
             "build",
@@ -346,6 +342,7 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
         ])
         .env("CGO_ENABLED", "1")
         .env("CC", &compiler)
+        .env("CGO_CFLAGS", cgo_cflags)
         .env("GOOS", "linux")
         .env("GOARCH", goarch)
         .current_dir(&flannel_dir);
@@ -363,6 +360,29 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
     crate::toolchain::put_toolchain_bin_on_path(cfg);
     tracing::info!("flanneld built from source");
     Ok(())
+}
+
+/// Debian's `musl-gcc` wrapper intentionally limits its system include path
+/// to musl's headers. Flannel's amd64 UDP backend also includes Linux UAPI
+/// headers (`linux/ip.h` and its architecture-specific `asm/` includes), so
+/// make those headers visible without putting glibc libraries or a glibc
+/// linker anywhere in the build. The compiler still controls the C runtime
+/// and the Go link step below still uses `-static`.
+fn linux_uapi_cgo_flags(compiler: &str) -> String {
+    let mut dirs = vec![std::path::PathBuf::from("/usr/include")];
+    if let Ok(output) = std::process::Command::new(compiler).arg("-print-multiarch").output() {
+        if output.status.success() {
+            let multiarch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !multiarch.is_empty() {
+                dirs.push(std::path::PathBuf::from("/usr/include").join(multiarch));
+            }
+        }
+    }
+    dirs.into_iter()
+        .filter(|dir| dir.is_dir())
+        .map(|dir| format!("-isystem {}", dir.display()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Deepest fallback: clone `flannel-io/cni-plugin` and run its own
