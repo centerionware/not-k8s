@@ -85,11 +85,16 @@ patch_hostpath_deploy_tooling() {
         return 1
     }
 
-    # Topology is GA/default in external-provisioner v6.3. WatchListClient
-    # needs to be off for this apiserver/backend pair; the sidecar then uses
-    # the standard LIST followed by WATCH path.
+    # Topology is GA/default in external-provisioner v6.3. WatchListClient is
+    # a client-go feature, not an external-provisioner feature-gate flag: the
+    # latter makes v6.3 exit immediately with status 255. Configure client-go
+    # through its supported environment variable so this apiserver/backend
+    # pair uses the standard LIST followed by WATCH path.
     sed -i \
-        's/--feature-gates=Topology=true/--feature-gates=WatchListClient=false/' \
+        '/^        - name: csi-provisioner$/a\\
+          env:\\
+            - name: KUBE_FEATURE_WatchListClient\\
+              value: "false"' \
         "$plugin_yaml"
 
     # kubectl's current kustomize rejects the upstream deploy script's
