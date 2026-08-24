@@ -402,7 +402,15 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_liveness_probes_own_grace_period_overrides_the_pods",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_startup_probe_gates_readiness_until_server_starts",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_startup_probe_gates_liveness_and_readiness",
         group: TestGroup::General,
     },
     TestCase {
@@ -932,8 +940,14 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_liveness_probe_failure_restarts_container" => {
             probes::liveness_probe_failure_restarts_container(context).await
         }
+        "test_liveness_probes_own_grace_period_overrides_the_pods" => {
+            probes::liveness_probe_uses_its_own_grace_period(context).await
+        }
         "test_startup_probe_gates_readiness_until_server_starts" => {
             probes::startup_probe_gates_readiness_until_server_starts(context).await
+        }
+        "test_startup_probe_gates_liveness_and_readiness" => {
+            probes::startup_probe_gates_liveness_and_readiness(context).await
         }
         "test_startup_probe_failure_past_threshold_restarts_the_container" => {
             probes::startup_probe_failure_past_threshold_restarts_the_container(context).await
