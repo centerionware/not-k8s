@@ -73,6 +73,7 @@ pub fn run_all() -> Result<()> {
     if !cfg.skip_nodelet {
         services::ensure_nodelet(&cfg)?;
         if !cfg.skip_control_plane && cfg.with_cri {
+            cni::wait_for_flannel_subnet(&cfg)?;
             targets::enable_nodelet_proxy(&cfg)?;
         }
     }
@@ -80,9 +81,6 @@ pub fn run_all() -> Result<()> {
         rbac::run_with(&cfg)?;
         services::ensure_nodescheduler(&cfg)?;
         services::ensure_nodecontroller(&cfg)?;
-        if cfg.with_cri {
-            cni::wait_for_flannel_subnet(&cfg)?;
-        }
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())
