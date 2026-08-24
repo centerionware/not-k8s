@@ -92,6 +92,55 @@ pub(super) async fn termination_message_path_is_read_back_into_status(
         .await
 }
 
+pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "stop-signal-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", "trap 'echo got-usr1 > /dev/termination-log; exit 7' USR1; sleep 3600"],
+                "lifecycle": {"stopSignal": "SIGUSR1"}
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("stop-signal Pod Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    pods.delete(name, &DeleteParams::default()).await?;
+    context
+        .wait_until(
+            "configured stop signal termination message",
+            Duration::from_secs(90),
+            || {
+                let context = context.clone();
+                async move {
+                    Ok(termination_message(&context, name)
+                        .await?
+                        .is_some_and(|message| message.trim() == "got-usr1"))
+                }
+            },
+        )
+        .await
+}
+
 pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -> Result<()> {
     let name = "prestop-hook";
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);

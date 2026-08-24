@@ -484,6 +484,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_lifecycle_stop_signal_is_honored_by_the_runtime",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_prestop_hook_runs_before_termination",
         group: TestGroup::General,
     },
@@ -966,6 +970,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_termination_message_path_is_read_back_into_status" => {
             hooks::termination_message_path_is_read_back_into_status(context).await
+        }
+        "test_lifecycle_stop_signal_is_honored_by_the_runtime" => {
+            hooks::lifecycle_stop_signal_is_honored_by_the_runtime(context).await
         }
         "test_prestop_hook_runs_before_termination" => {
             hooks::prestop_hook_runs_before_termination(context).await
