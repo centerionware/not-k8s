@@ -99,6 +99,53 @@ pub(super) async fn node_status_reports_runtime_handlers(context: &E2eContext) -
     Ok(())
 }
 
+pub(super) async fn node_status_images_reflects_a_real_pulled_image(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "node-status-images";
+    let pods: Api<k8s_openapi::api::core::v1::Pod> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: k8s_openapi::api::core::v1::Pod = serde_json::from_value(serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]}
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("image Pod Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    context
+        .wait_until("Node.status.images busybox entry", Duration::from_secs(90), || {
+            let nodes = nodes.clone();
+            async move {
+                Ok(nodes
+                    .list(&ListParams::default())
+                    .await?
+                    .items
+                    .into_iter()
+                    .flat_map(|node| node.status.and_then(|status| status.images).unwrap_or_default())
+                    .any(|image| {
+                        image.names.iter().any(|name| name.contains("busybox"))
+                            && image.size_bytes.is_some_and(|size| size > 0)
+                    }))
+            }
+        })
+        .await
+}
+
 pub(super) async fn node_gets_a_pod_cidr(context: &E2eContext) -> Result<()> {
     let nodes: Api<Node> = Api::all(context.client.clone());
     let suffix = std::time::SystemTime::now()

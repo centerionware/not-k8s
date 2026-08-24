@@ -25,3 +25,19 @@ pub(super) async fn pod_resources_socket_is_created_on_a_cri_node(
     );
     Ok(())
 }
+
+pub(super) async fn plugin_registry_directory_exists(_context: &E2eContext) -> Result<()> {
+    let path = std::env::var("NODELET_PLUGIN_REGISTRY_PATH")
+        .unwrap_or_else(|_| "/var/lib/nodelet/plugins_registry".to_string());
+    if path.is_empty() {
+        return Err(skip_test(
+            "NODELET_PLUGIN_REGISTRY_PATH is explicitly empty; plugin discovery is disabled",
+        ));
+    }
+    if !Path::new(&path).is_dir() {
+        return Err(skip_test(format!(
+            "plugin registry directory {path} does not exist on this deployment"
+        )));
+    }
+    Ok(())
+}

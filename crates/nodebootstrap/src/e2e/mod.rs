@@ -180,6 +180,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_node_status_images_reflects_a_real_pulled_image",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_node_gets_a_pod_cidr_allocated",
         group: TestGroup::General,
     },
@@ -273,6 +277,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_pod_resources_socket_is_created_on_a_cri_node",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_plugin_registry_directory_exists",
         group: TestGroup::General,
     },
     TestCase {
@@ -685,6 +693,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_node_status_reports_runtime_handlers" => {
             node_status::node_status_reports_runtime_handlers(context).await
         }
+        "test_node_status_images_reflects_a_real_pulled_image" => {
+            node_status::node_status_images_reflects_a_real_pulled_image(context).await
+        }
         "test_node_gets_a_pod_cidr_allocated" => node_status::node_gets_a_pod_cidr(context).await,
         "test_job_controller_runs_pods_to_completion" => {
             batch::job_controller_runs_pods_to_completion(context).await
@@ -752,6 +763,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_resources_socket_is_created_on_a_cri_node" => {
             pod_resources::pod_resources_socket_is_created_on_a_cri_node(context).await
+        }
+        "test_plugin_registry_directory_exists" => {
+            pod_resources::plugin_registry_directory_exists(context).await
         }
         "test_scheduler_places_an_ordinary_pod" => {
             scheduler::scheduler_places_an_ordinary_pod(context).await
