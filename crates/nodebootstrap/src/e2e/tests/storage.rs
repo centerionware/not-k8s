@@ -1,6 +1,6 @@
 use super::context::E2eContext;
 use anyhow::Result;
-use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim};
+use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod};
 use k8s_openapi::api::storage::v1::StorageClass;
 use kube::api::{Api, DeleteParams, PostParams};
 use serde_json::json;
@@ -105,5 +105,90 @@ pub(super) async fn pv_binder_requests_dynamic_provisioning_from_storage_class(
         .await;
     let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
     let _ = classes.delete(class, &DeleteParams::default()).await;
+    wait_result
+}
+
+pub(super) async fn pod_mounts_a_persistent_volume_claim(context: &E2eContext) -> Result<()> {
+    let class = "mounted-static-e2e-class";
+    let pv_name = "mounted-static-e2e-pv";
+    let pvc_name = "mounted-static-e2e-pvc";
+    let pod_name = "mounted-static-e2e-pod";
+    let host_path = format!("/tmp/nodebootstrap-e2e-pvc-{}", std::process::id());
+    std::fs::create_dir_all(&host_path)?;
+    std::fs::write(format!("{host_path}/marker"), "persistent-volume-marker")?;
+    let pvs: Api<PersistentVolume> = Api::all(context.client.clone());
+    let pv: PersistentVolume = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": pv_name},
+        "spec": {"capacity": {"storage": "10Mi"}, "accessModes": ["ReadWriteOnce"], "storageClassName": class, "persistentVolumeReclaimPolicy": "Delete", "hostPath": {"path": host_path}}
+    }))?;
+    pvs.create(&PostParams::default(), &pv).await?;
+    let pvcs: Api<PersistentVolumeClaim> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": pvc_name},
+        "spec": {"accessModes": ["ReadWriteOnce"], "storageClassName": class, "resources": {"requests": {"storage": "10Mi"}}}
+    }))?;
+    pvcs.create(&PostParams::default(), &pvc).await?;
+    let bind_result = context
+        .wait_until("PVC for mounted persistent volume", Duration::from_secs(90), || {
+            let pvcs = pvcs.clone();
+            async move {
+                Ok(pvcs
+                    .get(pvc_name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Bound"))
+            }
+        })
+        .await;
+    if let Err(error) = bind_result {
+        let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
+        let _ = pvs.delete(pv_name, &DeleteParams::default()).await;
+        let _ = std::fs::remove_dir_all(&host_path);
+        return Err(error);
+    }
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": pod_name},
+        "spec": {
+            "restartPolicy": "Never",
+            "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "cat /data/marker > /dev/termination-log"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}]
+        }
+    }))?;
+    let wait_result = async {
+        pods.create(&PostParams::default(), &pod).await?;
+        context
+            .wait_until("persistent volume claim mount", Duration::from_secs(120), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(pod_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.container_statuses)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|status| status.name == "app")
+                        .and_then(|status| status.state)
+                        .and_then(|state| state.terminated)
+                        .and_then(|terminated| terminated.message)
+                        .is_some_and(|message| message.trim() == "persistent-volume-marker"))
+                }
+            })
+            .await
+    }
+    .await;
+    let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
+    let _ = pvs.delete(pv_name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
     wait_result
 }

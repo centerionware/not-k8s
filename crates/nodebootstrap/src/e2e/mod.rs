@@ -503,6 +503,10 @@ const TESTS: &[TestCase] = &[
         name: "test_pv_binder_requests_dynamic_provisioning_from_storage_class",
         group: TestGroup::CsiDra,
     },
+    TestCase {
+        name: "test_pod_mounts_a_persistent_volume_claim",
+        group: TestGroup::CsiDra,
+    },
 ];
 
 /// Run the selected bootstrap-native checks without re-running installation
@@ -965,6 +969,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pv_binder_requests_dynamic_provisioning_from_storage_class" => {
             storage::pv_binder_requests_dynamic_provisioning_from_storage_class(context).await
+        }
+        "test_pod_mounts_a_persistent_volume_claim" => {
+            storage::pod_mounts_a_persistent_volume_claim(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
