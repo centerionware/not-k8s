@@ -332,6 +332,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_empty_dir_memory_is_backed_by_tmpfs",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_read_only_root_filesystem_blocks_writes",
         group: TestGroup::General,
     },
@@ -701,6 +705,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_aliases_are_written_to_etc_hosts" => {
             volumes::host_aliases_are_written_to_etc_hosts(context).await
+        }
+        "test_empty_dir_memory_is_backed_by_tmpfs" => {
+            volumes::empty_dir_memory_is_backed_by_tmpfs(context).await
         }
         "test_read_only_root_filesystem_blocks_writes" => {
             security::read_only_root_filesystem_blocks_writes(context).await

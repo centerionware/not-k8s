@@ -188,3 +188,27 @@ pub(super) async fn host_aliases_are_written_to_etc_hosts(context: &E2eContext) 
         })
         .await
 }
+
+pub(super) async fn empty_dir_memory_is_backed_by_tmpfs(context: &E2eContext) -> Result<()> {
+    let name = "emptydir-memory";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "cache", "emptyDir": {"medium": "Memory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "grep ' /cache ' /proc/mounts > /dev/termination-log"], "volumeMounts": [{"name": "cache", "mountPath": "/cache"}] }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("memory emptyDir mount", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.contains("tmpfs") && message.contains("/cache")))
+            }
+        })
+        .await
+}
