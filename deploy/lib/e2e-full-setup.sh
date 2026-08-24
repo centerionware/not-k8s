@@ -91,9 +91,9 @@ patch_hostpath_deploy_tooling() {
     # through its supported environment variable so this apiserver/backend
     # pair uses the standard LIST followed by WATCH path.
     sed -i \
-        '/^        - name: csi-provisioner$/a\\
-          env:\\
-            - name: KUBE_FEATURE_WatchListClient\\
+        '/^        - name: csi-provisioner$/a\
+          env:\
+            - name: KUBE_FEATURE_WatchListClient\
               value: "false"' \
         "$plugin_yaml"
 
