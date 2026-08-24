@@ -237,7 +237,7 @@ export INSTALL_K3S_EXEC="server \
     --cluster-cidr=$CLUSTER_CIDR \
     --service-cidr=$SERVICE_CIDR \
     --kube-controller-manager-arg=node-monitor-period=10s \
-    --kube-apiserver-arg=feature-gates=ServiceAccountTokenPodNodeInfo=true \
+    --kube-apiserver-arg=feature-gates=ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true \
     $KUBELET_CA_ARG \
     $DATASTORE_ARG \
     --write-kubeconfig-mode=0644"

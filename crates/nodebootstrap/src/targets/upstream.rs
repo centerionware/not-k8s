@@ -352,8 +352,10 @@ fn apiserver_args(spec: &TargetSpec, nodelet_ca: Option<&std::path::Path>) -> Ve
         "--allow-privileged=true".to_string(),
         "--anonymous-auth=false".to_string(),
         // The reference DRA driver's admission policy relies on the node
-        // name enrichment carried by projected ServiceAccount tokens.
-        "--feature-gates=ServiceAccountTokenPodNodeInfo=true".to_string(),
+        // name enrichment carried by projected ServiceAccount tokens. Device
+        // plugin health is reported through PodStatus.allocatedResourcesStatus,
+        // which is alpha and off by default in the v1.33 apiserver.
+        "--feature-gates=ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true".to_string(),
         "--v=1".to_string(),
     ];
     if let Some(path) = nodelet_ca {
@@ -392,6 +394,6 @@ mod tests {
         assert!(args.iter().any(|a| a == "--kubelet-client-key=/var/lib/nodebootstrap/pki/kube-apiserver.key"));
         assert!(args.iter().any(|a| a == "--kubelet-certificate-authority=/var/lib/nodelet/pki/server-ca.pem"));
         assert!(args.iter().any(|a| a == "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP"));
-        assert!(args.iter().any(|a| a == "--feature-gates=ServiceAccountTokenPodNodeInfo=true"));
+        assert!(args.iter().any(|a| a == "--feature-gates=ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true"));
     }
 }

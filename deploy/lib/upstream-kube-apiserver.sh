@@ -165,7 +165,7 @@ ExecStart=$APISERVER_BIN \\
     --enable-admission-plugins=NodeRestriction \\
     --allow-privileged=true \\
     --anonymous-auth=false \\
-    --feature-gates=ServiceAccountTokenPodNodeInfo=true \\
+    --feature-gates=ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true \\
     --v=1
 Restart=on-failure
 RestartSec=2
