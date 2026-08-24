@@ -33,6 +33,7 @@ Common commands after downloading the release binary:
 
 ```bash
 ./bootstrap                         # install or update the stack (CRI is the default)
+./bootstrap --without-cri           # opt out of containerd/CRI and use mock runtime
 ./bootstrap --release              # update from the latest published assets
 ./bootstrap --e2e                   # run bootstrap-native checks against the cluster
 ./bootstrap --e2e --only=node       # run one check by name substring
