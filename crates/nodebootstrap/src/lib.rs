@@ -9,6 +9,7 @@ pub mod config;
 pub mod containerd;
 pub mod cni;
 pub mod components;
+pub mod e2e;
 pub mod fetch;
 pub mod kubeconfig;
 pub mod manifests;
@@ -151,6 +152,11 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
         print_help();
         return Ok(());
     }
+    if command.e2e {
+        anyhow::ensure!(command.subcommand.is_none(), "--e2e cannot be combined with a subcommand");
+        return e2e::run(command.only.as_deref());
+    }
+    anyhow::ensure!(command.only.is_none(), "--only is only valid with --e2e");
     apply_root_reexec(args, embedded)?;
     dispatch(command.subcommand.as_deref())
 }
@@ -167,6 +173,8 @@ fn install_tls_provider() -> Result<()> {
 #[derive(Default)]
 struct ParsedArgs {
     subcommand: Option<String>,
+    e2e: bool,
+    only: Option<String>,
     help: bool,
 }
 
@@ -175,6 +183,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             parsed.help = true;
+            continue;
+        }
+        if arg == "--e2e" {
+            parsed.e2e = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--only=") {
+            anyhow::ensure!(!value.is_empty(), "--only requires a test name or substring");
+            parsed.only = Some(value.to_string());
             continue;
         }
         if arg == "--with-cri" {
@@ -343,6 +360,8 @@ fn print_help() {
     println!("  --layout=combined|split|both");
     println!("  --proxy=none           omit nodeproxy service");
     println!("  --cni=none             use an externally-managed CNI");
+    println!("  --e2e                  run bootstrap-native end-to-end checks");
+    println!("  --only=TEST[,TEST...]  select e2e tests by name substring");
     println!("  --skip-control-plane   only stage services against an existing cluster");
     println!("  --skip-nodelet         do not install nodelet");
     println!("  -h, --help             show this help");

@@ -144,10 +144,33 @@ former source script and can rebuild the installed binaries.  `--update` (or
 when its unit is refreshed.  The combined applet stages its own executable,
 so an already-installed release can rebuild or update itself.
 
+Common post-install commands are:
+
+```bash
+./bootstrap --e2e
+./bootstrap --e2e --only=node
+KUBECONFIG=/path/to/cluster.kubeconfig ./bootstrap --e2e
+```
+
+`--e2e` is a read-only bootstrap applet mode. It does not re-run installation,
+does not require k3s-specific paths or flags, and uses the Kubernetes Rust
+client directly. It prefers `$KUBECONFIG` and otherwise discovers the admin
+kubeconfig emitted under `/etc/nodebootstrap`. The initial checks are the
+0.7.1 migration seam; the remaining shell cases are converted into this
+runner incrementally under issue #242.
+
 ## Testing strategy
 
-Same shape as `deploy/lib/test/cases/datastore.sh` (drives the real gRPC API
-against a throwaway `nodestore`) and `APISERVER_PLAN.md`'s "getting signal
+The bootstrap applet's `--e2e` mode is the long-term runner. It drives the
+Kubernetes API directly through the Rust client so the same checks work on
+any cluster bootstrapped by the applet, without k3s-only flags or shell
+wrappers. The initial checks cover apiserver resource serving, node readiness,
+and the apiserver's reachable `default/kubernetes` endpoint; subsequent
+0.7.1 slices migrate the feature cases into the same registry.
+
+Until that migration is complete, the legacy suite remains available. It has
+the same shape as `deploy/lib/test/cases/datastore.sh` (drives the real gRPC
+API against a throwaway `nodestore`) and `APISERVER_PLAN.md`'s "getting signal
 earlier" rig: a case file in `deploy/lib/test/cases/*.sh` that runs
 `nodebootstrap` end to end — generate PKI, mint kubeconfig, install RBAC,
 stand up `nodestore` plus the upstream

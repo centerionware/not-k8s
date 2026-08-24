@@ -29,6 +29,21 @@ ln -s ./notk8s-0.7.0-linux-aarch64-release bootstrap
 ./bootstrap --with-cri
 ```
 
+Common commands after downloading the release binary:
+
+```bash
+./bootstrap --with-cri             # install or update the stack
+./bootstrap --release              # update from the latest published assets
+./bootstrap --e2e                   # run bootstrap-native checks against the cluster
+./bootstrap --e2e --only=node       # run one check by name substring
+```
+
+`--e2e` does not install or restart anything. It uses `$KUBECONFIG` when set,
+otherwise it discovers the admin kubeconfig written by nodebootstrap at
+`/etc/nodebootstrap/admin.kubeconfig` (or `NODEBOOTSTRAP_KUBECONFIG_DIR`).
+The e2e checks are being migrated from the legacy shell suite as part of the
+0.7.1 target in [issue #242](https://github.com/centerionware/not-k8s/issues/242).
+
 ## Scope
 
 most everything except apiserver (apiserver in progress)
