@@ -144,6 +144,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set",
         group: TestGroup::General,
     },
@@ -709,6 +713,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_crashing_container_restarts_and_increments_restart_count" => {
             pods::crashing_container_restarts(context).await
+        }
+        "test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed" => {
+            pods::pod_with_a_finalizer_tears_down_but_stays_until_removed(context).await
         }
         "test_pod_stays_not_ready_until_its_readiness_gate_condition_is_set" => {
             readiness_gates::pod_stays_not_ready_until_its_readiness_gate_condition_is_set(context).await

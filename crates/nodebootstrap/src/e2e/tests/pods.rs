@@ -1,7 +1,7 @@
 use super::context::E2eContext;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, PostParams};
+use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
 
@@ -226,6 +226,49 @@ pub(super) async fn crashing_container_restarts(context: &E2eContext) -> Result<
                     .first()
                     .is_some_and(|status| status.restart_count > 0))
             }
+        })
+        .await
+}
+
+pub(super) async fn pod_with_a_finalizer_tears_down_but_stays_until_removed(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "pod-finalizer-teardown";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name, "finalizers": ["nodebootstrap.e2e/finalizer"]},
+        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]}
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("finalizer Pod Running", Duration::from_secs(90), || {
+            pod_has_phase(context, name, "Running")
+        })
+        .await?;
+    pods.delete(name, &DeleteParams::default()).await?;
+    context
+        .wait_until("finalizer Pod to remain terminating", Duration::from_secs(30), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get_opt(name)
+                    .await?
+                    .is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()))
+            }
+        })
+        .await?;
+    pods.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({"metadata": {"finalizers": null}})),
+    )
+    .await?;
+    context
+        .wait_until("finalizer Pod deletion", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(name).await?.is_none()) }
         })
         .await
 }
