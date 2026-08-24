@@ -52,6 +52,8 @@ mod namespace;
 mod networking;
 #[path = "tests/lifecycle.rs"]
 mod lifecycle;
+#[path = "tests/metrics.rs"]
+mod metrics;
 #[path = "tests/pods.rs"]
 mod pods;
 #[path = "tests/process.rs"]
@@ -615,6 +617,18 @@ const TESTS: &[TestCase] = &[
         name: "test_kubectl_port_forward_reaches_a_real_container_port",
         group: TestGroup::General,
     },
+    TestCase {
+        name: "test_stats_summary_returns_real_pod_usage",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_metrics_resource_returns_real_pod_usage",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_metrics_cadvisor_returns_real_container_usage",
+        group: TestGroup::General,
+    },
 ];
 
 /// Run the selected bootstrap-native checks without re-running installation
@@ -1150,6 +1164,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_kubectl_port_forward_reaches_a_real_container_port" => {
             streaming::kubectl_port_forward_reaches_a_real_container_port(context).await
+        }
+        "test_stats_summary_returns_real_pod_usage" => {
+            metrics::stats_summary_returns_real_pod_usage(context).await
+        }
+        "test_metrics_resource_returns_real_pod_usage" => {
+            metrics::metrics_resource_returns_real_pod_usage(context).await
+        }
+        "test_metrics_cadvisor_returns_real_container_usage" => {
+            metrics::metrics_cadvisor_returns_real_container_usage(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
