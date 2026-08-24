@@ -372,6 +372,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_startup_probe_failure_past_threshold_restarts_the_container",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_http_get_readiness_probe_against_a_real_server",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_wrong_port_readiness_probe_keeps_pod_not_ready",
         group: TestGroup::General,
     },
@@ -844,6 +852,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_startup_probe_gates_readiness_until_server_starts" => {
             probes::startup_probe_gates_readiness_until_server_starts(context).await
+        }
+        "test_startup_probe_failure_past_threshold_restarts_the_container" => {
+            probes::startup_probe_failure_past_threshold_restarts_the_container(context).await
+        }
+        "test_http_get_readiness_probe_against_a_real_server" => {
+            probes::http_get_readiness_probe_against_a_real_server(context).await
         }
         "test_wrong_port_readiness_probe_keeps_pod_not_ready" => {
             probes::wrong_port_readiness_probe_keeps_pod_not_ready(context).await
