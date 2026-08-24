@@ -54,6 +54,8 @@ mod readiness_gates;
 mod replicaset;
 #[path = "tests/resource_quota.rs"]
 mod resource_quota;
+#[path = "tests/resources.rs"]
+mod resources;
 #[path = "tests/runtime_class.rs"]
 mod runtime_class;
 #[path = "tests/scheduler.rs"]
@@ -219,6 +221,18 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_resourcequota_used_pods_tracks_actual_pod_count",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_memory_limit_is_enforced_via_cgroup",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cpu_limit_is_enforced_via_cgroup",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_besteffort_pod_gets_no_cgroup_limit",
         group: TestGroup::General,
     },
     TestCase {
@@ -606,6 +620,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_resourcequota_used_pods_tracks_actual_pod_count" => {
             resource_quota::resourcequota_used_pods_tracks_actual_pod_count(context).await
+        }
+        "test_memory_limit_is_enforced_via_cgroup" => {
+            resources::memory_limit_is_enforced_via_cgroup(context).await
+        }
+        "test_cpu_limit_is_enforced_via_cgroup" => {
+            resources::cpu_limit_is_enforced_via_cgroup(context).await
+        }
+        "test_besteffort_pod_gets_no_cgroup_limit" => {
+            resources::besteffort_pod_gets_no_cgroup_limit(context).await
         }
         "test_endpointslice_is_produced_for_a_selected_pod" => {
             endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await
