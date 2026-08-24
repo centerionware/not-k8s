@@ -268,6 +268,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_scheduler_leaves_a_gated_pod_alone",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_ignores_a_pod_for_another_scheduler",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_restart_policy_never_exit_zero_is_succeeded",
         group: TestGroup::General,
     },
@@ -669,6 +677,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_leaves_an_impossible_selector_pending" => {
             scheduler::scheduler_leaves_an_impossible_selector_pending(context).await
+        }
+        "test_scheduler_leaves_a_gated_pod_alone" => {
+            scheduler::scheduler_leaves_a_gated_pod_alone(context).await
+        }
+        "test_scheduler_ignores_a_pod_for_another_scheduler" => {
+            scheduler::scheduler_ignores_a_pod_for_another_scheduler(context).await
         }
         "test_restart_policy_never_exit_zero_is_succeeded" => {
             lifecycle::restart_policy_never_exit_zero_is_succeeded(context).await

@@ -1,7 +1,7 @@
 use super::context::E2eContext;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod};
-use kube::api::{Api, ListParams, PostParams};
+use kube::api::{Api, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
@@ -119,4 +119,66 @@ pub(super) async fn scheduler_leaves_an_impossible_selector_pending(
             async move { Ok(pods.get(name).await?.spec.and_then(|spec| spec.node_name).is_none()) }
         })
         .await
+}
+
+pub(super) async fn scheduler_leaves_a_gated_pod_alone(context: &E2eContext) -> Result<()> {
+    let name = "scheduler-gated";
+    create_pod(
+        context,
+        name,
+        json!({
+            "schedulingGates": [{"name": "example.com/hold"}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+        }),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let gated = pods.get(name).await?;
+    anyhow::ensure!(
+        gated.spec.as_ref().and_then(|spec| spec.node_name).is_none(),
+        "a Pod with a scheduling gate was bound before the gate was removed"
+    );
+    anyhow::ensure!(
+        gated
+            .spec
+            .and_then(|spec| spec.scheduling_gates)
+            .is_some_and(|gates| !gates.is_empty()),
+        "the scheduler gate disappeared before the test removed it"
+    );
+    pods.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({"spec": {"schedulingGates": null}})),
+    )
+    .await?;
+    context
+        .wait_until("ungated Pod to be scheduled", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get(name).await?.spec.and_then(|spec| spec.node_name).is_some()) }
+        })
+        .await
+}
+
+pub(super) async fn scheduler_ignores_a_pod_for_another_scheduler(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "scheduler-other-scheduler";
+    create_pod(
+        context,
+        name,
+        json!({
+            "schedulerName": "not-k8s-e2e-other-scheduler",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+        }),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod = pods.get(name).await?;
+    anyhow::ensure!(
+        pod.spec.and_then(|spec| spec.node_name).is_none(),
+        "the configured scheduler bound a Pod assigned to another scheduler"
+    );
+    Ok(())
 }

@@ -1,6 +1,7 @@
 use super::context::E2eContext;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{EndpointSlice, Node, Pod, Service};
+use k8s_openapi::api::core::v1::{Node, Pod, Service};
+use k8s_openapi::api::discovery::v1::EndpointSlice;
 use kube::api::{Api, ListParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
