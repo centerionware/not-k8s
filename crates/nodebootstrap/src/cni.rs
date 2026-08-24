@@ -45,6 +45,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 
 fn start_flanneld(cfg: &Config) -> Result<()> {
     let flanneld_bin = resolve_executable("flanneld", cfg).context("resolving flanneld's absolute path")?;
+    let flanneld_bin_value = flanneld_bin.to_string_lossy().into_owned();
     let bootstrap_bin = std::env::current_exe().context("resolving nodebootstrap executable for flanneld")?;
     let command = service_command(&bootstrap_bin);
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string();
@@ -63,7 +64,7 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
             exec_cmd: &command,
             after: Some("kube-apiserver.service"),
             env: &[
-                ("NODEBOOTSTRAP_FLANNELD_BIN", &flanneld_bin),
+                ("NODEBOOTSTRAP_FLANNELD_BIN", &flanneld_bin_value),
                 ("NODEBOOTSTRAP_FLANNELD_NODE_NAME", &node_name),
                 ("KUBECONFIG", &kubeconfig),
                 ("NODEBOOTSTRAP_IP_FAMILY", &ip_family),
@@ -97,8 +98,13 @@ async fn run_flanneld_async(cfg: &Config) -> Result<()> {
     let mut pod_cidr = None;
     for _ in 0..30 {
         if let Ok(node) = nodes.get(&node_name).await {
-            if let Some(value) = node.spec.pod_cidr.filter(|value| !value.is_empty()) {
-                pod_cidr = Some(value);
+            if let Some(value) = node
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.pod_cidr.as_deref())
+                .filter(|value| !value.is_empty())
+            {
+                pod_cidr = Some(value.to_owned());
                 break;
             }
         }
@@ -174,7 +180,8 @@ fn default_interface() -> Option<String> {
             .args([family, "route", "show", "default"])
             .output()
             .ok()?;
-        let fields: Vec<_> = String::from_utf8_lossy(&output.stdout).split_whitespace().collect();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let fields: Vec<_> = stdout.split_whitespace().collect();
         fields.windows(2).find(|pair| pair[0] == "dev").map(|pair| pair[1].to_string())
     })
 }
