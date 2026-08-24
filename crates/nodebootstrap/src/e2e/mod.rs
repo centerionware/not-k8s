@@ -36,8 +36,12 @@ mod generic_ephemeral_volume;
 mod node_status;
 #[path = "tests/namespace.rs"]
 mod namespace;
+#[path = "tests/networking.rs"]
+mod networking;
 #[path = "tests/pods.rs"]
 mod pods;
+#[path = "tests/pod_resources.rs"]
+mod pod_resources;
 #[path = "tests/readiness_gates.rs"]
 mod readiness_gates;
 #[path = "tests/replicaset.rs"]
@@ -207,6 +211,18 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_network_pod_uses_the_node_network_namespace",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_port_reaches_the_container_on_the_node_ip",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_pod_resources_socket_is_created_on_a_cri_node",
         group: TestGroup::General,
     },
 ];
@@ -472,6 +488,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods" => {
             garbage_collection::garbage_collector_cascades_deployment_delete_to_replicaset_and_pods(context).await
+        }
+        "test_host_network_pod_uses_the_node_network_namespace" => {
+            networking::host_network_pod_uses_the_node_network_namespace(context).await
+        }
+        "test_host_port_reaches_the_container_on_the_node_ip" => {
+            networking::host_port_reaches_the_container_on_the_node_ip(context).await
+        }
+        "test_pod_resources_socket_is_created_on_a_cri_node" => {
+            pod_resources::pod_resources_socket_is_created_on_a_cri_node(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
