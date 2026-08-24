@@ -339,3 +339,88 @@ pub(super) async fn scheduler_honours_topology_spread(context: &E2eContext) -> R
     );
     Ok(())
 }
+
+pub(super) async fn scheduler_respects_a_taint_and_its_toleration(
+    context: &E2eContext,
+) -> Result<()> {
+    require_single_node(context).await?;
+    let node = first_node(context).await?;
+    let node_name = node
+        .metadata
+        .name
+        .clone()
+        .context("the Node has no name")?;
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let original_taints = serde_json::to_value(
+        node.spec
+            .as_ref()
+            .and_then(|spec| spec.taints.clone()),
+    )?;
+    let mut taints = original_taints.clone().as_array().cloned().unwrap_or_default();
+    taints.push(json!({
+        "key": "example.com/sched-test",
+        "value": "yes",
+        "effect": "NoSchedule"
+    }));
+    nodes
+        .patch(
+            &node_name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({"spec": {"taints": taints}})),
+        )
+        .await?;
+
+    let result = async {
+        let blocked = "scheduler-taint-blocked";
+        let tolerated = "scheduler-taint-tolerated";
+        create_pod(
+            context,
+            blocked,
+            json!({
+                "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+            }),
+        )
+        .await?;
+        create_pod(
+            context,
+            tolerated,
+            json!({
+                "tolerations": [{"key": "example.com/sched-test", "operator": "Equal", "value": "yes", "effect": "NoSchedule"}],
+                "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+            }),
+        )
+        .await?;
+        context
+            .wait_until("tolerating Pod to be scheduled", Duration::from_secs(60), || {
+                pod_is_scheduled(context, tolerated)
+            })
+            .await?;
+        anyhow::ensure!(
+            !pod_is_scheduled(context, blocked).await?,
+            "a Pod without a toleration was scheduled onto the tainted node"
+        );
+        nodes
+            .patch(
+                &node_name,
+                &PatchParams::default(),
+                &Patch::Merge(&json!({"spec": {"taints": original_taints.clone()}})),
+            )
+            .await?;
+        context
+            .wait_until("untolerating Pod to be scheduled after untaint", Duration::from_secs(60), || {
+                pod_is_scheduled(context, blocked)
+            })
+            .await
+    }
+    .await;
+
+    let restore = nodes
+        .patch(
+            &node_name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({"spec": {"taints": original_taints}})),
+        )
+        .await;
+    restore?;
+    result
+}

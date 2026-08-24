@@ -342,6 +342,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_scheduler_respects_a_taint_and_its_toleration",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_restart_policy_never_exit_zero_is_succeeded",
         group: TestGroup::General,
     },
@@ -882,6 +886,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_honours_topology_spread" => {
             scheduler::scheduler_honours_topology_spread(context).await
+        }
+        "test_scheduler_respects_a_taint_and_its_toleration" => {
+            scheduler::scheduler_respects_a_taint_and_its_toleration(context).await
         }
         "test_restart_policy_never_exit_zero_is_succeeded" => {
             lifecycle::restart_policy_never_exit_zero_is_succeeded(context).await
