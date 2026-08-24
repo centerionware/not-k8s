@@ -64,6 +64,8 @@ mod security;
 mod service_proxy;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
+#[path = "tests/storage.rs"]
+mod storage;
 #[path = "tests/volumes.rs"]
 mod volumes;
 
@@ -330,6 +332,14 @@ const TESTS: &[TestCase] = &[
     TestCase {
         name: "test_nodeport_service_is_reachable_on_the_node_ip",
         group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_pv_binder_requests_dynamic_provisioning_from_storage_class",
+        group: TestGroup::CsiDra,
     },
 ];
 
@@ -672,6 +682,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeport_service_is_reachable_on_the_node_ip" => {
             service_proxy::nodeport_service_is_reachable_on_the_node_ip(context).await
+        }
+        "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion" => {
+            storage::pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion(context).await
+        }
+        "test_pv_binder_requests_dynamic_provisioning_from_storage_class" => {
+            storage::pv_binder_requests_dynamic_provisioning_from_storage_class(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
