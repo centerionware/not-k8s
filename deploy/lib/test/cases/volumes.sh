@@ -53,7 +53,7 @@ test_configmap_volume_updates_live_without_pod_restart() {
     # count stays at 0 throughout.
     if ! node_uses_cri_runtime; then skip_test "needs cri runtime"; fi
     local name="cm-live-update"
-    kctl create configmap "$name-cm" --from-literal=greeting=hello >/dev/null
+    kctl create configmap "$name-cm" --save-config --from-literal=greeting=hello >/dev/null
     apply_manifest <<EOF
 apiVersion: v1
 kind: Pod
