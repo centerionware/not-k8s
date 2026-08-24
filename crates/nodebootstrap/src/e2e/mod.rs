@@ -18,8 +18,14 @@ use std::time::Instant;
 mod batch;
 #[path = "tests/bootstrap.rs"]
 mod bootstrap;
+#[path = "tests/build_layout.rs"]
+mod build_layout;
 #[path = "tests/context.rs"]
 mod context;
+#[path = "tests/cgroup.rs"]
+mod cgroup;
+#[path = "tests/component_rbac.rs"]
+mod component_rbac;
 #[path = "tests/csi.rs"]
 mod csi;
 #[path = "tests/daemonset.rs"]
@@ -113,6 +119,22 @@ struct TestCase {
 const TESTS: &[TestCase] = &[
     TestCase {
         name: "external_cni_mode_disables_flannel",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_combined_binary_contains_every_component",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_combined_binary_rejects_an_unknown_component",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_installed_component_binaries_are_runnable_whatever_the_layout",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_failing_component_says_why_before_it_exits",
         group: TestGroup::General,
     },
     TestCase {
@@ -269,6 +291,18 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_endpointslice_is_produced_for_a_selected_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_replacement_control_plane_identities_can_read_all_watch_inputs",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_node_allocatable_cgroup_exists_and_is_capped",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_pod_cgroup_reflects_its_qos_class",
         group: TestGroup::General,
     },
     TestCase {
@@ -738,6 +772,18 @@ fn test_names() -> Vec<&'static str> {
 async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
     match name {
         "external_cni_mode_disables_flannel" => bootstrap::external_cni_mode_disables_flannel(context).await,
+        "test_combined_binary_contains_every_component" => {
+            build_layout::combined_binary_contains_every_component(context).await
+        }
+        "test_combined_binary_rejects_an_unknown_component" => {
+            build_layout::combined_binary_rejects_an_unknown_component(context).await
+        }
+        "test_installed_component_binaries_are_runnable_whatever_the_layout" => {
+            build_layout::installed_component_binaries_are_runnable_whatever_the_layout(context).await
+        }
+        "test_a_failing_component_says_why_before_it_exits" => {
+            build_layout::a_failing_component_says_why_before_it_exits(context).await
+        }
         "apiserver_serves_resources" => apiserver_serves_resources(context.client.clone()).await,
         "node_is_ready" => node_is_ready(context.client.clone()).await,
         "kubernetes_service_has_reachable_endpoint" => {
@@ -844,6 +890,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_endpointslice_is_produced_for_a_selected_pod" => {
             endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await
+        }
+        "test_replacement_control_plane_identities_can_read_all_watch_inputs" => {
+            component_rbac::replacement_control_plane_identities_can_read_all_watch_inputs(context).await
+        }
+        "test_node_allocatable_cgroup_exists_and_is_capped" => {
+            cgroup::node_allocatable_cgroup_exists_and_is_capped(context).await
+        }
+        "test_pod_cgroup_reflects_its_qos_class" => {
+            cgroup::pod_cgroup_reflects_its_qos_class(context).await
         }
         "test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods" => {
             garbage_collection::garbage_collector_cascades_deployment_delete_to_replicaset_and_pods(context).await
