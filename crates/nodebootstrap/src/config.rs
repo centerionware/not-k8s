@@ -152,6 +152,7 @@ impl Config {
 
     pub fn worker_nodelet_kubeconfig(&self) -> std::path::PathBuf {
         std::env::var("NODELET_KUBECONFIG")
+            .ok()
             .filter(|path| !path.is_empty())
             .map(Into::into)
             .unwrap_or_else(|_| self.kubeconfig_dir().join("nodelet.kubeconfig"))
