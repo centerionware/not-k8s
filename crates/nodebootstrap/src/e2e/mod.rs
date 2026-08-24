@@ -440,6 +440,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_fsgroup_chowns_materialized_volumes",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_read_only_root_filesystem_blocks_writes",
         group: TestGroup::General,
     },
@@ -923,6 +927,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_path_directory_type_rejects_a_nonexistent_path" => {
             volumes::host_path_directory_type_rejects_a_nonexistent_path(context).await
+        }
+        "test_fsgroup_chowns_materialized_volumes" => {
+            volumes::fsgroup_chowns_materialized_volumes(context).await
         }
         "test_read_only_root_filesystem_blocks_writes" => {
             security::read_only_root_filesystem_blocks_writes(context).await

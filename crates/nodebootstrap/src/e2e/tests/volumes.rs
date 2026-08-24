@@ -423,3 +423,28 @@ pub(super) async fn host_path_directory_type_rejects_a_nonexistent_path(
     let _ = std::fs::remove_dir_all(&host_path);
     wait_result
 }
+
+pub(super) async fn fsgroup_chowns_materialized_volumes(context: &E2eContext) -> Result<()> {
+    let name = "fsgroup-emptydir";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "securityContext": {"fsGroup": 2000},
+            "volumes": [{"name": "data", "emptyDir": {}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "stat -c '%u:%g' /data > /dev/termination-log"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("fsGroup ownership on emptyDir", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "0:2000"))
+            }
+        })
+        .await
+}
