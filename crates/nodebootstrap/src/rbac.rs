@@ -137,6 +137,7 @@ const CONTROLLER_SA_NAMES: &[&str] = &[
     "pv-protection-controller",
     "root-ca-cert-publisher",
     "resource-claim-controller",
+    "ephemeral-volume-controller",
     "certificate-controller",
     "disruption-controller",
 ];

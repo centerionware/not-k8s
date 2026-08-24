@@ -29,7 +29,7 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, Resource, ResourceExt};
 use kube::api::{DynamicObject, TypeMeta};
-use kube::core::GroupVersionKind;
+use kube::core::{GroupVersionKind, PartialObjectMeta};
 use kube::discovery::ApiResource;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -384,6 +384,19 @@ shared_watch!(watch_jobs, SHARED_JOBS, Job);
 shared_watch!(watch_cron_jobs, SHARED_CRON_JOBS, CronJob);
 
 shared_watch!(watch_persistent_volume_claims, SHARED_PVCS, PersistentVolumeClaim);
+
+/// PVC consumers that only need existence and ownership must not deserialize
+/// the PVC spec/status on every CSI provisioning or status update. Keep this
+/// informer metadata-only; the API request's negotiated
+/// `PartialObjectMetadata` representation excludes the rest of the object.
+pub fn watch_persistent_volume_claim_metadata(
+    _client: &Client,
+) -> BoxStream<'static, watcher::Result<Event<PartialObjectMeta<PersistentVolumeClaim>>>> {
+    let api: Api<PartialObjectMeta<PersistentVolumeClaim>> = Api::all(base_client());
+    watcher(api, watch_config())
+        .backoff(WatchBackoffPolicy::default())
+        .boxed()
+}
 
 shared_watch!(watch_persistent_volumes, SHARED_PVS, PersistentVolume);
 

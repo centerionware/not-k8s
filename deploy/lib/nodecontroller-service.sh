@@ -222,7 +222,7 @@ NODECONTROLLER_SA_NAMES=(
     generic-garbage-collector job-controller cronjob-controller
     ttl-after-finished-controller attachdetach-controller
     persistent-volume-binder pv-protection-controller root-ca-cert-publisher
-    resource-claim-controller certificate-controller disruption-controller
+    resource-claim-controller ephemeral-volume-controller certificate-controller disruption-controller
 )
 
 # `sa apiGroup resource` triples -- see crates/nodebootstrap/src/rbac.rs's

@@ -501,11 +501,21 @@ are implemented and e2e-verified.
   targets. Not a gap, the same reasoning `CLAUDE.md`'s "confirmed genuinely
   NOT kubelet's job" list uses one layer up.
 
-## H. DRA-adjacent — Tier 2 — **ephemeral-volume-controller implemented; device-taint-eviction-controller scoped out**
+## H. Ephemeral volumes and DRA-adjacent controllers — Tier 2
 
-- `ephemeral-volume-controller` / `resourceclaim-controller`
+- `ephemeral-volume-controller`
+  (`crates/nodecontroller/src/controllers/ephemeral_volume.rs`,
+  **implemented**): watches Pods with
+  `spec.volumes[].ephemeral.volumeClaimTemplate`, creates the deterministic
+  Pod-owned PVC (`<pod-name>-<volume-name>`), and copies the template's
+  labels, annotations, and PVC spec. Existing same-named PVCs are never
+  adopted unless their controller owner is the exact Pod UID. Garbage
+  collection removes the claim with its Pod; nodelet then consumes it through
+  the ordinary PVC/CSI path. This is distinct from CSI inline volumes and
+  OCI image volumes, which have no PVC lifecycle here.
+- `resourceclaim-controller`
   (`crates/nodecontroller/src/controllers/resource_claim.rs`,
-  **implemented**): creates a `ResourceClaim` from a Pod's
+  **implemented**): creates a DRA `ResourceClaim` from a Pod's
   `spec.resourceClaims[].resourceClaimTemplateName` entries and records the
   generated name in `pod.status.resourceClaimStatuses`. Pairs directly with
   nodelet's existing `runtime/cri/claims.rs`'s `resource_claim_object_name()`,
