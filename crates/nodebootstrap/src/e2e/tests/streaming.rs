@@ -235,8 +235,7 @@ async fn port_forward_response(namespace: &str, name: &str) -> Result<String> {
     })
     .await;
     stop_child(&mut child).await;
-    response
-        .context("timed out waiting for kubectl port-forward to reach the container")??
+    Ok(response.context("timed out waiting for kubectl port-forward to reach the container")??)
 }
 
 pub(super) async fn kubectl_port_forward_reaches_a_real_container_port(
