@@ -18,6 +18,8 @@ use std::time::Instant;
 mod batch;
 #[path = "tests/context.rs"]
 mod context;
+#[path = "tests/csi.rs"]
+mod csi;
 #[path = "tests/daemonset.rs"]
 mod daemonset;
 #[path = "tests/disruption.rs"]
@@ -298,6 +300,14 @@ const TESTS: &[TestCase] = &[
     TestCase {
         name: "test_plugin_registry_directory_exists",
         group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_dynamic_csi_registration_is_visible_on_the_node",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_csi_ephemeral_inline_volume_is_mounted",
+        group: TestGroup::CsiDra,
     },
     TestCase {
         name: "test_scheduler_places_an_ordinary_pod",
@@ -838,6 +848,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_plugin_registry_directory_exists" => {
             pod_resources::plugin_registry_directory_exists(context).await
+        }
+        "test_dynamic_csi_registration_is_visible_on_the_node" => {
+            pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
+        }
+        "test_csi_ephemeral_inline_volume_is_mounted" => {
+            csi::csi_ephemeral_inline_volume_is_mounted(context).await
         }
         "test_scheduler_places_an_ordinary_pod" => {
             scheduler::scheduler_places_an_ordinary_pod(context).await
