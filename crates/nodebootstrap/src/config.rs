@@ -313,7 +313,7 @@ impl Config {
         let marker_exists = std::path::Path::new(&state_dir)
             .join(WITHOUT_FLANNEL_MARKER)
             .is_file();
-        let without_flannel = explicit_cni.as_deref() != Ok("flannel")
+        let without_flannel = !matches!(explicit_cni.as_deref(), Ok("flannel"))
             && (flag("NODEBOOTSTRAP_WITHOUT_FLANNEL") || (explicit_cni.is_err() && marker_exists));
         let cni_provider = match explicit_cni.as_deref() {
             Ok("none") => None,
