@@ -8,12 +8,17 @@
 //! runner.
 
 use anyhow::{bail, Context, Result};
-use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
-use kube::api::{Api, ListParams};
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
+use k8s_openapi::api::batch::v1::{CronJob, Job};
+use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node, Pod, ServiceAccount};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::Client;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use serde_json::json;
 use std::net::IpAddr;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use std::future::Future;
 
 const CSI_DRA_SHARDS: usize = 2;
 
@@ -33,7 +38,75 @@ const TESTS: &[TestCase] = &[
     TestCase { name: "apiserver_serves_resources", group: TestGroup::General },
     TestCase { name: "node_is_ready", group: TestGroup::General },
     TestCase { name: "kubernetes_service_has_reachable_endpoint", group: TestGroup::General },
+    TestCase { name: "test_job_controller_runs_pods_to_completion", group: TestGroup::General },
+    TestCase { name: "test_job_controller_fails_after_backoff_limit", group: TestGroup::General },
+    TestCase { name: "test_cronjob_controller_creates_a_job_on_schedule", group: TestGroup::General },
+    TestCase { name: "test_ttl_after_finished_controller_deletes_expired_jobs", group: TestGroup::General },
+    TestCase { name: "test_daemonset_places_a_pod_directly", group: TestGroup::General },
+    TestCase { name: "test_deployment_creates_replicaset_and_rolls_update", group: TestGroup::General },
+    TestCase { name: "test_replicaset_creates_and_scales_pods", group: TestGroup::General },
 ];
+
+#[derive(Clone)]
+struct E2eContext {
+    client: Client,
+    namespace: String,
+}
+
+impl E2eContext {
+    async fn create(client: Client) -> Result<Self> {
+        let namespace = format!("nodebootstrap-e2e-{}-{}", std::process::id(), unique_suffix());
+        let namespaces: Api<Namespace> = Api::all(client.clone());
+        namespaces
+            .create(
+                &PostParams::default(),
+                &Namespace {
+                    metadata: ObjectMeta { name: Some(namespace.clone()), ..Default::default() },
+                    ..Default::default()
+                },
+            )
+            .await
+            .with_context(|| format!("creating e2e namespace {namespace}"))?;
+
+        let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), &namespace);
+        Self::wait_until("the e2e namespace's default ServiceAccount", Duration::from_secs(30), || {
+            let service_accounts = service_accounts.clone();
+            async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+        })
+        .await?;
+
+        Ok(Self { client, namespace })
+    }
+
+    async fn wait_until<F, Fut>(description: &str, timeout: Duration, mut check: F) -> Result<()>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<bool>>,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if check().await? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for {description}");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    async fn cleanup(&self) {
+        let namespaces: Api<Namespace> = Api::all(self.client.clone());
+        let _ = namespaces.delete(&self.namespace, &DeleteParams::default()).await;
+    }
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
 
 /// Run the selected bootstrap-native checks without re-running installation
 /// or re-executing through sudo. This mode is deliberately safe to invoke on
@@ -56,6 +129,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     let client = Client::try_default()
         .await
         .context("loading the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first")?;
+    let context = E2eContext::create(client).await?;
 
     if let Some(shard) = shard {
         println!("bootstrap e2e: {} test(s), shard {shard}", selected.len());
@@ -67,7 +141,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     for name in selected {
         let started = Instant::now();
         print!("▶ {name} ... ");
-        match run_test(name, client.clone()).await {
+        match run_test(name, &context).await {
             Ok(()) => {
                 passed += 1;
                 println!("PASS ({}ms)", started.elapsed().as_millis());
@@ -80,6 +154,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
         }
     }
 
+    context.cleanup().await;
     if failures.is_empty() {
         println!("Results: {passed} passed, 0 failed");
         Ok(())
@@ -182,13 +257,282 @@ fn test_names() -> Vec<&'static str> {
     TESTS.iter().map(|test| test.name).collect()
 }
 
-async fn run_test(name: &str, client: Client) -> Result<()> {
+async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
     match name {
-        "apiserver_serves_resources" => apiserver_serves_resources(client).await,
-        "node_is_ready" => node_is_ready(client).await,
-        "kubernetes_service_has_reachable_endpoint" => kubernetes_service_has_reachable_endpoint(client).await,
+        "apiserver_serves_resources" => apiserver_serves_resources(context.client.clone()).await,
+        "node_is_ready" => node_is_ready(context.client.clone()).await,
+        "kubernetes_service_has_reachable_endpoint" => kubernetes_service_has_reachable_endpoint(context.client.clone()).await,
+        "test_job_controller_runs_pods_to_completion" => job_controller_runs_pods_to_completion(context).await,
+        "test_job_controller_fails_after_backoff_limit" => job_controller_fails_after_backoff_limit(context).await,
+        "test_cronjob_controller_creates_a_job_on_schedule" => cronjob_controller_creates_a_job_on_schedule(context).await,
+        "test_ttl_after_finished_controller_deletes_expired_jobs" => ttl_after_finished_controller_deletes_expired_jobs(context).await,
+        "test_daemonset_places_a_pod_directly" => daemonset_places_a_pod_directly(context).await,
+        "test_deployment_creates_replicaset_and_rolls_update" => deployment_creates_replicaset_and_rolls_update(context).await,
+        "test_replicaset_creates_and_scales_pods" => replicaset_creates_and_scales_pods(context).await,
         other => bail!("unknown bootstrap e2e test {other}"),
     }
+}
+
+async fn job_controller_runs_pods_to_completion(context: &E2eContext) -> Result<()> {
+    let name = "job-controller-completion";
+    let jobs: Api<Job> = Api::namespaced(context.client.clone(), &context.namespace);
+    let job: Job = serde_json::from_value(json!({
+        "apiVersion": "batch/v1", "kind": "Job",
+        "metadata": {"name": name},
+        "spec": {
+            "completions": 2, "parallelism": 2, "backoffLimit": 2,
+            "template": {"spec": {"restartPolicy": "Never", "containers": [{
+                "name": "busybox", "image": "busybox:latest", "command": ["sh", "-c", "exit 0"]
+            }]}}
+        }
+    }))?;
+    jobs.create(&PostParams::default(), &job).await.context("creating completion Job")?;
+    context
+        .wait_until("Job to report two succeeded Pods", Duration::from_secs(90), || {
+            let jobs = jobs.clone();
+            async move { Ok(jobs.get(name).await?.status.and_then(|status| status.succeeded) == Some(2)) }
+        })
+        .await?;
+    context
+        .wait_until("Job Complete=True", Duration::from_secs(30), || {
+            let jobs = jobs.clone();
+            async move {
+                Ok(jobs
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.conditions)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|condition| condition.type_ == "Complete" && condition.status == "True"))
+            }
+        })
+        .await?;
+    let _ = jobs.delete(name, &DeleteParams::default()).await;
+    Ok(())
+}
+
+async fn job_controller_fails_after_backoff_limit(context: &E2eContext) -> Result<()> {
+    let name = "job-controller-failure";
+    let jobs: Api<Job> = Api::namespaced(context.client.clone(), &context.namespace);
+    let job: Job = serde_json::from_value(json!({
+        "apiVersion": "batch/v1", "kind": "Job",
+        "metadata": {"name": name},
+        "spec": {
+            "backoffLimit": 0,
+            "template": {"spec": {"restartPolicy": "Never", "containers": [{
+                "name": "busybox", "image": "busybox:latest", "command": ["sh", "-c", "exit 1"]
+            }]}}
+        }
+    }))?;
+    jobs.create(&PostParams::default(), &job).await.context("creating failing Job")?;
+    context
+        .wait_until("Job Failed=True", Duration::from_secs(90), || {
+            let jobs = jobs.clone();
+            async move {
+                Ok(jobs
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.conditions)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|condition| condition.type_ == "Failed" && condition.status == "True"))
+            }
+        })
+        .await?;
+    let _ = jobs.delete(name, &DeleteParams::default()).await;
+    Ok(())
+}
+
+async fn cronjob_controller_creates_a_job_on_schedule(context: &E2eContext) -> Result<()> {
+    let name = "cronjob-controller";
+    let cronjobs: Api<CronJob> = Api::namespaced(context.client.clone(), &context.namespace);
+    let jobs: Api<Job> = Api::namespaced(context.client.clone(), &context.namespace);
+    let cronjob: CronJob = serde_json::from_value(json!({
+        "apiVersion": "batch/v1", "kind": "CronJob",
+        "metadata": {"name": name},
+        "spec": {
+            "schedule": "* * * * *", "concurrencyPolicy": "Allow",
+            "jobTemplate": {"spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{
+                "name": "busybox", "image": "busybox:latest", "command": ["sh", "-c", "exit 0"]
+            }]}}}}
+        }
+    }))?;
+    cronjobs.create(&PostParams::default(), &cronjob).await.context("creating CronJob")?;
+    context
+        .wait_until("CronJob to create a Job", Duration::from_secs(150), || {
+            let jobs = jobs.clone();
+            async move { Ok(!jobs.list(&ListParams::labels(&format!("cronjob-name={name}"))).await?.items.is_empty()) }
+        })
+        .await?;
+    context
+        .wait_until("CronJob lastScheduleTime", Duration::from_secs(30), || {
+            let cronjobs = cronjobs.clone();
+            async move { Ok(cronjobs.get(name).await?.status.and_then(|status| status.last_schedule_time).is_some()) }
+        })
+        .await?;
+    let _ = cronjobs.delete(name, &DeleteParams::default()).await;
+    let _ = jobs.delete_collection(&DeleteParams::default(), &ListParams::labels(&format!("cronjob-name={name}"))).await;
+    Ok(())
+}
+
+async fn ttl_after_finished_controller_deletes_expired_jobs(context: &E2eContext) -> Result<()> {
+    let name = "job-controller-ttl";
+    let jobs: Api<Job> = Api::namespaced(context.client.clone(), &context.namespace);
+    let job: Job = serde_json::from_value(json!({
+        "apiVersion": "batch/v1", "kind": "Job",
+        "metadata": {"name": name},
+        "spec": {
+            "ttlSecondsAfterFinished": 5, "backoffLimit": 0,
+            "template": {"spec": {"restartPolicy": "Never", "containers": [{
+                "name": "busybox", "image": "busybox:latest", "command": ["sh", "-c", "exit 0"]
+            }]}}
+        }
+    }))?;
+    jobs.create(&PostParams::default(), &job).await.context("creating TTL Job")?;
+    context
+        .wait_until("TTL Job Complete=True", Duration::from_secs(90), || {
+            let jobs = jobs.clone();
+            async move {
+                Ok(jobs
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.conditions)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|condition| condition.type_ == "Complete" && condition.status == "True"))
+            }
+        })
+        .await?;
+    context
+        .wait_until("TTL controller to delete the finished Job", Duration::from_secs(60), || {
+            let jobs = jobs.clone();
+            async move { Ok(jobs.get_opt(name).await?.is_none()) }
+        })
+        .await
+}
+
+async fn daemonset_places_a_pod_directly(context: &E2eContext) -> Result<()> {
+    let name = "daemonset-controller";
+    let daemonsets: Api<DaemonSet> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let node_name = nodes.list(&ListParams::default()).await?.items.into_iter().next().and_then(|node| node.metadata.name).context("finding a node for the DaemonSet")?;
+    let daemonset: DaemonSet = serde_json::from_value(json!({
+        "apiVersion": "apps/v1", "kind": "DaemonSet",
+        "metadata": {"name": name},
+        "spec": {"selector": {"matchLabels": {"app": name}}, "template": {
+            "metadata": {"labels": {"app": name}},
+            "spec": {"containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sleep", "3600"]}]}
+        }}
+    }))?;
+    daemonsets.create(&PostParams::default(), &daemonset).await.context("creating DaemonSet")?;
+    context
+        .wait_until("DaemonSet Pod to receive the node name", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            let node_name = node_name.clone();
+            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.into_iter().next().and_then(|pod| pod.spec.and_then(|spec| spec.node_name)) == Some(node_name)) }
+        })
+        .await?;
+    context
+        .wait_until("DaemonSet numberReady=1", Duration::from_secs(90), || {
+            let daemonsets = daemonsets.clone();
+            async move { Ok(daemonsets.get(name).await?.status.is_some_and(|status| status.number_ready == 1)) }
+        })
+        .await?;
+    context
+        .wait_until("DaemonSet desiredNumberScheduled=1", Duration::from_secs(30), || {
+            let daemonsets = daemonsets.clone();
+            async move { Ok(daemonsets.get(name).await?.status.is_some_and(|status| status.desired_number_scheduled == 1)) }
+        })
+        .await?;
+    let _ = daemonsets.delete(name, &DeleteParams::default()).await;
+    Ok(())
+}
+
+async fn deployment_creates_replicaset_and_rolls_update(context: &E2eContext) -> Result<()> {
+    let name = "deployment-controller";
+    let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
+    let replicasets: Api<ReplicaSet> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let deployment: Deployment = serde_json::from_value(json!({
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"name": name},
+        "spec": {"replicas": 2, "selector": {"matchLabels": {"app": name}}, "template": {
+            "metadata": {"labels": {"app": name}},
+            "spec": {"containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sleep", "3600"]}]}
+        }}
+    }))?;
+    deployments.create(&PostParams::default(), &deployment).await.context("creating Deployment")?;
+    context
+        .wait_until("Deployment to create one ReplicaSet", Duration::from_secs(60), || {
+            let replicasets = replicasets.clone();
+            async move { Ok(replicasets.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 1) }
+        })
+        .await?;
+    context
+        .wait_until("Deployment to create two Pods", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 2) }
+        })
+        .await?;
+    context
+        .wait_until("Deployment readyReplicas=2", Duration::from_secs(90), || {
+            let deployments = deployments.clone();
+            async move { Ok(deployments.get(name).await?.status.and_then(|status| status.ready_replicas) == Some(2)) }
+        })
+        .await?;
+    let patch = json!({"spec": {"template": {"spec": {"containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sleep", "7200"]}]}}}});
+    deployments.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await.context("patching Deployment template")?;
+    context
+        .wait_until("Deployment to create a second ReplicaSet", Duration::from_secs(90), || {
+            let replicasets = replicasets.clone();
+            async move { Ok(replicasets.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() >= 2) }
+        })
+        .await?;
+    context
+        .wait_until("Deployment to retain two Pods after rollout", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 2) }
+        })
+        .await
+}
+
+async fn replicaset_creates_and_scales_pods(context: &E2eContext) -> Result<()> {
+    let name = "replicaset-controller";
+    let replicasets: Api<ReplicaSet> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let replicaset: ReplicaSet = serde_json::from_value(json!({
+        "apiVersion": "apps/v1", "kind": "ReplicaSet",
+        "metadata": {"name": name},
+        "spec": {"replicas": 2, "selector": {"matchLabels": {"app": name}}, "template": {
+            "metadata": {"labels": {"app": name}},
+            "spec": {"containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sleep", "3600"]}]}
+        }}
+    }))?;
+    replicasets.create(&PostParams::default(), &replicaset).await.context("creating ReplicaSet")?;
+    context
+        .wait_until("ReplicaSet to create two Pods", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 2) }
+        })
+        .await?;
+    context
+        .wait_until("ReplicaSet readyReplicas=2", Duration::from_secs(90), || {
+            let replicasets = replicasets.clone();
+            async move { Ok(replicasets.get(name).await?.status.and_then(|status| status.ready_replicas) == Some(2)) }
+        })
+        .await?;
+    let patch = json!({"spec": {"replicas": 1}});
+    replicasets.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await.context("scaling ReplicaSet")?;
+    context
+        .wait_until("ReplicaSet to scale down to one Pod", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 1) }
+        })
+        .await
 }
 
 async fn apiserver_serves_resources(client: Client) -> Result<()> {
@@ -260,10 +604,11 @@ mod tests {
 
     #[test]
     fn general_tests_are_round_robined_across_five_shards() {
-        assert_eq!(select_tests(None, Some("1/5")).unwrap(), vec!["apiserver_serves_resources"]);
-        assert_eq!(select_tests(None, Some("2/5")).unwrap(), vec!["node_is_ready"]);
-        assert_eq!(select_tests(None, Some("3/5")).unwrap(), vec!["kubernetes_service_has_reachable_endpoint"]);
-        assert!(select_tests(None, Some("4/5")).unwrap().is_empty());
+        assert_eq!(select_tests(None, Some("1/5")).unwrap(), vec!["apiserver_serves_resources", "test_cronjob_controller_creates_a_job_on_schedule"]);
+        assert_eq!(select_tests(None, Some("2/5")).unwrap(), vec!["node_is_ready", "test_ttl_after_finished_controller_deletes_expired_jobs"]);
+        assert_eq!(select_tests(None, Some("3/5")).unwrap(), vec!["kubernetes_service_has_reachable_endpoint", "test_daemonset_places_a_pod_directly"]);
+        assert_eq!(select_tests(None, Some("4/5")).unwrap(), vec!["test_job_controller_runs_pods_to_completion", "test_deployment_creates_replicaset_and_rolls_update"]);
+        assert_eq!(select_tests(None, Some("5/5")).unwrap(), vec!["test_job_controller_fails_after_backoff_limit", "test_replicaset_creates_and_scales_pods"]);
     }
 
     #[test]
