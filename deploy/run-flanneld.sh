@@ -46,10 +46,18 @@ mkdir -p /etc/kube-flannel /run/flannel
 # node-IPAM/flannel dependency cycle.
 if [[ -n "${NODE_NAME:-}" ]]; then
     echo "==> waiting for nodecontroller to assign a PodCIDR to $NODE_NAME"
-    while ! pod_cidr="$(kubectl --kubeconfig "$KUBECONFIG" get node "$NODE_NAME" \
-        -o jsonpath='{.spec.podCIDR}' 2>/dev/null)" || [[ -z "$pod_cidr" ]]; do
+    pod_cidr=""
+    for _ in {1..30}; do
+        if pod_cidr="$(kubectl --kubeconfig "$KUBECONFIG" get node "$NODE_NAME" \
+            -o jsonpath='{.spec.podCIDR}' 2>/dev/null)" && [[ -n "$pod_cidr" ]]; then
+            break
+        fi
         sleep 2
     done
+    if [[ -z "$pod_cidr" ]]; then
+        echo "error: timed out waiting for PodCIDR: PATH=$PATH NODE_NAME=$NODE_NAME; check apiserver access and nodecontroller" >&2
+        exit 1
+    fi
     echo "==> node PodCIDR ready: $pod_cidr"
 fi
 

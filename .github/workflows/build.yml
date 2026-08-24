@@ -75,7 +75,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
       - name: cargo test (nodelet both feature sets, nodeproxy)
         # Under sudo for the same reason release.yml's own test step is:
@@ -174,7 +176,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Skip this architecture?
         id: want

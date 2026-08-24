@@ -60,7 +60,7 @@ EOF
     # earlier lines and remains connected.
     try_wait_until 40 bash -c "grep -q line-3 '$out_file' 2>/dev/null" || true
     pkill -f "kubectl.*logs -f $name" 2>/dev/null || true
-    if [[ -f "$out_file" ]] && grep -q "line-" "$out_file"; then
+    if [[ -f "$out_file" ]] && grep -q "line-" "$out_file" && grep -Eq "line-[2-8]" "$out_file"; then
         rm -f "$out_file"
     else
         rm -f "$out_file"
@@ -118,6 +118,7 @@ EOF
     rm -f "$out_file"
     delete_pod_if_exists "$name"
     assert_contains "$seen" "attach-line-" "kubectl attach produced no streamed output at all"
+    [[ "$seen" =~ attach-line-[2-8] ]] || die "kubectl attach disconnected after its first output line"
 }
 
 test_kubectl_port_forward_reaches_a_real_container_port() {

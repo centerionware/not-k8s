@@ -245,50 +245,18 @@ const NODECONTROLLER_READ_GRANTS: &[(&str, &str)] = &[
 /// is written. Starting either replacement control-plane component immediately
 /// after `kubectl apply` therefore produced a burst of legitimate-looking 403s
 /// during bootstrap, and some reflectors never recovered before the first CSI
-/// PVC arrived. Keep this list tied to the two base clients' actual watch sets
+/// PVC arrived. Derive this list from the two base clients' actual watch sets
 /// and wait until the authorizer answers yes before installing either service.
-const BASE_READ_CHECKS: &[(&str, &str, &str)] = &[
-    ("system:kube-scheduler", "", "namespaces"),
-    ("system:kube-scheduler", "", "nodes"),
-    ("system:kube-scheduler", "", "pods"),
-    ("system:kube-scheduler", "", "services"),
-    ("system:kube-scheduler", "", "replicationcontrollers"),
-    ("system:kube-scheduler", "", "persistentvolumes"),
-    ("system:kube-scheduler", "", "persistentvolumeclaims"),
-    ("system:kube-scheduler", "apps", "replicasets"),
-    ("system:kube-scheduler", "apps", "statefulsets"),
-    ("system:kube-scheduler", "policy", "poddisruptionbudgets"),
-    ("system:kube-scheduler", "storage.k8s.io", "storageclasses"),
-    ("system:kube-scheduler", "storage.k8s.io", "csinodes"),
-    ("system:kube-scheduler", "storage.k8s.io", "csidrivers"),
-    ("system:kube-scheduler", "storage.k8s.io", "csistoragecapacities"),
-    ("system:kube-scheduler", "storage.k8s.io", "volumeattachments"),
-    ("system:kube-scheduler", "resource.k8s.io", "deviceclasses"),
-    ("system:kube-scheduler", "resource.k8s.io", "resourceclaims"),
-    ("system:kube-scheduler", "resource.k8s.io", "resourceslices"),
-    ("system:kube-controller-manager", "", "namespaces"),
-    ("system:kube-controller-manager", "", "configmaps"),
-    ("system:kube-controller-manager", "", "nodes"),
-    ("system:kube-controller-manager", "", "pods"),
-    ("system:kube-controller-manager", "", "resourcequotas"),
-    ("system:kube-controller-manager", "", "services"),
-    ("system:kube-controller-manager", "", "serviceaccounts"),
-    ("system:kube-controller-manager", "", "replicationcontrollers"),
-    ("system:kube-controller-manager", "", "persistentvolumes"),
-    ("system:kube-controller-manager", "", "persistentvolumeclaims"),
-    ("system:kube-controller-manager", "apps", "deployments"),
-    ("system:kube-controller-manager", "apps", "replicasets"),
-    ("system:kube-controller-manager", "apps", "daemonsets"),
-    ("system:kube-controller-manager", "apps", "statefulsets"),
-    ("system:kube-controller-manager", "batch", "jobs"),
-    ("system:kube-controller-manager", "batch", "cronjobs"),
-    ("system:kube-controller-manager", "certificates.k8s.io", "certificatesigningrequests"),
-    ("system:kube-controller-manager", "coordination.k8s.io", "leases"),
-    ("system:kube-controller-manager", "policy", "poddisruptionbudgets"),
-    ("system:kube-controller-manager", "storage.k8s.io", "storageclasses"),
-    ("system:kube-controller-manager", "storage.k8s.io", "volumeattachments"),
-    ("system:kube-controller-manager", "resource.k8s.io", "resourceclaimtemplates"),
-];
+fn base_read_checks() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    NODESCHEDULER_READ_GRANTS
+        .iter()
+        .map(|&(group, resource)| ("system:kube-scheduler", group, resource))
+        .chain(
+            NODECONTROLLER_READ_GRANTS
+                .iter()
+                .map(|&(group, resource)| ("system:kube-controller-manager", group, resource)),
+        )
+}
 
 /// Supplements (does not replace) the built-in bootstrap roles -- see the
 /// findings in this module's doc comment. Separate ClusterRoles/Bindings
@@ -542,9 +510,9 @@ fn apply_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
 }
 
 fn verify_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
-    for &(identity, group, resource) in BASE_READ_CHECKS {
+    for (identity, group, resource) in base_read_checks() {
         let resource = if group.is_empty() {
-            (*resource).to_string()
+            resource.to_string()
         } else {
             format!("{resource}.{group}")
         };

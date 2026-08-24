@@ -16,11 +16,11 @@ export KUBECONFIG
 
 kubectl_cmd() {
     if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
-        kubectl --kubeconfig "$KUBECONFIG" "$@"
+        kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
     elif command -v sudo >/dev/null 2>&1; then
-        sudo kubectl --kubeconfig "$KUBECONFIG" "$@"
+        sudo kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
     else
-        kubectl --kubeconfig "$KUBECONFIG" "$@"
+        kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
     fi
 }
 

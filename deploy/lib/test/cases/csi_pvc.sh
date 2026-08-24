@@ -115,18 +115,33 @@ EOF
     fi
     assert_contains "$(cat "$marker_path")" "hello-from-csi-pvc" "marker file content"
 
-    # Round 34: Node.status.volumesInUse/volumesAttached — reuses this
-    # test's own already-mounted CSI volume rather than needing separate
-    # infrastructure. Real kubelet's unique-volume-name scheme is
-    # "kubernetes.io/csi/<driver>^<volumeHandle>"; the driver/handle
-    # aren't independently known to this bash test, so this checks for
-    # the expected prefix and the claim's PV name being present somewhere
-    # in the volume handle, rather than reconstructing the exact string.
-    local n
+    # Round 34: Node.status.volumesInUse/volumesAttached — reconstruct the
+    # exact unique-volume-name from this claim's bound PV. Real kubelet uses
+    # "kubernetes.io/csi/<driver>^<volumeHandle>"; accepting any CSI entry
+    # would allow a different mounted volume to make this assertion pass.
+    local n pv csi_driver volume_handle expected_volume
     n="$(node_name)"
-    if ! try_wait_until 120 bash -c "kubectl get node '$n' -o jsonpath='{.status.volumesInUse}' | grep -q 'kubernetes.io/csi/'"; then
+    if ! pv="$(kubectl get pvc "$claim" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.volumeName}')" || [[ -z "$pv" ]]; then
         delete_pod_and_pvc "$name" "$claim"
-        die "Node.status.volumesInUse never listed a CSI entry while the CSI-backed pod was running — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs"
+        die "the bound PV name was unavailable for PVC $claim"
+    fi
+    if ! csi_driver="$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.driver}')" || [[ -z "$csi_driver" ]]; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "the bound PV $pv did not expose a CSI driver"
+    fi
+    if ! volume_handle="$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}')" || [[ -z "$volume_handle" ]]; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "the bound PV $pv did not expose a CSI volume handle"
+    fi
+    expected_volume="kubernetes.io/csi/${csi_driver}^${volume_handle}"
+    volumes_in_use_contains_expected() {
+        local entries
+        entries="$(kubectl get node "$n" -o jsonpath='{range .status.volumesInUse[*]}{.}{"\n"}{end}' 2>/dev/null)" || return 1
+        grep -Fqx -- "$expected_volume" <<<"$entries"
+    }
+    if ! try_wait_until 120 volumes_in_use_contains_expected; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "Node.status.volumesInUse never listed $expected_volume while the CSI-backed pod was running — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs"
     fi
 
     delete_pod_and_pvc "$name" "$claim"

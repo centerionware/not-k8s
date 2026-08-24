@@ -75,7 +75,9 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Select non-empty shards
         id: plan
         env:
@@ -142,7 +144,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
 

@@ -527,8 +527,13 @@ test_scheduler_holds_the_leader_lease() {
     # starts, especially after another control-plane test has just recreated
     # the lease object.
     local first second
-    first="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)"
-    if ! try_wait_until 30 bash -c "[[ \"\$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)\" != \"$first\" ]]"; then
+    if ! first="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)" || [[ -z "$first" ]]; then
+        die "the kube-scheduler lease renewTime could not be read before polling"
+    fi
+    if ! try_wait_until 30 bash -c "
+        current=\$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null) &&
+        [[ -n \"\$current\" && \"\$current\" != \"$first\" ]]
+    "; then
         second="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)"
         die "the lease renewTime did not advance from '$first' (still '$second') — a stale lease means another replica will take over mid-flight"
     fi

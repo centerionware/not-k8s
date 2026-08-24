@@ -26,8 +26,8 @@ use anyhow::{bail, Context, Result};
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
-/// and nodecontroller -> CNI readiness -> apiserver network endpoint refresh
-/// -> nodescheduler and the remaining
+/// and nodecontroller -> nodescheduler -> CNI readiness -> apiserver network
+/// endpoint refresh -> the remaining
 /// replacement services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;

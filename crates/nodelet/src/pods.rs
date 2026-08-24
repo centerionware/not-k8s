@@ -357,19 +357,29 @@ impl PodController {
 
         info!(node = %self.node_name, "pod controller watching pods bound to this node");
 
+        // Device-health events are deliberately prioritized so an allocated
+        // device is not reported healthy for an unbounded time, but a
+        // continuously non-empty priority channel must not starve ordinary
+        // CRI, probe, or Kubernetes watch events.
+        const MAX_PRIORITY_BURST: u8 = 32;
+        let mut priority_burst = 0;
         loop {
             tokio::select! {
                 biased;
-                key = next_event(&mut priority_events) => {
+                key = next_event(&mut priority_events), if priority_burst < MAX_PRIORITY_BURST => {
+                    priority_burst += 1;
                     self.on_runtime_event(&key).await;
                 }
                 key = next_event(&mut events) => {
+                    priority_burst = 0;
                     self.on_runtime_event(&key).await;
                 }
                 key = next_event(&mut probe_events) => {
+                    priority_burst = 0;
                     self.on_runtime_event(&key).await;
                 }
                 item = stream.next() => {
+                    priority_burst = 0;
                     match item {
                         Some(Ok(ev)) => self.on_watch(ev).await,
                         Some(Err(e)) => warn!(error = ?e, "pod watch error; watcher will retry"),
@@ -381,6 +391,7 @@ impl PodController {
                     }
                 }
                 item = cm_stream.next() => {
+                    priority_burst = 0;
                     match item {
                         // Round 124 (found live in CI): `InitApply` is kube-rs's
                         // own marker for the watch's *initial* relist on
@@ -408,6 +419,7 @@ impl PodController {
                     }
                 }
                 item = sec_stream.next() => {
+                    priority_burst = 0;
                     match item {
                         // See the ConfigMap arm's own comment above — same
                         // "InitApply isn't a real change" reasoning applies
