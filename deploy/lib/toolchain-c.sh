@@ -127,7 +127,7 @@ ensure_c_toolchain() {
         return 0
     fi
     pkg_install "musl C toolchain" \
-        "musl-tools musl-dev" "musl-gcc musl-libc-devel" "musl" "musl-dev gcc" "musl-devel gcc" "musl-devel" \
+        "musl-tools musl-dev linux-libc-dev" "musl-gcc musl-libc-devel kernel-headers" "musl linux-api-headers" "musl-dev linux-headers gcc" "musl-devel kernel-headers gcc" "musl-devel linux-headers" \
         && compiler="$(find_musl_cc)" && { configure_musl_cargo "$compiler"; return 0; }
     if try_musl_cc_toolchain && compiler="$(find_musl_cc)"; then
         configure_musl_cargo "$compiler"

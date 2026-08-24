@@ -262,12 +262,12 @@ pub fn ensure_c_toolchain(cfg: &Config) -> Result<()> {
     }
 
     let names = PkgNames {
-        apt: "musl-tools musl-dev",
-        dnf: "musl-gcc musl-libc-devel",
-        pacman: "musl",
-        apk: "musl-dev gcc",
-        zypper: "musl-devel gcc",
-        xbps: "musl-devel",
+        apt: "musl-tools musl-dev linux-libc-dev",
+        dnf: "musl-gcc musl-libc-devel kernel-headers",
+        pacman: "musl linux-api-headers",
+        apk: "musl-dev linux-headers gcc",
+        zypper: "musl-devel kernel-headers gcc",
+        xbps: "musl-devel linux-headers",
     };
     if pkg_install("musl C toolchain", &names)? {
         put_toolchain_bin_on_path(cfg);
