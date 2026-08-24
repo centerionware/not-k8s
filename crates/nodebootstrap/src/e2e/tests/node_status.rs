@@ -1,7 +1,8 @@
 use super::context::E2eContext;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Node;
-use kube::api::{Api, ListParams};
+use kube::api::{Api, DeleteParams, ListParams, PostParams};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use std::time::Duration;
 
 async fn e2e_node(context: &E2eContext) -> Result<Node> {
@@ -100,21 +101,37 @@ pub(super) async fn node_status_reports_runtime_handlers(context: &E2eContext) -
 
 pub(super) async fn node_gets_a_pod_cidr(context: &E2eContext) -> Result<()> {
     let nodes: Api<Node> = Api::all(context.client.clone());
-    context
-        .wait_until("Node.spec.podCIDR", Duration::from_secs(90), || {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let name = format!("nodebootstrap-cidr-{}-{suffix}", std::process::id());
+    nodes
+        .create(
+            &PostParams::default(),
+            &Node {
+                metadata: ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await?;
+    let result = context
+        .wait_until("disposable Node.spec.podCIDR", Duration::from_secs(90), || {
             let nodes = nodes.clone();
+            let name = name.clone();
             async move {
                 Ok(nodes
-                    .list(&ListParams::default())
+                    .get(&name)
                     .await?
-                    .items
-                    .into_iter()
-                    .any(|node| {
-                        node.spec
-                            .and_then(|spec| spec.pod_cidr)
-                            .is_some_and(|cidr| !cidr.is_empty())
-                    }))
+                    .spec
+                    .and_then(|spec| spec.pod_cidr)
+                    .is_some_and(|cidr| !cidr.is_empty()))
             }
         })
-        .await
+        .await;
+    let _ = nodes.delete(&name, &DeleteParams::default()).await;
+    result
 }
