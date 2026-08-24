@@ -52,6 +52,61 @@ pub(super) async fn env_resource_field_ref_reports_the_containers_own_limits(
         .await
 }
 
+async fn oom_score(context: &E2eContext, name: &str, resources: serde_json::Value) -> Result<String> {
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "resources": resources,
+                "command": ["sh", "-c", "cat /proc/self/oom_score_adj > /dev/termination-log"]
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("Pod OOM score probe", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move { Ok(terminal_phase(&context, name).await? && termination_message(&context, name).await?.is_some()) }
+        })
+        .await?;
+    termination_message(context, name)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("OOM score probe terminated without a message"))
+}
+
+pub(super) async fn besteffort_pod_gets_the_certain_death_oom_score(
+    context: &E2eContext,
+) -> Result<()> {
+    let value = oom_score(context, "oom-score-besteffort", json!({})).await?;
+    anyhow::ensure!(
+        value.trim() == "1000",
+        "BestEffort oom_score_adj was {:?}, expected 1000",
+        value.trim()
+    );
+    Ok(())
+}
+
+pub(super) async fn guaranteed_pod_gets_the_protected_oom_score(
+    context: &E2eContext,
+) -> Result<()> {
+    let value = oom_score(
+        context,
+        "oom-score-guaranteed",
+        json!({"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "100m", "memory": "64Mi"}}),
+    )
+    .await?;
+    anyhow::ensure!(
+        value.trim() == "-998",
+        "Guaranteed oom_score_adj was {:?}, expected -998",
+        value.trim()
+    );
+    Ok(())
+}
+
 async fn terminal_phase(context: &E2eContext, name: &str) -> Result<bool> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods

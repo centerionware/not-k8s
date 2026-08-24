@@ -244,6 +244,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_besteffort_pod_gets_the_certain_death_oom_score",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_guaranteed_pod_gets_the_protected_oom_score",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_env_resource_field_ref_reports_the_containers_own_limits",
         group: TestGroup::General,
     },
@@ -764,6 +772,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_besteffort_pod_gets_no_cgroup_limit" => {
             resources::besteffort_pod_gets_no_cgroup_limit(context).await
+        }
+        "test_besteffort_pod_gets_the_certain_death_oom_score" => {
+            resources::besteffort_pod_gets_the_certain_death_oom_score(context).await
+        }
+        "test_guaranteed_pod_gets_the_protected_oom_score" => {
+            resources::guaranteed_pod_gets_the_protected_oom_score(context).await
         }
         "test_env_resource_field_ref_reports_the_containers_own_limits" => {
             resources::env_resource_field_ref_reports_the_containers_own_limits(context).await
