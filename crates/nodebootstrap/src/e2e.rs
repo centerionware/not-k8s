@@ -8,9 +8,9 @@
 //! runner.
 
 use anyhow::{bail, Context, Result};
-use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
-use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node, Pod, ServiceAccount};
+use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node, PersistentVolumeClaim, Pod, ServiceAccount};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::Client;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -45,6 +45,8 @@ const TESTS: &[TestCase] = &[
     TestCase { name: "test_daemonset_places_a_pod_directly", group: TestGroup::General },
     TestCase { name: "test_deployment_creates_replicaset_and_rolls_update", group: TestGroup::General },
     TestCase { name: "test_replicaset_creates_and_scales_pods", group: TestGroup::General },
+    TestCase { name: "test_statefulset_creates_ordinal_pods_and_scales_down_highest_first", group: TestGroup::General },
+    TestCase { name: "test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod", group: TestGroup::General },
 ];
 
 #[derive(Clone)]
@@ -69,16 +71,17 @@ impl E2eContext {
             .with_context(|| format!("creating e2e namespace {namespace}"))?;
 
         let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), &namespace);
-        Self::wait_until("the e2e namespace's default ServiceAccount", Duration::from_secs(30), || {
+        let context = Self { client, namespace };
+        context.wait_until("the e2e namespace's default ServiceAccount", Duration::from_secs(30), || {
             let service_accounts = service_accounts.clone();
             async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
         })
         .await?;
 
-        Ok(Self { client, namespace })
+        Ok(context)
     }
 
-    async fn wait_until<F, Fut>(description: &str, timeout: Duration, mut check: F) -> Result<()>
+    async fn wait_until<F, Fut>(&self, description: &str, timeout: Duration, mut check: F) -> Result<()>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<bool>>,
@@ -106,6 +109,10 @@ fn unique_suffix() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
+}
+
+fn labels(value: &str) -> ListParams {
+    ListParams::default().labels(value)
 }
 
 /// Run the selected bootstrap-native checks without re-running installation
@@ -269,6 +276,8 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_daemonset_places_a_pod_directly" => daemonset_places_a_pod_directly(context).await,
         "test_deployment_creates_replicaset_and_rolls_update" => deployment_creates_replicaset_and_rolls_update(context).await,
         "test_replicaset_creates_and_scales_pods" => replicaset_creates_and_scales_pods(context).await,
+        "test_statefulset_creates_ordinal_pods_and_scales_down_highest_first" => statefulset_creates_ordinal_pods_and_scales_down_highest_first(context).await,
+        "test_statefulset_with_a_volume_claim_template_creates_an_accepted_pod" => statefulset_with_a_volume_claim_template_creates_an_accepted_pod(context).await,
         other => bail!("unknown bootstrap e2e test {other}"),
     }
 }
@@ -363,7 +372,7 @@ async fn cronjob_controller_creates_a_job_on_schedule(context: &E2eContext) -> R
     context
         .wait_until("CronJob to create a Job", Duration::from_secs(150), || {
             let jobs = jobs.clone();
-            async move { Ok(!jobs.list(&ListParams::labels(&format!("cronjob-name={name}"))).await?.items.is_empty()) }
+            async move { Ok(!jobs.list(&labels(&format!("cronjob-name={name}"))).await?.items.is_empty()) }
         })
         .await?;
     context
@@ -373,7 +382,7 @@ async fn cronjob_controller_creates_a_job_on_schedule(context: &E2eContext) -> R
         })
         .await?;
     let _ = cronjobs.delete(name, &DeleteParams::default()).await;
-    let _ = jobs.delete_collection(&DeleteParams::default(), &ListParams::labels(&format!("cronjob-name={name}"))).await;
+    let _ = jobs.delete_collection(&DeleteParams::default(), &labels(&format!("cronjob-name={name}"))).await;
     Ok(())
 }
 
@@ -433,7 +442,7 @@ async fn daemonset_places_a_pod_directly(context: &E2eContext) -> Result<()> {
         .wait_until("DaemonSet Pod to receive the node name", Duration::from_secs(60), || {
             let pods = pods.clone();
             let node_name = node_name.clone();
-            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.into_iter().next().and_then(|pod| pod.spec.and_then(|spec| spec.node_name)) == Some(node_name)) }
+            async move { Ok(pods.list(&labels(&format!("app={name}"))).await?.items.into_iter().next().and_then(|pod| pod.spec.and_then(|spec| spec.node_name)) == Some(node_name)) }
         })
         .await?;
     context
@@ -469,13 +478,13 @@ async fn deployment_creates_replicaset_and_rolls_update(context: &E2eContext) ->
     context
         .wait_until("Deployment to create one ReplicaSet", Duration::from_secs(60), || {
             let replicasets = replicasets.clone();
-            async move { Ok(replicasets.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 1) }
+            async move { Ok(replicasets.list(&labels(&format!("app={name}"))).await?.items.len() == 1) }
         })
         .await?;
     context
         .wait_until("Deployment to create two Pods", Duration::from_secs(60), || {
             let pods = pods.clone();
-            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 2) }
+            async move { Ok(pods.list(&labels(&format!("app={name}"))).await?.items.len() == 2) }
         })
         .await?;
     context
@@ -489,13 +498,13 @@ async fn deployment_creates_replicaset_and_rolls_update(context: &E2eContext) ->
     context
         .wait_until("Deployment to create a second ReplicaSet", Duration::from_secs(90), || {
             let replicasets = replicasets.clone();
-            async move { Ok(replicasets.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() >= 2) }
+            async move { Ok(replicasets.list(&labels(&format!("app={name}"))).await?.items.len() >= 2) }
         })
         .await?;
     context
         .wait_until("Deployment to retain two Pods after rollout", Duration::from_secs(90), || {
             let pods = pods.clone();
-            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 2) }
+            async move { Ok(pods.list(&labels(&format!("app={name}"))).await?.items.len() == 2) }
         })
         .await
 }
@@ -516,7 +525,7 @@ async fn replicaset_creates_and_scales_pods(context: &E2eContext) -> Result<()> 
     context
         .wait_until("ReplicaSet to create two Pods", Duration::from_secs(60), || {
             let pods = pods.clone();
-            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 2) }
+            async move { Ok(pods.list(&labels(&format!("app={name}"))).await?.items.len() == 2) }
         })
         .await?;
     context
@@ -530,9 +539,111 @@ async fn replicaset_creates_and_scales_pods(context: &E2eContext) -> Result<()> 
     context
         .wait_until("ReplicaSet to scale down to one Pod", Duration::from_secs(60), || {
             let pods = pods.clone();
-            async move { Ok(pods.list(&ListParams::labels(&format!("app={name}"))).await?.items.len() == 1) }
+            async move { Ok(pods.list(&labels(&format!("app={name}"))).await?.items.len() == 1) }
         })
         .await
+}
+
+async fn statefulset_creates_ordinal_pods_and_scales_down_highest_first(context: &E2eContext) -> Result<()> {
+    let name = "statefulset-controller";
+    let statefulsets: Api<StatefulSet> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let statefulset: StatefulSet = serde_json::from_value(json!({
+        "apiVersion": "apps/v1", "kind": "StatefulSet",
+        "metadata": {"name": name}, "spec": {
+            "serviceName": name, "replicas": 2,
+            "selector": {"matchLabels": {"app": name}},
+            "template": {"metadata": {"labels": {"app": name}}, "spec": {
+                "containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sh", "-c", "sleep 15; touch /tmp/release; sleep 3600"],
+                    "readinessProbe": {"exec": {"command": ["test", "-f", "/tmp/release"]}, "periodSeconds": 1}]}
+            }}
+        }
+    }))?;
+    statefulsets.create(&PostParams::default(), &statefulset).await.context("creating StatefulSet")?;
+    context
+        .wait_until("StatefulSet ordinal zero", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(&format!("{name}-0")).await?.is_some()) }
+        })
+        .await?;
+    context
+        .wait_until("StatefulSet ordinal zero to be Running but initially unready", Duration::from_secs(30), || {
+            let pods = pods.clone();
+            async move {
+                let pod = pods.get(&format!("{name}-0")).await?;
+                let running = pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Running");
+                let ready = pod.status.and_then(|status| status.conditions).unwrap_or_default().iter().any(|condition| condition.type_ == "Ready" && condition.status == "True");
+                Ok(running && !ready)
+            }
+        })
+        .await?;
+    anyhow::ensure!(pods.get_opt(&format!("{name}-1")).await?.is_none(), "OrderedReady created ordinal one before ordinal zero became ready");
+    context
+        .wait_until("StatefulSet ordinal one after ordinal zero is ready", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(&format!("{name}-1")).await?.is_some()) }
+        })
+        .await?;
+    context
+        .wait_until("StatefulSet to report two ready replicas", Duration::from_secs(90), || {
+            let statefulsets = statefulsets.clone();
+            async move { Ok(statefulsets.get(name).await?.status.and_then(|status| status.ready_replicas) == Some(2)) }
+        })
+        .await?;
+    let patch = json!({"spec": {"replicas": 1}});
+    statefulsets.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await.context("scaling StatefulSet")?;
+    context
+        .wait_until("StatefulSet to delete the highest ordinal first", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(&format!("{name}-1")).await?.is_none()) }
+        })
+        .await?;
+    anyhow::ensure!(pods.get_opt(&format!("{name}-0")).await?.is_some(), "StatefulSet deleted ordinal zero instead of the highest ordinal");
+    let _ = statefulsets.delete(name, &DeleteParams::default()).await;
+    Ok(())
+}
+
+async fn statefulset_with_a_volume_claim_template_creates_an_accepted_pod(context: &E2eContext) -> Result<()> {
+    let name = "statefulset-controller-pvc";
+    let statefulsets: Api<StatefulSet> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(context.client.clone(), &context.namespace);
+    let statefulset: StatefulSet = serde_json::from_value(json!({
+        "apiVersion": "apps/v1", "kind": "StatefulSet",
+        "metadata": {"name": name}, "spec": {
+            "serviceName": name, "replicas": 1,
+            "selector": {"matchLabels": {"app": name}},
+            "template": {"metadata": {"labels": {"app": name}}, "spec": {
+                "containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}]
+            }},
+            "volumeClaimTemplates": [{"metadata": {"name": "data"}, "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "64Mi"}}}}]
+        }
+    }))?;
+    statefulsets.create(&PostParams::default(), &statefulset).await.context("creating StatefulSet with a volume claim template")?;
+    let pod_name = format!("{name}-0");
+    context
+        .wait_until("StatefulSet PVC-backed Pod", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            let pod_name = pod_name.clone();
+            async move { Ok(pods.get_opt(&pod_name).await?.is_some()) }
+        })
+        .await?;
+    let pod = pods.get(&pod_name).await?;
+    let volume = pod
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.volumes.as_ref())
+        .into_iter()
+        .flatten()
+        .find(|volume| volume.name == "data")
+        .context("StatefulSet Pod is missing the injected data volume")?;
+    anyhow::ensure!(
+        volume.persistent_volume_claim.as_ref().is_some_and(|claim| claim.claim_name == "data-statefulset-controller-pvc-0"),
+        "StatefulSet Pod volume must reference the generated data-statefulset-controller-pvc-0 claim"
+    );
+    let _ = statefulsets.delete(name, &DeleteParams::default()).await;
+    let _ = pvcs.delete_collection(&DeleteParams::default(), &ListParams::default()).await;
+    Ok(())
 }
 
 async fn apiserver_serves_resources(client: Client) -> Result<()> {
