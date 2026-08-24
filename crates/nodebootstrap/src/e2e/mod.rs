@@ -563,7 +563,16 @@ mod tests {
                 select_tests(None, Some(&shard)).unwrap()
             })
             .collect();
-        let selected_count: usize = shards.iter().map(Vec::len).sum();
+        let general_names: Vec<_> = TESTS
+            .iter()
+            .filter(|test| test.group == TestGroup::General)
+            .map(|test| test.name)
+            .collect();
+        let selected_count: usize = shards
+            .iter()
+            .flatten()
+            .filter(|name| general_names.contains(name))
+            .count();
         assert_eq!(
             selected_count,
             TESTS
