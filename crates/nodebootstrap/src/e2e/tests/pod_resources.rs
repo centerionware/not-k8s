@@ -76,8 +76,7 @@ pub(super) async fn dynamic_csi_registration_is_visible_on_the_node(
                     .get(&node_name)
                     .await?
                     .spec
-                    .map(|spec| spec.drivers)
-                    .unwrap_or_default()
+                    .drivers
                     .into_iter()
                     .any(|registered| registered.name == driver))
             }
