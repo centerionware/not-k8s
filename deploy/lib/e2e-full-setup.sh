@@ -20,6 +20,12 @@
 # transcribing by hand is the same lesson applied here to deployment
 # manifests, not just code.
 #
+# The one compatibility adjustment below is applied only to the downloaded
+# copy. Kubernetes 1.34's apiserver rejects the v6.3 sidecar's WatchList
+# requests with a retryable 429 while the replacement control plane's watch
+# caches are coming up. Normal LIST/WATCH is the supported fallback and keeps
+# the reference driver's real deploy script, RBAC, images, and probes intact.
+#
 # Assumes: a running not-k8s cluster (deploy/bootstrap-source.sh --with-cri
 # already ran), kubectl configured via $KUBECONFIG, and network access to
 # github.com/registry.k8s.io. Idempotent — safe to re-run against an
@@ -64,6 +70,47 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snaps
 # ── CSI: kubernetes-csi/csi-driver-host-path's own real deploy.sh ──────────
 log "fetching csi-driver-host-path..."
 git clone --depth 1 https://github.com/kubernetes-csi/csi-driver-host-path.git "$WORK_DIR/csi-driver-host-path"
+
+# Keep the upstream deployment authoritative while adapting the downloaded
+# manifest to this control plane's API compatibility and kubectl version.
+# This is intentionally a narrow text change in WORK_DIR, never a checked-in
+# copy of the driver's YAML.
+patch_hostpath_deploy_tooling() {
+    local driver_dir="$WORK_DIR/csi-driver-host-path/deploy/kubernetes-latest"
+    local plugin_yaml="$driver_dir/hostpath/csi-hostpath-plugin.yaml"
+    local deploy_sh="$driver_dir/deploy.sh"
+
+    [[ -f "$plugin_yaml" && -f "$deploy_sh" ]] || {
+        echo "hostpath deploy layout changed; refusing an unverified compatibility patch" >&2
+        return 1
+    }
+
+    # Topology is GA/default in external-provisioner v6.3. WatchListClient
+    # needs to be off for this apiserver/backend pair; the sidecar then uses
+    # the standard LIST followed by WATCH path.
+    sed -i \
+        's/--feature-gates=Topology=true/--feature-gates=WatchListClient=false/' \
+        "$plugin_yaml"
+
+    # kubectl's current kustomize rejects the upstream deploy script's
+    # deprecated commonLabels spelling. Preserve the same selector-inclusive
+    # labels using the current Kustomization form in the downloaded script.
+    sed -i \
+        -e 's/^commonLabels:$/labels:\n- pairs:/' \
+        -e '/^  app\.kubernetes\.io\// s/^  /    /' \
+        -e '/^    app\.kubernetes\.io\/part-of: csi-driver-host-path$/a\  includeSelectors: true' \
+        "$deploy_sh"
+
+    # Two containers expose a port named healthz. Kubernetes accepts the
+    # manifest but warns because port names must be unique within a Pod.
+    # Rename only the registrar's port and its matching probe.
+    sed -i \
+        -e '/- name: node-driver-registrar/,/- name: liveness-probe/ s/name: healthz/name: registrar-healthz/' \
+        -e '/- name: node-driver-registrar/,/- name: liveness-probe/ s/port: healthz/port: registrar-healthz/' \
+        "$plugin_yaml"
+}
+
+patch_hostpath_deploy_tooling
 
 log "deploying hostpath CSI driver (KUBELET_DATA_DIR=$NODELET_DATA_DIR)..."
 KUBELET_DATA_DIR="$NODELET_DATA_DIR" "$WORK_DIR/csi-driver-host-path/deploy/kubernetes-latest/deploy.sh"
@@ -140,9 +187,9 @@ EOF
     external_provisioner="system:serviceaccount:default:csi-hostpathplugin-sa"
     kubectl auth can-i get persistentvolumeclaims --as="$external_provisioner" 2>&1 || true
     kubectl auth can-i watch persistentvolumeclaims --as="$external_provisioner" 2>&1 || true
-    kubectl auth can-i get persistentvolumes --as="$external_provisioner" 2>&1 || true
-    kubectl auth can-i create persistentvolumes --as="$external_provisioner" 2>&1 || true
-    kubectl auth can-i get storageclasses --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i get persistentvolumes --all-namespaces --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i create persistentvolumes --all-namespaces --as="$external_provisioner" 2>&1 || true
+    kubectl auth can-i get storageclasses --all-namespaces --as="$external_provisioner" 2>&1 || true
     kubectl auth can-i get leases --namespace=default --as="$external_provisioner" 2>&1 || true
     prov_pod="$(kubectl get pods --all-namespaces --no-headers 2>/dev/null \
         | awk '$2 ~ /csi-hostpathplugin/ { print $1 "/" $2; exit }')"

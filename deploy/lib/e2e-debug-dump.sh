@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # e2e-debug-dump.sh — print everything needed to diagnose a stuck/failed
-# e2e run: node status/taints/conditions, disk space, and nodelet's own
-# service status + recent logs. Exists because the CSI/DRA reference
+# e2e run: node status/taints/conditions, disk space, and the replacement
+# control-plane/node services' status + recent logs. Exists because the CSI/DRA reference
 # drivers' own upstream deploy tooling only dumps *their* objects on
 # timeout (see e2e-full-setup.sh) — when the real problem is upstream of
 # that (the node never went Ready, a disk-pressure taint, nodelet crashed
@@ -61,6 +61,13 @@ echo "── flanneld.service logs (last 200 lines) ──"
 sudo journalctl -u flanneld.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
 
 echo ""
+echo "── nodeproxy.service ──"
+sudo systemctl status nodeproxy.service --no-pager -l 2>&1 || echo "(nodeproxy.service not found/not running)"
+echo ""
+echo "── nodeproxy.service logs (last 200 lines) ──"
+sudo journalctl -u nodeproxy.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
+
+echo ""
 # Only present when this deployment runs our scheduler (SCHEDULER=nodescheduler).
 # Worth dumping unconditionally rather than gating on it: when placement is
 # what broke, "the unit is not installed" is itself the answer, and the first
@@ -88,21 +95,15 @@ echo "── controller-manager lease ──"
 kubectl_cmd get lease kube-controller-manager -n kube-system -o yaml 2>&1 | head -30 || echo "(no controller-manager lease)"
 
 echo ""
-echo "── k3s.service ──"
-sudo systemctl status k3s.service --no-pager -l 2>&1 || echo "(k3s.service not found/not running)"
+echo "── kube-apiserver.service ──"
+sudo systemctl status kube-apiserver.service --no-pager -l 2>&1 || echo "(kube-apiserver.service not found/not running)"
 
 echo ""
-# k3s bundles kube-controller-manager (AttachDetachController et al) into
-# the same process/journal as everything else it stripped down to — there
-# is no separate unit to target. A stuck CSI attach (VolumeAttachment never
-# created, or created but never Attached) is invisible without this: the
-# nodelet/nodescheduler dumps above only show the two ends of that pipe,
-# never the controller in the middle. Grepped rather than dumped whole
-# because k3s's own log is dominated by apiserver audit/watch chatter —
-# unfiltered this would bury the one subsystem actually worth reading here
-# under everything else running in the same process.
-echo "── k3s.service logs: attach/detach + volume events (last 800 lines, filtered) ──"
-sudo journalctl -u k3s.service --no-pager -n 800 2>&1 \
+# A stuck CSI attach (VolumeAttachment never created, or created but never
+# Attached) is invisible without the controller journal: nodelet and the
+# scheduler show only the two ends of that pipe.
+echo "── nodecontroller.service logs: attach/detach + volume events (last 800 lines, filtered) ──"
+sudo journalctl -u nodecontroller.service --no-pager -n 800 2>&1 \
     | grep -iE "attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat" \
     || echo "(no matching lines in the last 800 — either nothing ran, or it's further back than this tail reaches)"
 
