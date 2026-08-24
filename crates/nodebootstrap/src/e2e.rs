@@ -148,7 +148,7 @@ async fn kubernetes_service_has_reachable_endpoint(client: Client) -> Result<()>
     let mut addresses = Vec::new();
     for subset in endpoints.subsets.unwrap_or_default() {
         for address in subset.addresses.unwrap_or_default() {
-            addresses.push(address.address);
+            addresses.push(address.ip);
         }
     }
 
