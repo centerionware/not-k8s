@@ -33,6 +33,7 @@ use std::sync::Mutex;
 /// an already-namespaced pod would come up in the *host* ID space
 /// instead of its isolated range (a real isolation regression, not just
 /// a bookkeeping one), and volume ownership would get chowned wrong.
+#[cfg(not(test))]
 const CHECKPOINT_DIR: &str = "/var/lib/nodelet/userns/allocations";
 
 pub struct UsernsAllocator {
@@ -45,12 +46,14 @@ pub struct UsernsAllocator {
 /// Duck-typed on-disk form of one claim — self-contained per the
 /// established sidecar-checkpoint convention, no cross-module type
 /// sharing.
+#[cfg(not(test))]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ClaimMeta {
     pod_uid: String,
     slot: u32,
 }
 
+#[cfg(not(test))]
 fn checkpoint_path(key: &str) -> std::path::PathBuf {
     // Pod UIDs are UUIDs and never contain '/', but sanitize defensively
     // anyway since this becomes a filename.

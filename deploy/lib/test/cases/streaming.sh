@@ -54,10 +54,13 @@ EOF
     local out_file="/tmp/nodelet-e2e-logs-follow-$$"
     (kctl logs -f "$name" > "$out_file" 2>/dev/null &)
     local follow_pid_check
-    try_wait_until 40 bash -c "grep -q line-3 '$out_file' 2>/dev/null" \
-        || warn "kubectl logs -f didn't show streamed output within 20s (may still be buffering)"
+    # The final assertion below is the real gate. Do not call a delayed but
+    # still-valid stream a warning: on a busy runner kubectl may not flush
+    # line 3 before this observation window even though it has already sent
+    # earlier lines and remains connected.
+    try_wait_until 40 bash -c "grep -q line-3 '$out_file' 2>/dev/null" || true
     pkill -f "kubectl.*logs -f $name" 2>/dev/null || true
-    if [[ -f "$out_file" ]] && grep -q "line-" "$out_file"; then
+    if [[ -f "$out_file" ]] && grep -q "line-" "$out_file" && grep -Eq "line-[2-8]" "$out_file"; then
         rm -f "$out_file"
     else
         rm -f "$out_file"
@@ -108,14 +111,14 @@ EOF
     wait_until 90 "$name Running" pod_is_phase "$name" Running
     local out_file="/tmp/nodelet-e2e-attach-$$"
     (kctl attach "$name" > "$out_file" 2>/dev/null &)
-    try_wait_until 40 bash -c "grep -q attach-line-3 '$out_file' 2>/dev/null" \
-        || warn "kubectl attach didn't show streamed output within 20s (may still be buffering)"
+    try_wait_until 40 bash -c "grep -q attach-line-3 '$out_file' 2>/dev/null" || true
     pkill -f "kubectl.*attach $name" 2>/dev/null || true
     local seen
     seen="$(cat "$out_file" 2>/dev/null)"
     rm -f "$out_file"
     delete_pod_if_exists "$name"
     assert_contains "$seen" "attach-line-" "kubectl attach produced no streamed output at all"
+    [[ "$seen" =~ attach-line-[2-8] ]] || die "kubectl attach disconnected after its first output line"
 }
 
 test_kubectl_port_forward_reaches_a_real_container_port() {

@@ -327,6 +327,10 @@ impl PodRuntime for CriRuntime {
         self.rx.lock().unwrap().take()
     }
 
+    fn take_priority_event_rx(&self) -> Option<UnboundedReceiver<String>> {
+        self.priority_rx.lock().unwrap().take()
+    }
+
     async fn exec(&self, namespace: &str, name: &str, container: &str, command: &[String]) -> Result<bool> {
         let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
             return Ok(false); // pod gone; nothing to exec into
@@ -591,4 +595,3 @@ pub(crate) fn rotate_log_file(path: &std::path::Path, max_files: u32) -> std::io
     std::fs::rename(path, rotated(1))?;
     Ok(())
 }
-

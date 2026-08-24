@@ -374,14 +374,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(rs))) | Some(Ok(Event::InitApply(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.insert(format!("{ns}/{}", rs.name_any()), rs);
-                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(*d) == ns) {
+                        for (key, _d) in deployments.iter().filter(|(_, d)| ns_of(*d) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.remove(&format!("{ns}/{}", rs.name_any()));
-                        for (key, d) in deployments.iter().filter(|(_, d)| ns_of(*d) == ns) {
+                        for (key, _d) in deployments.iter().filter(|(_, d)| ns_of(*d) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

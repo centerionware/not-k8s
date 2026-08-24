@@ -194,6 +194,7 @@ pub(crate) fn restart_count_key(sandbox_id: &str, container_name: &str) -> Strin
 }
 
 
+#[cfg(test)]
 pub(crate) fn restart_count_from(counts: &HashMap<String, u32>, sandbox_id: &str, container_name: &str) -> u32 {
     counts.get(&restart_count_key(sandbox_id, container_name)).copied().unwrap_or(0)
 }
@@ -220,8 +221,10 @@ pub(crate) fn clear_restart_counts_in(counts: &mut HashMap<String, u32>, sandbox
 /// `containerStatuses[].restartCount` unconditionally — a real, visible
 /// regression (`kubectl get pods`'s RESTARTS column dropping after a
 /// nodelet restart, not just an internal bookkeeping nicety).
+#[cfg(not(test))]
 const RESTART_COUNT_CHECKPOINT_DIR: &str = "/var/lib/nodelet/restart-counts";
 
+#[cfg(not(test))]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RestartCountMeta {
     sandbox_id: String,
@@ -229,6 +232,7 @@ struct RestartCountMeta {
     count: u32,
 }
 
+#[cfg(not(test))]
 fn restart_count_checkpoint_path(sandbox_id: &str, container_name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(RESTART_COUNT_CHECKPOINT_DIR)
         .join(format!("{sandbox_id}_{}.json", container_name.replace('/', "_")))

@@ -521,13 +521,22 @@ test_scheduler_holds_the_leader_lease() {
     assert_not_empty "$holder" \
         "nodescheduler must hold the kube-scheduler lease in kube-system while it is scheduling"
 
-    # It must actually be renewing it, not just have taken it once.
+    # It must actually be renewing it, not just have taken it once. Poll
+    # rather than taking one fixed-width sample: a fresh scheduler can be
+    # between its initial lease write and the first renewal when this test
+    # starts, especially after another control-plane test has just recreated
+    # the lease object.
     local first second
-    first="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)"
-    sleep 8
-    second="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)"
-    assert_not_eq "$first" "$second" \
-        "the lease renewTime must advance — a stale lease means another replica will take over mid-flight"
+    if ! first="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)" || [[ -z "$first" ]]; then
+        die "the kube-scheduler lease renewTime could not be read before polling"
+    fi
+    if ! try_wait_until 30 bash -c "
+        current=\$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null) &&
+        [[ -n \"\$current\" && \"\$current\" != \"$first\" ]]
+    "; then
+        second="$(kubectl get lease kube-scheduler -n kube-system -o jsonpath='{.spec.renewTime}' 2>/dev/null)"
+        die "the lease renewTime did not advance from '$first' (still '$second') — a stale lease means another replica will take over mid-flight"
+    fi
 }
 register_test test_scheduler_holds_the_leader_lease
 

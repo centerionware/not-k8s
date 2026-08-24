@@ -59,6 +59,10 @@ pub struct PodController {
     /// because build_pod_status() is a free function reachable from the
     /// detached schedule_retry() task too.
     health: HealthMap,
+    /// Device-health changes are kept separate from the ordinary CRI event
+    /// stream so `allocatedResourcesStatus` is refreshed promptly even when
+    /// many unrelated container events are queued.
+    priority_events: Option<UnboundedReceiver<String>>,
     /// One probe-supervisor task per pod key, so re-reconciling an
     /// unchanged pod doesn't spawn duplicates. Aborted on teardown.
     probe_tasks: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
@@ -237,6 +241,7 @@ impl PodController {
     pub fn new(client: Client, runtime: Arc<dyn PodRuntime>, node_name: String) -> Self {
         let host_ip = crate::node::detect_internal_ip();
         let events = runtime.take_event_rx();
+        let priority_events = runtime.take_priority_event_rx();
         let (probe_events_tx, probe_events_rx) = mpsc::unbounded_channel();
         Self {
             client,
@@ -247,6 +252,7 @@ impl PodController {
             probe_events_tx,
             probe_events_rx: Some(probe_events_rx),
             health: probes::new_health_map(),
+            priority_events,
             probe_tasks: Mutex::new(HashMap::new()),
             torn_down: Arc::new(Mutex::new(HashSet::new())),
             pod_refs: Mutex::new(HashMap::new()),
@@ -346,30 +352,46 @@ impl PodController {
             watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
         let mut events = self.events.take();
+        let mut priority_events = self.priority_events.take();
         let mut probe_events = self.probe_events_rx.take();
 
         info!(node = %self.node_name, "pod controller watching pods bound to this node");
 
+        // Device-health events are deliberately prioritized so an allocated
+        // device is not reported healthy for an unbounded time, but a
+        // continuously non-empty priority channel must not starve ordinary
+        // CRI, probe, or Kubernetes watch events.
+        const MAX_PRIORITY_BURST: u8 = 32;
+        let mut priority_burst = 0;
         loop {
             tokio::select! {
+                biased;
+                key = next_event(&mut priority_events), if priority_burst < MAX_PRIORITY_BURST => {
+                    priority_burst += 1;
+                    self.on_runtime_event(&key).await;
+                }
                 key = next_event(&mut events) => {
+                    priority_burst = 0;
                     self.on_runtime_event(&key).await;
                 }
                 key = next_event(&mut probe_events) => {
+                    priority_burst = 0;
                     self.on_runtime_event(&key).await;
                 }
                 item = stream.next() => {
+                    priority_burst = 0;
                     match item {
                         Some(Ok(ev)) => self.on_watch(ev).await,
                         Some(Err(e)) => warn!(error = ?e, "pod watch error; watcher will retry"),
                         None => {
                             warn!("pod watch stream ended; restarting");
-                            self.events = events; self.probe_events_rx = probe_events; // retain for the next run()
+                            self.events = events; self.priority_events = priority_events; self.probe_events_rx = probe_events; // retain for the next run()
                             return Ok(());
                         }
                     }
                 }
                 item = cm_stream.next() => {
+                    priority_burst = 0;
                     match item {
                         // Round 124 (found live in CI): `InitApply` is kube-rs's
                         // own marker for the watch's *initial* relist on
@@ -391,12 +413,13 @@ impl PodController {
                         Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
                         None => {
                             warn!("configmap watch stream ended; restarting");
-                            self.events = events; self.probe_events_rx = probe_events;
+                            self.events = events; self.priority_events = priority_events; self.probe_events_rx = probe_events;
                             return Ok(());
                         }
                     }
                 }
                 item = sec_stream.next() => {
+                    priority_burst = 0;
                     match item {
                         // See the ConfigMap arm's own comment above — same
                         // "InitApply isn't a real change" reasoning applies
@@ -405,7 +428,7 @@ impl PodController {
                         Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
                         None => {
                             warn!("secret watch stream ended; restarting");
-                            self.events = events; self.probe_events_rx = probe_events;
+                            self.events = events; self.priority_events = priority_events; self.probe_events_rx = probe_events;
                             return Ok(());
                         }
                     }

@@ -511,6 +511,27 @@ pub async fn push_status(
     let status = build_status(cfg, ready, extra_capacity, images, mounted_csi_volumes, runtime_handlers);
     let current_keys: std::collections::BTreeSet<String> = status.capacity.iter().flatten().map(|(k, _)| k.clone()).collect();
     let mut patch = serde_json::json!({ "status": status });
+    // JSON Merge Patch does not delete map keys that are absent from the new
+    // value. Device-plugin deregistration removes the resource from
+    // `extra_capacity`, so explicitly null any previously advertised
+    // extended-resource keys that are no longer present; otherwise a plugin
+    // that disappears can leave stale schedulable capacity on the Node
+    // forever. Read the current status only on this infrequent full-status
+    // path, not on lease renewal.
+    let current = api.get(&cfg.node_name).await?;
+    let mut stale_extended_resources = std::collections::BTreeSet::new();
+    for resources in [current.status.as_ref().and_then(|s| s.capacity.as_ref()), current.status.as_ref().and_then(|s| s.allocatable.as_ref())]
+        .into_iter()
+        .flatten()
+    {
+        for key in resources.keys().filter(|key| key.contains('/') && !current_keys.contains(*key)) {
+            stale_extended_resources.insert(key.clone());
+        }
+    }
+    for key in stale_extended_resources {
+        patch["status"]["capacity"][key.as_str()] = serde_json::Value::Null;
+        patch["status"]["allocatable"][key.as_str()] = serde_json::Value::Null;
+    }
     // Round 124: explicitly null out any hugepage size this kernel could
     // report but isn't reserved right now — see known_hugepage_suffixes()'s
     // own doc comment for why omission alone (what capacity_map() already

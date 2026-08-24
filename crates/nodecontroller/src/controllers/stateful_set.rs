@@ -443,14 +443,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
+                        for (key, _sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
+                        for (key, _sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
@@ -464,14 +464,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pvc))) | Some(Ok(Event::InitApply(pvc))) => {
                         let ns = ns_of(&pvc);
                         pvcs.insert(format!("{ns}/{}", pvc.name_any()), pvc);
-                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
+                        for (key, _sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pvc))) => {
                         let ns = ns_of(&pvc);
                         pvcs.remove(&format!("{ns}/{}", pvc.name_any()));
-                        for (key, sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
+                        for (key, _sts) in stateful_sets.iter().filter(|(_, sts)| ns_of(*sts) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

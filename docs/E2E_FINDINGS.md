@@ -1233,3 +1233,66 @@ found a real gap in the gate itself within one dispatch. The fix a
 plausible-looking failure suggests first (reorder the bootstrap) was the
 wrong one; reading the actual error against the actual retry semantics
 (`Restart=always`) found the real one (fix the check's timing) instead.
+
+### 24. Fixed: release run 50 started the reference drivers without proving
+the replacement control-plane read path or nodelet's DRA registration
+
+**Severity: high — four failures and a warning storm in the 0.7.0 release
+gate, fixed in the bootstrap and e2e harness.**
+
+Release pipeline run 50 (2026-08-23) failed in two independent ways. A CSI
+PVC stayed Pending long enough for `test_node_reports_volumes_in_use_for_a_csi_volume`
+to fail, and a DRA claim pod remained Pending because `nodescheduler` reported
+that no node had an available device. The same run logged repeated 403 watch
+errors for `system:kube-controller-manager` on PVCs and for
+`system:kube-scheduler` on CSI/DRA resources. Both replacement binaries were
+running, but their shared informer clients used base identities whose built-in
+bootstrap roles did not cover the unconditional watch set implemented by
+`nodecontroller/src/watch.rs` and `nodescheduler/src/watch.rs`.
+
+**Root cause and fix**: `nodebootstrap` now applies narrowly-scoped
+`get`/`list`/`watch` supplements for the exact PV/PVC, storage/CSI, and DRA
+resources each base identity reads. The shell bootstrap path applies the same
+roles before starting the services. Controller-specific writes remain on the
+existing impersonated ServiceAccount grants. An e2e RBAC test calls
+`kubectl auth can-i` for every grant so a future missing rule fails directly
+instead of surfacing as a provisioning timeout.
+
+The DRA setup had a second readiness gap: it checked for a ResourceSlice but
+did not prove that the fresh DRA registrar had registered with nodelet. After
+the driver pod was recreated, nodelet retained a dead registrar socket and
+repeatedly logged connection-refused warnings. The setup now removes only
+that driver's stale registration sockets and waits for a fresh nodelet
+`plugin registered` event before exporting the DRA test variables. It also
+creates a temporary PVC and requires it to become Bound before the CSI/DRA
+tests begin, turning the shared provisioning path into an explicit gate.
+
+Finally, the fake device-plugin test asserted `allocatedResourcesStatus` in
+the same instant the pod became Running. Allocation and the subsequent Pod
+status write are separate asynchronous events; the run-50 failure occurred
+after `Allocate()` had succeeded and the container had the expected device
+environment. The test now waits for the Healthy status entry before asserting
+it, and device-health notifications use a priority runtime-event channel so
+they cannot sit behind a busy CRI container-event queue.
+
+### 25. Fixed: nodebootstrap's flannel readiness barrier initially waited for
+the controller that allocates its prerequisite PodCIDR
+
+**Severity: bootstrap-fatal — found live while rerunning the run-50 focused
+e2e gate.**
+
+After the run-50 fixes moved the final apiserver restart ahead of the
+replacement control-plane services, the combined `nodebootstrap` path started
+`nodelet` and then waited for `/run/flannel/subnet.env` before starting
+`nodecontroller`. That cannot succeed: flannel's kube-subnet-manager needs a
+Node `spec.podCIDR`, and nodecontroller's node-ipam controller is what assigns
+that CIDR. Both focused shards failed after 30 seconds with no subnet file;
+this was a deterministic dependency cycle, not a flannel networking failure.
+
+**Fixed**: nodecontroller now starts immediately after the final apiserver
+restart and RBAC barrier, before the flannel wait. Nodescheduler remains after
+the wait so no workload is placed while CNI is still acquiring the subnet.
+The e2e failure dump now passes the nodebootstrap kubeconfig explicitly,
+falls back to sudo when the bootstrap ran as root, and includes flanneld's
+unit status/logs; the previous dump's `/etc/rancher/k3s` errors obscured this
+diagnosis.

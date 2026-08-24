@@ -35,7 +35,7 @@
 use anyhow::Result;
 use crate::workqueue::KeyedWorkQueue;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{Pod, ResourceQuota, Service};
+use k8s_openapi::api::core::v1::{Pod, ResourceQuota};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
@@ -43,6 +43,7 @@ use kube::{Client, ResourceExt};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
+#[cfg(test)]
 const SUPPORTED_KEYS: &[&str] = &["pods", "services"];
 
 fn counts_toward_pod_quota(pod: &Pod) -> bool {
@@ -69,7 +70,7 @@ pub fn compute_used(
         let count = match key.as_str() {
             "pods" => pod_count,
             "services" => service_count,
-            _ => continue, // not one of SUPPORTED_KEYS — left untracked, not guessed
+            _ => continue, // unsupported keys are left untracked, not guessed
         };
         used.insert(key.clone(), Quantity(count.to_string()));
     }

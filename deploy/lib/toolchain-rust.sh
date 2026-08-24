@@ -76,9 +76,8 @@ ensure_rust() {
             log "Rust present with static target $target: $(cargo --version)"
             return 0
         fi
-        warn "Rust is new enough but its static musl target is missing — installing $target."
-    fi
-    if command -v cargo &>/dev/null; then
+        log "Rust is new enough; installing its missing static musl target $target."
+    elif command -v cargo &>/dev/null; then
         warn "Found $(cargo --version) but this project needs >=1.$MIN_CARGO_MINOR — looking for a newer one."
     fi
 

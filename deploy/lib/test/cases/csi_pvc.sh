@@ -115,18 +115,31 @@ EOF
     fi
     assert_contains "$(cat "$marker_path")" "hello-from-csi-pvc" "marker file content"
 
-    # Round 34: Node.status.volumesInUse/volumesAttached — reuses this
-    # test's own already-mounted CSI volume rather than needing separate
-    # infrastructure. Real kubelet's unique-volume-name scheme is
-    # "kubernetes.io/csi/<driver>^<volumeHandle>"; the driver/handle
-    # aren't independently known to this bash test, so this checks for
-    # the expected prefix and the claim's PV name being present somewhere
-    # in the volume handle, rather than reconstructing the exact string.
-    local n volumes_in_use
+    # Round 34: Node.status.volumesInUse/volumesAttached — reconstruct the
+    # exact unique-volume-name from this claim's bound PV. Real kubelet uses
+    # "kubernetes.io/csi/<driver>^<volumeHandle>"; accepting any CSI entry
+    # would allow a different mounted volume to make this assertion pass.
+    local n pv csi_driver volume_handle expected_volume
     n="$(node_name)"
-    volumes_in_use="$(kubectl get node "$n" -o jsonpath='{.status.volumesInUse}')"
-    if [[ "$volumes_in_use" != *"kubernetes.io/csi/"* ]]; then
-        warn "Node.status.volumesInUse has no kubernetes.io/csi/ entry while a CSI volume is mounted — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs (round 34; not failing the test outright since the exact naming scheme is unvalidated against a real attach/detach controller)"
+    if ! pv="$(kubectl get pvc "$claim" -n "$TEST_NAMESPACE" -o jsonpath='{.spec.volumeName}')" || [[ -z "$pv" ]]; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "the bound PV name was unavailable for PVC $claim"
+    fi
+    if ! csi_driver="$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.driver}')" || [[ -z "$csi_driver" ]]; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "the bound PV $pv did not expose a CSI driver"
+    fi
+    if ! volume_handle="$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeHandle}')" || [[ -z "$volume_handle" ]]; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "the bound PV $pv did not expose a CSI volume handle"
+    fi
+    expected_volume="kubernetes.io/csi/${csi_driver}^${volume_handle}"
+    volumes_in_use_contains_expected() {
+        kubectl get node "$n" -o jsonpath='{.status.volumesInUse}' 2>/dev/null | grep -Fq -- "$expected_volume"
+    }
+    if ! try_wait_until 120 volumes_in_use_contains_expected; then
+        delete_pod_and_pvc "$name" "$claim"
+        die "Node.status.volumesInUse never listed $expected_volume while the CSI-backed pod was running — check mounted_csi_volumes()/csi_unique_volume_name() wiring in runtime/cri.rs and node.rs"
     fi
 
     delete_pod_and_pvc "$name" "$claim"
@@ -436,8 +449,13 @@ EOF
     # than cleanly reusing the volume. Wait for the OLD VolumeAttachment
     # to actually clear before creating pod2, not just for pod1's object.
     if [[ -n "$pv_name" ]]; then
-        try_wait_until 90 bash -c "[[ -z \"\$(kubectl get volumeattachments.storage.k8s.io -o jsonpath=\\\"{.items[?(@.spec.source.persistentVolumeName=='$pv_name')].metadata.name}\\\" 2>/dev/null)\" ]]" \
-            || warn "old VolumeAttachment for $pv_name didn't clear within 30s of pod1's deletion — proceeding anyway, pod2's own Running wait below is the real gate"
+        # The reference attacher can take several reconciliation rounds to
+        # delete the old object under a full-suite load. This is a readiness
+        # dependency for a clean reuse, not a diagnostic condition: pod2's
+        # own Running check below remains the behavioral gate if the driver
+        # takes longer than this generous wait.
+        try_wait_until 240 bash -c "[[ -z \"\$(kubectl get volumeattachments.storage.k8s.io -o jsonpath=\\\"{.items[?(@.spec.source.persistentVolumeName=='$pv_name')].metadata.name}\\\" 2>/dev/null)\" ]]" \
+            || true
     fi
 
     local second="fsgroup-policy-check-2"
@@ -446,17 +464,6 @@ EOF
         delete_pod_and_pvc "$second" "$claim"
         skip_test "second pod never reached Running reusing the same PVC + fsGroup"
     fi
-    # Temporary diagnostic (round 123): capture pod2's own state the
-    # MOMENT it's confirmed Running, immediately, before anything else —
-    # a prior run's kctl exec reported "pod not found" moments after this
-    # same check passed, and the CSI driver's own hostpath plugin was
-    # separately observed being torn down/restarted around the same
-    # window (losing its in-memory volume registry). This settles whether
-    # pod2 itself is unstable, or whether it's the CSI driver underneath
-    # it that's the real moving part.
-    warn "[diag] pod2 right after Running: $(kctl get pod "$second" -o wide 2>&1)"
-    warn "[diag] default-ns pods (CSI driver state): $(kubectl get pods -n default -o wide 2>&1)"
-
     # If OnRootMismatch's skip were somehow broken (e.g. it recursed
     # every time regardless of policy), this still wouldn't distinguish
     # "skipped" from "re-applied" from the outside without exec'ing in —
@@ -479,17 +486,6 @@ EOF
     # ('got 4322, want 4322' on a plain assert_eq was an earlier finding —
     # kctl exec's stream can carry a stray byte a raw capture doesn't
     # strip; tr -dc above already keeps only digits, sidestepping that.)
-    if [[ "$gid" != "4322" ]]; then
-        # Temporary diagnostic (round 123): found live in CI, not yet
-        # root-caused — print what's actually mounted and what nodelet's
-        # own fsGroup/CSI-mount code logged for this pod before cleanup
-        # destroys the evidence.
-        warn "[diag] /data on $second: $(kctl exec "$second" -- ls -la /data 2>&1)"
-        warn "[diag] /hostvol root on $second: $(kctl exec "$second" -- ls -la / 2>&1)"
-        warn "[diag] pod2 full status: $(kctl get pod "$second" -o json 2>&1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps(d.get("status",{}), indent=1))' 2>&1)"
-        warn "[diag] nodelet log mentioning $second, the claim, or CSI/mount activity:"
-        sudo journalctl -u nodelet --no-pager 2>/dev/null | grep -E "$second|$claim|skip_fs_group_change|fsGroup|chown|CSI|NodePublish|NodeStage|resolve_volumes|hostpath\.csi" | tail -50 | while IFS= read -r line; do warn "[diag]   $line"; done
-    fi
     delete_pod_and_pvc "$second" "$claim"
     assert_eq "$gid" "4322" "the second pod reusing the same PVC should still see fsGroup 4322 on /data, whether OnRootMismatch skipped the chown or not"
 }

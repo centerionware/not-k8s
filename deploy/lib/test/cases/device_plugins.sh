@@ -36,36 +36,29 @@ _fake_device_plugin_setup() {
     FDP_LOG="$FDP_WORK/plugin.log"
     FDP_PRESTART_LOG="$FDP_WORK/prestart.log"
     FDP_CONTROL_DIR="$FDP_WORK/control"
+    FDP_PYTHON="python3"
     sudo mkdir -p "$FDP_CONTROL_DIR"
     sudo touch "$FDP_PRESTART_LOG"
     sudo chmod 0666 "$FDP_PRESTART_LOG"
 
     if ! sudo python3 -c "import grpc" 2>/dev/null; then
         log "installing grpcio/grpcio-tools for the fake device plugin..."
-        # Round 124 (found live in CI): ubuntu-latest is now 24.04, which
-        # enforces PEP 668 "externally-managed-environment" — a bare `pip
-        # install` fails outright (not a network issue) unless told this is
-        # a throwaway CI runner, not a shared system Python. Safe here:
-        # this whole box is ephemeral per-run.
-        #
-        # --break-system-packages alone still wasn't enough — confirmed
-        # live: it got past PEP 668 only to hit a second, unrelated
-        # failure — "Cannot uninstall typing_extensions 4.10.0, RECORD
-        # file not found. Hint: The package was installed by debian."
-        # grpcio-tools pulls in typing_extensions as a dependency, and
-        # ubuntu-latest's image already has an apt/dpkg-installed copy
-        # with no pip-readable RECORD metadata, so pip refuses to
-        # uninstall it to upgrade. --ignore-installed is the standard fix
-        # for exactly this shape of error: it tells pip to shadow the
-        # existing install with its own instead of trying to remove it
-        # first.
-        sudo python3 -m pip install --quiet --break-system-packages --ignore-installed grpcio grpcio-tools \
+        # Keep the ephemeral test dependency out of the runner's system
+        # Python. Besides avoiding PEP 668 and distro-package collisions,
+        # this avoids pip's root-user warning on the release runner.
+        FDP_VENV="$FDP_WORK/venv"
+        python3 -m venv "$FDP_VENV" \
+            || skip_test "python3-venv is unavailable — can't create the fake device plugin's isolated environment"
+        FDP_PYTHON="$FDP_VENV/bin/python"
+        export PIP_CACHE_DIR="$FDP_WORK/pip-cache"
+        mkdir -p "$PIP_CACHE_DIR"
+        PIP_ROOT_USER_ACTION=ignore "$FDP_PYTHON" -m pip install --quiet grpcio grpcio-tools \
             || skip_test "couldn't install grpcio (no network access to PyPI?) — genuinely can't stand up a fake gRPC device plugin without it"
     fi
 
     log "generating gRPC stubs from the vendored proto files..."
     cp "$REPO_ROOT/crates/nodelet/proto/pluginregistration.proto" "$REPO_ROOT/crates/nodelet/proto/deviceplugin.proto" "$FDP_WORK/"
-    (cd "$FDP_WORK" && sudo python3 -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. pluginregistration.proto deviceplugin.proto) \
+    (cd "$FDP_WORK" && sudo "$FDP_PYTHON" -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. pluginregistration.proto deviceplugin.proto) \
         || skip_test "grpc_tools.protoc failed to generate stubs from the vendored proto files"
 
     cat > "$FDP_WORK/fake_device_plugin.py" <<'PYEOF'
@@ -158,7 +151,7 @@ server.wait_for_termination()
 PYEOF
 
     log "starting the fake device plugin (resource=$FDP_RESOURCE)..."
-    sudo python3 "$FDP_WORK/fake_device_plugin.py" "$FDP_SOCK" "$FDP_RESOURCE" "$FDP_CONTROL_DIR" > "$FDP_LOG" 2>&1 &
+    sudo "$FDP_PYTHON" "$FDP_WORK/fake_device_plugin.py" "$FDP_SOCK" "$FDP_RESOURCE" "$FDP_CONTROL_DIR" > "$FDP_LOG" 2>&1 &
     FDP_PID=$!
     if ! try_wait_until 40 bash -c "grep -q ready '$FDP_LOG' 2>/dev/null"; then
         cat "$FDP_LOG" 2>/dev/null || true
@@ -200,8 +193,8 @@ _fake_device_plugin_teardown() {
     # deregistering plugin). Waiting here for Node.status.capacity to
     # actually drop the resource closes that window — the next test starts
     # from a genuinely clean slate instead of racing this one's teardown.
-    try_wait_until 90 bash -c "! kctl get node -o jsonpath='{.items[0].status.capacity}' 2>/dev/null | grep -q 'fake\.example\.com/testdevice'" \
-        || warn "Node.status.capacity still listed fake.example.com/testdevice 90s after tearing down this test's fake plugin — the next device-plugin test may race a not-yet-deregistered leftover"
+    try_wait_until 180 bash -c "! kctl get node -o jsonpath='{.items[0].status.capacity}' 2>/dev/null | grep -q 'fake\.example\.com/testdevice'" \
+        || die "Node.status.capacity still listed fake.example.com/testdevice after tearing down this test's fake plugin — device-plugin deregistration did not reach the node status publisher"
     # Round 124: plain `rm -rf` here left a stream of "Permission denied"
     # noise on every run — the fake plugin itself and `grpc_tools.protoc`
     # both run under sudo (line ~161/56), so $FDP_WORK's __pycache__/*.pyc
@@ -246,6 +239,14 @@ EOF
     if ! wait_until 90 "$name Running" pod_is_phase "$name" Running; then
         delete_pod_if_exists "$name"
         die "pod requesting 1x $FDP_RESOURCE never reached Running — check nodelet's device-manager Allocate() wiring (device_plugins.rs / container_create.rs)"
+    fi
+    # Pod Running and allocatedResourcesStatus are separate asynchronous
+    # updates: container creation can complete before nodelet's next Pod
+    # status write includes the device health entry. Release run 50 hit that
+    # race even though Allocate() and the container env were correct.
+    if ! try_wait_until 30 bash -c "kctl get pod '$name' -o jsonpath='{.status.containerStatuses[0].allocatedResourcesStatus}' 2>/dev/null | grep -q Healthy"; then
+        delete_pod_if_exists "$name"
+        die "allocatedResourcesStatus never reported Healthy after the device-allocated pod reached Running"
     fi
     local env_val
     env_val="$(kctl exec "$name" -- sh -c 'echo $FAKE_DEVICE_IDS' 2>/dev/null)"

@@ -101,7 +101,14 @@ _apiserver_kill_strays() {
     pids="$(pgrep -af "nodestore" 2>/dev/null | awk '{print $1}' || true)"
     local pid
     for pid in $pids; do
-        if tr '\0' ' ' <"/proc/$pid/environ" 2>/dev/null | grep -q "NODESTORE_LISTEN=127.0.0.1:$NODESTORE_APISERVER_PORT"; then
+        # Processes owned by another user (including the runner's own
+        # service processes) can expose an unreadable environ under procfs.
+        # They cannot be this test's leftover: this test starts its datastore
+        # as the current user, so skip unreadable entries instead of letting
+        # the shell print a misleading permission warning for every PID.
+        if [[ -r "/proc/$pid/environ" ]] \
+            && tr '\0' ' ' <"/proc/$pid/environ" 2>/dev/null \
+            | grep -q "NODESTORE_LISTEN=127.0.0.1:$NODESTORE_APISERVER_PORT"; then
             kill -9 "$pid" 2>/dev/null
         fi
     done
@@ -278,7 +285,7 @@ test_apiserver_crud_round_trips_through_nodestore() {
     # compare-and-swap on the resourceVersion it read, so a store that got
     # modRevision wrong fails here and nowhere else.
     _kubectl_test create namespace nodestore-crud >/dev/null
-    _kubectl_test -n nodestore-crud create configmap probe --from-literal=k=v1 >/dev/null
+    _kubectl_test -n nodestore-crud create configmap probe --save-config --from-literal=k=v1 >/dev/null
     assert_eq "$(_kubectl_test -n nodestore-crud get configmap probe -o jsonpath='{.data.k}')" "v1" "value after create"
 
     local rv1 rv2

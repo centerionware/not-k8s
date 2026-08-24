@@ -25,7 +25,10 @@ use anyhow::{bail, Context, Result};
 
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
-/// rbac -> service-reconciler -> manifests -> nodelet TLS/CNI readiness.
+/// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
+/// and nodecontroller -> nodescheduler -> CNI readiness -> apiserver network
+/// endpoint refresh -> the remaining
+/// replacement services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
@@ -35,25 +38,20 @@ use anyhow::{bail, Context, Result};
 /// `services::ensure_nodestore` runs before `targets` -- `targets/
 /// upstream.rs` orders `kube-apiserver.service` `After=nodestore.service`,
 /// so nodestore has to actually be installed and enabled first.
-/// `nodescheduler`/`nodecontroller` run right after `targets` -- they
-/// *are* this project's kube-scheduler/kube-controller-manager
-/// replacements (`targets/upstream.rs` only installs `kube-apiserver` now;
-/// see that module's and `services.rs`'s doc comments), so they take the
-/// slot the upstream binaries used to occupy. `cni` deliberately runs
-/// **after** those, not before: `flanneld`'s kube-subnet-mgr mode needs a
-/// live kubeconfig pointed at a reachable apiserver, same ordering
-/// constraint `cni.sh`'s own `start_flanneld` comment documents
-/// ("flanneld needs a KUBECONFIG (control plane must be up first)").
 /// `targets::run_with` itself runs after `pki`/`kubeconfig` (it needs the
 /// minted PKI to start the apiserver trusting it) and before
 /// `service_reconciler`/`manifests` (both need a reachable apiserver to
-/// apply against). **`rbac` runs before `nodescheduler`, not after** --
-/// its `apply_nodescheduler_dra_grant` (see `rbac.rs`'s second finding)
-/// has to land before `nodescheduler` starts watching `resource.k8s.io`,
-/// or its reflector 403s in a retry loop before ever reaching the pod
-/// watch. `nodelet`/`nodeproxy` run last, after containerd/CNI/the
-/// apiserver/scheduler/controller-manager are all up -- same order
-/// `bootstrap-source.sh` uses today.
+/// apply against). `cni` runs after the apiserver is up because flanneld's
+/// kube-subnet-manager mode needs a live kubeconfig. Nodelet then generates
+/// its serving certificate; `targets::enable_nodelet_proxy` may restart the
+/// apiserver to trust that CA. The replacement scheduler/controller are
+/// deliberately installed only after that first planned restart and after
+/// the RBAC authorizer barrier. The scheduler must be running before the
+/// later network endpoint refresh: otherwise CoreDNS stays Pending and no
+/// CNI bridge is created for that refresh to discover. `nodecontroller` is
+/// the deliberate exception to the CNI barrier: its node-ipam controller
+/// allocates the PodCIDR that flanneld needs before it can lease this node a
+/// subnet.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
@@ -69,9 +67,6 @@ pub fn run_all() -> Result<()> {
     if !cfg.skip_control_plane {
         services::ensure_nodestore(&cfg)?;
         targets::run_with(&cfg)?;
-        rbac::run_with(&cfg)?;
-        services::ensure_nodescheduler(&cfg)?;
-        services::ensure_nodecontroller(&cfg)?;
         if cfg.with_cri {
             cni::run_with(&cfg)?;
         }
@@ -83,7 +78,15 @@ pub fn run_all() -> Result<()> {
         services::ensure_nodelet(&cfg)?;
         if !cfg.skip_control_plane && cfg.with_cri {
             targets::enable_nodelet_proxy(&cfg)?;
+        }
+    }
+    if !cfg.skip_control_plane {
+        rbac::run_with(&cfg)?;
+        services::ensure_nodecontroller(&cfg)?;
+        services::ensure_nodescheduler(&cfg)?;
+        if !cfg.skip_nodelet && cfg.with_cri {
             cni::wait_for_flannel_subnet(&cfg)?;
+            targets::refresh_network_advertise_address(&cfg)?;
         }
     }
     services::ensure_nodeproxy(&cfg)?;

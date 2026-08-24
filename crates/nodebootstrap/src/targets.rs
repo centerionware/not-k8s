@@ -34,3 +34,15 @@ pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
         Target::Upstream => upstream::enable_nodelet_proxy(cfg),
     }
 }
+
+/// Complete the network-dependent part of the apiserver handoff. The
+/// apiserver has to start before CNI can create `cni0`, so its first
+/// `--advertise-address` may necessarily be the loopback fallback. Once
+/// nodelet has started a pod and flannel has assigned the node a subnet,
+/// replace that fallback with the bridge gateway that in-cluster clients can
+/// actually reach.
+pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
+    match cfg.target {
+        Target::Upstream => upstream::refresh_network_advertise_address(cfg),
+    }
+}

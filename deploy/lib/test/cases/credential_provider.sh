@@ -86,11 +86,18 @@ test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull() {
         || die "containerd never came back up after the config.toml change"
 
     log "pushing $TEST_IMAGE into the local registry as $pushed_image..."
-    docker login "$reg_host" -u "$reg_user" -p "$reg_pass" >/dev/null
+    # Write the short-lived test credential directly in Docker's config
+    # format. This is equivalent to `docker login`, but avoids both the
+    # insecure-password CLI warning and Docker's unencrypted credential-store
+    # warning on runners that have no credential helper configured.
+    local docker_config auth
+    docker_config="$work_dir/docker"
+    mkdir -p "$docker_config"
+    auth="$(printf '%s:%s' "$reg_user" "$reg_pass" | base64 -w0)"
+    printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$reg_host" "$auth" > "$docker_config/config.json"
     docker pull "$TEST_IMAGE" >/dev/null
     docker tag "$TEST_IMAGE" "$pushed_image"
-    docker push "$pushed_image" >/dev/null
-    docker logout "$reg_host" >/dev/null 2>&1 || true
+    DOCKER_CONFIG="$docker_config" docker push "$pushed_image" >/dev/null
 
     # Negative control first: with NO credential provider configured, a
     # pull of this image must genuinely fail — proof the registry really

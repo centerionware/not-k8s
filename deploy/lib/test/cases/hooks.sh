@@ -60,7 +60,7 @@ spec:
             command: ["sh", "-c", "echo ran > /shared/prestop.txt"]
 EOF
     wait_until 90 "$name Running" pod_is_phase "$name" Running
-    kctl delete pod "$name" --wait=false >/dev/null
+    kctl delete pod "$name" --wait=false >/dev/null 2>&1
     local content
     content="$(wait_for_check_file "$name" shared prestop.txt 20)"
     assert_eq "$content" "ran" "preStop hook output"
@@ -98,7 +98,7 @@ EOF
     wait_until 90 "$name Running" pod_is_phase "$name" Running
     local start
     start=$(date +%s)
-    kctl delete pod "$name" --wait=false >/dev/null
+    kctl delete pod "$name" --wait=false >/dev/null 2>&1
     wait_until 60 "$name gone" pod_gone "$name"
     local elapsed=$(( $(date +%s) - start ))
     # Not a tight bound (scheduling/CRI overhead varies) — just proves this

@@ -23,6 +23,68 @@ NODESCHEDULER_UNIT_SYSTEMD=/etc/systemd/system/nodescheduler.service
 NODESCHEDULER_UNIT_OPENRC=/etc/init.d/nodescheduler
 NODESCHEDULER_SUPERVISOR_SCRIPT="$WORK_DIR/nodescheduler-supervisor.sh"
 
+# Shared informer inputs read directly as system:kube-scheduler by
+# nodescheduler's watch.rs. The upstream scheduler role is not sufficient
+# for this replacement's unconditional storage/CSI/DRA watch set. Keep this
+# in sync with crates/nodebootstrap/src/rbac.rs's
+# NODESCHEDULER_READ_GRANTS (Finding #5, release pipeline run 50).
+NODESCHEDULER_READ_GRANTS=(
+    "'' namespaces"
+    "'' nodes"
+    "'' pods"
+    "'' services"
+    "'' replicationcontrollers"
+    "'' persistentvolumes"
+    "'' persistentvolumeclaims"
+    "apps replicasets"
+    "apps statefulsets"
+    "policy poddisruptionbudgets"
+    "storage.k8s.io storageclasses"
+    "storage.k8s.io csinodes"
+    "storage.k8s.io csidrivers"
+    "storage.k8s.io csistoragecapacities"
+    "storage.k8s.io volumeattachments"
+    "resource.k8s.io deviceclasses"
+    "resource.k8s.io resourceclaims"
+    "resource.k8s.io resourceslices"
+)
+
+apply_nodescheduler_rbac() {
+    local entry group resource manifest="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:nodescheduler-dra
+rules:
+"
+    for entry in "${NODESCHEDULER_READ_GRANTS[@]}"; do
+        # shellcheck disable=SC2086 # deliberately word-split: "group resource"
+        set -- $entry
+        group="$1" resource="$2"
+        [[ "$group" == "''" ]] && group=""
+        manifest+="- apiGroups: [\"${group}\"]
+  resources: [\"${resource}\"]
+  verbs: [\"get\", \"list\", \"watch\"]
+"
+    done
+    manifest+="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:nodescheduler-dra
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:nodescheduler-dra
+subjects:
+- kind: User
+  name: system:kube-scheduler
+  apiGroup: rbac.authorization.k8s.io
+"
+    echo "$manifest" | kubectl apply -f - \
+        || die "applying nodescheduler's storage/CSI/DRA RBAC grant failed"
+}
+
 install_nodescheduler_service() {
     if command -v systemctl &>/dev/null; then
         install_nodescheduler_service_systemd

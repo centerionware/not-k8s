@@ -339,6 +339,7 @@ fn find_static_candidates(pvc: &crate::cache::storage::PvcInfo, snapshot: &Snaps
 /// here rather than lazily in `Filter`/`Reserve`. The first satisfying
 /// candidate wins per node; which one is arbitrary among ties, the same way
 /// `allocate_on_node`'s device picks are.
+#[cfg(test)]
 fn resolve_by_node(candidates: &[StaticCandidate], snapshot: &Snapshot) -> HashMap<String, String> {
     resolve_by_node_with_used(candidates, snapshot, &mut HashMap::new())
 }

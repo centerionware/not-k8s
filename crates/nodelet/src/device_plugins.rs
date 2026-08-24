@@ -158,12 +158,14 @@ fn is_valid_preferred_allocation(ids: &[String], devices: &[DeviceInfo], allocat
 /// "self-contained module, shared filesystem contract, no cross-module
 /// type coupling" precedent `csi.rs`'s own `MountMeta` sidecar already
 /// set for CSI volumes.
+#[cfg(not(test))]
 const DEVICE_ALLOC_CHECKPOINT_DIR: &str = "/var/lib/nodelet/device-plugins/allocations";
 
 /// The subset of `container_support.rs`'s `DeviceAllocMeta` fields this
 /// module actually needs — deserializing the exact same on-disk JSON,
 /// just ignoring `container_name`, which restoring `DevicePlugins`' own
 /// `allocated`/`owners` state has no use for.
+#[cfg(not(test))]
 #[derive(serde::Deserialize)]
 struct RestoredAllocation {
     resource_name: String,
@@ -203,10 +205,10 @@ pub struct DevicePlugins {
     /// (container_create.rs), cleared by `release()`.
     owners: Mutex<HashMap<(String, String), String>>,
     /// Poked with a pod key whenever an owned device's health changes —
-    /// the exact same general-purpose "something changed outside a watch
-    /// event, please re-sync this pod's status" channel `events_gc.rs`'s
-    /// CRI event loop already feeds into `pods.rs`'s `on_runtime_event()`
-    /// (see `CriRuntime::new()`, which clones its own `tx` into here).
+    /// the priority "something changed outside a watch event, please
+    /// re-sync this pod's status" channel that `pods.rs` services ahead of
+    /// the general CRI event queue, so a health transition is not delayed by
+    /// unrelated container churn.
     notify: UnboundedSender<String>,
 }
 
@@ -224,6 +226,15 @@ impl DevicePlugins {
         for id in device_ids {
             owners.insert((resource_name.to_string(), id.clone()), pod_key.to_string());
         }
+    }
+
+    /// Ask the pod controller to publish a status snapshot after a runtime
+    /// transition that does not necessarily produce a CRI event. This is
+    /// intentionally separate from `record_owner()`: allocation ownership is
+    /// recorded before the container starts, while the status snapshot must
+    /// not race that record or it can observe no allocated resources at all.
+    pub fn notify_pod_status(&self, pod_key: &str) {
+        let _ = self.notify.send(pod_key.to_string());
     }
 
     /// Register a device plugin and start tracking its device inventory.

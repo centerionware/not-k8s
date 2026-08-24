@@ -62,7 +62,7 @@ EOF
     wait_until 30 "namespace contents exist before deletion" \
         bash -c "kubectl get configmap must-be-cleaned -n '$ns' >/dev/null 2>&1"
 
-    kubectl delete namespace "$ns" --wait=false >/dev/null
+    kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1
 
     wait_until 120 "namespace-controller removes the namespaced object" \
         bash -c "! kubectl get configmap must-be-cleaned -n '$ns' >/dev/null 2>&1"

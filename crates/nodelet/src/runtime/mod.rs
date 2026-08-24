@@ -220,6 +220,14 @@ pub trait PodRuntime: Send + Sync {
     /// Returning `None` means the runtime produces no async events.
     fn take_event_rx(&self) -> Option<UnboundedReceiver<String>>;
 
+    /// Take the higher-priority event channel for runtime changes that must
+    /// update Pod status promptly even when the ordinary CRI event stream is
+    /// busy with unrelated container activity. The default is `None` for
+    /// runtimes that have no such event source.
+    fn take_priority_event_rx(&self) -> Option<UnboundedReceiver<String>> {
+        None
+    }
+
     /// Run `command` inside the named pod's named container and report
     /// whether it exited zero (exec-probe semantics). Default: always
     /// succeeds — runtimes with nothing real to exec into (mock) have no

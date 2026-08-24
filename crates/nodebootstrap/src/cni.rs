@@ -227,7 +227,11 @@ fn build_cni_base_plugins_from_source(cfg: &Config, bin_dir: &std::path::Path) -
             .context("cloning containernetworking/plugins")?;
         anyhow::ensure!(status.success(), "git clone containernetworking/plugins failed");
     }
-    let status = std::process::Command::new("./build_linux.sh").current_dir(&plugins_dir).status().context("running build_linux.sh")?;
+    let status = std::process::Command::new("./build_linux.sh")
+        .env("CGO_ENABLED", "0")
+        .current_dir(&plugins_dir)
+        .status()
+        .context("running build_linux.sh")?;
     anyhow::ensure!(status.success(), "containernetworking/plugins' build_linux.sh failed");
 
     for entry in std::fs::read_dir(plugins_dir.join("bin")).context("reading plugins/bin")? {
@@ -244,11 +248,6 @@ fn build_cni_base_plugins_from_source(cfg: &Config, bin_dir: &std::path::Path) -
 fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
     let toolchain_bin = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&toolchain_bin).context("creating toolchain bin dir")?;
-
-    if !crate::pkg::command_exists("flanneld") {
-        let names = PkgNames { apt: "flannel", dnf: "flannel", pacman: "flannel", apk: "flannel", zypper: "flannel", xbps: "flannel" };
-        let _ = pkg_install("flannel", &names);
-    }
 
     // flanneld shells out to iptables for --ip-masq -- see cni.sh's comment
     // on why this bites Alpine specifically (no iptables in a base image).
@@ -302,11 +301,20 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Deepest fallback: clone `flannel-io/flannel` and `make dist/flanneld`.
-/// Needs Go.
+/// Deepest fallback: clone `flannel-io/flannel` and build its flanneld entry
+/// point with the verified musl C toolchain. Do not use upstream's Makefile
+/// here: it forces `CGO_ENABLED=1` and lets the host compiler decide the C
+/// runtime, which can link the supposedly static binary against glibc and
+/// emits the exact runtime-dependency warning this bootstrap is designed to
+/// avoid. Flannel's amd64 UDP backend does require cgo, so disabling it is
+/// not a valid static-build strategy either.
 fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> Result<()> {
     tracing::warn!("no prebuilt flanneld for this arch -- building from source (needs Go)");
     crate::toolchain::ensure_go(cfg).context("flanneld's from-source build needs Go")?;
+    crate::toolchain::ensure_c_toolchain(cfg).context("flanneld's static from-source build needs a musl C compiler")?;
+    let compiler = std::env::var("MUSL_C_COMPILER").context("musl compiler was not exported after C toolchain setup")?;
+    let arch = cfg.arch();
+    let goarch = cni_go_arch(&arch).context("no Go architecture mapping for flanneld's source build")?;
     if !crate::pkg::command_exists("git") {
         let names = PkgNames { apt: "git", dnf: "git", pacman: "git", apk: "git", zypper: "git", xbps: "git" };
         let _ = pkg_install("git", &names);
@@ -320,9 +328,31 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
             .context("cloning flannel-io/flannel")?;
         anyhow::ensure!(status.success(), "git clone flannel-io/flannel failed");
     }
-    let status =
-        std::process::Command::new("make").arg("dist/flanneld").current_dir(&flannel_dir).status().context("running make dist/flanneld")?;
-    anyhow::ensure!(status.success(), "flannel-io/flannel's make dist/flanneld failed");
+    let mut command = std::process::Command::new("go");
+    let cgo_cflags = linux_uapi_cgo_flags(&compiler);
+    command
+        .args([
+            "build",
+            "-trimpath",
+            "-o",
+            "dist/flanneld",
+            "-ldflags",
+            "-s -w -X github.com/flannel-io/flannel/pkg/version.Version=v0.25.6 -linkmode external -extldflags '-static'",
+            ".",
+        ])
+        .env("CGO_ENABLED", "1")
+        .env("CC", &compiler)
+        .env("CGO_CFLAGS", cgo_cflags)
+        .env("GOOS", "linux")
+        .env("GOARCH", goarch)
+        .current_dir(&flannel_dir);
+    if arch == "armv7l" {
+        command.env("GOARM", "7");
+    } else if arch == "armv6l" {
+        command.env("GOARM", "6");
+    }
+    let status = command.status().context("building flanneld from source")?;
+    anyhow::ensure!(status.success(), "flannel-io/flannel's from-source build failed");
 
     let dest = toolchain_bin.join("flanneld");
     std::fs::copy(flannel_dir.join("dist/flanneld"), &dest).with_context(|| format!("copying {}", dest.display()))?;
@@ -330,6 +360,31 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
     crate::toolchain::put_toolchain_bin_on_path(cfg);
     tracing::info!("flanneld built from source");
     Ok(())
+}
+
+/// Debian's `musl-gcc` wrapper intentionally limits its system include path
+/// to musl's headers. Flannel's amd64 UDP backend also includes Linux UAPI
+/// headers (`linux/ip.h` and its architecture-specific `asm/` includes), so
+/// make those headers visible without putting glibc's standard headers,
+/// libraries, or linker anywhere in the build. `-idirafter` is important:
+/// musl's headers must remain ahead of the distro's general `/usr/include`
+/// tree. The compiler still controls the C runtime and the Go link step
+/// below still uses `-static`.
+fn linux_uapi_cgo_flags(compiler: &str) -> String {
+    let mut dirs = vec![std::path::PathBuf::from("/usr/include")];
+    if let Ok(output) = std::process::Command::new(compiler).arg("-print-multiarch").output() {
+        if output.status.success() {
+            let multiarch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !multiarch.is_empty() {
+                dirs.push(std::path::PathBuf::from("/usr/include").join(multiarch));
+            }
+        }
+    }
+    dirs.into_iter()
+        .filter(|dir| dir.is_dir())
+        .map(|dir| format!("-idirafter {}", dir.display()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Deepest fallback: clone `flannel-io/cni-plugin` and run its own
@@ -346,7 +401,11 @@ fn build_flannel_cni_plugin_from_source(cfg: &Config, goarch: Option<&str>, dest
             .context("cloning flannel-io/cni-plugin")?;
         anyhow::ensure!(status.success(), "git clone flannel-io/cni-plugin failed");
     }
-    let status = std::process::Command::new("./build.sh").current_dir(&cni_plugin_dir).status().context("running build.sh")?;
+    let status = std::process::Command::new("./build.sh")
+        .env("CGO_ENABLED", "0")
+        .current_dir(&cni_plugin_dir)
+        .status()
+        .context("running build.sh")?;
     anyhow::ensure!(status.success(), "flannel-io/cni-plugin's build.sh failed");
 
     let goarch = goarch.unwrap_or("amd64");

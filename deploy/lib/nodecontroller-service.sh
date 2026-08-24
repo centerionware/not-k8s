@@ -261,6 +261,36 @@ NODECONTROLLER_PATCH_GRANTS=(
     "pv-protection-controller '' persistentvolumeclaims"
 )
 
+# Shared informer inputs read directly as system:kube-controller-manager by
+# nodecontroller's watch.rs. The per-controller ServiceAccounts below are
+# still used for writes; this is only the base identity's read/watch grant.
+# Keep this in sync with crates/nodebootstrap/src/rbac.rs's
+# NODECONTROLLER_READ_GRANTS (Finding #5, release pipeline run 50).
+NODECONTROLLER_READ_GRANTS=(
+    "'' namespaces"
+    "'' configmaps"
+    "'' nodes"
+    "'' pods"
+    "'' resourcequotas"
+    "'' services"
+    "'' serviceaccounts"
+    "'' replicationcontrollers"
+    "'' persistentvolumes"
+    "'' persistentvolumeclaims"
+    "apps deployments"
+    "apps replicasets"
+    "apps daemonsets"
+    "apps statefulsets"
+    "batch jobs"
+    "batch cronjobs"
+    "certificates.k8s.io certificatesigningrequests"
+    "coordination.k8s.io leases"
+    "policy poddisruptionbudgets"
+    "storage.k8s.io storageclasses"
+    "storage.k8s.io volumeattachments"
+    "resource.k8s.io resourceclaimtemplates"
+)
+
 # Grants nodecontroller's impersonated per-controller identities the RBAC
 # this stack actually needs to run them, applied every time nodecontroller
 # is (re)started so a re-run always ends up with the current set.
@@ -279,6 +309,45 @@ NODECONTROLLER_PATCH_GRANTS=(
 #      nodecontroller writes with PATCH throughout.
 apply_nodecontroller_rbac() {
     local name manifest=""
+
+    # Unlike the impersonated controller writes, these are shared informer
+    # reads made by the base system:kube-controller-manager identity itself.
+    # The built-in bootstrap role does not contain all of nodecontroller's
+    # storage/DRA watch inputs, so omitting this role produces repeated 403s
+    # and leaves CSI/PV state stale even though the service is running.
+    manifest+="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:nodecontroller-watches
+rules:
+"
+    local group resource
+    for entry in "${NODECONTROLLER_READ_GRANTS[@]}"; do
+        # shellcheck disable=SC2086 # deliberately word-split: "group resource"
+        set -- $entry
+        group="$1" resource="$2"
+        [[ "$group" == "''" ]] && group=""
+        manifest+="- apiGroups: [\"${group}\"]
+  resources: [\"${resource}\"]
+  verbs: [\"get\", \"list\", \"watch\"]
+"
+    done
+    manifest+="---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:nodecontroller-watches
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:nodecontroller-watches
+subjects:
+- kind: User
+  name: system:kube-controller-manager
+  apiGroup: rbac.authorization.k8s.io
+"
+
     for name in "${NODECONTROLLER_SA_NAMES[@]}"; do
         manifest+="---
 apiVersion: rbac.authorization.k8s.io/v1

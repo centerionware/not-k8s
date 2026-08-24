@@ -63,6 +63,11 @@ run_and_verify() {
     # as real under the mock runtime as under containerd.
     if want_nodescheduler; then
         log "Starting nodescheduler (pod placement; k3s's own kube-scheduler is disabled)..."
+        # Must land before the service starts its unconditional storage/CSI/
+        # DRA informer watches. The built-in scheduler role omits part of
+        # that input set; see nodescheduler-service.sh and
+        # nodebootstrap/src/rbac.rs Finding #5.
+        apply_nodescheduler_rbac
         install_nodescheduler_service
     else
         remove_nodescheduler_service

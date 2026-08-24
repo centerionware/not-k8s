@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # e2e-debug-dump.sh — print everything needed to diagnose a stuck/failed
-# e2e run: node status/taints/conditions, disk space, and nodelet's own
-# service status + recent logs. Exists because the CSI/DRA reference
+# e2e run: node status/taints/conditions, disk space, and the replacement
+# control-plane/node services' status + recent logs. Exists because the CSI/DRA reference
 # drivers' own upstream deploy tooling only dumps *their* objects on
 # timeout (see e2e-full-setup.sh) — when the real problem is upstream of
 # that (the node never went Ready, a disk-pressure taint, nodelet crashed
@@ -14,6 +14,16 @@ set -uo pipefail
 KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 export KUBECONFIG
 
+kubectl_cmd() {
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
+    else
+        kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
+    fi
+}
+
 echo "=========================================="
 echo "e2e-debug-dump: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "=========================================="
@@ -24,17 +34,17 @@ df -h / 2>&1
 
 echo ""
 echo "── node status ──"
-kubectl get nodes -o wide 2>&1
+kubectl_cmd get nodes -o wide 2>&1
 echo ""
-kubectl describe nodes 2>&1
+kubectl_cmd describe nodes 2>&1
 
 echo ""
 echo "── all pods (every namespace) ──"
-kubectl get pods -A -o wide 2>&1
+kubectl_cmd get pods -A -o wide 2>&1
 
 echo ""
 echo "── pods not Running/Completed ──"
-kubectl get pods -A -o wide 2>&1 | awk 'NR==1 || ($4 !~ /Running|Completed/)'
+kubectl_cmd get pods -A -o wide 2>&1 | awk 'NR==1 || ($4 !~ /Running|Completed/)'
 
 echo ""
 echo "── nodelet.service ──"
@@ -42,6 +52,20 @@ sudo systemctl status nodelet.service --no-pager -l 2>&1 || echo "(nodelet.servi
 echo ""
 echo "── nodelet.service logs (last 200 lines) ──"
 sudo journalctl -u nodelet.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
+
+echo ""
+echo "── flanneld.service ──"
+sudo systemctl status flanneld.service --no-pager -l 2>&1 || echo "(flanneld.service not found/not running)"
+echo ""
+echo "── flanneld.service logs (last 200 lines) ──"
+sudo journalctl -u flanneld.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
+
+echo ""
+echo "── nodeproxy.service ──"
+sudo systemctl status nodeproxy.service --no-pager -l 2>&1 || echo "(nodeproxy.service not found/not running)"
+echo ""
+echo "── nodeproxy.service logs (last 200 lines) ──"
+sudo journalctl -u nodeproxy.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
 
 echo ""
 # Only present when this deployment runs our scheduler (SCHEDULER=nodescheduler).
@@ -57,7 +81,7 @@ echo "── nodescheduler.service logs (last 200 lines) ──"
 sudo journalctl -u nodescheduler.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
 echo ""
 echo "── scheduler lease ──"
-kubectl get lease kube-scheduler -n kube-system -o yaml 2>&1 | head -30 || echo "(no scheduler lease)"
+kubectl_cmd get lease kube-scheduler -n kube-system -o yaml 2>&1 | head -30 || echo "(no scheduler lease)"
 
 echo ""
 # Same reasoning as the nodescheduler dump above — worth it unconditionally.
@@ -68,30 +92,30 @@ echo "── nodecontroller.service logs (last 200 lines) ──"
 sudo journalctl -u nodecontroller.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
 echo ""
 echo "── controller-manager lease ──"
-kubectl get lease kube-controller-manager -n kube-system -o yaml 2>&1 | head -30 || echo "(no controller-manager lease)"
+kubectl_cmd get lease kube-controller-manager -n kube-system -o yaml 2>&1 | head -30 || echo "(no controller-manager lease)"
 
 echo ""
-echo "── k3s.service ──"
-sudo systemctl status k3s.service --no-pager -l 2>&1 || echo "(k3s.service not found/not running)"
+echo "── kube-apiserver.service ──"
+sudo systemctl status kube-apiserver.service --no-pager -l 2>&1 || echo "(kube-apiserver.service not found/not running)"
 
 echo ""
-# k3s bundles kube-controller-manager (AttachDetachController et al) into
-# the same process/journal as everything else it stripped down to — there
-# is no separate unit to target. A stuck CSI attach (VolumeAttachment never
-# created, or created but never Attached) is invisible without this: the
-# nodelet/nodescheduler dumps above only show the two ends of that pipe,
-# never the controller in the middle. Grepped rather than dumped whole
-# because k3s's own log is dominated by apiserver audit/watch chatter —
-# unfiltered this would bury the one subsystem actually worth reading here
-# under everything else running in the same process.
-echo "── k3s.service logs: attach/detach + volume events (last 800 lines, filtered) ──"
-sudo journalctl -u k3s.service --no-pager -n 800 2>&1 \
+echo "── kube-apiserver.service logs: requests/readiness (last 300 lines) ──"
+sudo journalctl -u kube-apiserver.service --no-pager -n 300 2>&1 \
+    | grep -iE "429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed" \
+    || echo "(no matching lines in the last 300)"
+
+echo ""
+# A stuck CSI attach (VolumeAttachment never created, or created but never
+# Attached) is invisible without the controller journal: nodelet and the
+# scheduler show only the two ends of that pipe.
+echo "── nodecontroller.service logs: attach/detach + volume events (last 800 lines, filtered) ──"
+sudo journalctl -u nodecontroller.service --no-pager -n 800 2>&1 \
     | grep -iE "attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat" \
     || echo "(no matching lines in the last 800 — either nothing ran, or it's further back than this tail reaches)"
 
 echo ""
 echo "── volumeattachments (every namespace is cluster-scoped) ──"
-kubectl get volumeattachments.storage.k8s.io -o wide 2>&1 || echo "(none / apiserver unreachable)"
+kubectl_cmd get volumeattachments.storage.k8s.io -o wide 2>&1 || echo "(none / apiserver unreachable)"
 
 echo ""
 # CSIDriver/CSINode survive a failing test's own cleanup (it only deletes
@@ -100,15 +124,15 @@ echo ""
 # from nodelet's registration-time logs, which only prove registration
 # happened once, not that it's still correct now.
 echo "── csidrivers ──"
-kubectl get csidrivers.storage.k8s.io -o yaml 2>&1 || echo "(none / apiserver unreachable)"
+kubectl_cmd get csidrivers.storage.k8s.io -o yaml 2>&1 || echo "(none / apiserver unreachable)"
 
 echo ""
 echo "── csinodes ──"
-kubectl get csinodes.storage.k8s.io -o yaml 2>&1 || echo "(none / apiserver unreachable)"
+kubectl_cmd get csinodes.storage.k8s.io -o yaml 2>&1 || echo "(none / apiserver unreachable)"
 
 echo ""
 echo "── recent events, every namespace (last 100, by time) ──"
-kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -100
+kubectl_cmd get events -A --sort-by=.lastTimestamp 2>&1 | tail -100
 
 echo ""
 echo "── containerd.service ──"
@@ -122,23 +146,23 @@ sudo systemctl status containerd.service --no-pager -l 2>&1 || echo "(containerd
 # message alone.
 echo ""
 echo "── system:controller:replicaset-controller ClusterRole (ground truth) ──"
-kubectl get clusterrole system:controller:replicaset-controller -o yaml 2>&1 || echo "(missing)"
+kubectl_cmd get clusterrole system:controller:replicaset-controller -o yaml 2>&1 || echo "(missing)"
 
 echo ""
 echo "── clusterrolebindings naming replicaset-controller (real + supplemental) ──"
-kubectl get clusterrolebindings -o yaml 2>&1 | grep -B5 -A15 'name: replicaset-controller\|controller-sa-replicaset-controller' \
+kubectl_cmd get clusterrolebindings -o yaml 2>&1 | grep -B5 -A15 'name: replicaset-controller\|controller-sa-replicaset-controller' \
     || echo "(none found)"
 
 echo ""
 echo "── kubectl auth can-i, as the impersonated identity itself ──"
-kubectl auth can-i patch replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
-kubectl auth can-i update replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
-kubectl auth can-i patch endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
-kubectl auth can-i update endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
+kubectl_cmd auth can-i patch replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
+kubectl_cmd auth can-i update replicasets/status --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system 2>&1
+kubectl_cmd auth can-i patch endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
+kubectl_cmd auth can-i update endpointslices --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system 2>&1
 
 echo ""
 echo "── system:controller:endpointslice-controller ClusterRole (ground truth) ──"
-kubectl get clusterrole system:controller:endpointslice-controller -o yaml 2>&1 || echo "(missing)"
+kubectl_cmd get clusterrole system:controller:endpointslice-controller -o yaml 2>&1 || echo "(missing)"
 
 echo "=========================================="
 echo "e2e-debug-dump: end"

@@ -325,13 +325,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = pod.namespace().unwrap_or_default();
-                        let labels = pod.metadata.labels.clone().unwrap_or_default();
                         pods.insert(pod_key(&pod), pod);
                         enqueue_affected_services(&ns, &services, &queue);
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = pod.namespace().unwrap_or_default();
-                        let labels = pod.metadata.labels.clone().unwrap_or_default();
                         pods.remove(&pod_key(&pod));
                         enqueue_affected_services(&ns, &services, &queue);
                     }

@@ -50,7 +50,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
 
       - name: cargo build (nodestore, nodelet [cri], nodeproxy, nodescheduler, nodecontroller, nodebootstrap, debug)
