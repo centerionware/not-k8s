@@ -8,6 +8,8 @@ use anyhow::{bail, Context, Result};
 use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
 use kube::api::{Api, ListParams};
 use kube::Client;
+use std::error::Error;
+use std::fmt;
 use std::net::IpAddr;
 use std::path::Path;
 use std::time::Instant;
@@ -28,6 +30,8 @@ mod ephemeral_containers;
 mod endpoint_slice;
 #[path = "tests/garbage_collection.rs"]
 mod garbage_collection;
+#[path = "tests/generic_ephemeral_volume.rs"]
+mod generic_ephemeral_volume;
 #[path = "tests/node_status.rs"]
 mod node_status;
 #[path = "tests/namespace.rs"]
@@ -49,10 +53,24 @@ use context::E2eContext;
 
 const CSI_DRA_SHARDS: usize = 2;
 
+#[derive(Debug)]
+struct SkipTest(String);
+
+impl fmt::Display for SkipTest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for SkipTest {}
+
+pub(super) fn skip_test(reason: impl Into<String>) -> anyhow::Error {
+    SkipTest(reason.into()).into()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TestGroup {
     General,
-    #[allow(dead_code)]
     CsiDra,
 }
 
@@ -114,6 +132,10 @@ const TESTS: &[TestCase] = &[
     TestCase {
         name: "test_kubectl_debug_adds_and_starts_an_ephemeral_container",
         group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_pod_mounts_a_generic_ephemeral_volume",
+        group: TestGroup::CsiDra,
     },
     TestCase {
         name: "test_node_is_ready_with_capacity_advertised",
@@ -219,6 +241,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     }
     let mut failures = Vec::new();
     let mut passed = 0;
+    let mut skipped = 0;
     for name in selected {
         let started = Instant::now();
         print!("▶ {name} ... ");
@@ -228,16 +251,21 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                 println!("PASS ({}ms)", started.elapsed().as_millis());
             }
             Err(error) => {
-                println!("FAIL ({}ms)", started.elapsed().as_millis());
-                eprintln!("    {error:#}");
-                failures.push(name);
+                if let Some(skip) = error.downcast_ref::<SkipTest>() {
+                    skipped += 1;
+                    println!("SKIP ({}; {}ms)", skip, started.elapsed().as_millis());
+                } else {
+                    println!("FAIL ({}ms)", started.elapsed().as_millis());
+                    eprintln!("    {error:#}");
+                    failures.push(name);
+                }
             }
         }
     }
 
     context.cleanup().await;
     if failures.is_empty() {
-        println!("Results: {passed} passed, 0 failed");
+        println!("Results: {passed} passed, {skipped} skipped, 0 failed");
         Ok(())
     } else {
         bail!(
@@ -391,6 +419,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_kubectl_debug_adds_and_starts_an_ephemeral_container" => {
             ephemeral_containers::kubectl_debug_adds_and_starts_an_ephemeral_container(context).await
+        }
+        "test_pod_mounts_a_generic_ephemeral_volume" => {
+            generic_ephemeral_volume::pod_mounts_a_generic_ephemeral_volume(context).await
         }
         "test_node_is_ready_with_capacity_advertised" => {
             node_status::node_is_ready_with_capacity_advertised(context).await
