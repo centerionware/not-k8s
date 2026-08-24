@@ -365,9 +365,11 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
 /// Debian's `musl-gcc` wrapper intentionally limits its system include path
 /// to musl's headers. Flannel's amd64 UDP backend also includes Linux UAPI
 /// headers (`linux/ip.h` and its architecture-specific `asm/` includes), so
-/// make those headers visible without putting glibc libraries or a glibc
-/// linker anywhere in the build. The compiler still controls the C runtime
-/// and the Go link step below still uses `-static`.
+/// make those headers visible without putting glibc's standard headers,
+/// libraries, or linker anywhere in the build. `-idirafter` is important:
+/// musl's headers must remain ahead of the distro's general `/usr/include`
+/// tree. The compiler still controls the C runtime and the Go link step
+/// below still uses `-static`.
 fn linux_uapi_cgo_flags(compiler: &str) -> String {
     let mut dirs = vec![std::path::PathBuf::from("/usr/include")];
     if let Ok(output) = std::process::Command::new(compiler).arg("-print-multiarch").output() {
@@ -380,7 +382,7 @@ fn linux_uapi_cgo_flags(compiler: &str) -> String {
     }
     dirs.into_iter()
         .filter(|dir| dir.is_dir())
-        .map(|dir| format!("-isystem {}", dir.display()))
+        .map(|dir| format!("-idirafter {}", dir.display()))
         .collect::<Vec<_>>()
         .join(" ")
 }
