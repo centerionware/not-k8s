@@ -77,13 +77,13 @@ pub(super) async fn slow_terminating_pod_does_not_stall_another_pods_creation(
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let blocker = "term-blocker";
     let victim = "term-victim";
-    let grace = 45_u32;
+    let grace = 45_i64;
     create_slow_pod(context, &pods, blocker, grace).await?;
     let started = Instant::now();
     pods.delete(
         blocker,
         &DeleteParams {
-            grace_period_seconds: Some(grace),
+            grace_period_seconds: Some(grace as u32),
             ..Default::default()
         },
     )
@@ -124,12 +124,12 @@ pub(super) async fn recreated_pod_survives_the_old_pods_detached_teardown(
     }
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let name = "term-recreate";
-    let grace = 20_u32;
+    let grace = 20_i64;
     create_slow_pod(context, &pods, name, grace).await?;
     pods.delete(
         name,
         &DeleteParams {
-            grace_period_seconds: Some(grace),
+            grace_period_seconds: Some(grace as u32),
             ..Default::default()
         },
     )
