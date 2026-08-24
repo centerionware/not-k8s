@@ -138,7 +138,10 @@ pub(super) async fn node_status_images_reflects_a_real_pulled_image(
                     .into_iter()
                     .flat_map(|node| node.status.and_then(|status| status.images).unwrap_or_default())
                     .any(|image| {
-                        image.names.iter().any(|name| name.contains("busybox"))
+                        image
+                            .names
+                            .iter()
+                            .any(|name| name.as_str().contains("busybox"))
                             && image.size_bytes.is_some_and(|size| size > 0)
                     }))
             }
