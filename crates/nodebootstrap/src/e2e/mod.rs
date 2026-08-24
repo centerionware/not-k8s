@@ -480,6 +480,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_clusterip_is_reachable_from_inside_a_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion",
         group: TestGroup::CsiDra,
     },
@@ -931,6 +935,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_service_with_no_endpoints_does_not_wedge_the_ruleset" => {
             service_proxy::service_with_no_endpoints_does_not_wedge_the_ruleset(context).await
+        }
+        "test_clusterip_is_reachable_from_inside_a_pod" => {
+            service_proxy::clusterip_is_reachable_from_inside_a_pod(context).await
         }
         "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion" => {
             storage::pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion(context).await

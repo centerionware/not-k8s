@@ -73,6 +73,21 @@ async fn receives_marker(address: &str) -> Result<bool> {
         .any(|window| window == b"service-proxy-marker"))
 }
 
+async fn terminated_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.container_statuses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|status| status.name == "app")
+        .and_then(|status| status.state)
+        .and_then(|state| state.terminated)
+        .and_then(|terminated| terminated.message))
+}
+
 async fn node_internal_ip(context: &E2eContext) -> Result<String> {
     Api::<Node>::all(context.client.clone())
         .list(&ListParams::default())
@@ -146,6 +161,44 @@ pub(super) async fn service_with_no_endpoints_does_not_wedge_the_ruleset(
                     .await?
                     .items;
                 Ok(!items.is_empty() && items.iter().all(|slice| slice.endpoints.is_empty()))
+            }
+        })
+        .await
+}
+
+pub(super) async fn clusterip_is_reachable_from_inside_a_pod(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "clusterip-inside";
+    create_backend(context, name).await?;
+    create_service(context, name, "ClusterIP", 18093, None).await?;
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    let cluster_ip = services
+        .get(name)
+        .await?
+        .spec
+        .and_then(|spec| spec.cluster_ip)
+        .filter(|ip| !ip.is_empty())
+        .context("ClusterIP service did not receive a cluster IP")?;
+    let client_name = "clusterip-inside-client";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let client: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": client_name},
+        "spec": {
+            "restartPolicy": "Never",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", format!("wget -qO- --timeout=5 http://{cluster_ip}:18093/ > /dev/termination-log")]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &client).await?;
+    context
+        .wait_until("ClusterIP access from a Pod", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, client_name)
+                    .await?
+                    .is_some_and(|message| message.contains("service-proxy-marker")))
             }
         })
         .await
