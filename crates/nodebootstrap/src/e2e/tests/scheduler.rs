@@ -136,7 +136,11 @@ pub(super) async fn scheduler_leaves_a_gated_pod_alone(context: &E2eContext) -> 
     tokio::time::sleep(Duration::from_secs(5)).await;
     let gated = pods.get(name).await?;
     anyhow::ensure!(
-        gated.spec.as_ref().and_then(|spec| spec.node_name).is_none(),
+        gated
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.node_name.as_ref())
+            .is_none(),
         "a Pod with a scheduling gate was bound before the gate was removed"
     );
     anyhow::ensure!(

@@ -1,7 +1,7 @@
 use super::context::E2eContext;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
-use kube::api::{Api, PostParams};
+use kube::api::{Api, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
 
@@ -208,6 +208,62 @@ pub(super) async fn empty_dir_memory_is_backed_by_tmpfs(context: &E2eContext) ->
                 Ok(terminated_message(&context, name)
                     .await?
                     .is_some_and(|message| message.contains("tmpfs") && message.contains("/cache")))
+            }
+        })
+        .await
+}
+
+pub(super) async fn configmap_volume_updates_live_without_pod_restart(
+    context: &E2eContext,
+) -> Result<()> {
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let configmap: ConfigMap = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "live-volume-config"},
+        "data": {"value": "old"}
+    }))?;
+    configmaps.create(&PostParams::default(), &configmap).await?;
+    let name = "live-configmap-volume";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "config", "configMap": {"name": "live-volume-config"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "while [ \"$(cat /config/value)\" != new ]; do sleep 1; done; cat /config/value > /dev/termination-log"], "volumeMounts": [{"name": "config", "mountPath": "/config"}] }]
+        }),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("live ConfigMap Pod Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    configmaps
+        .patch(
+            "live-volume-config",
+            &PatchParams::default(),
+            &Patch::Merge(&json!({"data": {"value": "new"}})),
+        )
+        .await?;
+    context
+        .wait_until("ConfigMap volume to refresh in place", Duration::from_secs(120), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "new"))
             }
         })
         .await

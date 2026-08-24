@@ -352,6 +352,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_configmap_volume_updates_live_without_pod_restart",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_read_only_root_filesystem_blocks_writes",
         group: TestGroup::General,
     },
@@ -740,6 +744,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_empty_dir_memory_is_backed_by_tmpfs" => {
             volumes::empty_dir_memory_is_backed_by_tmpfs(context).await
+        }
+        "test_configmap_volume_updates_live_without_pod_restart" => {
+            volumes::configmap_volume_updates_live_without_pod_restart(context).await
         }
         "test_read_only_root_filesystem_blocks_writes" => {
             security::read_only_root_filesystem_blocks_writes(context).await
