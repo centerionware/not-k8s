@@ -36,6 +36,8 @@ Common commands after downloading the release binary:
 ./bootstrap --without-cri           # opt out of containerd/CRI and use mock runtime
 ./bootstrap --release              # update from the latest published assets
 ./bootstrap --without-flannel      # use an external CNI and remember it on updates
+./bootstrap --without-flannel --proxy=none
+                                     # full single-node CP+worker for Cilium-style setups
 ./bootstrap --worker --kubeconfig=/path/to/cluster.kubeconfig --proxy=none
                                      # nodelet; no local control plane, flannel, or proxy
 ./bootstrap --control-plane --join=https://cp-1:2379 --peer-url=https://cp-2:2380
