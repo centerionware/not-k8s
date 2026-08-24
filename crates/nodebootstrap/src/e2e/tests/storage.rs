@@ -44,8 +44,7 @@ pub(super) async fn pv_binder_binds_a_static_pv_and_protection_finalizers_gate_d
                 let bound_phase = claim
                         .status
                         .as_ref()
-                        .and_then(|status| status.phase)
-                        .as_deref()
+                        .and_then(|status| status.phase.as_deref())
                         == Some("Bound");
                 Ok(bound_volume
                     && bound_phase
