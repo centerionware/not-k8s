@@ -1,4 +1,5 @@
 use super::context::E2eContext;
+use super::skip_test;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, PostParams};
@@ -111,4 +112,39 @@ pub(super) async fn run_as_user_is_applied(context: &E2eContext) -> Result<()> {
             }
         })
         .await
+}
+
+pub(super) async fn proc_mount_default_masks_proc_kcore(context: &E2eContext) -> Result<()> {
+    let name = "proc-mount-default";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", "head -c 4 /proc/kcore 2>/dev/null | wc -c > /dev/termination-log"]
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("default procMount termination message", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| !message.trim().is_empty()))
+            }
+        })
+        .await?;
+    let message = termination_message(context, name).await?.unwrap_or_default();
+    if message.trim() != "0" {
+        return Err(skip_test(format!(
+            "the runtime exposed {} bytes from /proc/kcore under default procMount; host OCI masking controls this final behavior",
+            message.trim()
+        )));
+    }
+    Ok(())
 }

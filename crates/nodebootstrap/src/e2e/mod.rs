@@ -474,6 +474,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_proc_mount_default_masks_proc_kcore",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_containers_get_isolated_pid_namespaces_by_default",
         group: TestGroup::General,
     },
@@ -977,6 +981,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_run_as_user_is_applied" => {
             security::run_as_user_is_applied(context).await
+        }
+        "test_proc_mount_default_masks_proc_kcore" => {
+            security::proc_mount_default_masks_proc_kcore(context).await
         }
         "test_containers_get_isolated_pid_namespaces_by_default" => {
             process::containers_get_isolated_pid_namespaces_by_default(context).await
