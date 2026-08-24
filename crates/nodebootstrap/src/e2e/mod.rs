@@ -372,6 +372,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_run_as_user_is_applied",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_poststart_hook_runs_before_container_exit",
         group: TestGroup::General,
     },
@@ -767,6 +771,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_writable_root_filesystem_allows_writes" => {
             security::writable_root_filesystem_allows_writes(context).await
+        }
+        "test_run_as_user_is_applied" => {
+            security::run_as_user_is_applied(context).await
         }
         "test_poststart_hook_runs_before_container_exit" => {
             hooks::poststart_hook_runs_before_container_exit(context).await
