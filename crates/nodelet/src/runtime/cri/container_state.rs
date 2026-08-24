@@ -194,6 +194,7 @@ pub(crate) fn restart_count_key(sandbox_id: &str, container_name: &str) -> Strin
 }
 
 
+#[cfg(test)]
 pub(crate) fn restart_count_from(counts: &HashMap<String, u32>, sandbox_id: &str, container_name: &str) -> u32 {
     counts.get(&restart_count_key(sandbox_id, container_name)).copied().unwrap_or(0)
 }

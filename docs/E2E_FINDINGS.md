@@ -1274,3 +1274,25 @@ after `Allocate()` had succeeded and the container had the expected device
 environment. The test now waits for the Healthy status entry before asserting
 it, and device-health notifications use a priority runtime-event channel so
 they cannot sit behind a busy CRI container-event queue.
+
+### 25. Fixed: nodebootstrap's flannel readiness barrier initially waited for
+the controller that allocates its prerequisite PodCIDR
+
+**Severity: bootstrap-fatal — found live while rerunning the run-50 focused
+e2e gate.**
+
+After the run-50 fixes moved the final apiserver restart ahead of the
+replacement control-plane services, the combined `nodebootstrap` path started
+`nodelet` and then waited for `/run/flannel/subnet.env` before starting
+`nodecontroller`. That cannot succeed: flannel's kube-subnet-manager needs a
+Node `spec.podCIDR`, and nodecontroller's node-ipam controller is what assigns
+that CIDR. Both focused shards failed after 30 seconds with no subnet file;
+this was a deterministic dependency cycle, not a flannel networking failure.
+
+**Fixed**: nodecontroller now starts immediately after the final apiserver
+restart and RBAC barrier, before the flannel wait. Nodescheduler remains after
+the wait so no workload is placed while CNI is still acquiring the subnet.
+The e2e failure dump now passes the nodebootstrap kubeconfig explicitly,
+falls back to sudo when the bootstrap ran as root, and includes flanneld's
+unit status/logs; the previous dump's `/etc/rancher/k3s` errors obscured this
+diagnosis.

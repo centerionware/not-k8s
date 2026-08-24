@@ -145,14 +145,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (key, pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
+                        for (key, _pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (key, pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
+                        for (key, _pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

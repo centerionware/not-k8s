@@ -15,7 +15,13 @@ KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 export KUBECONFIG
 
 kubectl_cmd() {
-    kubectl --kubeconfig "$KUBECONFIG" "$@"
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        kubectl --kubeconfig "$KUBECONFIG" "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo kubectl --kubeconfig "$KUBECONFIG" "$@"
+    else
+        kubectl --kubeconfig "$KUBECONFIG" "$@"
+    fi
 }
 
 echo "=========================================="
@@ -46,6 +52,13 @@ sudo systemctl status nodelet.service --no-pager -l 2>&1 || echo "(nodelet.servi
 echo ""
 echo "── nodelet.service logs (last 200 lines) ──"
 sudo journalctl -u nodelet.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
+
+echo ""
+echo "── flanneld.service ──"
+sudo systemctl status flanneld.service --no-pager -l 2>&1 || echo "(flanneld.service not found/not running)"
+echo ""
+echo "── flanneld.service logs (last 200 lines) ──"
+sudo journalctl -u flanneld.service --no-pager -n 200 2>&1 || echo "(no journalctl access)"
 
 echo ""
 # Only present when this deployment runs our scheduler (SCHEDULER=nodescheduler).

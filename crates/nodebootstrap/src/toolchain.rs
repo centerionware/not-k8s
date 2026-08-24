@@ -1,8 +1,8 @@
 //! Toolchain presence checks — replaces `deploy/lib/toolchain-{rust,c,go,protoc}.sh`.
 //!
 //! Every tier from the shell version is ported now, including the deepest
-//! from-source fallbacks (`build_gcc_from_source`, `try_musl_cc_toolchain`,
-//! `build_go_from_source`, `build_protoc_from_source`) -- slow (30-90+ min
+//! from-source fallbacks (`try_musl_cc_toolchain`, `build_go_from_source`,
+//! `build_protoc_from_source`) -- slow (30-90+ min
 //! for gcc/Go), rare in practice (CI builds centrally), but real, not
 //! `bail!`'d out. `ensure_c_toolchain`/`ensure_go` are public but **not**
 //! called by the ordinary runtime path except that source builds must have a
@@ -246,76 +246,6 @@ fn try_musl_cc_toolchain(cfg: &Config) -> Result<bool> {
     put_toolchain_bin_on_path(cfg);
     tracing::info!(path = %cc.display(), "static musl.cc toolchain ready");
     Ok(true)
-}
-
-/// Deepest C-compiler fallback: build gcc + binutils from pure GNU source
-/// tarballs. Slow (30-90+ min on constrained hardware) but needs no
-/// prebuilt binary beyond a *minimal* pre-existing `cc` (see
-/// `toolchain-c.sh`'s own comment on why true zero-binary bootstrap is out
-/// of scope).
-fn build_gcc_from_source(cfg: &Config) -> Result<()> {
-    if command_present("cc") {
-        return Ok(());
-    }
-    tracing::warn!("no C compiler and no package manager/prebuilt worked -- building gcc from source (30-90+ minutes)");
-    const GCC_VER: &str = "13.2.0";
-    const BINUTILS_VER: &str = "2.42";
-    let prefix = cfg.toolchain_dir().join("gcc-src-build");
-    std::fs::create_dir_all(&prefix).context("creating gcc build prefix")?;
-    let src_dir = cfg.src_dir();
-    std::fs::create_dir_all(&src_dir).context("creating scratch dir")?;
-
-    let binutils_tar = src_dir.join(format!("binutils-{BINUTILS_VER}.tar.xz"));
-    if !binutils_tar.exists() {
-        fetch_url(&format!("https://ftp.gnu.org/gnu/binutils/binutils-{BINUTILS_VER}.tar.xz"), &binutils_tar)?;
-    }
-    let gcc_tar = src_dir.join(format!("gcc-{GCC_VER}.tar.xz"));
-    if !gcc_tar.exists() {
-        fetch_url(&format!("https://ftp.gnu.org/gnu/gcc/gcc-{GCC_VER}/gcc-{GCC_VER}.tar.xz"), &gcc_tar)?;
-    }
-    run_cmd("tar", &["xf", &binutils_tar.to_string_lossy()], &src_dir)?;
-    run_cmd("tar", &["xf", &gcc_tar.to_string_lossy()], &src_dir)?;
-    run_cmd("./contrib/download_prerequisites", &[], &src_dir.join(format!("gcc-{GCC_VER}")))?;
-
-    let build_binutils = src_dir.join("build-binutils");
-    std::fs::create_dir_all(&build_binutils).context("creating build-binutils dir")?;
-    let prefix_arg = format!("--prefix={}", prefix.display());
-    run_cmd(
-        &src_dir.join(format!("binutils-{BINUTILS_VER}/configure")).to_string_lossy(),
-        &[&prefix_arg, "--disable-nls", "--disable-werror"],
-        &build_binutils,
-    )?;
-    run_cmd("make", &["-j", &num_jobs()], &build_binutils)?;
-    run_cmd("make", &["install"], &build_binutils)?;
-
-    let path_with_binutils = format!("{}:{}", prefix.join("bin").display(), std::env::var("PATH").unwrap_or_default());
-    let build_gcc = src_dir.join("build-gcc");
-    std::fs::create_dir_all(&build_gcc).context("creating build-gcc dir")?;
-    let status = std::process::Command::new(src_dir.join(format!("gcc-{GCC_VER}/configure")))
-        .args([prefix_arg.as_str(), "--disable-nls", "--disable-multilib", "--enable-languages=c,c++", "--disable-bootstrap"])
-        .current_dir(&build_gcc)
-        .env("PATH", &path_with_binutils)
-        .status()
-        .context("configuring gcc")?;
-    anyhow::ensure!(status.success(), "gcc configure failed");
-    let make_status = |args: &[&str]| -> Result<()> {
-        let s = std::process::Command::new("make").args(args).current_dir(&build_gcc).env("PATH", &path_with_binutils).status()?;
-        anyhow::ensure!(s.success(), "make {} failed", args.join(" "));
-        Ok(())
-    };
-    make_status(&["-j", &num_jobs()])?;
-    make_status(&["install"])?;
-
-    for (name, target) in [("cc", "gcc"), ("gcc", "gcc"), ("g++", "g++")] {
-        let link = cfg.toolchain_dir().join("bin").join(name);
-        let _ = std::fs::remove_file(&link);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(prefix.join("bin").join(target), &link)
-            .with_context(|| format!("symlinking {name}"))?;
-    }
-    put_toolchain_bin_on_path(cfg);
-    tracing::info!("gcc built from source");
-    Ok(())
 }
 
 fn num_jobs() -> String {

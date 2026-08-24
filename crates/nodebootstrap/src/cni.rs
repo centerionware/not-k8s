@@ -227,7 +227,11 @@ fn build_cni_base_plugins_from_source(cfg: &Config, bin_dir: &std::path::Path) -
             .context("cloning containernetworking/plugins")?;
         anyhow::ensure!(status.success(), "git clone containernetworking/plugins failed");
     }
-    let status = std::process::Command::new("./build_linux.sh").current_dir(&plugins_dir).status().context("running build_linux.sh")?;
+    let status = std::process::Command::new("./build_linux.sh")
+        .env("CGO_ENABLED", "0")
+        .current_dir(&plugins_dir)
+        .status()
+        .context("running build_linux.sh")?;
     anyhow::ensure!(status.success(), "containernetworking/plugins' build_linux.sh failed");
 
     for entry in std::fs::read_dir(plugins_dir.join("bin")).context("reading plugins/bin")? {
@@ -302,8 +306,11 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Deepest fallback: clone `flannel-io/flannel` and `make dist/flanneld`.
-/// Needs Go.
+/// Deepest fallback: clone `flannel-io/flannel` and build its flanneld entry
+/// point with the pure-Go toolchain. Do not use upstream's Makefile here: it
+/// forces `CGO_ENABLED=1`, which links the supposedly static binary against
+/// glibc name-service helpers and emits the exact runtime-dependency warning
+/// this bootstrap is designed to avoid.
 fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> Result<()> {
     tracing::warn!("no prebuilt flanneld for this arch -- building from source (needs Go)");
     crate::toolchain::ensure_go(cfg).context("flanneld's from-source build needs Go")?;
@@ -320,9 +327,21 @@ fn build_flanneld_from_source(cfg: &Config, toolchain_bin: &std::path::Path) -> 
             .context("cloning flannel-io/flannel")?;
         anyhow::ensure!(status.success(), "git clone flannel-io/flannel failed");
     }
-    let status =
-        std::process::Command::new("make").arg("dist/flanneld").current_dir(&flannel_dir).status().context("running make dist/flanneld")?;
-    anyhow::ensure!(status.success(), "flannel-io/flannel's make dist/flanneld failed");
+    let status = std::process::Command::new("go")
+        .args([
+            "build",
+            "-trimpath",
+            "-o",
+            "dist/flanneld",
+            "-ldflags",
+            "-s -w -X github.com/flannel-io/flannel/pkg/version.Version=v0.25.6",
+            "./cmd/flanneld",
+        ])
+        .env("CGO_ENABLED", "0")
+        .current_dir(&flannel_dir)
+        .status()
+        .context("building flanneld from source")?;
+    anyhow::ensure!(status.success(), "flannel-io/flannel's from-source build failed");
 
     let dest = toolchain_bin.join("flanneld");
     std::fs::copy(flannel_dir.join("dist/flanneld"), &dest).with_context(|| format!("copying {}", dest.display()))?;
@@ -346,7 +365,11 @@ fn build_flannel_cni_plugin_from_source(cfg: &Config, goarch: Option<&str>, dest
             .context("cloning flannel-io/cni-plugin")?;
         anyhow::ensure!(status.success(), "git clone flannel-io/cni-plugin failed");
     }
-    let status = std::process::Command::new("./build.sh").current_dir(&cni_plugin_dir).status().context("running build.sh")?;
+    let status = std::process::Command::new("./build.sh")
+        .env("CGO_ENABLED", "0")
+        .current_dir(&cni_plugin_dir)
+        .status()
+        .context("running build.sh")?;
     anyhow::ensure!(status.success(), "flannel-io/cni-plugin's build.sh failed");
 
     let goarch = goarch.unwrap_or("amd64");

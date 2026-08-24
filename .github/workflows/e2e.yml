@@ -75,7 +75,7 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Select non-empty shards
         id: plan
         env:
@@ -142,7 +142,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-toolchain
 
@@ -244,6 +244,8 @@ jobs:
       # anywhere before this. See e2e-debug-dump.sh's own doc comment.
       - name: Dump debug info (node/taints/disk/nodelet logs) on failure
         if: failure() || steps.e2e.outputs.exit_code != '0'
+        env:
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: bash deploy/lib/e2e-debug-dump.sh
 
       - name: Publish results to the e2e-results branch

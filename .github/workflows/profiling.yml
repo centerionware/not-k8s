@@ -122,7 +122,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
         run: |
@@ -166,7 +166,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download all measurements
         uses: actions/download-artifact@v4
@@ -208,7 +208,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # Round 124 (found live in CI): a *separate* `git clone` into a
           # fresh WORKDIR doesn't inherit whatever credential setup
-          # actions/checkout@v4 did for the already-checked-out repo --
+          # actions/checkout@v5 did for the already-checked-out repo --
           # that clone had no way to authenticate the later `git push` at
           # all ("could not read Username for 'https://github.com'").
           # Embedding the real token in the clone/push URL itself is what

@@ -403,14 +403,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
                         pods.insert(format!("{ns}/{}", pod.name_any()), pod);
-                        for (key, ds) in daemon_sets.iter().filter(|(_, ds)| ns_of(*ds) == ns) {
+                        for (key, _ds) in daemon_sets.iter().filter(|(_, ds)| ns_of(*ds) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         pods.remove(&format!("{ns}/{}", pod.name_any()));
-                        for (key, ds) in daemon_sets.iter().filter(|(_, ds)| ns_of(*ds) == ns) {
+                        for (key, _ds) in daemon_sets.iter().filter(|(_, ds)| ns_of(*ds) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }

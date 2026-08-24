@@ -25,8 +25,9 @@ use anyhow::{bail, Context, Result};
 
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
-/// service-reconciler -> manifests -> nodelet TLS/CNI readiness -> rbac and
-/// the replacement control-plane services.
+/// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
+/// and nodecontroller -> CNI readiness -> nodescheduler and the remaining
+/// replacement services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
@@ -48,6 +49,9 @@ use anyhow::{bail, Context, Result};
 /// produce a burst of 403/EOF/410 warnings before the authorizer and watch
 /// caches settle. `rbac` runs immediately before those services, so its
 /// authorizer barrier checks the apiserver instance they will actually use.
+/// `nodecontroller` is the deliberate exception to the CNI barrier: its
+/// node-ipam controller allocates the PodCIDR that flanneld needs before it
+/// can lease this node a subnet.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
@@ -73,14 +77,16 @@ pub fn run_all() -> Result<()> {
     if !cfg.skip_nodelet {
         services::ensure_nodelet(&cfg)?;
         if !cfg.skip_control_plane && cfg.with_cri {
-            cni::wait_for_flannel_subnet(&cfg)?;
             targets::enable_nodelet_proxy(&cfg)?;
         }
     }
     if !cfg.skip_control_plane {
         rbac::run_with(&cfg)?;
-        services::ensure_nodescheduler(&cfg)?;
         services::ensure_nodecontroller(&cfg)?;
+        if !cfg.skip_nodelet && cfg.with_cri {
+            cni::wait_for_flannel_subnet(&cfg)?;
+        }
+        services::ensure_nodescheduler(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())
