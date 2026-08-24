@@ -181,7 +181,7 @@ pub(super) async fn namespace_controller_deletes_contents_before_finalizing(
         data: Some(std::collections::BTreeMap::from([(
             "proof".to_string(),
             "namespace-controller".to_string(),
-        ])),
+        )])),
         ..Default::default()
     };
     configmaps
