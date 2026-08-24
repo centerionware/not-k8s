@@ -105,8 +105,8 @@ patch_hostpath_deploy_tooling() {
     # manifest but warns because port names must be unique within a Pod.
     # Rename only the registrar's port and its matching probe.
     sed -i \
-        -e '/- name: node-driver-registrar/,/- name: liveness-probe/ s/name: healthz/name: registrar-healthz/' \
-        -e '/- name: node-driver-registrar/,/- name: liveness-probe/ s/port: healthz/port: registrar-healthz/' \
+        -e '/- name: node-driver-registrar/,/- name: liveness-probe/ s/name: healthz/name: reg-healthz/' \
+        -e '/- name: node-driver-registrar/,/- name: liveness-probe/ s/port: healthz/port: reg-healthz/' \
         "$plugin_yaml"
 }
 

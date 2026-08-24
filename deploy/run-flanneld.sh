@@ -37,6 +37,22 @@ IPV6_CLUSTER_CIDR="${IPV6_CLUSTER_CIDR:-fd00:42::/56}"
 
 mkdir -p /etc/kube-flannel /run/flannel
 
+# nodecontroller owns PodCIDR allocation and nodelet owns Node registration.
+# Starting flanneld before both exist only makes it exit once with the noisy
+# "pod cidr not assigned" error before systemd retries it. Wait here instead:
+# the service stays supervised, but the first flanneld process starts only
+# when its lease can actually succeed. This is especially important because
+# nodebootstrap deliberately starts nodecontroller before CNI to break the
+# node-IPAM/flannel dependency cycle.
+if [[ -n "${NODE_NAME:-}" ]]; then
+    echo "==> waiting for nodecontroller to assign a PodCIDR to $NODE_NAME"
+    while ! pod_cidr="$(kubectl --kubeconfig "$KUBECONFIG" get node "$NODE_NAME" \
+        -o jsonpath='{.spec.podCIDR}' 2>/dev/null)" || [[ -z "$pod_cidr" ]]; do
+        sleep 2
+    done
+    echo "==> node PodCIDR ready: $pod_cidr"
+fi
+
 v4_net="" v6_net=""
 [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv4" ]] && v4_net="$IPV4_CLUSTER_CIDR"
 [[ "$IP_FAMILY" == "dual" || "$IP_FAMILY" == "ipv6" ]] && v6_net="$IPV6_CLUSTER_CIDR"

@@ -99,6 +99,12 @@ echo "── kube-apiserver.service ──"
 sudo systemctl status kube-apiserver.service --no-pager -l 2>&1 || echo "(kube-apiserver.service not found/not running)"
 
 echo ""
+echo "── kube-apiserver.service logs: requests/readiness (last 300 lines) ──"
+sudo journalctl -u kube-apiserver.service --no-pager -n 300 2>&1 \
+    | grep -iE "429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed" \
+    || echo "(no matching lines in the last 300)"
+
+echo ""
 # A stuck CSI attach (VolumeAttachment never created, or created but never
 # Attached) is invisible without the controller journal: nodelet and the
 # scheduler show only the two ends of that pipe.
