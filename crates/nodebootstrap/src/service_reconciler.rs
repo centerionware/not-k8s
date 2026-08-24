@@ -54,3 +54,87 @@ fn verify_kubernetes_service(kubeconfig: &std::path::Path) -> Result<()> {
     );
     Ok(())
 }
+
+/// The first apiserver starts before CNI exists and may publish its loopback
+/// fallback.  The later network-address handoff restarts the apiserver with
+/// the CNI gateway, but the bootstrap controller keeps the old endpoint while
+/// it reconciles multiple advertised addresses.  Remove that stale object so
+/// the restarted controller can recreate one valid endpoint instead of
+/// rejecting the object forever because it still contains 127.0.0.1.
+pub fn reset_and_wait_for_reachable_endpoint(kubeconfig: &std::path::Path) -> Result<()> {
+    let output = std::process::Command::new("kubectl")
+        .args([
+            "--kubeconfig",
+            &kubeconfig.to_string_lossy(),
+            "delete",
+            "endpoints",
+            "kubernetes",
+            "-n",
+            "default",
+            "--ignore-not-found=true",
+        ])
+        .output()
+        .context("deleting the stale kubernetes Endpoints object")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to clear the stale 'kubernetes' Endpoints object: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    for _ in 0..30 {
+        let output = std::process::Command::new("kubectl")
+            .args([
+                "--kubeconfig",
+                &kubeconfig.to_string_lossy(),
+                "get",
+                "endpoints",
+                "kubernetes",
+                "-n",
+                "default",
+                "-o",
+                "jsonpath={.subsets[*].addresses[*].ip}",
+            ])
+            .output()
+            .context("checking the recreated kubernetes Endpoints object")?;
+        let addresses = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && has_only_reachable_addresses(&addresses) {
+            tracing::info!(addresses = %addresses.trim(), "kubernetes Service endpoint is reachable from pods");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    anyhow::bail!(
+        "the apiserver did not recreate a reachable 'kubernetes' Endpoints object within 30s; check the kube-apiserver bootstrap-controller logs"
+    )
+}
+
+fn has_only_reachable_addresses(addresses: &str) -> bool {
+    let mut found = false;
+    for address in addresses.split_whitespace() {
+        let Ok(address) = address.parse::<std::net::IpAddr>() else {
+            return false;
+        };
+        found = true;
+        if address.is_loopback() {
+            return false;
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_only_reachable_addresses;
+
+    #[test]
+    fn rejects_stale_loopback_endpoint() {
+        assert!(!has_only_reachable_addresses("10.42.0.1 127.0.0.1"));
+    }
+
+    #[test]
+    fn accepts_cni_gateway_endpoint() {
+        assert!(has_only_reachable_addresses("10.42.0.1"));
+    }
+}
