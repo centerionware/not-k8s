@@ -141,7 +141,8 @@ pub(super) async fn node_status_images_reflects_a_real_pulled_image(
                         image
                             .names
                             .iter()
-                            .any(|name| name.as_str().contains("busybox"))
+                            .flatten()
+                            .any(|name| name.contains("busybox"))
                             && image.size_bytes.is_some_and(|size| size > 0)
                     }))
             }
