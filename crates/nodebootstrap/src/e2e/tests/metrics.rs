@@ -117,10 +117,11 @@ async fn endpoint_body(context: &E2eContext, pod_name: &str, path: &str) -> Resu
             },
         )
         .await?;
-    body.lock()
+    let body = body
+        .lock()
         .expect("metrics body mutex poisoned")
-        .clone()
-        .context("metrics endpoint disappeared after the wait predicate succeeded")
+        .clone();
+    body.context("metrics endpoint disappeared after the wait predicate succeeded")
 }
 
 pub(super) async fn stats_summary_returns_real_pod_usage(context: &E2eContext) -> Result<()> {
