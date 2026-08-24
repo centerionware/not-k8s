@@ -154,9 +154,10 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
     }
     if command.e2e {
         anyhow::ensure!(command.subcommand.is_none(), "--e2e cannot be combined with a subcommand");
-        return e2e::run(command.only.as_deref());
+        return e2e::run(command.only.as_deref(), command.shard.as_deref());
     }
     anyhow::ensure!(command.only.is_none(), "--only is only valid with --e2e");
+    anyhow::ensure!(command.shard.is_none(), "--shard is only valid with --e2e");
     apply_root_reexec(args, embedded)?;
     dispatch(command.subcommand.as_deref())
 }
@@ -175,6 +176,7 @@ struct ParsedArgs {
     subcommand: Option<String>,
     e2e: bool,
     only: Option<String>,
+    shard: Option<String>,
     help: bool,
 }
 
@@ -192,6 +194,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
         if let Some(value) = arg.strip_prefix("--only=") {
             anyhow::ensure!(!value.is_empty(), "--only requires a test name or substring");
             parsed.only = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--shard=") {
+            anyhow::ensure!(!value.is_empty(), "--shard requires N/5");
+            parsed.shard = Some(value.to_string());
             continue;
         }
         if arg == "--without-cri" {
@@ -357,6 +364,7 @@ fn print_help() {
     println!("  --cni=none             use an externally-managed CNI");
     println!("  --e2e                  run bootstrap-native end-to-end checks");
     println!("  --only=TEST[,TEST...]  select e2e tests by name substring");
+    println!("  --shard=N/5            run one of the five CI e2e shards");
     println!("  --skip-control-plane   only stage services against an existing cluster");
     println!("  --skip-nodelet         do not install nodelet");
     println!("  -h, --help             show this help");

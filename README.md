@@ -37,6 +37,7 @@ Common commands after downloading the release binary:
 ./bootstrap --release              # update from the latest published assets
 ./bootstrap --e2e                   # run bootstrap-native checks against the cluster
 ./bootstrap --e2e --only=node       # run one check by name substring
+./bootstrap --e2e --shard=1/5       # run one CI shard (normally set by GitHub Actions)
 ```
 
 `--e2e` does not install or restart anything. It uses `$KUBECONFIG` when set,

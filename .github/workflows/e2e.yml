@@ -1,8 +1,8 @@
 name: Bootstrap e2e
 
 # Manual real-infrastructure validation for the Rust bootstrap applet. The
-# former shell harness and its shard matrix were removed in the 0.7.1
-# cutover; `bootstrap --e2e` is now the only repository-owned e2e entrypoint.
+# Rust runner keeps the former five-way CI shape: CSI/DRA tests are assigned
+# across shards 1-2, while all other tests are assigned across shards 1-5.
 on:
   workflow_dispatch:
     inputs:
@@ -22,6 +22,20 @@ permissions:
 
 jobs:
   e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            needs_drivers: true
+          - shard: 2
+            needs_drivers: true
+          - shard: 3
+            needs_drivers: false
+          - shard: 4
+            needs_drivers: false
+          - shard: 5
+            needs_drivers: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -56,7 +70,7 @@ jobs:
           ONLY: ${{ inputs.only }}
         run: |
           set -euo pipefail
-          args=(bootstrap --e2e)
+          args=(bootstrap --e2e --shard=${{ matrix.shard }}/5)
           [[ -z "$ONLY" ]] || args+=("--only=$ONLY")
           ./target/debug/notk8s "${args[@]}"
 

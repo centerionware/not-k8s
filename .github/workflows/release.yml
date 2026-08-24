@@ -1,8 +1,9 @@
 name: Release pipeline
 
 # Manual only: this workflow builds and publishes the Rust binaries after a
-# real bootstrap-native e2e check. The former shell installer and shell e2e
-# stages were removed in the 0.7.1 cutover.
+# real bootstrap-native e2e check. The Rust e2e registry retains the former
+# five-way layout: CSI/DRA tests use shards 1-2, and ordinary tests use all
+# five shards.
 on:
   workflow_dispatch:
 
@@ -51,6 +52,20 @@ jobs:
 
   e2e:
     needs: build-and-test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            needs_drivers: true
+          - shard: 2
+            needs_drivers: true
+          - shard: 3
+            needs_drivers: false
+          - shard: 4
+            needs_drivers: false
+          - shard: 5
+            needs_drivers: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -76,7 +91,7 @@ jobs:
       - name: Run bootstrap-native e2e checks
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-        run: ./dist-bin/notk8s bootstrap --e2e
+        run: ./dist-bin/notk8s bootstrap --e2e --shard=${{ matrix.shard }}/5
       - name: Dump bootstrap service state on failure
         if: failure()
         run: |

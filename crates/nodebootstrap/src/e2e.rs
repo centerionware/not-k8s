@@ -2,9 +2,10 @@
 //!
 //! This is the 0.7.1 migration seam from the shell e2e suite: checks live in
 //! the bootstrap applet, use the Kubernetes API directly, and do not assume
-//! k3s-specific flags, paths, services, or command wrappers. The test list is
-//! intentionally small in this first slice; each migrated shell case should
-//! become another entry here rather than growing a second shell-only harness.
+//! k3s-specific flags, paths, services, or command wrappers. Each migrated
+//! shell case becomes another entry here, with the metadata used
+//! by CI to keep CSI/DRA setup together instead of scattering it across every
+//! runner.
 
 use anyhow::{bail, Context, Result};
 use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
@@ -14,31 +15,53 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::time::Instant;
 
-const TESTS: &[&str] = &[
-    "apiserver_serves_resources",
-    "node_is_ready",
-    "kubernetes_service_has_reachable_endpoint",
+const CSI_DRA_SHARDS: usize = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestGroup {
+    General,
+    CsiDra,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TestCase {
+    name: &'static str,
+    group: TestGroup,
+}
+
+const TESTS: &[TestCase] = &[
+    TestCase { name: "apiserver_serves_resources", group: TestGroup::General },
+    TestCase { name: "node_is_ready", group: TestGroup::General },
+    TestCase { name: "kubernetes_service_has_reachable_endpoint", group: TestGroup::General },
 ];
 
 /// Run the selected bootstrap-native checks without re-running installation
 /// or re-executing through sudo. This mode is deliberately safe to invoke on
 /// an already-running cluster as an ordinary user.
-pub fn run(only: Option<&str>) -> Result<()> {
+pub fn run(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     select_kubeconfig()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building the bootstrap e2e runtime")?;
-    runtime.block_on(run_async(only))
+    runtime.block_on(run_async(only, shard))
 }
 
-async fn run_async(only: Option<&str>) -> Result<()> {
-    let selected = select_tests(only)?;
+async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
+    let selected = select_tests(only, shard)?;
+    if selected.is_empty() {
+        println!("bootstrap e2e: no tests selected for this shard");
+        return Ok(());
+    }
     let client = Client::try_default()
         .await
         .context("loading the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first")?;
 
-    println!("bootstrap e2e: {} test(s)", selected.len());
+    if let Some(shard) = shard {
+        println!("bootstrap e2e: {} test(s), shard {shard}", selected.len());
+    } else {
+        println!("bootstrap e2e: {} test(s)", selected.len());
+    }
     let mut failures = Vec::new();
     let mut passed = 0;
     for name in selected {
@@ -87,20 +110,70 @@ fn select_kubeconfig() -> Result<()> {
     Ok(())
 }
 
-fn select_tests(only: Option<&str>) -> Result<Vec<&'static str>> {
-    let Some(only) = only else {
-        return Ok(TESTS.to_vec());
-    };
-    let patterns: Vec<&str> = only.split(',').filter(|pattern| !pattern.is_empty()).collect();
-    let selected: Vec<&'static str> = TESTS
-        .iter()
-        .copied()
-        .filter(|name| patterns.iter().any(|pattern| name.contains(pattern)))
+fn select_tests(only: Option<&str>, shard: Option<&str>) -> Result<Vec<&'static str>> {
+    let shard = shard.map(parse_shard).transpose()?;
+    let patterns: Vec<&str> = only
+        .unwrap_or_default()
+        .split(',')
+        .filter(|pattern| !pattern.is_empty())
         .collect();
-    if selected.is_empty() {
-        bail!("--only={only} selected no bootstrap e2e tests; available tests: {}", TESTS.join(", "));
+
+    if let Some(only) = only {
+        let matches_any = TESTS.iter().any(|test| patterns.iter().any(|pattern| test.name.contains(pattern)));
+        if !matches_any {
+            bail!(
+                "--only={only} selected no bootstrap e2e tests; available tests: {}",
+                test_names().join(", ")
+            );
+        }
+    }
+
+    let mut general_position = 0;
+    let mut csi_dra_position = 0;
+    let mut selected = Vec::new();
+    for test in TESTS {
+        let selected_for_shard = match shard {
+            None => true,
+            Some(shard) => match test.group {
+                TestGroup::General => {
+                    let selected = general_position % shard.total == shard.index - 1;
+                    general_position += 1;
+                    selected
+                }
+                TestGroup::CsiDra => {
+                    let selected = shard.index <= CSI_DRA_SHARDS
+                        && csi_dra_position % CSI_DRA_SHARDS == shard.index - 1;
+                    csi_dra_position += 1;
+                    selected
+                }
+            },
+        };
+        if selected_for_shard && (only.is_none() || patterns.iter().any(|pattern| test.name.contains(pattern))) {
+            selected.push(test.name);
+        }
     }
     Ok(selected)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Shard {
+    index: usize,
+    total: usize,
+}
+
+fn parse_shard(value: &str) -> Result<Shard> {
+    let (index, total) = value
+        .split_once('/')
+        .with_context(|| format!("invalid --shard={value}; expected N/5"))?;
+    let index = index.parse::<usize>().with_context(|| format!("invalid shard index in --shard={value}"))?;
+    let total = total.parse::<usize>().with_context(|| format!("invalid shard total in --shard={value}"))?;
+    anyhow::ensure!(total > 0 && index > 0 && index <= total, "invalid --shard={value}; expected 1 <= N <= total");
+    anyhow::ensure!(total == 5, "invalid --shard={value}; CI uses exactly five e2e shards");
+    Ok(Shard { index, total })
+}
+
+fn test_names() -> Vec<&'static str> {
+    TESTS.iter().map(|test| test.name).collect()
 }
 
 async fn run_test(name: &str, client: Client) -> Result<()> {
@@ -163,19 +236,34 @@ mod tests {
 
     #[test]
     fn no_filter_selects_the_initial_bootstrap_checks() {
-        assert_eq!(select_tests(None).unwrap(), TESTS.to_vec());
+        assert_eq!(select_tests(None, None).unwrap(), test_names());
     }
 
     #[test]
     fn only_matches_test_name_substrings_and_comma_separates() {
         assert_eq!(
-            select_tests(Some("node_is_ready,kubernetes_service")).unwrap(),
+            select_tests(Some("node_is_ready,kubernetes_service"), None).unwrap(),
             vec!["node_is_ready", "kubernetes_service_has_reachable_endpoint"]
         );
     }
 
     #[test]
     fn an_unknown_only_pattern_is_an_error() {
-        assert!(select_tests(Some("does_not_exist")).is_err());
+        assert!(select_tests(Some("does_not_exist"), None).is_err());
+    }
+
+    #[test]
+    fn general_tests_are_round_robined_across_five_shards() {
+        assert_eq!(select_tests(None, Some("1/5")).unwrap(), vec!["apiserver_serves_resources"]);
+        assert_eq!(select_tests(None, Some("2/5")).unwrap(), vec!["node_is_ready"]);
+        assert_eq!(select_tests(None, Some("3/5")).unwrap(), vec!["kubernetes_service_has_reachable_endpoint"]);
+        assert!(select_tests(None, Some("4/5")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn shard_parser_requires_the_five_way_ci_layout() {
+        assert_eq!(parse_shard("2/5").unwrap(), Shard { index: 2, total: 5 });
+        assert!(parse_shard("0/5").is_err());
+        assert!(parse_shard("1/4").is_err());
     }
 }

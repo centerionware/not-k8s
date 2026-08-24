@@ -149,6 +149,7 @@ Common post-install commands are:
 ```bash
 ./bootstrap --e2e
 ./bootstrap --e2e --only=node
+./bootstrap --e2e --shard=1/5       # CI: one of five deterministic shards
 KUBECONFIG=/path/to/cluster.kubeconfig ./bootstrap --e2e
 ```
 
@@ -168,6 +169,10 @@ wrappers. The initial checks cover apiserver resource serving, node readiness,
 and the apiserver's reachable `default/kubernetes` endpoint. The old shell
 suite is no longer part of the build or release gate; each missing feature
 assertion must be ported into this registry before it is considered restored.
+GitHub Actions runs five independent bootstrap clusters: CSI/DRA cases are
+balanced across shards 1-2, and all other cases are balanced across shards
+1-5. `--only` is applied after the stable shard assignment, so a filtered CI
+run tests the same shard as an unfiltered run.
 
 ## Phasing / merge protocol
 
