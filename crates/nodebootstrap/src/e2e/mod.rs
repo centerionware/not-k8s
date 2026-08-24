@@ -508,6 +508,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_headless_service_does_not_break_other_services",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_clusterip_is_reachable_from_inside_a_pod",
         group: TestGroup::General,
     },
@@ -988,6 +992,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_service_with_no_endpoints_does_not_wedge_the_ruleset" => {
             service_proxy::service_with_no_endpoints_does_not_wedge_the_ruleset(context).await
+        }
+        "test_headless_service_does_not_break_other_services" => {
+            service_proxy::headless_service_does_not_break_other_services(context).await
         }
         "test_clusterip_is_reachable_from_inside_a_pod" => {
             service_proxy::clusterip_is_reachable_from_inside_a_pod(context).await

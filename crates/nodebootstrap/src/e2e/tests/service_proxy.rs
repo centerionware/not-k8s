@@ -40,12 +40,23 @@ async fn create_service(
     port: i32,
     node_port: Option<i32>,
 ) -> Result<()> {
+    create_service_for_selector(context, name, service_type, port, node_port, name).await
+}
+
+async fn create_service_for_selector(
+    context: &E2eContext,
+    name: &str,
+    service_type: &str,
+    port: i32,
+    node_port: Option<i32>,
+    selector: &str,
+) -> Result<()> {
     let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
     let mut service = json!({
         "apiVersion": "v1",
         "kind": "Service",
         "metadata": {"name": name},
-        "spec": {"type": service_type, "selector": {"app": name}, "ports": [{"name": "http", "port": port, "targetPort": 8080}]}
+        "spec": {"type": service_type, "selector": {"app": selector}, "ports": [{"name": "http", "port": port, "targetPort": 8080}]}
     });
     if let Some(node_port) = node_port {
         service["spec"]["ports"][0]["nodePort"] = json!(node_port);
@@ -161,6 +172,75 @@ pub(super) async fn service_with_no_endpoints_does_not_wedge_the_ruleset(
                     .await?
                     .items;
                 Ok(!items.is_empty() && items.iter().all(|slice| slice.endpoints.is_empty()))
+            }
+        })
+        .await
+}
+
+pub(super) async fn headless_service_does_not_break_other_services(
+    context: &E2eContext,
+) -> Result<()> {
+    let headless_backend = "headless-backend";
+    create_backend(context, headless_backend).await?;
+    create_service_for_selector(
+        context,
+        "headless-service",
+        "ClusterIP",
+        18094,
+        None,
+        headless_backend,
+    )
+    .await?;
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    let cluster_ip = services
+        .get("headless-service")
+        .await?
+        .spec
+        .and_then(|spec| spec.cluster_ip);
+    anyhow::ensure!(
+        cluster_ip.as_deref() == Some("None"),
+        "headless Service did not receive clusterIP=None: {cluster_ip:?}"
+    );
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("headless Service EndpointSlice", Duration::from_secs(60), || {
+            let slices = slices.clone();
+            async move {
+                Ok(slices
+                    .list(&ListParams::default().labels(&format!(
+                        "kubernetes.io/service-name=headless-service"
+                    )))
+                    .await?
+                    .items
+                    .iter()
+                    .any(|slice| {
+                        !slice.endpoints.is_empty()
+                            && slice
+                                .endpoints
+                                .iter()
+                                .any(|endpoint| !endpoint.addresses.is_empty())
+                    }))
+            }
+        })
+        .await?;
+
+    let probe = "headless-probe";
+    create_backend(context, probe).await?;
+    create_service(context, probe, "ClusterIP", 18095, None).await?;
+    context
+        .wait_until("normal Service beside headless Service", Duration::from_secs(90), || {
+            let services = services.clone();
+            async move {
+                let cluster_ip = services
+                    .get(probe)
+                    .await?
+                    .spec
+                    .and_then(|spec| spec.cluster_ip)
+                    .filter(|ip| !ip.is_empty());
+                let Some(cluster_ip) = cluster_ip else {
+                    return Ok(false);
+                };
+                receives_marker(&format!("{cluster_ip}:18095")).await
             }
         })
         .await
