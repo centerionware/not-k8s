@@ -18,8 +18,14 @@ mod batch;
 mod context;
 #[path = "tests/daemonset.rs"]
 mod daemonset;
+#[path = "tests/disruption.rs"]
+mod disruption;
 #[path = "tests/deployment.rs"]
 mod deployment;
+#[path = "tests/endpoint_slice.rs"]
+mod endpoint_slice;
+#[path = "tests/garbage_collection.rs"]
+mod garbage_collection;
 #[path = "tests/node_status.rs"]
 mod node_status;
 #[path = "tests/namespace.rs"]
@@ -100,6 +106,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_disruption_controller_computes_pdb_status",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_node_is_ready_with_capacity_advertised",
         group: TestGroup::General,
     },
@@ -161,6 +171,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_resourcequota_used_pods_tracks_actual_pod_count",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_endpointslice_is_produced_for_a_selected_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods",
         group: TestGroup::General,
     },
 ];
@@ -362,6 +380,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_runtime_class_handler_is_honored" => {
             runtime_class::runtime_class_handler_is_honored(context).await
         }
+        "test_disruption_controller_computes_pdb_status" => {
+            disruption::disruption_controller_computes_pdb_status(context).await
+        }
         "test_node_is_ready_with_capacity_advertised" => {
             node_status::node_is_ready_with_capacity_advertised(context).await
         }
@@ -405,6 +426,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_resourcequota_used_pods_tracks_actual_pod_count" => {
             resource_quota::resourcequota_used_pods_tracks_actual_pod_count(context).await
+        }
+        "test_endpointslice_is_produced_for_a_selected_pod" => {
+            endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await
+        }
+        "test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods" => {
+            garbage_collection::garbage_collector_cascades_deployment_delete_to_replicaset_and_pods(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
