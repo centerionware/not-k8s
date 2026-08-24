@@ -86,6 +86,8 @@ mod statefulset;
 mod storage;
 #[path = "tests/streaming.rs"]
 mod streaming;
+#[path = "tests/termination.rs"]
+mod termination;
 #[path = "tests/volumes.rs"]
 mod volumes;
 
@@ -627,6 +629,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_metrics_cadvisor_returns_real_container_usage",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_slow_terminating_pod_does_not_stall_another_pods_creation",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_recreated_pod_survives_the_old_pods_detached_teardown",
         group: TestGroup::General,
     },
 ];
@@ -1173,6 +1183,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_metrics_cadvisor_returns_real_container_usage" => {
             metrics::metrics_cadvisor_returns_real_container_usage(context).await
+        }
+        "test_a_slow_terminating_pod_does_not_stall_another_pods_creation" => {
+            termination::slow_terminating_pod_does_not_stall_another_pods_creation(context).await
+        }
+        "test_a_recreated_pod_survives_the_old_pods_detached_teardown" => {
+            termination::recreated_pod_survives_the_old_pods_detached_teardown(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
