@@ -1,7 +1,7 @@
 //! Env-var configuration, matching the other components' style (`nodelet`'s
 //! `config.rs`, `nodeproxy`'s, etc.). The public binary also translates its
 //! installer flags into these variables, so a deployment can be driven either
-//! by `./bootstrap --with-cri` or by an already-supervised subcommand.
+//! by `./bootstrap` (CRI is the default) or by an already-supervised subcommand.
 
 use anyhow::Result;
 

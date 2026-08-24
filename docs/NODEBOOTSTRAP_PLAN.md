@@ -133,11 +133,11 @@ the `nodebootstrap` applet plus the `bootstrap` alias.  The normal install is:
 wget https://github.com/centerionware/not-k8s/releases/download/v0.7.0/notk8s-0.7.0-linux-aarch64-release
 chmod +x notk8s-0.7.0-linux-aarch64-release
 ln -s ./notk8s-0.7.0-linux-aarch64-release bootstrap
-./bootstrap --with-cri
+./bootstrap
 ```
 
 The default command runs the complete bootstrap flow.  CRI is enabled by
-default; `--without-cri` skips containerd and CNI and selects nodelet mock
+default; `--without-cri` is the only CRI-selection flag, skipping containerd and CNI and selecting nodelet mock
 runtime.  `--from-source` uses the same fetched toolchain fallbacks as the
 former source script and can rebuild the installed binaries.  `--update` (or
 `--release`) fetches release assets, and every installed service is restarted

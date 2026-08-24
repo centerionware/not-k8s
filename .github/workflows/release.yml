@@ -145,7 +145,7 @@ jobs:
         # path users get from the published `notk8s` asset.
         run: |
           chmod +x dist-bin/notk8s
-          sudo -E ./dist-bin/notk8s nodebootstrap --with-cri \
+          sudo -E ./dist-bin/notk8s nodebootstrap \
             --layout=combined \
             --proxy=nodeproxy \
             --datastore=nodestore \

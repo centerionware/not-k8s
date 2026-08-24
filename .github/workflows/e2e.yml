@@ -160,7 +160,7 @@ jobs:
           set -e
           cargo build --features cri -p notk8s
           if [[ -z "$LAYOUT" || "$LAYOUT" == combined ]]; then
-            sudo -E ./target/debug/notk8s nodebootstrap --with-cri --layout=combined --proxy="$PROXY" \
+            sudo -E ./target/debug/notk8s nodebootstrap --layout=combined --proxy="$PROXY" \
               --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller
           else
             cargo build --features cri -p nodelet
@@ -175,7 +175,7 @@ jobs:
               NOTK8S_NODESTORE_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodestore" \
               NOTK8S_NODESCHEDULER_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodescheduler" \
               NOTK8S_NODECONTROLLER_PREBUILT="$GITHUB_WORKSPACE/target/debug/nodecontroller" \
-              ./target/debug/nodebootstrap --with-cri --layout=split --proxy="$PROXY" \
+              ./target/debug/nodebootstrap --layout=split --proxy="$PROXY" \
                 --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller
           fi
 

@@ -194,11 +194,6 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             parsed.only = Some(value.to_string());
             continue;
         }
-        if arg == "--with-cri" {
-            std::env::set_var("NODEBOOTSTRAP_WITH_CRI", "1");
-            std::env::set_var("NODELET_RUNTIME", "cri");
-            continue;
-        }
         if arg == "--without-cri" {
             std::env::set_var("NODEBOOTSTRAP_WITH_CRI", "0");
             std::env::set_var("NODELET_RUNTIME", "mock");
@@ -353,7 +348,6 @@ fn print_help() {
     println!("RBAC, kubeconfigs, and CoreDNS. Existing services are restarted.");
     println!();
     println!("Options:");
-    println!("  --with-cri             use the real containerd/CRI runtime (default)");
     println!("  --without-cri          skip containerd/CNI and use nodelet's mock runtime");
     println!("  --from-source          build components from this checkout");
     println!("  --release [--tag=TAG]  fetch published component binaries");
@@ -369,4 +363,21 @@ fn print_help() {
     println!("Subcommands: all, toolchain, containerd, cni, fetch, pki, kubeconfig,");
     println!("targets, rbac, service-reconciler, manifests, services, nodestore,");
     println!("nodelet, nodeproxy, nodescheduler, nodecontroller");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args;
+
+    #[test]
+    fn cri_is_selected_by_default_without_a_positive_flag() {
+        let parsed = parse_args(&[]).expect("default arguments should parse");
+        assert!(!parsed.e2e);
+        assert!(parsed.only.is_none());
+    }
+
+    #[test]
+    fn with_cri_is_not_a_nodebootstrap_flag() {
+        assert!(parse_args(&["--with-cri".to_string()]).is_err());
+    }
 }

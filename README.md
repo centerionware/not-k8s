@@ -26,13 +26,13 @@ It's going to be something like
 wget https://github.com/centerionware/not-k8s/releases/download/v0.7.0/notk8s-0.7.0-linux-aarch64-release
 chmod +x notk8s-0.7.0-linux-aarch64-release
 ln -s ./notk8s-0.7.0-linux-aarch64-release bootstrap
-./bootstrap --with-cri
+./bootstrap
 ```
 
 Common commands after downloading the release binary:
 
 ```bash
-./bootstrap --with-cri             # install or update the stack
+./bootstrap                         # install or update the stack (CRI is the default)
 ./bootstrap --release              # update from the latest published assets
 ./bootstrap --e2e                   # run bootstrap-native checks against the cluster
 ./bootstrap --e2e --only=node       # run one check by name substring
