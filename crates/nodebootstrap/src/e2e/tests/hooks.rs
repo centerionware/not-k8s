@@ -3,6 +3,7 @@ use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
@@ -121,11 +122,13 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
         context,
         name,
         json!({
+            "volumes": [{"name": "shared", "emptyDir": {}}],
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
                 "command": ["sh", "-c", "trap 'echo got-usr1 > /dev/termination-log; exit 7' USR1; sleep 3600"],
-                "lifecycle": {"stopSignal": "SIGUSR1"}
+                "lifecycle": {"stopSignal": "SIGUSR1"},
+                "volumeMounts": [{"name": "shared", "mountPath": "/shared"}]
             }],
             "os": {"name": "linux"}
         }),
@@ -145,23 +148,30 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
             }
         })
         .await?;
-    add_deletion_finalizer(&pods, name).await?;
+    let pod_uid = pods
+        .get(name)
+        .await?
+        .metadata
+        .uid
+        .ok_or_else(|| anyhow::anyhow!("stop-signal Pod has no UID"))?;
+    let marker = PathBuf::from("/var/lib/nodelet/pods")
+        .join(pod_uid)
+        .join("volumes/shared/signal.txt");
     pods.delete(name, &DeleteParams::default()).await?;
     let result = context
         .wait_until(
             "configured stop signal termination message",
             Duration::from_secs(90),
             || {
-                let context = context.clone();
+                let marker = marker.clone();
                 async move {
-                    Ok(termination_message(&context, name)
-                        .await?
-                        .is_some_and(|message| message.trim() == "got-usr1"))
+                    Ok(std::fs::read_to_string(&marker)
+                        .is_ok_and(|message| message.trim() == "got-usr1"))
                 }
             },
         )
         .await;
-    release_deletion_finalizer(&pods, name).await?;
+    let _ = std::fs::remove_file(marker);
     result
 }
 
