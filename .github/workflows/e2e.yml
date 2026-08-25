@@ -111,6 +111,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@v4
         with:
@@ -153,8 +155,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-        with:
-          persist-credentials: false
 
       - uses: actions/download-artifact@v4
         with:
