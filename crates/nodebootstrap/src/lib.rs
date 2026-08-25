@@ -121,13 +121,19 @@ pub fn run_all() -> Result<()> {
         services::remove_nodelet(&cfg);
     }
     if !cfg.skip_control_plane {
-        rbac::run_with(&cfg)?;
-        services::ensure_nodecontroller(&cfg)?;
-        services::ensure_nodescheduler(&cfg)?;
+        // With flannel, this is the final kube-apiserver restart: the first
+        // instance starts before cni0 exists and advertises loopback, while
+        // pods need the bridge address to reach the apiserver Service. Do it
+        // before RBAC verification and before starting either replacement
+        // controller, otherwise their initial watches can race the restart
+        // and observe transient 403s while the new apiserver reloads RBAC.
         if !cfg.skip_nodelet && cfg.with_cri {
             cni::wait_for_flannel_subnet(&cfg)?;
             targets::refresh_network_advertise_address(&cfg)?;
         }
+        rbac::run_with(&cfg)?;
+        services::ensure_nodecontroller(&cfg)?;
+        services::ensure_nodescheduler(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())
