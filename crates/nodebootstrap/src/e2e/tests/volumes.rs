@@ -83,10 +83,9 @@ async fn exec_in_pod(context: &E2eContext, pod: &str, args: &[&str]) -> Result<(
     process.join().await?;
     let succeeded = match status {
         Some(status) => status.await.is_some_and(|status| {
-            serde_json::to_value(status)
-                .ok()
-                .and_then(|status| status.get("status").and_then(serde_json::Value::as_str))
-                == Some("Success")
+            serde_json::to_value(status).ok().is_some_and(|status| {
+                status.get("status").and_then(serde_json::Value::as_str) == Some("Success")
+            })
         }),
         None => true,
     };
