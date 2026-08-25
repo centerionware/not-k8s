@@ -2,6 +2,7 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, PersistentVolume, PersistentVolumeClaim, Pod};
+use k8s_openapi::api::storage::v1::VolumeAttachment;
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use serde_json::json;
 use std::path::Path;
@@ -425,6 +426,117 @@ pub(super) async fn fsgroup_change_policy_on_root_mismatch_skips_the_second_chow
         })
         .await;
     let _ = pods.delete(second_name, &DeleteParams::default()).await;
+    let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn pod_with_an_attach_required_pvc_waits_for_volumeattachment(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("CSI attach checks require the CRI runtime"));
+    }
+    let storage_class = std::env::var("TEST_CSI_ATTACH_STORAGE_CLASS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            skip_test(
+                "TEST_CSI_ATTACH_STORAGE_CLASS is not set; an attach-required CSI StorageClass is required",
+            )
+        })?;
+    let pod_name = "csi-attach-check";
+    let claim_name = "csi-attach-check-claim";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pvcs: Api<PersistentVolumeClaim> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let attachments: Api<VolumeAttachment> = Api::all(context.client.clone());
+    let claim: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": claim_name},
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": storage_class,
+            "resources": {"requests": {"storage": "64Mi"}}
+        }
+    }))?;
+    pvcs.create(&PostParams::default(), &claim).await?;
+    let bind_result = context
+        .wait_until("attach-required PVC to become Bound", Duration::from_secs(120), || {
+            let pvcs = pvcs.clone();
+            async move {
+                Ok(pvcs
+                    .get(claim_name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Bound"))
+            }
+        })
+        .await;
+    if let Err(error) = bind_result {
+        let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
+        return Err(error);
+    }
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": pod_name},
+        "spec": {
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}],
+            "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": claim_name}}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    let result = async {
+        context
+            .wait_until("attach-required PVC Pod Running", Duration::from_secs(120), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(pod_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        let pv_name = pvcs
+            .get(claim_name)
+            .await?
+            .spec
+            .and_then(|spec| spec.volume_name)
+            .context("attach-required PVC has no bound PV name")?;
+        context
+            .wait_until("VolumeAttachment for the bound PV", Duration::from_secs(60), || {
+                let attachments = attachments.clone();
+                let pv_name = pv_name.clone();
+                async move {
+                    Ok(attachments
+                        .list(&ListParams::default())
+                        .await?
+                        .items
+                        .into_iter()
+                        .any(|attachment| {
+                            attachment
+                                .spec
+                                .source
+                                .persistent_volume_name
+                                .as_deref()
+                                == Some(pv_name.as_str())
+                                && attachment
+                                    .status
+                                    .is_some_and(|status| status.attached)
+                        }))
+                }
+            })
+            .await
+    }
+    .await;
+    let _ = pods.delete(pod_name, &DeleteParams::default()).await;
     let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
     result
 }
