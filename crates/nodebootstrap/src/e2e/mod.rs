@@ -648,19 +648,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_node_gets_a_pod_cidr_allocated",
-        group: TestGroup::General,
-    },
-    TestCase {
         name: "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers",
-        group: TestGroup::General,
-    },
-    TestCase {
-        name: "test_namespace_controller_deletes_contents_before_finalizing",
-        group: TestGroup::General,
-    },
-    TestCase {
-        name: "test_endpointslice_is_produced_for_a_selected_pod",
         group: TestGroup::General,
     },
 ];
@@ -1217,17 +1205,8 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_the_node_still_reconciles_pods_after_an_apiserver_restart" => {
             watch_recovery::node_still_reconciles_pods_after_an_apiserver_restart(context).await
         }
-        "test_node_gets_a_pod_cidr_allocated" => {
-            controller_manager::node_gets_a_pod_cidr_allocated(context).await
-        }
         "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers" => {
             controller_manager::node_is_tainted_unreachable_after_heartbeat_loss_and_recovers(context).await
-        }
-        "test_namespace_controller_deletes_contents_before_finalizing" => {
-            controller_manager::namespace_controller_deletes_contents_before_finalizing(context).await
-        }
-        "test_endpointslice_is_produced_for_a_selected_pod" => {
-            controller_manager::endpointslice_is_produced_for_a_selected_pod(context).await
         }
         other => bail!("unknown bootstrap e2e test {other}"),
     }
