@@ -1390,10 +1390,14 @@ fn select_tests(only: Option<&str>, shard: Option<&str>) -> Result<Vec<&'static 
     // existing shard assignment, but apply the same stable partition inside
     // each shard so an ordinary test never starts while one of these fixtures
     // is still restoring the node.
+    Ok(reorder_environment_reconfiguring_tests(selected))
+}
+
+fn reorder_environment_reconfiguring_tests(selected: Vec<&'static str>) -> Vec<&'static str> {
     let (ordinary, disruptive): (Vec<_>, Vec<_>) = selected
         .into_iter()
         .partition(|name| !is_environment_reconfiguring_test(name));
-    Ok(ordinary.into_iter().chain(disruptive).collect())
+    ordinary.into_iter().chain(disruptive).collect()
 }
 
 fn is_environment_reconfiguring_test(name: &str) -> bool {
@@ -2255,7 +2259,10 @@ mod tests {
 
     #[test]
     fn no_filter_selects_all_registered_bootstrap_checks() {
-        assert_eq!(select_tests(None, None).unwrap(), test_names());
+        assert_eq!(
+            select_tests(None, None).unwrap(),
+            reorder_environment_reconfiguring_tests(test_names())
+        );
     }
 
     #[test]
