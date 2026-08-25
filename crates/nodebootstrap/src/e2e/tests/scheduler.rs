@@ -1,7 +1,9 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
@@ -527,6 +529,214 @@ pub(super) async fn scheduler_honours_topology_spread(context: &E2eContext) -> R
         "topology spread allowed skew 2 in the only eligible topology domain"
     );
     Ok(())
+}
+
+pub(super) async fn scheduler_resolves_a_namespace_selector_against_real_labels(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    require_single_node(context).await?;
+    let helper_namespace = "nodebootstrap-e2e-selector-namespace";
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let _ = namespaces.delete(helper_namespace, &DeleteParams::default()).await;
+    let namespace: Namespace = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {"name": helper_namespace, "labels": {"nodebootstrap-e2e-selector": "other"}}
+    }))?;
+    namespaces.create(&PostParams::default(), &namespace).await?;
+    let other_pods: Api<Pod> = Api::namespaced(context.client.clone(), helper_namespace);
+    let blocker: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "namespace-selector-blocker", "labels": {"nodebootstrap-e2e-selector": "match"}},
+        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"]}]}
+    }))?;
+    other_pods.create(&PostParams::default(), &blocker).await?;
+    context
+        .wait_until("namespaceSelector blocker to be scheduled", Duration::from_secs(90), || {
+            let other_pods = other_pods.clone();
+            async move { Ok(other_pods.get("namespace-selector-blocker").await?.spec.and_then(|spec| spec.node_name).is_some()) }
+        })
+        .await?;
+
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let blocked = "scheduler-namespace-selector-blocked";
+    create_pod(
+        context,
+        blocked,
+        json!({
+            "affinity": {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {"matchLabels": {"nodebootstrap-e2e-selector": "match"}},
+                "namespaceSelector": {"matchLabels": {"nodebootstrap-e2e-selector": "other"}},
+                "topologyKey": "kubernetes.io/hostname"
+            }]}},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"]}]
+        }),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    anyhow::ensure!(!pod_is_scheduled(context, blocked).await?, "namespaceSelector failed to apply the matching namespace");
+
+    let allowed = "scheduler-namespace-selector-allowed";
+    create_pod(
+        context,
+        allowed,
+        json!({
+            "affinity": {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {"matchLabels": {"nodebootstrap-e2e-selector": "match"}},
+                "namespaceSelector": {"matchLabels": {"nodebootstrap-e2e-selector": "does-not-exist"}},
+                "topologyKey": "kubernetes.io/hostname"
+            }]}},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"]}]
+        }),
+    )
+    .await?;
+    let result = context
+        .wait_until("namespaceSelector non-matching Pod to be scheduled", Duration::from_secs(60), || {
+            pod_is_scheduled(context, allowed)
+        })
+        .await;
+    let _ = pods.delete(blocked, &DeleteParams::default()).await;
+    let _ = pods.delete(allowed, &DeleteParams::default()).await;
+    let _ = namespaces.delete(helper_namespace, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn scheduler_schedules_pods_that_get_default_spread_constraints(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    let name = "scheduler-default-spread";
+    let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let service: Service = serde_json::from_value(json!({
+        "apiVersion": "v1", "kind": "Service", "metadata": {"name": name},
+        "spec": {"selector": {"app": name}, "ports": [{"port": 80}]}
+    }))?;
+    services.create(&PostParams::default(), &service).await?;
+    let deployment: Deployment = serde_json::from_value(json!({
+        "apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name},
+        "spec": {"replicas": 2, "selector": {"matchLabels": {"app": name}}, "template": {
+            "metadata": {"labels": {"app": name, "tier": "front"}},
+            "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"]}]}
+        }}
+    }))?;
+    deployments.create(&PostParams::default(), &deployment).await?;
+    let result = context
+        .wait_until("default-spread Deployment Pods to be scheduled", Duration::from_secs(120), || {
+            let pods = pods.clone();
+            async move {
+                let listed = pods.list(&ListParams::default().labels(&format!("app={name}"))).await?;
+                Ok(listed.items.len() == 2 && listed.items.iter().all(|pod| pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_some()))
+            }
+        })
+        .await;
+    let _ = deployments.delete(name, &DeleteParams::default()).await;
+    let _ = services.delete(name, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn scheduler_claims_a_static_wait_for_first_consumer_volume(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    let class_name = "nodebootstrap-e2e-static-wfc";
+    let pv_name = "nodebootstrap-e2e-static-wfc-pv";
+    let pvc_name = "nodebootstrap-e2e-static-wfc-pvc";
+    let pod_name = "nodebootstrap-e2e-static-wfc-pod";
+    let classes: Api<StorageClass> = Api::all(context.client.clone());
+    let pvs: Api<PersistentVolume> = Api::all(context.client.clone());
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let class: StorageClass = serde_json::from_value(json!({
+        "apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": class_name},
+        "provisioner": "kubernetes.io/no-provisioner", "volumeBindingMode": "WaitForFirstConsumer"
+    }))?;
+    classes.create(&PostParams::default(), &class).await?;
+    let pv: PersistentVolume = serde_json::from_value(json!({
+        "apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": pv_name},
+        "spec": {"capacity": {"storage": "64Mi"}, "accessModes": ["ReadWriteOnce"], "storageClassName": class_name, "persistentVolumeReclaimPolicy": "Retain", "hostPath": {"path": "/tmp/nodebootstrap-e2e-static-wfc", "type": "DirectoryOrCreate"}}
+    }))?;
+    pvs.create(&PostParams::default(), &pv).await?;
+    let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": pvc_name},
+        "spec": {"accessModes": ["ReadWriteOnce"], "storageClassName": class_name, "resources": {"requests": {"storage": "32Mi"}}}
+    }))?;
+    pvcs.create(&PostParams::default(), &pvc).await?;
+    let result = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        anyhow::ensure!(pvcs.get(pvc_name).await?.status.and_then(|status| status.phase).as_deref() == Some("Pending"), "WaitForFirstConsumer PVC bound before a Pod selected a node");
+        let pod: Pod = serde_json::from_value(json!({
+            "apiVersion": "v1", "kind": "Pod", "metadata": {"name": pod_name},
+            "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}], "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}]}
+        }))?;
+        pods.create(&PostParams::default(), &pod).await?;
+        context.wait_until("static WaitForFirstConsumer Pod to be scheduled", Duration::from_secs(90), || pod_is_scheduled(context, pod_name)).await?;
+        context.wait_until("static WaitForFirstConsumer PVC to bind", Duration::from_secs(90), || {
+            let pvcs = pvcs.clone();
+            async move { Ok(pvcs.get(pvc_name).await?.status.and_then(|status| status.phase).as_deref() == Some("Bound")) }
+        }).await?;
+        let claim = pvcs.get(pvc_name).await?;
+        anyhow::ensure!(claim.spec.and_then(|spec| spec.volume_name).as_deref() == Some(pv_name), "the binder did not publish the scheduler's static PV choice");
+        Ok(())
+    }.await;
+    let _ = pods.delete(pod_name, &DeleteParams::default()).await;
+    let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
+    let _ = pvs.delete(pv_name, &DeleteParams::default()).await;
+    let _ = classes.delete(class_name, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn scheduler_enforces_read_write_once_pod_exclusivity(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    let Some(class_name) = std::env::var("TEST_CSI_STORAGE_CLASS").ok().filter(|value| !value.is_empty()) else {
+        return Err(skip_test("TEST_CSI_STORAGE_CLASS is not set for the ReadWriteOncePod scheduler case"));
+    };
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("ReadWriteOncePod scheduling requires the CRI runtime"));
+    }
+    let pvc_name = "nodebootstrap-e2e-rwop-pvc";
+    let first = "nodebootstrap-e2e-rwop-first";
+    let second = "nodebootstrap-e2e-rwop-second";
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let claim: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": pvc_name},
+        "spec": {"accessModes": ["ReadWriteOncePod"], "storageClassName": class_name, "resources": {"requests": {"storage": "64Mi"}}}
+    }))?;
+    pvcs.create(&PostParams::default(), &claim).await?;
+    let result = async {
+        context.wait_until("ReadWriteOncePod claim to bind", Duration::from_secs(120), || {
+            let pvcs = pvcs.clone();
+            async move { Ok(pvcs.get(pvc_name).await?.status.and_then(|status| status.phase).as_deref() == Some("Bound")) }
+        }).await?;
+        for name in [first, second] {
+            let pod: Pod = serde_json::from_value(json!({
+                "apiVersion": "v1", "kind": "Pod", "metadata": {"name": name},
+                "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}], "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}]}
+            }))?;
+            pods.create(&PostParams::default(), &pod).await?;
+            if name == first {
+                context.wait_until("first ReadWriteOncePod to be scheduled", Duration::from_secs(90), || pod_is_scheduled(context, first)).await?;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        anyhow::ensure!(!pod_is_scheduled(context, second).await?, "second ReadWriteOncePod consumer was scheduled while the first held the claim");
+        pods.delete(first, &DeleteParams::default()).await?;
+        context.wait_until("first ReadWriteOncePod to disappear", Duration::from_secs(120), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(first).await?.is_none()) }
+        }).await?;
+        context.wait_until("second ReadWriteOncePod to be scheduled after release", Duration::from_secs(90), || pod_is_scheduled(context, second)).await
+    }.await;
+    let _ = pods.delete(first, &DeleteParams::default()).await;
+    let _ = pods.delete(second, &DeleteParams::default()).await;
+    let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn scheduler_respects_a_taint_and_its_toleration(

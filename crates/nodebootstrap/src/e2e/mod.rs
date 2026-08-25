@@ -650,6 +650,22 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_scheduler_resolves_a_namespace_selector_against_real_labels",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_schedules_pods_that_get_default_spread_constraints",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_claims_a_static_wait_for_first_consumer_volume",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_scheduler_enforces_read_write_once_pod_exclusivity",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_restart_policy_never_exit_zero_is_succeeded",
         group: TestGroup::General,
     },
@@ -1559,6 +1575,18 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_respects_a_taint_and_its_toleration" => {
             scheduler::scheduler_respects_a_taint_and_its_toleration(context).await
+        }
+        "test_scheduler_resolves_a_namespace_selector_against_real_labels" => {
+            scheduler::scheduler_resolves_a_namespace_selector_against_real_labels(context).await
+        }
+        "test_scheduler_schedules_pods_that_get_default_spread_constraints" => {
+            scheduler::scheduler_schedules_pods_that_get_default_spread_constraints(context).await
+        }
+        "test_scheduler_claims_a_static_wait_for_first_consumer_volume" => {
+            scheduler::scheduler_claims_a_static_wait_for_first_consumer_volume(context).await
+        }
+        "test_scheduler_enforces_read_write_once_pod_exclusivity" => {
+            scheduler::scheduler_enforces_read_write_once_pod_exclusivity(context).await
         }
         "test_restart_policy_never_exit_zero_is_succeeded" => {
             lifecycle::restart_policy_never_exit_zero_is_succeeded(context).await
