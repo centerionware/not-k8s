@@ -524,6 +524,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_image_volume_source_mounts_a_read_only_image",
         group: TestGroup::General,
     },
@@ -537,6 +541,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_host_path_directory_or_create_creates_missing_directory",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_mount_propagation_host_to_container_still_mounts_normally",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_recursive_read_only_still_mounts_read_only_normally",
         group: TestGroup::General,
     },
     TestCase {
@@ -1139,6 +1151,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_empty_dir_memory_is_backed_by_tmpfs" => {
             volumes::empty_dir_memory_is_backed_by_tmpfs(context).await
         }
+        "test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs" => {
+            volumes::empty_dir_hugepages_is_backed_by_hugetlbfs(context).await
+        }
         "test_image_volume_source_mounts_a_read_only_image" => {
             volumes::image_volume_source_mounts_a_read_only_image(context).await
         }
@@ -1150,6 +1165,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_path_directory_or_create_creates_missing_directory" => {
             volumes::host_path_directory_or_create_creates_missing_directory(context).await
+        }
+        "test_mount_propagation_host_to_container_still_mounts_normally" => {
+            volumes::mount_propagation_host_to_container_still_mounts_normally(context).await
+        }
+        "test_recursive_read_only_still_mounts_read_only_normally" => {
+            volumes::recursive_read_only_still_mounts_read_only_normally(context).await
         }
         "test_sub_path_expr_expands_a_downward_api_env_var" => {
             volumes::sub_path_expr_expands_a_downward_api_env_var(context).await

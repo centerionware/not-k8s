@@ -2,9 +2,10 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::time::Duration;
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
@@ -242,6 +243,55 @@ pub(super) async fn empty_dir_memory_is_backed_by_tmpfs(context: &E2eContext) ->
             }
         })
         .await
+}
+
+pub(super) async fn empty_dir_hugepages_is_backed_by_hugetlbfs(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("HugePages emptyDir checks require the CRI runtime"));
+    }
+    let reserved = std::fs::read_to_string("/proc/sys/vm/nr_hugepages")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or_default();
+    if reserved == 0 {
+        return Err(skip_test(
+            "no hugepages are reserved on this node; HugePages emptyDir cannot be mounted",
+        ));
+    }
+    let name = "empty-dir-hugepages";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "hugepool", "emptyDir": {"medium": "HugePages-2Mi", "sizeLimit": "4Mi"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "resources": {"limits": {"hugepages-2Mi": "4Mi", "memory": "67108864"}}, "command": ["stat", "-f", "-c", "%T", "/huge"], "volumeMounts": [{"name": "hugepool", "mountPath": "/huge"}]}]
+        }),
+    )
+    .await?;
+    let result = async {
+        context
+            .wait_until("HugePages emptyDir to terminate", Duration::from_secs(90), || {
+                let context = context.clone();
+                async move { Ok(terminated_message(&context, name).await?.is_some()) }
+            })
+            .await?;
+        let filesystem = terminated_message(context, name)
+            .await?
+            .unwrap_or_default();
+        anyhow::ensure!(
+            filesystem.trim() == "hugetlbfs",
+            "HugePages emptyDir was backed by {}, not hugetlbfs",
+            filesystem.trim()
+        );
+        Ok(())
+    }
+    .await;
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn image_volume_source_mounts_a_read_only_image(
@@ -488,6 +538,104 @@ pub(super) async fn host_path_directory_type_rejects_a_nonexistent_path(
         .await;
     let _ = std::fs::remove_dir_all(&host_path);
     wait_result
+}
+
+pub(super) async fn mount_propagation_host_to_container_still_mounts_normally(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("mount propagation checks require the CRI runtime"));
+    }
+    let host_path = host_path_test_dir("mount-propagation");
+    std::fs::create_dir_all(&host_path)?;
+    std::fs::write(format!("{host_path}/marker"), "written-by-the-host")?;
+    let from_container = format!("{host_path}/from-container");
+    let name = "mount-propagation-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let create_result = create_pod(
+        context,
+        name,
+        json!({
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "cat /host/marker > /host/from-container; sleep 3600"], "volumeMounts": [{"name": "host", "mountPath": "/host", "mountPropagation": "HostToContainer"}]}]
+        }),
+    )
+    .await;
+    if let Err(error) = create_result {
+        let _ = std::fs::remove_dir_all(&host_path);
+        return Err(error);
+    }
+    let result = async {
+        context
+            .wait_until("mountPropagation Pod Running", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        context
+            .wait_until("mountPropagation container write", Duration::from_secs(40), || {
+                let from_container = from_container.clone();
+                async move { Ok(Path::new(&from_container).is_file()) }
+            })
+            .await?;
+        let content = std::fs::read_to_string(&from_container)?;
+        anyhow::ensure!(
+            content.contains("written-by-the-host"),
+            "mountPropagation Pod could not read the hostPath marker"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    result
+}
+
+pub(super) async fn recursive_read_only_still_mounts_read_only_normally(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("recursive read-only checks require the CRI runtime"));
+    }
+    let host_path = host_path_test_dir("recursive-readonly");
+    std::fs::create_dir_all(&host_path)?;
+    let name = "recursive-readonly-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let create_result = create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "if touch /host/roottest 2>/dev/null; then echo writable > /dev/termination-log; else echo readonly > /dev/termination-log; fi"], "volumeMounts": [{"name": "host", "mountPath": "/host", "readOnly": true, "recursiveReadOnly": "Enabled"}]}]
+        }),
+    )
+    .await;
+    if let Err(error) = create_result {
+        let _ = std::fs::remove_dir_all(&host_path);
+        return Err(error);
+    }
+    let result = context
+        .wait_until("recursiveReadOnly Pod to report readonly", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "readonly"))
+            }
+        })
+        .await;
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    result
 }
 
 pub(super) async fn fsgroup_never_applies_to_hostpath_volumes(
