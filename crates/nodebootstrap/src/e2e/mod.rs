@@ -572,6 +572,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_grpc_probe_gates_readiness_against_a_real_grpc_server",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_configmap_and_secret_volumes_are_materialized",
         group: TestGroup::General,
     },
@@ -1281,6 +1289,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_wrong_port_readiness_probe_keeps_pod_not_ready" => {
             probes::wrong_port_readiness_probe_keeps_pod_not_ready(context).await
+        }
+        "test_grpc_probe_gates_readiness_against_a_real_grpc_server" => {
+            probes::grpc_probe_gates_readiness_against_a_real_grpc_server(context).await
+        }
+        "test_grpc_probe_leaves_pod_not_ready_against_the_wrong_port" => {
+            probes::grpc_probe_leaves_pod_not_ready_against_the_wrong_port(context).await
         }
         "test_configmap_and_secret_volumes_are_materialized" => {
             volumes::configmap_and_secret_volumes_are_materialized(context).await

@@ -1,9 +1,18 @@
 use super::context::E2eContext;
+use super::skip_test;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, PostParams};
 use serde_json::json;
 use std::time::Duration;
+
+fn require_cri() -> Result<()> {
+    anyhow::ensure!(
+        crate::config::Config::from_env()?.nodelet_runtime() == "cri",
+        "gRPC probe checks require the CRI runtime",
+    );
+    Ok(())
+}
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -298,6 +307,84 @@ pub(super) async fn wrong_port_readiness_probe_keeps_pod_not_ready(
     .await?;
     context
         .wait_until("wrong-port readiness probe to report False", Duration::from_secs(90), || {
+            pod_not_ready(context, name)
+        })
+        .await
+}
+
+pub(super) async fn grpc_probe_gates_readiness_against_a_real_grpc_server(
+    context: &E2eContext,
+) -> Result<()> {
+    require_cri().map_err(|error| skip_test(error.to_string()))?;
+    let name = "grpc-probe-check";
+    create_pod(
+        context,
+        name,
+        json!({
+            "containers": [{
+                "name": "etcd",
+                "image": "registry.k8s.io/etcd:3.5.9-0",
+                "command": ["etcd", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://127.0.0.1:2379"],
+                "readinessProbe": {"grpc": {"port": 2379}, "periodSeconds": 2, "failureThreshold": 5, "initialDelaySeconds": 3}
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("gRPC probe Pod to become Running", Duration::from_secs(120), || {
+            let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    context
+        .wait_until("real gRPC health probe to report Ready", Duration::from_secs(90), || {
+            pod_ready(context, name)
+        })
+        .await
+}
+
+pub(super) async fn grpc_probe_leaves_pod_not_ready_against_the_wrong_port(
+    context: &E2eContext,
+) -> Result<()> {
+    require_cri().map_err(|error| skip_test(error.to_string()))?;
+    let name = "grpc-probe-wrong-port-check";
+    create_pod(
+        context,
+        name,
+        json!({
+            "containers": [{
+                "name": "etcd",
+                "image": "registry.k8s.io/etcd:3.5.9-0",
+                "command": ["etcd", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://127.0.0.1:2379"],
+                "readinessProbe": {"grpc": {"port": 9999}, "periodSeconds": 2, "failureThreshold": 1, "initialDelaySeconds": 3}
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("wrong-port gRPC probe Pod to become Running", Duration::from_secs(120), || {
+            let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    context
+        .wait_until("wrong-port gRPC probe to report NotReady", Duration::from_secs(45), || {
             pod_not_ready(context, name)
         })
         .await
