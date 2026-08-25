@@ -55,6 +55,22 @@ pub(super) async fn resource_api_group_is_enabled(context: &E2eContext) -> Resul
     Ok(())
 }
 
+pub(super) async fn plugin_registry_watches_for_dra_drivers_too(
+    _context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("DRA plugin registration checks require the CRI runtime"));
+    }
+    let path = std::env::var("NODELET_PLUGIN_REGISTRY_PATH")
+        .unwrap_or_else(|_| "/var/lib/nodelet/plugins_registry".to_owned());
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(skip_test(format!(
+            "plugin registry directory {path} is not present on this deployment"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) async fn dra_claim_is_allocated_and_reserved_for_the_pod(
     context: &E2eContext,
 ) -> Result<()> {
@@ -139,9 +155,13 @@ pub(super) async fn dra_claim_is_allocated_and_reserved_for_the_pod(
                         .pointer("/metadata/ownerReferences")
                         .and_then(serde_json::Value::as_array)
                         .and_then(|owners| {
-                            owners.iter().any(|owner| {
-                                owner.get("name").and_then(serde_json::Value::as_str) == Some(name)
-                            })
+                            owners
+                                .iter()
+                                .any(|owner| {
+                                    owner.get("name").and_then(serde_json::Value::as_str)
+                                        == Some(name)
+                                })
+                                .then_some(())
                         })
                         .then(|| claim.pointer("/metadata/name"))
                         .flatten()

@@ -14,6 +14,22 @@ fn needs_cri() -> Result<()> {
     Ok(())
 }
 
+pub(super) async fn plugin_registry_watches_for_device_plugins_too(
+    _context: &E2eContext,
+) -> Result<()> {
+    if let Err(error) = needs_cri() {
+        return Err(skip_test(error.to_string()));
+    }
+    let path = std::env::var("NODELET_PLUGIN_REGISTRY_PATH")
+        .unwrap_or_else(|_| "/var/lib/nodelet/plugins_registry".to_owned());
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(skip_test(format!(
+            "plugin registry directory {path} is not present on this deployment"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) async fn allocated_resources_status_absent_without_device_resources(
     context: &E2eContext,
 ) -> Result<()> {

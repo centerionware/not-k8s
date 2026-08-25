@@ -28,6 +28,8 @@ mod cgroup;
 mod component_rbac;
 #[path = "tests/config_file.rs"]
 mod config_file;
+#[path = "tests/credential_provider.rs"]
+mod credential_provider;
 #[path = "tests/controller_manager.rs"]
 mod controller_manager;
 #[path = "tests/csi.rs"]
@@ -151,6 +153,10 @@ struct TestCase {
 const TESTS: &[TestCase] = &[
     TestCase {
         name: "external_cni_mode_disables_flannel",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_graceful_node_shutdown_manual_note",
         group: TestGroup::General,
     },
     TestCase {
@@ -534,6 +540,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_allocated_resources_status_absent_without_device_resources",
         group: TestGroup::General,
     },
@@ -574,12 +584,24 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_plugin_registry_watches_for_device_plugins_too",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_plugin_registry_watches_for_dra_drivers_too",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_dynamic_csi_registration_is_visible_on_the_node",
         group: TestGroup::CsiDra,
     },
     TestCase {
         name: "test_resource_api_group_is_enabled",
         group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_credential_provider_config_unset_by_default",
+        group: TestGroup::General,
     },
     TestCase {
         name: "test_dra_claim_is_allocated_and_reserved_for_the_pod",
@@ -1252,6 +1274,9 @@ fn test_names() -> Vec<&'static str> {
 async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
     match name {
         "external_cni_mode_disables_flannel" => bootstrap::external_cni_mode_disables_flannel(context).await,
+        "test_graceful_node_shutdown_manual_note" => {
+            bootstrap::graceful_node_shutdown_manual_note(context).await
+        }
         "test_combined_binary_contains_every_component" => {
             build_layout::combined_binary_contains_every_component(context).await
         }
@@ -1525,6 +1550,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_pod_teardown_actually_removes_the_sandbox" => {
             garbage_collection::pod_teardown_actually_removes_the_sandbox(context).await
         }
+        "test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down" => {
+            garbage_collection::orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down(context).await
+        }
         "test_allocated_resources_status_absent_without_device_resources" => {
             device_plugins::allocated_resources_status_absent_without_device_resources(context).await
         }
@@ -1555,10 +1583,19 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_plugin_registry_directory_exists" => {
             pod_resources::plugin_registry_directory_exists(context).await
         }
+        "test_plugin_registry_watches_for_device_plugins_too" => {
+            device_plugins::plugin_registry_watches_for_device_plugins_too(context).await
+        }
+        "test_plugin_registry_watches_for_dra_drivers_too" => {
+            dra::plugin_registry_watches_for_dra_drivers_too(context).await
+        }
         "test_dynamic_csi_registration_is_visible_on_the_node" => {
             pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
         }
         "test_resource_api_group_is_enabled" => dra::resource_api_group_is_enabled(context).await,
+        "test_credential_provider_config_unset_by_default" => {
+            credential_provider::credential_provider_config_unset_by_default(context).await
+        }
         "test_dra_claim_is_allocated_and_reserved_for_the_pod" => {
             dra::dra_claim_is_allocated_and_reserved_for_the_pod(context).await
         }

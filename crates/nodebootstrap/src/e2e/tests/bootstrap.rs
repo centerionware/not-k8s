@@ -49,3 +49,9 @@ pub(super) async fn external_cni_mode_disables_flannel(context: &E2eContext) -> 
     }
     Ok(())
 }
+
+pub(super) async fn graceful_node_shutdown_manual_note(_context: &E2eContext) -> Result<()> {
+    Err(skip_test(
+        "graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case",
+    ))
+}
