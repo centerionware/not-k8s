@@ -351,7 +351,7 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
         fs::write(
             &provider,
             format!(
-                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{{\"apiVersion\":\"credentialprovider.kubelet.k8s.io/v1\",\"kind\":\"CredentialProviderResponse\",\"cacheKeyType\":\"Registry\",\"cacheDuration\":\"0s\",\"auth\":{{\"{registry_host}\":{{\"username\":\"testuser\",\"password\":\"testpass123\"}}}}}}'\\n"
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{{\"apiVersion\":\"credentialprovider.kubelet.k8s.io/v1\",\"kind\":\"CredentialProviderResponse\",\"cacheKeyType\":\"Registry\",\"cacheDuration\":\"0s\",\"auth\":{{\"{registry_host}\":{{\"username\":\"testuser\",\"password\":\"testpass123\"}}}}}}'\n"
             ),
         )?;
         let mut permissions = fs::metadata(&provider)?.permissions();
