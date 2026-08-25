@@ -84,7 +84,7 @@ jobs:
           NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
           NODEBOOTSTRAP_SOURCE=compile \
           NOTK8S_BUILD_LAYOUT=combined \
-          NOTK8S_BUILD_PROFILE=debug \
+          NOTK8S_BUILD_PROFILE=release \
             ./target/debug/nodebootstrap fetch
           install -m0755 "$stage/bin/nodebootstrap" e2e-bin/nodebootstrap
           install -m0755 "$stage/bin/notk8s" e2e-bin/notk8s
