@@ -768,7 +768,7 @@ pub(crate) fn chown_gid(path: &std::path::Path, gid: u32) -> std::io::Result<()>
 /// Set both the owning uid and gid of `path` (no `(uid_t)-1` "leave
 /// unchanged" trick here — both are always set to the same value, since
 /// every call site below chowns to a userns range's single base id).
-fn chown_uid_gid(path: &std::path::Path, id: u32) -> std::io::Result<()> {
+pub(crate) fn chown_uid_gid(path: &std::path::Path, id: u32) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -883,4 +883,3 @@ pub(crate) fn apply_fs_group(dir: &std::path::Path, gid: u32) -> std::io::Result
     }
     Ok(())
 }
-
