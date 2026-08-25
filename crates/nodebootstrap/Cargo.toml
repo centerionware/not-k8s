@@ -28,6 +28,7 @@ kube = { workspace = true }
 k8s-openapi = { workspace = true }
 http = "1"
 tokio = { workspace = true }
+futures = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }

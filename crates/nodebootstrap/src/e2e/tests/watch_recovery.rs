@@ -1,8 +1,8 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{Node, Pod, ServiceAccount};
-use kube::api::{Api, PostParams};
+use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ServiceAccount};
+use kube::api::{Api, ListParams, PostParams};
 use serde_json::json;
 use std::process::Command;
 use std::time::Duration;
@@ -52,13 +52,6 @@ fn restart_unit(unit: &str) -> Result<()> {
     Ok(())
 }
 
-fn apiserver_is_ready() -> bool {
-    Command::new("kubectl")
-        .args(["get", "--raw", "/readyz"])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 async fn pod_is_running(pods: &Api<Pod>, name: &str) -> Result<bool> {
     Ok(pods
         .get(name)
@@ -91,9 +84,10 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
         .ok_or_else(|| anyhow::anyhow!("the cluster has no node to pin the recovery Pod to"))?;
 
     restart_unit(unit)?;
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
     context
         .wait_until("the apiserver to become ready after restart", Duration::from_secs(180), || async {
-            Ok(apiserver_is_ready())
+            Ok(namespaces.list(&ListParams::default()).await.is_ok())
         })
         .await?;
 

@@ -141,7 +141,7 @@ impl ApiServerHarness {
     fn client(&self) -> Result<Client> {
         let mut config = KubeConfig::new(format!("https://127.0.0.1:{}", self.port).parse()?);
         config.accept_invalid_certs = true;
-        config.auth_info.token = Some(API_TOKEN.to_owned());
+        config.auth_info.token = Some(API_TOKEN.to_owned().into());
         config.default_namespace = "default".to_owned();
         Client::try_from(config).context("building kube-rs client for throwaway apiserver")
     }

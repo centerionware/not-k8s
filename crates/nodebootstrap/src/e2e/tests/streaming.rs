@@ -1,7 +1,8 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
-use futures::{AsyncBufReadExt, TryStreamExt};
+use futures::io::AsyncBufReadExt;
+use futures::TryStreamExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, AttachParams, LogParams, PostParams};
 use serde_json::json;

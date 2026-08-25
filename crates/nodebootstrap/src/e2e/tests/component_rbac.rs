@@ -1,19 +1,38 @@
 use super::context::E2eContext;
 use super::skip_test;
-use anyhow::{Context, Result};
+use anyhow::Result;
+use http::Request;
+use kube::discovery;
+use serde_json::json;
 use std::process::Command;
 
-fn kubectl(args: &[&str]) -> Result<String> {
-    let output = Command::new("kubectl")
-        .args(args)
-        .output()
-        .with_context(|| format!("running kubectl {args:?}"))?;
+async fn assert_can(
+    client: &kube::Client,
+    identity: &str,
+    verb: &str,
+    resource: &str,
+) -> Result<()> {
+    let (resource, group) = resource
+        .split_once('.')
+        .map_or((resource, ""), |(resource, group)| (resource, group));
+    let request = Request::builder()
+        .method("POST")
+        .uri("/apis/authorization.k8s.io/v1/subjectaccessreviews")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SubjectAccessReview",
+            "spec": {
+                "user": identity,
+                "resourceAttributes": {"group": group, "resource": resource, "verb": verb}
+            }
+        }))?)?;
+    let review: serde_json::Value = client.request(request).await?;
     anyhow::ensure!(
-        output.status.success(),
-        "kubectl {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        review.pointer("/status/allowed") == Some(&serde_json::Value::Bool(true)),
+        "{identity} cannot {verb} {resource}: SubjectAccessReview denied it: {review}"
     );
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(())
 }
 
 fn service_is_active(name: &str) -> bool {
@@ -23,24 +42,8 @@ fn service_is_active(name: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn assert_can(identity: &str, verb: &str, resource: &str) -> Result<()> {
-    let answer = kubectl(&[
-        "auth",
-        "can-i",
-        &format!("--as={identity}"),
-        verb,
-        resource,
-        "--all-namespaces",
-    ])?;
-    anyhow::ensure!(
-        answer == "yes",
-        "{identity} cannot {verb} {resource}: kubectl auth can-i returned {answer:?}",
-    );
-    Ok(())
-}
-
 pub(super) async fn replacement_control_plane_identities_can_read_all_watch_inputs(
-    _context: &E2eContext,
+    context: &E2eContext,
 ) -> Result<()> {
     if !service_is_active("nodescheduler") {
         return Err(skip_test(
@@ -74,32 +77,35 @@ pub(super) async fn replacement_control_plane_identities_can_read_all_watch_inpu
     ] {
         for resource in resources {
             for verb in ["get", "list", "watch"] {
-                assert_can(identity, verb, resource)?;
+                assert_can(&context.client, identity, verb, resource).await?;
             }
         }
     }
 
-    let dra_resources = kubectl(&["api-resources", "--api-group=resource.k8s.io", "--no-headers"])?;
-    if !dra_resources.trim().is_empty() {
+    let dra_group = discovery::group(&context.client, "resource.k8s.io").await.ok();
+    if let Some(dra_group) = dra_group {
+        let dra_resources = dra_group.recommended_resources().collect::<Vec<_>>();
         for resource in [
             "resourceclaims.resource.k8s.io",
             "deviceclasses.resource.k8s.io",
             "resourceslices.resource.k8s.io",
         ] {
             for verb in ["get", "list", "watch"] {
-                assert_can("system:kube-scheduler", verb, resource)?;
+                assert_can(&context.client, "system:kube-scheduler", verb, resource).await?;
             }
         }
         if dra_resources
-            .lines()
-            .any(|line| line.split_whitespace().next() == Some("resourceclaimtemplates"))
+            .iter()
+            .any(|(resource, _)| resource.plural == "resourceclaimtemplates")
         {
             for verb in ["get", "list", "watch"] {
                 assert_can(
+                    &context.client,
                     "system:kube-controller-manager",
                     verb,
                     "resourceclaimtemplates.resource.k8s.io",
-                )?;
+                )
+                .await?;
             }
         }
     }

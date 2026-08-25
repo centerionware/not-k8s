@@ -2,10 +2,10 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, PostParams};
+use kube::api::{Api, AttachParams, Patch, PatchParams, PostParams};
 use serde_json::json;
-use std::process::Command;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -17,6 +17,21 @@ async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -
     }))?;
     pods.create(&PostParams::default(), &pod).await?;
     Ok(())
+}
+
+async fn exec_output(context: &E2eContext, pod: &str, command: &[&str]) -> Result<String> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let params = AttachParams::default()
+        .container("app")
+        .stdout(true)
+        .stderr(false);
+    let mut process = pods.exec(pod, command.iter().copied(), &params).await?;
+    let mut stdout = Vec::new();
+    if let Some(mut stream) = process.stdout() {
+        stream.read_to_end(&mut stdout).await?;
+    }
+    process.join().await?;
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 pub(super) async fn env_resource_field_ref_reports_the_containers_own_limits(
@@ -168,54 +183,36 @@ pub(super) async fn in_place_resize_updates_memory_limit_without_restarting(
             }
         })
         .await?;
-    let exec = |args: &[&str]| -> Result<std::process::Output> {
-        Command::new("kubectl")
-            .args(["exec", "-n", &context.namespace, name, "--"])
-            .args(args)
-            .output()
-            .context("reading the resize Pod cgroup")
-    };
-    let before = exec(&["cat", "/sys/fs/cgroup/memory.max"])?;
-    if !before.status.success() {
+    let before = exec_output(context, name, &["cat", "/sys/fs/cgroup/memory.max"]).await?;
+    if before.trim().is_empty() {
         return Err(skip_test(
             "the resize Pod could not read /sys/fs/cgroup/memory.max; this node may use cgroup v1",
         ));
     }
     anyhow::ensure!(
-        String::from_utf8_lossy(&before.stdout).trim() == "134217728",
+        before.trim() == "134217728",
         "initial memory.max was {:?}, expected 134217728",
-        String::from_utf8_lossy(&before.stdout).trim()
+        before.trim()
     );
-    let patch = Command::new("kubectl")
-        .args([
-            "--namespace",
-            &context.namespace,
-            "patch",
-            "pod",
+    if let Err(error) = pods
+        .patch_resize(
             name,
-            "--subresource",
-            "resize",
-            "--type",
-            "merge",
-            "-p",
-            r#"{"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"268435456"}}}]}}"#,
-        ])
-        .output()
-        .context("patching the Pod resize subresource")?;
-    if !patch.status.success() {
+            &PatchParams::default(),
+            &Patch::Merge(json!({"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"268435456"}}}]}})),
+        )
+        .await
+    {
         return Err(skip_test(format!(
-            "the apiserver does not support the Pod resize subresource: {}",
-            String::from_utf8_lossy(&patch.stderr)
+            "the apiserver does not support the Pod resize subresource: {error}"
         )));
     }
     context
         .wait_until("container memory.max to reflect the in-place resize", Duration::from_secs(60), || {
-            let output = exec(&["cat", "/sys/fs/cgroup/memory.max"]);
+            let context = context.clone();
             async move {
-                Ok(output.is_ok_and(|output| {
-                    output.status.success()
-                        && String::from_utf8_lossy(&output.stdout).trim() == "268435456"
-                }))
+                Ok(exec_output(&context, name, &["cat", "/sys/fs/cgroup/memory.max"])
+                    .await
+                    .is_ok_and(|output| output.trim() == "268435456"))
             }
         })
         .await?;

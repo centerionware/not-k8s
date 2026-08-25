@@ -3,7 +3,7 @@ use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
+use kube::api::{Api, AttachParams, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::process::Command;
 use std::time::Duration;
@@ -12,6 +12,21 @@ use tokio::net::TcpStream;
 
 async fn create_backend(context: &E2eContext, name: &str) -> Result<()> {
     create_backend_with_marker(context, name, name, "service-proxy-marker").await
+}
+
+async fn exec_output(context: &E2eContext, pod: &str, command: &[&str]) -> Result<String> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let params = AttachParams::default()
+        .container("app")
+        .stdout(true)
+        .stderr(false);
+    let mut process = pods.exec(pod, command.iter().copied(), &params).await?;
+    let mut stdout = Vec::new();
+    if let Some(mut stream) = process.stdout() {
+        stream.read_to_end(&mut stdout).await?;
+    }
+    process.join().await?;
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 async fn create_backend_with_marker(
@@ -439,21 +454,19 @@ pub(super) async fn a_pod_reaching_its_own_service_gets_hairpin_masquerade(
         nft_table()?.contains("masquerade"),
         "nodeproxy nftables table has no hairpin masquerade rule"
     );
-    context
+        context
         .wait_until("hairpin request to the backend's own Service", Duration::from_secs(60), || {
-            let namespace = context.namespace.clone();
+            let context = context.clone();
             let cluster_ip = cluster_ip.clone();
             async move {
-                let output = Command::new("kubectl")
-                    .args([
-                        "exec", "-n", &namespace, name, "--", "wget", "-qO-", "--timeout=5",
-                    ])
-                    .arg(format!("http://{cluster_ip}:18100/"))
-                    .output();
-                Ok(output.is_ok_and(|output| {
-                    output.status.success()
-                        && String::from_utf8_lossy(&output.stdout).contains("hairpin-marker")
-                }))
+                let url = format!("http://{cluster_ip}:18100/");
+                let output = exec_output(
+                    &context,
+                    name,
+                    &["wget", "-qO-", "--timeout=5", url.as_str()],
+                )
+                .await;
+                Ok(output.is_ok_and(|output| output.contains("hairpin-marker")))
             }
         })
         .await
