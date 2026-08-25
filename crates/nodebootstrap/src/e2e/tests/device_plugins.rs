@@ -366,10 +366,16 @@ impl FakeDevicePlugin {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
+        let _ = fs::remove_file(&self.socket);
         if let Some(task) = self.task.take() {
+            // ListAndWatch is intentionally long-lived.  A graceful tonic
+            // server shutdown waits for that stream's client to close, but
+            // nodelet only closes it after the registration socket vanishes.
+            // Remove the socket first, then abort the fixture server instead
+            // of awaiting a stream that cannot finish on its own.
+            task.abort();
             let _ = task.await;
         }
-        let _ = fs::remove_file(&self.socket);
         self.restore_registry_mode();
         let nodes: Api<Node> = Api::all(context.client.clone());
         let _ = context

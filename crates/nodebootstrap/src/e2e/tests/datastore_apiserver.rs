@@ -223,8 +223,15 @@ impl ApiServerHarness {
         let namespaces: Api<Namespace> = Api::all(client);
         let deadline = Instant::now() + Duration::from_secs(90);
         loop {
-            if namespaces.list(&ListParams::default()).await.is_ok() {
-                return Ok(());
+            if let Ok(list) = namespaces.list(&ListParams::default()).await {
+                let names: std::collections::HashSet<_> = list
+                    .items
+                    .into_iter()
+                    .filter_map(|namespace| namespace.metadata.name)
+                    .collect();
+                if names.contains("default") && names.contains("kube-system") {
+                    return Ok(());
+                }
             }
             if self
                 .api

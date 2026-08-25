@@ -48,9 +48,9 @@ pub(super) async fn static_pod_creates_a_mirror_pod(context: &E2eContext) -> Res
             let mirror = mirror.clone();
             async move {
                 Ok(pods
-                    .get(&mirror)
+                    .get_opt(&mirror)
                     .await?
-                    .status
+                    .and_then(|pod| pod.status)
                     .and_then(|status| status.phase)
                     .as_deref()
                     == Some("Running"))

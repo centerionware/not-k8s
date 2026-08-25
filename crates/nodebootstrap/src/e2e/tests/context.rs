@@ -6,6 +6,8 @@ use kube::Client;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
+pub(super) const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Clone)]
 pub(super) struct E2eContext {
     pub(super) client: Client,
@@ -69,8 +71,13 @@ impl E2eContext {
     {
         let deadline = Instant::now() + timeout;
         loop {
-            if check().await? {
-                return Ok(());
+            match tokio::time::timeout(API_REQUEST_TIMEOUT, check()).await {
+                Ok(result) => {
+                    if result? {
+                        return Ok(());
+                    }
+                }
+                Err(_) => {}
             }
             if Instant::now() >= deadline {
                 bail!("timed out waiting for {description}");

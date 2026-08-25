@@ -7,12 +7,14 @@
 use anyhow::{bail, Context, Result};
 use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
 use kube::api::{Api, ListParams};
-use kube::Client;
+use kube::{Client, Config as KubeConfig};
 use std::error::Error;
 use std::fmt;
+use std::io::Write;
 use std::net::IpAddr;
 use std::path::Path;
-use std::time::Instant;
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 #[path = "tests/batch.rs"]
 mod batch;
@@ -1185,8 +1187,17 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
         println!("bootstrap e2e: no tests selected for this shard");
         return Ok(());
     }
-    let client = Client::try_default().await.context(
+    let mut kube_config = KubeConfig::infer().await.context(
         "loading the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first",
+    )?;
+    // kubectl's --request-timeout=30s equivalent for ordinary kube-rs
+    // requests.  Without this, a broken apiserver/nodelet connection can
+    // leave one polling predicate stuck forever, so CI never reaches the
+    // component diagnostics or publishes the real failing test.
+    kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
+    kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
+    let client = Client::try_from(kube_config).context(
+        "building the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first",
     )?;
     let context = E2eContext::create(client).await?;
 
@@ -1201,12 +1212,13 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     for name in selected {
         let started = Instant::now();
         print!("▶ {name} ... ");
-        match run_test(name, &context).await {
-            Ok(()) => {
+        let _ = std::io::stdout().flush();
+        match tokio::time::timeout(Duration::from_secs(300), run_test(name, &context)).await {
+            Ok(Ok(())) => {
                 passed += 1;
                 println!("PASS ({}ms)", started.elapsed().as_millis());
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 if let Some(skip) = error.downcast_ref::<SkipTest>() {
                     skipped += 1;
                     println!("SKIP ({}; {}ms)", skip, started.elapsed().as_millis());
@@ -1216,9 +1228,19 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                     failures.push(name);
                 }
             }
+            Err(_) => {
+                println!("FAIL ({}ms)", started.elapsed().as_millis());
+                eprintln!(
+                    "    test exceeded the 300-second safety timeout; the next test will run after diagnostics"
+                );
+                failures.push(name);
+            }
         }
     }
 
+    if !failures.is_empty() {
+        dump_failure_diagnostics();
+    }
     context.cleanup().await;
     if failures.is_empty() {
         println!("Results: {passed} passed, {skipped} skipped, 0 failed");
@@ -1230,6 +1252,71 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             failures.join(", ")
         )
     }
+}
+
+const DIAGNOSTIC_UNITS: &[&str] = &[
+    "kube-apiserver",
+    "nodestore",
+    "nodelet",
+    "nodeproxy",
+    "nodescheduler",
+    "nodecontroller",
+    "flanneld",
+    "containerd",
+];
+
+fn privileged_diagnostic_command(program: &str, args: &[&str]) -> Command {
+    let root = Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
+    let mut command = if root {
+        Command::new(program)
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg(program);
+        command
+    };
+    command.args(args);
+    command
+}
+
+fn print_diagnostic_command(label: &str, program: &str, args: &[&str]) {
+    println!("── {label} ──");
+    match privileged_diagnostic_command(program, args).output() {
+        Ok(output) => {
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+        Err(error) => eprintln!("{program} failed: {error}"),
+    }
+}
+
+/// Keep the old shell harness's failure signal available from the Rust path:
+/// capture every installed component while the failed test's namespace and
+/// host state still exist. The workflow also performs its kubernetes-object
+/// dump, but it cannot recover this snapshot when a test times out or the
+/// namespace cleanup has already started.
+fn dump_failure_diagnostics() {
+    println!("==========================================");
+    println!("bootstrap e2e component diagnostics");
+    println!("==========================================");
+    print_diagnostic_command("disk space", "df", &["-h", "/"]);
+    for unit in DIAGNOSTIC_UNITS {
+        print_diagnostic_command(
+            &format!("{unit}.service status"),
+            "systemctl",
+            &["status", &format!("{unit}.service"), "--no-pager", "-l"],
+        );
+        print_diagnostic_command(
+            &format!("{unit}.service logs (last 300 lines)"),
+            "journalctl",
+            &["-u", &format!("{unit}.service"), "--no-pager", "-n", "300"],
+        );
+    }
+    println!("==========================================");
+    println!("bootstrap e2e component diagnostics: end");
+    println!("==========================================");
 }
 
 /// Prefer an explicitly supplied kubeconfig. A nodebootstrap-created cluster
