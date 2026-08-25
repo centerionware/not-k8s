@@ -72,6 +72,64 @@ fn containerd_config_path() -> &'static Path {
     Path::new("/etc/containerd/config.toml")
 }
 
+fn configure_containerd_registry(config: &str, registry_host: &str) -> String {
+    let section = r#"[plugins."io.containerd.grpc.v1.cri".registry]"#;
+    let config_line = r#"config_path = "/etc/containerd/certs.d""#;
+    let mirror_section = format!(
+        r#"[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{registry_host}"]"#
+    );
+    let mirror_line = format!(r#"endpoint = ["http://{registry_host}"]"#);
+
+    let mut output = Vec::with_capacity(config.len() + 256);
+    let mut in_registry_section = false;
+    let mut saw_registry_section = false;
+    let mut saw_config_path = false;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed == section {
+            in_registry_section = true;
+            saw_registry_section = true;
+        } else if in_registry_section && trimmed.starts_with('[') {
+            if !saw_config_path {
+                output.push(config_line.to_string());
+                saw_config_path = true;
+            }
+            in_registry_section = false;
+        }
+
+        if in_registry_section && trimmed.starts_with("config_path") {
+            if !saw_config_path {
+                output.push(config_line.to_string());
+                saw_config_path = true;
+            }
+            continue;
+        }
+        output.push(line.to_string());
+    }
+    if in_registry_section && !saw_config_path {
+        output.push(config_line.to_string());
+        saw_config_path = true;
+    }
+    if !saw_registry_section {
+        output.push(String::new());
+        output.push(section.to_string());
+        output.push(config_line.to_string());
+    }
+
+    let mut updated = output.join("\n");
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if !updated.contains(&mirror_section) {
+        updated.push('\n');
+        updated.push_str(&mirror_section);
+        updated.push('\n');
+        updated.push_str(&mirror_line);
+        updated.push('\n');
+    }
+    updated
+}
+
 fn registry_requires_auth(port: u16) -> bool {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
         return false;
@@ -189,21 +247,8 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
             })
             .await?;
 
-        let config_path_text = original_config;
-        if !config_path_text.contains(r#"config_path = "/etc/containerd/certs.d""#) {
-            let section = r#"[plugins."io.containerd.grpc.v1.cri".registry]"#;
-            let insertion = format!(
-                "{section}\n      config_path = \"/etc/containerd/certs.d\""
-            );
-            let updated = if config_path_text.contains(section) {
-                config_path_text.replacen(section, &insertion, 1)
-            } else {
-                format!("{config_path_text}\n\n{insertion}\n")
-            };
-            anyhow::ensure!(
-                updated != config_path_text,
-                "could not add the CRI registry config to containerd"
-            );
+        let updated = configure_containerd_registry(&original_config, &registry_host);
+        if updated != original_config {
             fs::copy(config_path, &config_backup)?;
             let updated_path = work.join("config.updated.toml");
             fs::write(&updated_path, updated)?;

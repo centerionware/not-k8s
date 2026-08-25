@@ -32,6 +32,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct CredentialProviderConfigFile {
@@ -289,7 +290,13 @@ impl CredentialProviders {
             }
         }
 
-        let entry = self.exec_provider(provider, image, sa_ctx).await.ok()??;
+        let entry = match self.exec_provider(provider, image, sa_ctx).await {
+            Ok(entry) => entry,
+            Err(error) => {
+                warn!(provider = %provider.name, image, error = ?error, "credential provider execution failed");
+                return None;
+            }
+        }?;
         Some(to_auth_config(&entry))
     }
 
