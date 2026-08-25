@@ -26,6 +26,8 @@ mod context;
 mod cgroup;
 #[path = "tests/component_rbac.rs"]
 mod component_rbac;
+#[path = "tests/config_file.rs"]
+mod config_file;
 #[path = "tests/controller_manager.rs"]
 mod controller_manager;
 #[path = "tests/csi.rs"]
@@ -321,6 +323,18 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_replacement_control_plane_identities_can_read_all_watch_inputs",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_config_file_sets_a_value_env_did_not_override",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_config_file_precedence_a_real_env_var_still_wins",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_config_dir_merges_files_in_filename_order",
         group: TestGroup::General,
     },
     TestCase {
@@ -1056,6 +1070,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_replacement_control_plane_identities_can_read_all_watch_inputs" => {
             component_rbac::replacement_control_plane_identities_can_read_all_watch_inputs(context).await
+        }
+        "test_config_file_sets_a_value_env_did_not_override" => {
+            config_file::config_file_sets_a_value_env_did_not_override(context).await
+        }
+        "test_config_file_precedence_a_real_env_var_still_wins" => {
+            config_file::config_file_precedence_a_real_env_var_still_wins(context).await
+        }
+        "test_config_dir_merges_files_in_filename_order" => {
+            config_file::config_dir_merges_files_in_filename_order(context).await
         }
         "test_node_allocatable_cgroup_exists_and_is_capped" => {
             cgroup::node_allocatable_cgroup_exists_and_is_capped(context).await
