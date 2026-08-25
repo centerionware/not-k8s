@@ -544,6 +544,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_unreferenced_image_is_not_removed_below_the_watermark",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_image_gc_removes_unreferenced_images_above_the_watermark",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_allocated_resources_status_absent_without_device_resources",
         group: TestGroup::General,
     },
@@ -1552,6 +1560,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down" => {
             garbage_collection::orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down(context).await
+        }
+        "test_unreferenced_image_is_not_removed_below_the_watermark" => {
+            garbage_collection::unreferenced_image_is_not_removed_below_the_watermark(context).await
+        }
+        "test_image_gc_removes_unreferenced_images_above_the_watermark" => {
+            garbage_collection::image_gc_removes_unreferenced_images_above_the_watermark(context).await
         }
         "test_allocated_resources_status_absent_without_device_resources" => {
             device_plugins::allocated_resources_status_absent_without_device_resources(context).await

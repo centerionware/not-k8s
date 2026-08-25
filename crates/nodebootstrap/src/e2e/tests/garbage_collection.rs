@@ -46,6 +46,132 @@ fn containerd_has_container(ctr: &str, id: &str) -> Result<bool> {
         .any(|line| line.trim() == id))
 }
 
+fn containerd_has_image(ctr: &str, image: &str) -> Result<bool> {
+    let output = Command::new("sudo")
+        .args([ctr, "-n", "k8s.io", "images", "ls", "-q"])
+        .output()
+        .with_context(|| format!("running sudo {ctr} -n k8s.io images ls -q"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "ctr could not list containerd images: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == image))
+}
+
+async fn restart_nodelet_with_override(context: &E2eContext, contents: &str) -> Result<()> {
+    write_nodelet_gc_override(Some(contents))?;
+    run_systemctl(&["daemon-reload",])?;
+    run_systemctl(&["restart", "nodelet.service"])?;
+    context
+        .wait_until("nodelet to become active after image-GC configuration", Duration::from_secs(60), || async {
+            Ok(Command::new("systemctl")
+                .args(["is-active", "--quiet", "nodelet.service"])
+                .status()
+                .is_ok_and(|status| status.success()))
+        })
+        .await
+}
+
+async fn image_gc_case(context: &E2eContext, override_contents: &str, image: &str, expect_present: bool) -> Result<()> {
+    if let Err(error) = needs_cri() {
+        return Err(skip_test(error.to_string()));
+    }
+    let Some(ctr) = ctr_path() else {
+        return Err(skip_test("ctr is not installed; image-GC state cannot be verified"));
+    };
+    if !Command::new("systemctl")
+        .args(["cat", "nodelet.service"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return Err(skip_test("image-GC checks require a systemd-managed nodelet service"));
+    }
+    let usage_path = std::env::var("NODELET_DISK_PATH").unwrap_or_else(|_| "/".to_owned());
+    let usage = Command::new("df")
+        .args(["--output=pcent", &usage_path])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.lines().last().map(|line| line.trim().trim_end_matches('%').parse::<u8>().ok()).flatten());
+    if !expect_present && usage.is_some_and(|value| value >= 99) {
+        return Err(skip_test("the test filesystem is already at 99% usage; a low watermark would not be a controlled image-GC check"));
+    }
+
+    let name = if expect_present { "image-gc-below-watermark-check" } else { "image-gc-watermark-check" };
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let result = async {
+        restart_nodelet_with_override(context, override_contents).await?;
+        let pod: Pod = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name},
+            "spec": {"containers": [{"name": "app", "image": image, "command": ["sleep", "60"]}]}
+        }))?;
+        pods.create(&PostParams::default(), &pod).await?;
+        context
+            .wait_until("image-GC test Pod to reach Running", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        anyhow::ensure!(containerd_has_image(ctr, image)?, "containerd did not retain pulled image {image}");
+        pods.delete(name, &DeleteParams::default()).await?;
+        context
+            .wait_until("image-GC test Pod to disappear", Duration::from_secs(120), || {
+                let pods = pods.clone();
+                async move { Ok(pods.get_opt(name).await?.is_none()) }
+            })
+            .await?;
+        context
+            .wait_until("image-GC result", Duration::from_secs(120), || {
+                let ctr = ctr.to_owned();
+                async move { Ok(containerd_has_image(&ctr, image)? == expect_present) }
+            })
+            .await
+    }
+    .await;
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = write_nodelet_gc_override(None);
+    let _ = run_systemctl(&["daemon-reload"]);
+    let _ = run_systemctl(&["restart", "nodelet.service"]);
+    result
+}
+
+pub(super) async fn unreferenced_image_is_not_removed_below_the_watermark(
+    context: &E2eContext,
+) -> Result<()> {
+    image_gc_case(
+        context,
+        "[Service]\nEnvironment=NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT=99\nEnvironment=NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT=90\nEnvironment=NODELET_IMAGE_GC_MIN_AGE_SECS=1\nEnvironment=NODELET_GC_INTERVAL_SECS=10\n",
+        "busybox:1.36.1",
+        true,
+    )
+    .await
+}
+
+pub(super) async fn image_gc_removes_unreferenced_images_above_the_watermark(
+    context: &E2eContext,
+) -> Result<()> {
+    image_gc_case(
+        context,
+        "[Service]\nEnvironment=NODELET_IMAGE_GC_HIGH_THRESHOLD_PERCENT=10\nEnvironment=NODELET_IMAGE_GC_LOW_THRESHOLD_PERCENT=5\nEnvironment=NODELET_IMAGE_GC_MIN_AGE_SECS=1\nEnvironment=NODELET_GC_INTERVAL_SECS=10\n",
+        "busybox:1.33.1",
+        false,
+    )
+    .await
+}
+
 fn run_systemctl(args: &[&str]) -> Result<()> {
     let uid = Command::new("id").arg("-u").output()?;
     let uid = String::from_utf8_lossy(&uid.stdout).trim().to_owned();
