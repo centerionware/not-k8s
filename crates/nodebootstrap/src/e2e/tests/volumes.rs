@@ -82,7 +82,12 @@ async fn exec_in_pod(context: &E2eContext, pod: &str, args: &[&str]) -> Result<(
     }
     process.join().await?;
     let succeeded = match status {
-        Some(status) => status.await.is_some_and(|status| status.is_success()),
+        Some(status) => status.await.is_some_and(|status| {
+            serde_json::to_value(status)
+                .ok()
+                .and_then(|status| status.get("status").and_then(serde_json::Value::as_str))
+                == Some("Success")
+        }),
         None => true,
     };
     Ok((succeeded, String::from_utf8_lossy(&stdout).into_owned()))
@@ -869,27 +874,28 @@ async fn recursive_read_only_if_possible(
         json!({"volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}], "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "host", "mountPath": "/host", "readOnly": true, "recursiveReadOnly": "IfPossible"}]}]}),
     )
     .await?;
-    let result = context
-        .wait_until("recursiveReadOnly IfPossible Pod", Duration::from_secs(90), || {
-            let pods = pods.clone();
-            async move { Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some("Running")) }
-        })
-        .await
-        .and_then(|_| async {
-            let pod_value = serde_json::to_value(pods.get(name).await?)?;
-            let got = pod_value
-                .pointer("/status/containerStatuses/0/volumeMounts")
-                .and_then(serde_json::Value::as_array)
-                .and_then(|mounts| mounts.iter().find(|mount| mount.get("name").and_then(serde_json::Value::as_str) == Some("host")))
-                .and_then(|mount| mount.get("recursiveReadOnly").and_then(serde_json::Value::as_str))
-                .context("IfPossible status omitted recursiveReadOnly")?;
-            anyhow::ensure!(got == "Enabled" || got == "Disabled", "IfPossible reported invalid value {got}");
-            if let Some(capability) = capability {
-                let expected = if capability { "Enabled" } else { "Disabled" };
-                anyhow::ensure!(got == expected, "IfPossible reported {got}, but runtime handler advertised {expected}");
-            }
-            Ok(())
-        });
+    let result = async {
+        context
+            .wait_until("recursiveReadOnly IfPossible Pod", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move { Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some("Running")) }
+            })
+            .await?;
+        let pod_value = serde_json::to_value(pods.get(name).await?)?;
+        let got = pod_value
+            .pointer("/status/containerStatuses/0/volumeMounts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|mounts| mounts.iter().find(|mount| mount.get("name").and_then(serde_json::Value::as_str) == Some("host")))
+            .and_then(|mount| mount.get("recursiveReadOnly").and_then(serde_json::Value::as_str))
+            .context("IfPossible status omitted recursiveReadOnly")?;
+        anyhow::ensure!(got == "Enabled" || got == "Disabled", "IfPossible reported invalid value {got}");
+        if let Some(capability) = capability {
+            let expected = if capability { "Enabled" } else { "Disabled" };
+            anyhow::ensure!(got == expected, "IfPossible reported {got}, but runtime handler advertised {expected}");
+        }
+        Ok(())
+    }
+    .await;
     let _ = pods.delete(name, &DeleteParams::default()).await;
     let _ = std::fs::remove_dir_all(&host_path);
     result
