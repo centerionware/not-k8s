@@ -501,7 +501,8 @@ pub(super) async fn scheduler_wakes_a_pending_pod_on_a_real_event(
     require_nodescheduler()?;
     require_single_node(context).await?;
     let node = first_node(context).await?;
-    let allocatable = serde_json::to_value(node)?
+    let node_value = serde_json::to_value(node)?;
+    let allocatable = node_value
         .pointer("/status/allocatable/cpu")
         .and_then(Value::as_str)
         .context("the Node has no allocatable CPU quantity")?;
