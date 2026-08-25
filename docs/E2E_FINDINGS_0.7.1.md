@@ -53,6 +53,37 @@ test passes in a later run against the corrected bootstrap path.
 | 5 | `test_kubectl_port_forward_reaches_a_real_container_port` | Port-forward response was empty | Port-forward stream/runtime path | Capture nodelet server and CRI stream errors | |
 | 1-5 | Worker validation without flannel or proxy | All five checks failed before bootstrap because the workflow referenced missing `target/debug/*` paths | Confirmed CI workflow defect, duplicated five times | Use the downloaded combined artifact and run this check once, on shard 5 | |
 
+## Focused TLS correction run: 32818313184
+
+This run used the shared source-built artifact and selected only
+`test_tls_bootstrap_issues_a_real_client_certificate`. The source build and
+all five bootstrap environments completed; shards 1, 2, 4, and 5 were clean.
+Shard 3 found the CSR, the test approved it, and nodelet wrote the
+certificate-bearing output kubeconfig. The only failure was the test reading a
+still-running child’s buffered log before stopping it. That assertion is
+removed in `d87b15a5`; this run does not receive a completion mark because it
+predates that fix.
+
+| Shard | Rust test or workflow check | Observed result | Classification | Required next action | Completed |
+| --- | --- | --- | --- | --- | --- |
+| 3 | `test_tls_bootstrap_issues_a_real_client_certificate` | CSR submission, approval, and client-certificate kubeconfig succeeded; redundant buffered-log assertion failed | Confirmed test assertion defect | Re-run on `d87b15a5` and require the output kubeconfig only | |
+| 1, 2, 4, 5 | Focused run with no selected test | Bootstrap and artifact path passed | Corrected CI path | None | |
+
+## Focused TLS correction run: 32819412757
+
+This rerun used commit `d87b15a5`, the shared source-built combined runtime,
+and selected only `test_tls_bootstrap_issues_a_real_client_certificate`.
+The source build passed in 6m26s; all five bootstrap environments completed;
+shards 1, 2, 4, and 5 had no selected tests; and shard 3 passed the TLS test
+in 4042ms. The test now relies on the certificate-bearing output kubeconfig,
+which is the durable behavioral result, instead of requiring a buffered log
+line from a still-running child.
+
+| Shard | Rust test or workflow check | Observed result | Classification | Required next action | Completed |
+| --- | --- | --- | --- | --- | --- |
+| 3 | `test_tls_bootstrap_issues_a_real_client_certificate` | CSR submission, approval, and client-certificate kubeconfig all passed | Verified TLS bootstrap path and corrected assertion | None | ✅ |
+| 1, 2, 4, 5 | Focused run with no selected test | Bootstrap and shared artifact path passed | Corrected CI path | None | ✅ |
+
 ## Warnings and skips from the same baseline
 
 | Observation | Evidence | Classification | Required action | Completed |
