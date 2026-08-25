@@ -80,11 +80,10 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Build the Rust bootstrapper and combined runtime applet
+      - name: Build the Rust bootstrapper
         run: |
           set -euo pipefail
           cargo build -p nodebootstrap
-          cargo build --features cri -p notk8s
 
       - name: Bootstrap a real cluster with Rust
         env:
@@ -102,9 +101,10 @@ jobs:
             args+=(--without-flannel --proxy=none)
           fi
           sudo -E env \
-            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/target/debug/notk8s" \
+            NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+            NODEBOOTSTRAP_SOURCE=compile \
             NOTK8S_BUILD_LAYOUT=combined \
-            ./target/debug/nodebootstrap "${args[@]:1}"
+            ./target/debug/nodebootstrap --from-source "${args[@]:1}"
 
       - name: Make the admin kubeconfig readable
         run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
