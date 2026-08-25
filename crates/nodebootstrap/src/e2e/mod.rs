@@ -38,6 +38,8 @@ mod daemonset;
 mod disruption;
 #[path = "tests/deployment.rs"]
 mod deployment;
+#[path = "tests/datastore.rs"]
+mod datastore;
 #[path = "tests/device_plugins.rs"]
 mod device_plugins;
 #[path = "tests/dra.rs"]
@@ -377,6 +379,54 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_static_pod_creates_a_mirror_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_serves_the_etcd_status_rpc",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_round_trips_a_key_over_grpc",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_lists_a_prefix_in_key_order",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_enforces_compare_and_swap",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_creates_a_key_only_if_absent",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_streams_watch_events_as_they_happen",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_replays_missed_events_to_a_late_watcher",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_refuses_a_read_below_the_compaction_point",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_expires_a_lease_and_its_keys",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_survives_a_restart_with_its_data",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_refuses_a_cluster_it_cannot_be_part_of",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_refuses_a_malformed_cluster_spec",
         group: TestGroup::General,
     },
     TestCase {
@@ -1259,6 +1309,42 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_static_pod_creates_a_mirror_pod" => {
             static_pods::static_pod_creates_a_mirror_pod(context).await
+        }
+        "test_datastore_serves_the_etcd_status_rpc" => {
+            datastore::datastore_serves_the_etcd_status_rpc(context).await
+        }
+        "test_datastore_round_trips_a_key_over_grpc" => {
+            datastore::datastore_round_trips_a_key_over_grpc(context).await
+        }
+        "test_datastore_lists_a_prefix_in_key_order" => {
+            datastore::datastore_lists_a_prefix_in_key_order(context).await
+        }
+        "test_datastore_enforces_compare_and_swap" => {
+            datastore::datastore_enforces_compare_and_swap(context).await
+        }
+        "test_datastore_creates_a_key_only_if_absent" => {
+            datastore::datastore_creates_a_key_only_if_absent(context).await
+        }
+        "test_datastore_streams_watch_events_as_they_happen" => {
+            datastore::datastore_streams_watch_events_as_they_happen(context).await
+        }
+        "test_datastore_replays_missed_events_to_a_late_watcher" => {
+            datastore::datastore_replays_missed_events_to_a_late_watcher(context).await
+        }
+        "test_datastore_refuses_a_read_below_the_compaction_point" => {
+            datastore::datastore_refuses_a_read_below_the_compaction_point(context).await
+        }
+        "test_datastore_expires_a_lease_and_its_keys" => {
+            datastore::datastore_expires_a_lease_and_its_keys(context).await
+        }
+        "test_datastore_survives_a_restart_with_its_data" => {
+            datastore::datastore_survives_a_restart_with_its_data(context).await
+        }
+        "test_datastore_refuses_a_cluster_it_cannot_be_part_of" => {
+            datastore::datastore_refuses_a_cluster_it_cannot_be_part_of(context).await
+        }
+        "test_datastore_refuses_a_malformed_cluster_spec" => {
+            datastore::datastore_refuses_a_malformed_cluster_spec(context).await
         }
         "test_a_pending_pod_recovers_after_the_node_failure_is_fixed" => {
             host_recovery::pending_pod_recovers_after_the_node_failure_is_fixed(context).await
