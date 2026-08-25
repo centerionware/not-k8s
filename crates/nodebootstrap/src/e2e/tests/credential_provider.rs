@@ -62,6 +62,12 @@ fn command_available(program: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+fn docker_command(config_dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("docker");
+    command.env("DOCKER_CONFIG", config_dir).args(args);
+    command
+}
+
 fn containerd_config_path() -> &'static Path {
     Path::new("/etc/containerd/config.toml")
 }
@@ -249,21 +255,14 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
             docker_config_dir.join("config.json"),
             format!(r#"{{"auths":{{"{registry_host}":{{"auth":"{auth}"}}}}}}"#),
         )?;
-        let docker_env = |command: &mut Command| {
-            command.env("DOCKER_CONFIG", &docker_config_dir);
-            command
-        };
         anyhow::ensure!(
-            docker_env(
-                Command::new("docker")
-                    .args(["tag", "busybox:latest", &image])
-            )
-            .status()?
-            .success(),
+            docker_command(&docker_config_dir, &["tag", "busybox:latest", &image])
+                .status()?
+                .success(),
             "tagging the private-registry image failed"
         );
         anyhow::ensure!(
-            docker_env(Command::new("docker").args(["push", &image]))
+            docker_command(&docker_config_dir, &["push", &image])
                 .status()?
                 .success(),
             "pushing the private-registry image failed"
