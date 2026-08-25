@@ -183,7 +183,8 @@ impl ApiServerHarness {
 
     fn client(&self) -> Result<Client> {
         let mut config = KubeConfig::new(format!("https://127.0.0.1:{}", self.port).parse()?);
-        config.root_cert = Some(vec![fs::read(self.root.join("serving-ca.crt"))?]);
+        let ca = pem::parse(fs::read(self.root.join("serving-ca.crt"))?)?;
+        config.root_cert = Some(vec![ca.into_contents()]);
         config.auth_info.token = Some(API_TOKEN.to_owned().into());
         config.default_namespace = "default".to_owned();
         Client::try_from(config).context("building kube-rs client for throwaway apiserver")

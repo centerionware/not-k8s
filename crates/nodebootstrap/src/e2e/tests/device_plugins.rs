@@ -146,13 +146,13 @@ impl DevicePlugin for DevicePluginService {
         let state = Arc::clone(&self.state);
         let (sender, receiver) = mpsc::channel(4);
         tokio::spawn(async move {
-            let mut previous = HashSet::new();
+            let mut previous = None;
             loop {
                 let current = state
                     .lock()
                     .map(|state| state.unhealthy.clone())
                     .unwrap_or_default();
-                if current != previous {
+                if previous.as_ref() != Some(&current) {
                     let devices = DEVICE_IDS
                         .iter()
                         .map(|id| Device {
@@ -172,7 +172,7 @@ impl DevicePlugin for DevicePluginService {
                     {
                         break;
                     }
-                    previous = current;
+                    previous = Some(current);
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }

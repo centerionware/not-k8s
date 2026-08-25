@@ -5,9 +5,10 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, PostParams};
 use serde_json::json;
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn run_privileged(program: &str, args: &[&str]) -> Result<()> {
     let uid = Command::new("id").arg("-u").output()?;
@@ -60,6 +61,24 @@ fn require_cri_and_systemd() -> Result<()> {
     ))
 }
 
+fn wait_for_nodelet_server() -> Result<()> {
+    let port = std::env::var("NODELET_SERVER_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(10250);
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("nodelet service did not reopen its server on {address}");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 pub(super) struct NodeletEnvOverride {
     drop_in: PathBuf,
 }
@@ -95,6 +114,7 @@ impl NodeletEnvOverride {
         })();
         let _ = fs::remove_file(local.as_ref());
         result?;
+        wait_for_nodelet_server()?;
         Ok(Self { drop_in })
     }
 }
@@ -105,6 +125,7 @@ impl Drop for NodeletEnvOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodelet.service"]);
+        let _ = wait_for_nodelet_server();
     }
 }
 

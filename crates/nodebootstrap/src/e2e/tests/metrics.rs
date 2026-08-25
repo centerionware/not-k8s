@@ -64,7 +64,9 @@ async fn create_token(context: &E2eContext) -> Result<String> {
         .body(serde_json::to_vec(&TokenRequest {
             metadata: Default::default(),
             spec: TokenRequestSpec {
-                audiences: vec!["https://kubernetes.default.svc".to_owned()],
+                // Use the apiserver's configured default audience rather than
+                // assuming every distribution uses this service DNS name.
+                audiences: Vec::new(),
                 bound_object_ref: None,
                 expiration_seconds: Some(600),
             },

@@ -56,9 +56,15 @@ fn containerd_has_image(ctr: &str, image: &str) -> Result<bool> {
         "ctr could not list containerd images: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.trim() == image))
+    let canonical = if image.contains('/') {
+        image.to_owned()
+    } else {
+        format!("docker.io/library/{image}")
+    };
+    Ok(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        let line = line.trim();
+        line == image || line == canonical
+    }))
 }
 
 async fn restart_nodelet_with_override(context: &E2eContext, contents: &str) -> Result<()> {

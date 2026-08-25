@@ -1,7 +1,7 @@
 use super::context::E2eContext;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, DeleteParams, PostParams};
+use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -30,6 +30,16 @@ async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<
         .and_then(|status| status.state)
         .and_then(|state| state.terminated)
         .and_then(|terminated| terminated.message))
+}
+
+async fn release_deletion_finalizer(pods: &Api<Pod>, name: &str) -> Result<()> {
+    pods.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({"metadata": {"finalizers": []}})),
+    )
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn poststart_hook_runs_before_container_exit(
@@ -101,6 +111,7 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
         context,
         name,
         json!({
+            "metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]},
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
@@ -125,7 +136,7 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
         })
         .await?;
     pods.delete(name, &DeleteParams::default()).await?;
-    context
+    let result = context
         .wait_until(
             "configured stop signal termination message",
             Duration::from_secs(90),
@@ -138,7 +149,9 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
                 }
             },
         )
-        .await
+        .await;
+    release_deletion_finalizer(&pods, name).await?;
+    result
 }
 
 pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -> Result<()> {
@@ -148,6 +161,7 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
         context,
         name,
         json!({
+            "metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]},
             "terminationGracePeriodSeconds": 15,
             "containers": [{
                 "name": "app",
@@ -173,7 +187,7 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
         })
         .await?;
     pods.delete(name, &DeleteParams::default()).await?;
-    context
+    let result = context
         .wait_until("preStop termination message", Duration::from_secs(30), || {
             let context = context.clone();
             async move {
@@ -182,7 +196,9 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
                     .is_some_and(|message| message.trim() == "prestop"))
             }
         })
-        .await
+        .await;
+    release_deletion_finalizer(&pods, name).await?;
+    result
 }
 
 pub(super) async fn termination_grace_period_is_honored_not_instant(

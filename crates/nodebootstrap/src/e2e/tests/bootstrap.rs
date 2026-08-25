@@ -144,7 +144,11 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
         .body(serde_json::to_vec(&TokenRequest {
             metadata: Default::default(),
             spec: TokenRequestSpec {
-                audiences: vec!["https://kubernetes.default.svc".to_owned()],
+                // Let the apiserver select its configured default audience.
+                // Hard-coding the in-cluster DNS name makes this bootstrap
+                // fixture fail against distributions that configure a
+                // different service audience.
+                audiences: Vec::new(),
                 bound_object_ref: None,
                 expiration_seconds: Some(600),
             },
@@ -216,7 +220,12 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
                 break found;
             }
             if Instant::now() >= deadline {
-                anyhow::bail!("nodelet never submitted a TLS bootstrap CSR; log: {}", log_path.display());
+                let log = fs::read_to_string(&log_path).unwrap_or_else(|error| format!("<unreadable: {error}>"));
+                anyhow::bail!(
+                    "nodelet never submitted a TLS bootstrap CSR; log: {}\n{}",
+                    log_path.display(),
+                    log
+                );
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         };
