@@ -1,20 +1,31 @@
 use super::context::E2eContext;
+use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
-use kube::api::{Api, ListParams, PostParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::json;
+use std::process::Command;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
 async fn create_backend(context: &E2eContext, name: &str) -> Result<()> {
+    create_backend_with_marker(context, name, name, "service-proxy-marker").await
+}
+
+async fn create_backend_with_marker(
+    context: &E2eContext,
+    name: &str,
+    selector: &str,
+    marker: &str,
+) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let pod: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Pod",
-        "metadata": {"name": name, "labels": {"app": name}},
-        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "while true; do printf 'service-proxy-marker\\n' | nc -l -p 8080; done"]}]}
+        "metadata": {"name": name, "labels": {"app": selector}},
+        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", format!("while true; do printf '{marker}\\n' | nc -l -p 8080; done")] }]}
     }))?;
     pods.create(&PostParams::default(), &pod).await?;
     context
@@ -67,21 +78,102 @@ async fn create_service_for_selector(
 }
 
 async fn receives_marker(address: &str) -> Result<bool> {
+    Ok(fetch_response(address)
+        .await?
+        .is_some_and(|response| response.contains("service-proxy-marker")))
+}
+
+async fn fetch_response(address: &str) -> Result<Option<String>> {
     let Ok(Ok(mut stream)) = tokio::time::timeout(
         Duration::from_secs(3),
         TcpStream::connect(address),
     )
     .await
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response))
         .await
         .context("reading the service backend response")??;
-    Ok(response
-        .windows(b"service-proxy-marker".len())
-        .any(|window| window == b"service-proxy-marker"))
+    Ok(Some(String::from_utf8_lossy(&response).into_owned()))
+}
+
+fn require_service_proxy() -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("service routing checks require the CRI runtime"));
+    }
+    let nft = Command::new("nft")
+        .args(["list", "table", "inet", "not_k8s_svc"])
+        .output()
+        .or_else(|_| {
+            Command::new("sudo")
+                .args(["nft", "list", "table", "inet", "not_k8s_svc"])
+                .output()
+        });
+    let nft = match nft {
+        Ok(output) => output,
+        Err(_) => {
+            return Err(skip_test(
+                "nodeproxy/nftables is unavailable; bootstrap with the proxy enabled and a usable nftables host",
+            ))
+        }
+    };
+    if !nft.status.success() {
+        return Err(skip_test(
+            "nodeproxy/nftables is unavailable; bootstrap with the proxy enabled and a usable nftables host",
+        ));
+    }
+    Ok(())
+}
+
+fn nft_table() -> Result<String> {
+    let direct = Command::new("nft")
+        .args(["list", "table", "inet", "not_k8s_svc"])
+        .output();
+    let output = match direct {
+        Ok(output) if output.status.success() => output,
+        _ => Command::new("sudo")
+            .args(["nft", "list", "table", "inet", "not_k8s_svc"])
+            .output()
+            .context("reading the nodeproxy nftables table")?,
+    };
+    anyhow::ensure!(
+        output.status.success(),
+        "reading the nodeproxy nftables table failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn restart_nodeproxy() -> Result<()> {
+    let uid = Command::new("id").arg("-u").output()?;
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+    let output = if uid == "0" {
+        Command::new("systemctl")
+            .args(["restart", "nodeproxy.service"])
+            .output()?
+    } else {
+        Command::new("sudo")
+            .args(["systemctl", "restart", "nodeproxy.service"])
+            .output()?
+    };
+    anyhow::ensure!(
+        output.status.success(),
+        "restarting nodeproxy.service failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+async fn service_cluster_ip(context: &E2eContext, name: &str) -> Result<String> {
+    Api::<Service>::namespaced(context.client.clone(), &context.namespace)
+        .get(name)
+        .await?
+        .spec
+        .and_then(|spec| spec.cluster_ip)
+        .filter(|ip| !ip.is_empty() && ip != "None")
+        .context("Service did not receive a ClusterIP")
 }
 
 async fn terminated_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
@@ -280,6 +372,282 @@ pub(super) async fn clusterip_is_reachable_from_inside_a_pod(
                     .await?
                     .is_some_and(|message| message.contains("service-proxy-marker")))
             }
+        })
+        .await
+}
+
+pub(super) async fn nodeproxy_runs_as_its_own_service_separate_from_nodelet(
+    _context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    if Command::new("systemctl")
+        .args(["list-unit-files", "nodeproxy.service"])
+        .output()
+        .is_err()
+    {
+        return Err(skip_test("nodeproxy service checks require systemd"));
+    }
+    let unit = Command::new("systemctl")
+        .args(["cat", "nodeproxy.service"])
+        .output()?;
+    if !unit.status.success() {
+        return Err(skip_test(
+            "nodeproxy.service is not installed; bootstrap with the proxy enabled",
+        ));
+    }
+    let text = String::from_utf8_lossy(&unit.stdout);
+    let ordering = text
+        .lines()
+        .filter(|line| {
+            ["After=", "Before=", "Wants=", "Requires=", "Requisite=", "BindsTo=", "PartOf="]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!ordering.is_empty(), "nodeproxy.service has no ordering directives");
+    anyhow::ensure!(
+        ordering.iter().all(|line| !line.contains("nodelet")),
+        "nodeproxy.service must not order against nodelet.service: {ordering:?}"
+    );
+    let exec_start = text
+        .lines()
+        .find(|line| line.starts_with("ExecStart="))
+        .context("nodeproxy.service has no ExecStart")?;
+    anyhow::ensure!(
+        exec_start.contains("nodeproxy"),
+        "nodeproxy.service ExecStart does not name nodeproxy: {exec_start}"
+    );
+    Ok(())
+}
+
+pub(super) async fn a_pod_reaching_its_own_service_gets_hairpin_masquerade(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    let name = "service-hairpin";
+    create_backend_with_marker(context, name, name, "hairpin-marker").await?;
+    create_service(context, name, "ClusterIP", 18100, None).await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("hairpin Service endpoint", Duration::from_secs(90), || {
+            let slices = slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&slices, name).await? > 0) }
+        })
+        .await?;
+    let cluster_ip = service_cluster_ip(context, name).await?;
+    anyhow::ensure!(
+        nft_table()?.contains("masquerade"),
+        "nodeproxy nftables table has no hairpin masquerade rule"
+    );
+    context
+        .wait_until("hairpin request to the backend's own Service", Duration::from_secs(60), || {
+            let namespace = context.namespace.clone();
+            let cluster_ip = cluster_ip.clone();
+            async move {
+                let output = Command::new("kubectl")
+                    .args([
+                        "exec", "-n", &namespace, name, "--", "wget", "-qO-", "--timeout=5",
+                    ])
+                    .arg(format!("http://{cluster_ip}:18100/"))
+                    .output();
+                Ok(output.is_ok_and(|output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).contains("hairpin-marker")
+                }))
+            }
+        })
+        .await
+}
+
+async fn ready_endpoint_count_from_api(
+    slices: &Api<EndpointSlice>,
+    service: &str,
+) -> Result<usize> {
+    Ok(slices
+        .list(&ListParams::default().labels(&format!(
+            "kubernetes.io/service-name={service}"
+        )))
+        .await?
+        .items
+        .iter()
+        .flat_map(|slice| &slice.endpoints)
+        .filter(|endpoint| endpoint.conditions.as_ref().map_or(true, |conditions| {
+            conditions.ready != Some(false)
+        }))
+        .filter(|endpoint| !endpoint.addresses.is_empty())
+        .count())
+}
+
+pub(super) async fn multiple_backends_actually_share_traffic(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    let service = "service-multiple-backends";
+    create_backend_with_marker(context, "service-backend-a", service, "multibackend-a").await?;
+    create_backend_with_marker(context, "service-backend-b", service, "multibackend-b").await?;
+    create_service(context, service, "ClusterIP", 18101, None).await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("two ready Service endpoints", Duration::from_secs(90), || {
+            let slices = slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&slices, service).await? >= 2) }
+        })
+        .await?;
+    let cluster_ip = service_cluster_ip(context, service).await?;
+    let mut seen_a = false;
+    let mut seen_b = false;
+    for _ in 0..40 {
+        if let Some(response) = fetch_response(&format!("{cluster_ip}:18101")).await? {
+            seen_a |= response.contains("multibackend-a");
+            seen_b |= response.contains("multibackend-b");
+        }
+        if seen_a && seen_b {
+            break;
+        }
+    }
+    anyhow::ensure!(
+        seen_a && seen_b,
+        "two-backend Service did not reach both backends (a={seen_a}, b={seen_b})"
+    );
+    Ok(())
+}
+
+pub(super) async fn losing_every_backend_removes_the_dnat_rule(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    let service = "service-drain";
+    let backend = "service-drain-backend";
+    create_backend_with_marker(context, backend, service, "drain-marker").await?;
+    create_service(context, service, "ClusterIP", 18102, None).await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("drain Service endpoint", Duration::from_secs(90), || {
+            let slices = slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&slices, service).await? > 0) }
+        })
+        .await?;
+    let cluster_ip = service_cluster_ip(context, service).await?;
+    context
+        .wait_until("drain Service nftables rule", Duration::from_secs(60), || async {
+            Ok(nft_table()?.contains(&cluster_ip))
+        })
+        .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    pods.delete(backend, &DeleteParams::default()).await?;
+    context
+        .wait_until("drained Service nftables rule to disappear", Duration::from_secs(90), || async {
+            Ok(!nft_table()?.contains(&cluster_ip))
+        })
+        .await
+}
+
+pub(super) async fn deleting_a_service_removes_its_rules(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    let service = "service-delete-rules";
+    create_backend_with_marker(context, "service-delete-backend", service, "delete-marker").await?;
+    create_service(context, service, "ClusterIP", 18103, None).await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("deletable Service endpoint", Duration::from_secs(90), || {
+            let slices = slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&slices, service).await? > 0) }
+        })
+        .await?;
+    let cluster_ip = service_cluster_ip(context, service).await?;
+    context
+        .wait_until("deletable Service nftables rule", Duration::from_secs(60), || async {
+            Ok(nft_table()?.contains(&cluster_ip))
+        })
+        .await?;
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    services.delete(service, &DeleteParams::default()).await?;
+    context
+        .wait_until("deleted Service nftables rule to disappear", Duration::from_secs(90), || async {
+            Ok(!nft_table()?.contains(&cluster_ip))
+        })
+        .await
+}
+
+pub(super) async fn session_affinity_pins_a_client_to_one_backend(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    let service = "service-affinity";
+    create_backend_with_marker(context, "service-affinity-a", service, "affinity-a").await?;
+    create_backend_with_marker(context, "service-affinity-b", service, "affinity-b").await?;
+    create_service(context, service, "ClusterIP", 18104, None).await?;
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    services
+        .patch(
+            service,
+            &PatchParams::default(),
+            &Patch::Merge(json!({"spec": {"sessionAffinity": "ClientIP"}})),
+        )
+        .await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("session-affinity Service endpoints", Duration::from_secs(90), || {
+            let slices = slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&slices, service).await? >= 2) }
+        })
+        .await?;
+    let cluster_ip = service_cluster_ip(context, service).await?;
+    let mut first = None;
+    for _ in 0..20 {
+        let Some(response) = fetch_response(&format!("{cluster_ip}:18104")).await? else {
+            continue;
+        };
+        let marker = if response.contains("affinity-a") {
+            "affinity-a"
+        } else if response.contains("affinity-b") {
+            "affinity-b"
+        } else {
+            continue;
+        };
+        if let Some(expected) = first {
+            anyhow::ensure!(expected == marker, "ClientIP session affinity changed backend");
+        } else {
+            first = Some(marker);
+        }
+    }
+    anyhow::ensure!(first.is_some(), "session-affinity Service never returned a backend");
+    Ok(())
+}
+
+pub(super) async fn nodeproxy_rebuilds_the_whole_ruleset_after_a_restart(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    if !Command::new("systemctl")
+        .args(["list-unit-files", "nodeproxy.service"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return Err(skip_test("nodeproxy restart checks require systemd"));
+    }
+    let service = "service-restart-rebuild";
+    create_backend_with_marker(context, "service-restart-backend", service, "restart-marker").await?;
+    create_service(context, service, "ClusterIP", 18105, None).await?;
+    let slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("restart-check Service endpoint", Duration::from_secs(90), || {
+            let slices = slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&slices, service).await? > 0) }
+        })
+        .await?;
+    let cluster_ip = service_cluster_ip(context, service).await?;
+    context
+        .wait_until("restart-check Service before restart", Duration::from_secs(60), || async {
+            Ok(receives_marker(&format!("{cluster_ip}:18105")).await?)
+        })
+        .await?;
+    restart_nodeproxy()?;
+    context
+        .wait_until("restart-check Service after nodeproxy restart", Duration::from_secs(90), || async {
+            Ok(receives_marker(&format!("{cluster_ip}:18105")).await?)
         })
         .await
 }

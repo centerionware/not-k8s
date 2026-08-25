@@ -744,6 +744,34 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeproxy_runs_as_its_own_service_separate_from_nodelet",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_pod_reaching_its_own_service_gets_hairpin_masquerade",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_multiple_backends_actually_share_traffic",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_losing_every_backend_removes_the_dnat_rule",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_deleting_a_service_removes_its_rules",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_session_affinity_pins_a_client_to_one_backend",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion",
         group: TestGroup::CsiDra,
     },
@@ -1416,6 +1444,27 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_clusterip_is_reachable_from_inside_a_pod" => {
             service_proxy::clusterip_is_reachable_from_inside_a_pod(context).await
+        }
+        "test_nodeproxy_runs_as_its_own_service_separate_from_nodelet" => {
+            service_proxy::nodeproxy_runs_as_its_own_service_separate_from_nodelet(context).await
+        }
+        "test_a_pod_reaching_its_own_service_gets_hairpin_masquerade" => {
+            service_proxy::a_pod_reaching_its_own_service_gets_hairpin_masquerade(context).await
+        }
+        "test_multiple_backends_actually_share_traffic" => {
+            service_proxy::multiple_backends_actually_share_traffic(context).await
+        }
+        "test_losing_every_backend_removes_the_dnat_rule" => {
+            service_proxy::losing_every_backend_removes_the_dnat_rule(context).await
+        }
+        "test_deleting_a_service_removes_its_rules" => {
+            service_proxy::deleting_a_service_removes_its_rules(context).await
+        }
+        "test_session_affinity_pins_a_client_to_one_backend" => {
+            service_proxy::session_affinity_pins_a_client_to_one_backend(context).await
+        }
+        "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart" => {
+            service_proxy::nodeproxy_rebuilds_the_whole_ruleset_after_a_restart(context).await
         }
         "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion" => {
             storage::pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion(context).await
