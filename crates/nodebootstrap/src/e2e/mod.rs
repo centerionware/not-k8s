@@ -320,6 +320,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_teardown_actually_removes_the_sandbox",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_host_network_pod_uses_the_node_network_namespace",
         group: TestGroup::General,
     },
@@ -960,6 +964,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods" => {
             garbage_collection::garbage_collector_cascades_deployment_delete_to_replicaset_and_pods(context).await
+        }
+        "test_pod_teardown_actually_removes_the_sandbox" => {
+            garbage_collection::pod_teardown_actually_removes_the_sandbox(context).await
         }
         "test_host_network_pod_uses_the_node_network_namespace" => {
             networking::host_network_pod_uses_the_node_network_namespace(context).await
