@@ -38,6 +38,8 @@ mod disruption;
 mod deployment;
 #[path = "tests/device_plugins.rs"]
 mod device_plugins;
+#[path = "tests/dra.rs"]
+mod dra;
 #[path = "tests/ephemeral_containers.rs"]
 mod ephemeral_containers;
 #[path = "tests/endpoint_slice.rs"]
@@ -363,6 +365,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_dynamic_csi_registration_is_visible_on_the_node",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_resource_api_group_is_enabled",
         group: TestGroup::CsiDra,
     },
     TestCase {
@@ -1008,6 +1014,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_dynamic_csi_registration_is_visible_on_the_node" => {
             pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
         }
+        "test_resource_api_group_is_enabled" => dra::resource_api_group_is_enabled(context).await,
         "test_csi_ephemeral_inline_volume_is_mounted" => {
             csi::csi_ephemeral_inline_volume_is_mounted(context).await
         }
