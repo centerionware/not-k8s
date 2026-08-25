@@ -2,13 +2,17 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::core::v1::{Event, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn nodescheduler_is_active() -> bool {
     Command::new("systemctl")
@@ -29,6 +33,245 @@ fn require_nodescheduler() -> Result<()> {
             "nodescheduler is not active; bootstrap with the replacement scheduler to exercise its lease",
         ))
     }
+}
+
+struct FakeExtender {
+    port: u16,
+    calls: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+async fn fake_extender_connection(
+    mut stream: tokio::net::TcpStream,
+    reject: bool,
+    calls: Arc<AtomicUsize>,
+) -> Result<()> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let (header_end, content_length) = loop {
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 {
+            anyhow::bail!("fake scheduler extender received an incomplete HTTP request");
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = std::str::from_utf8(&request[..header_end])?;
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or_default();
+        if request.len() >= header_end + 4 + content_length {
+            break (header_end, content_length);
+        }
+    };
+    calls.fetch_add(1, Ordering::Relaxed);
+    let body_start = header_end + 4;
+    let request_body: Value = serde_json::from_slice(&request[body_start..body_start + content_length])?;
+    let node_names = request_body
+        .get("NodeNames")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut response = json!({"NodeNames": node_names});
+    if reject {
+        let failed = response["NodeNames"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|name| name.as_str().map(|name| (name.to_owned(), "no-gpu-quota-fake-extender")))
+            .collect::<Vec<_>>();
+        response["NodeNames"] = json!([]);
+        response["FailedNodes"] = Value::Object(
+            failed
+                .into_iter()
+                .map(|(name, reason)| (name, Value::String(reason.to_owned())))
+                .collect(),
+        );
+    }
+    let response_body = serde_json::to_vec(&response)?;
+    let response_head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response_body.len()
+    );
+    stream.write_all(response_head.as_bytes()).await?;
+    stream.write_all(&response_body).await?;
+    Ok(())
+}
+
+async fn start_fake_extender(reject: bool) -> Result<FakeExtender> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_task = calls.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { break };
+            let calls = calls_for_task.clone();
+            tokio::spawn(async move {
+                let _ = fake_extender_connection(stream, reject, calls).await;
+            });
+        }
+    });
+    Ok(FakeExtender { port, calls, task })
+}
+
+fn scheduler_override_path() -> std::path::PathBuf {
+    "/etc/systemd/system/nodescheduler.service.d/99-nodebootstrap-e2e.conf".into()
+}
+
+fn run_systemctl(args: &[&str]) -> Result<()> {
+    let uid = Command::new("id").arg("-u").output()?;
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_owned();
+    let mut command = if uid == "0" {
+        let mut command = Command::new("systemctl");
+        command.args(args);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg("systemctl").args(args);
+        command
+    };
+    let output = command.output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "systemctl {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn write_scheduler_override(contents: Option<&str>) -> Result<()> {
+    let path = scheduler_override_path();
+    let uid = Command::new("id").arg("-u").output()?;
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_owned();
+    if uid == "0" {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match contents {
+            Some(contents) => std::fs::write(&path, contents)?,
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    } else if let Some(contents) = contents {
+        let mut child = Command::new("sudo")
+            .args(["tee", path.to_str().context("scheduler override path is not UTF-8")?])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .context("sudo tee did not provide stdin")?
+            .write_all(contents.as_bytes())?;
+        anyhow::ensure!(child.wait()?.success(), "sudo tee failed writing scheduler override");
+    } else {
+        let status = Command::new("sudo")
+            .args(["rm", "-f", path.to_str().context("scheduler override path is not UTF-8")?])
+            .status()?;
+        anyhow::ensure!(status.success(), "sudo rm failed removing scheduler override");
+    }
+    Ok(())
+}
+
+async fn scheduler_lease_renew_time(context: &E2eContext) -> Result<String> {
+    let leases: Api<k8s_openapi::api::coordination::v1::Lease> =
+        Api::namespaced(context.client.clone(), "kube-system");
+    Ok(serde_json::to_value(leases.get("kube-scheduler").await?)?
+        .pointer("/spec/renewTime")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned())
+}
+
+async fn restart_scheduler_with_env(context: &E2eContext, contents: Option<&str>) -> Result<()> {
+    let before = scheduler_lease_renew_time(context).await?;
+    write_scheduler_override(contents)?;
+    let restarted = run_systemctl(&["daemon-reload"])
+        .and_then(|_| run_systemctl(&["restart", "nodescheduler.service"]));
+    if let Err(error) = restarted {
+        let _ = write_scheduler_override(None);
+        let _ = run_systemctl(&["daemon-reload"]);
+        return Err(error);
+    }
+    context
+        .wait_until("nodescheduler to reacquire its leader lease", Duration::from_secs(90), || {
+            let before = before.clone();
+            async move {
+                let now = scheduler_lease_renew_time(context).await?;
+                Ok(!now.is_empty() && now != before)
+            }
+        })
+        .await
+}
+
+async fn scheduler_extender_case(context: &E2eContext, reject: bool) -> Result<()> {
+    require_nodescheduler()?;
+    if !Command::new("systemctl")
+        .args(["cat", "nodescheduler.service"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return Err(skip_test(
+            "HTTP extender tests require a systemd-managed nodescheduler service",
+        ));
+    }
+    let extender = start_fake_extender(reject).await?;
+    let config = serde_json::to_string(&json!([{
+        "urlPrefix": format!("http://127.0.0.1:{}", extender.port),
+        "filterVerb": "filter",
+        "nodeCacheCapable": true
+    }]))?;
+    let escaped = config.replace('"', "\\\"");
+    let override_contents = format!(
+        "[Service]\nEnvironment=\"NODESCHEDULER_EXTENDERS_JSON={escaped}\"\n"
+    );
+    let setup = restart_scheduler_with_env(context, Some(&override_contents)).await;
+    let result = async {
+        setup?;
+        let name = if reject { "sched-extender-reject" } else { "sched-extender-accept" };
+        let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+        create_pod(
+            context,
+            name,
+            json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"]}]}),
+        )
+        .await?;
+        if reject {
+            context
+                .wait_until("extender-rejected Pod to report its scheduling event", Duration::from_secs(60), || {
+                    let events: Api<Event> = Api::namespaced(context.client.clone(), &context.namespace);
+                    async move {
+                        Ok(events.list(&ListParams::default()).await?.items.into_iter().any(|event| {
+                            let value = serde_json::to_value(event).unwrap_or_default();
+                            value.pointer("/involvedObject/name").and_then(Value::as_str) == Some(name)
+                                && value.pointer("/message").and_then(Value::as_str).is_some_and(|message| message.contains("no-gpu-quota-fake-extender"))
+                        }))
+                    }
+                })
+                .await?;
+            anyhow::ensure!(!pod_is_scheduled(context, name).await?, "the HTTP extender rejected Pod {name}, but it was scheduled");
+        } else {
+            context
+                .wait_until("extender-approved Pod to be scheduled", Duration::from_secs(90), || {
+                    pod_is_scheduled(context, name)
+                })
+                .await?;
+        }
+        anyhow::ensure!(extender.calls.load(Ordering::Relaxed) > 0, "nodescheduler never called the HTTP extender");
+        let _ = pods.delete(name, &DeleteParams::default()).await;
+        Ok(())
+    }
+    .await;
+    let _ = restart_scheduler_with_env(context, None).await;
+    extender.task.abort();
+    result
 }
 
 async fn first_node(context: &E2eContext) -> Result<Node> {
@@ -99,6 +342,18 @@ pub(super) async fn scheduler_places_an_ordinary_pod(context: &E2eContext) -> Re
             pod_is_scheduled(context, name)
         })
         .await
+}
+
+pub(super) async fn scheduler_consults_an_http_extender_and_honours_a_filter_rejection(
+    context: &E2eContext,
+) -> Result<()> {
+    scheduler_extender_case(context, true).await
+}
+
+pub(super) async fn scheduler_schedules_a_pod_an_http_extender_approves(
+    context: &E2eContext,
+) -> Result<()> {
+    scheduler_extender_case(context, false).await
 }
 
 pub(super) async fn scheduler_honours_a_matching_node_selector(

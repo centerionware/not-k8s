@@ -582,6 +582,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
+        name: "test_dra_claim_is_allocated_and_reserved_for_the_pod",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_csi_ephemeral_inline_volume_is_mounted",
         group: TestGroup::CsiDra,
     },
@@ -603,6 +607,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_scheduler_places_an_ordinary_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_schedules_a_pod_an_http_extender_approves",
         group: TestGroup::General,
     },
     TestCase {
@@ -1547,6 +1559,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
         }
         "test_resource_api_group_is_enabled" => dra::resource_api_group_is_enabled(context).await,
+        "test_dra_claim_is_allocated_and_reserved_for_the_pod" => {
+            dra::dra_claim_is_allocated_and_reserved_for_the_pod(context).await
+        }
         "test_csi_ephemeral_inline_volume_is_mounted" => {
             csi::csi_ephemeral_inline_volume_is_mounted(context).await
         }
@@ -1562,6 +1577,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_places_an_ordinary_pod" => {
             scheduler::scheduler_places_an_ordinary_pod(context).await
+        }
+        "test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection" => {
+            scheduler::scheduler_consults_an_http_extender_and_honours_a_filter_rejection(context).await
+        }
+        "test_scheduler_schedules_a_pod_an_http_extender_approves" => {
+            scheduler::scheduler_schedules_a_pod_an_http_extender_approves(context).await
         }
         "test_scheduler_honours_a_matching_node_selector" => {
             scheduler::scheduler_honours_a_matching_node_selector(context).await
