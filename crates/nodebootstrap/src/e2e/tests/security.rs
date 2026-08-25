@@ -397,7 +397,10 @@ pub(super) async fn supplemental_groups_policy_strict_ignores_image_group_member
     }))?;
     configmaps.create(&PostParams::default(), &configmap).await?;
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
-    let make_pod = |name: &str, policy: &str| {
+    for (name, policy) in [
+        ("supplemental-groups-merge", "Merge"),
+        ("supplemental-groups-strict", "Strict"),
+    ] {
         create_pod(
             context,
             name,
@@ -408,17 +411,16 @@ pub(super) async fn supplemental_groups_policy_strict_ignores_image_group_member
                 "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "id -G > /dev/termination-log"], "volumeMounts": [{"name": "identity", "mountPath": "/etc/passwd", "subPath": "passwd"}, {"name": "identity", "mountPath": "/etc/group", "subPath": "group"}]}]
             }),
         )
-    };
-    make_pod("supplemental-groups-merge", "Merge").await?;
-    make_pod("supplemental-groups-strict", "Strict").await?;
+        .await?;
+    }
     let result = async {
-        let merge = context
+        let _merge = context
             .wait_until("Merge supplemental groups", Duration::from_secs(120), || {
                 let context = context.clone();
                 async move { Ok(termination_message(&context, "supplemental-groups-merge").await?.is_some()) }
             })
             .await?;
-        let strict = context
+        let _strict = context
             .wait_until("Strict supplemental groups", Duration::from_secs(120), || {
                 let context = context.clone();
                 async move { Ok(termination_message(&context, "supplemental-groups-strict").await?.is_some()) }

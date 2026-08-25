@@ -305,7 +305,7 @@ pub(super) async fn datastore_creates_a_key_only_if_absent(
 fn spawn_watch(store: &DatastoreProcess, request: &str, path: &Path) -> Result<Child> {
     let pki = store.client_dir();
     let output = File::create(path)?;
-    Ok(Command::new("grpcurl")
+    Command::new("grpcurl")
         .args([
             "-cacert", pki.join("ca.crt").to_str().context("CA path is not UTF-8")?,
             "-cert", pki.join("client.crt").to_str().context("client cert path is not UTF-8")?,
@@ -316,7 +316,7 @@ fn spawn_watch(store: &DatastoreProcess, request: &str, path: &Path) -> Result<C
         .stdout(Stdio::from(output))
         .stderr(Stdio::null())
         .spawn()
-        .context("starting nodestore watch stream"))
+        .context("starting nodestore watch stream")
 }
 
 pub(super) async fn datastore_streams_watch_events_as_they_happen(
