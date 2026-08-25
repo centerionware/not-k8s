@@ -392,6 +392,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
+        name: "test_node_reports_volumes_in_use_for_a_csi_volume",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_scheduler_places_an_ordinary_pod",
         group: TestGroup::General,
     },
@@ -1088,6 +1092,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             csi::csi_ephemeral_inline_volume_is_mounted(context).await
         }
         "test_pod_uses_a_raw_block_volume" => csi::pod_uses_a_raw_block_volume(context).await,
+        "test_node_reports_volumes_in_use_for_a_csi_volume" => {
+            csi::node_reports_volumes_in_use_for_a_csi_volume(context).await
+        }
         "test_scheduler_places_an_ordinary_pod" => {
             scheduler::scheduler_places_an_ordinary_pod(context).await
         }
