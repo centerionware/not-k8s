@@ -310,3 +310,121 @@ pub(super) async fn node_reports_volumes_in_use_for_a_csi_volume(
     let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
     result
 }
+
+async fn pod_termination_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.container_statuses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|status| status.name == "app")
+        .and_then(|status| status.state)
+        .and_then(|state| state.terminated)
+        .and_then(|terminated| terminated.message))
+}
+
+pub(super) async fn fsgroup_change_policy_on_root_mismatch_skips_the_second_chown(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("CSI fsGroupChangePolicy checks require the CRI runtime"));
+    }
+    let storage_class = std::env::var("TEST_CSI_STORAGE_CLASS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            skip_test("TEST_CSI_STORAGE_CLASS is not set; a CSI-backed StorageClass is required")
+        })?;
+    let claim_name = "fsgroup-policy-check-claim";
+    let first_name = "fsgroup-policy-check-1";
+    let second_name = "fsgroup-policy-check-2";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pvcs: Api<PersistentVolumeClaim> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let claim: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": claim_name},
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": storage_class,
+            "resources": {"requests": {"storage": "64Mi"}}
+        }
+    }))?;
+    pvcs.create(&PostParams::default(), &claim).await?;
+    let bind_result = context
+        .wait_until("fsGroup policy PVC to become Bound", Duration::from_secs(120), || {
+            let pvcs = pvcs.clone();
+            async move {
+                Ok(pvcs
+                    .get(claim_name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Bound"))
+            }
+        })
+        .await;
+    if let Err(error) = bind_result {
+        let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
+        return Err(error);
+    }
+
+    let create_pod = |name: &'static str| {
+        serde_json::from_value::<Pod>(json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name},
+            "spec": {
+                "restartPolicy": "Never",
+                "securityContext": {"fsGroup": 4322, "fsGroupChangePolicy": "OnRootMismatch"},
+                "containers": [{"name": "app", "image": "busybox:latest", "command": ["stat", "-c", "%g", "/data"] , "volumeMounts": [{"name": "data", "mountPath": "/data"}]}],
+                "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": claim_name}}]
+            }
+        }))
+    };
+    let first: Pod = create_pod(first_name)?;
+    pods.create(&PostParams::default(), &first).await?;
+    let first_result = context
+        .wait_until("first fsGroup policy Pod", Duration::from_secs(120), || {
+            let context = context.clone();
+            async move {
+                Ok(pod_termination_message(&context, first_name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "4322"))
+            }
+        })
+        .await;
+    if let Err(error) = first_result {
+        let _ = pods.delete(first_name, &DeleteParams::default()).await;
+        let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
+        return Err(error);
+    }
+    pods.delete(first_name, &DeleteParams::default()).await?;
+    context
+        .wait_until("first fsGroup policy Pod deletion", Duration::from_secs(240), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get_opt(first_name).await?.is_none()) }
+        })
+        .await?;
+
+    let second: Pod = create_pod(second_name)?;
+    pods.create(&PostParams::default(), &second).await?;
+    let result = context
+        .wait_until("second fsGroup policy Pod", Duration::from_secs(240), || {
+            let context = context.clone();
+            async move {
+                Ok(pod_termination_message(&context, second_name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "4322"))
+            }
+        })
+        .await;
+    let _ = pods.delete(second_name, &DeleteParams::default()).await;
+    let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
+    result
+}

@@ -396,6 +396,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
+        name: "test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_scheduler_places_an_ordinary_pod",
         group: TestGroup::General,
     },
@@ -1094,6 +1098,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_pod_uses_a_raw_block_volume" => csi::pod_uses_a_raw_block_volume(context).await,
         "test_node_reports_volumes_in_use_for_a_csi_volume" => {
             csi::node_reports_volumes_in_use_for_a_csi_volume(context).await
+        }
+        "test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown" => {
+            csi::fsgroup_change_policy_on_root_mismatch_skips_the_second_chown(context).await
         }
         "test_scheduler_places_an_ordinary_pod" => {
             scheduler::scheduler_places_an_ordinary_pod(context).await
