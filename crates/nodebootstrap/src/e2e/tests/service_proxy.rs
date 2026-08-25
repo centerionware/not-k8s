@@ -128,21 +128,28 @@ fn require_service_proxy() -> Result<()> {
     if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
         return Err(skip_test("service routing checks require the CRI runtime"));
     }
-    let nft = Command::new("nft")
+    // The runner is deliberately unprivileged while nodeproxy is a root
+    // service. A successful process spawn is not enough here: `nft` returns
+    // non-zero when the unprivileged probe cannot open netlink, so fall back
+    // to sudo on both spawn failure and command failure. The old code only
+    // used sudo for spawn failure and therefore skipped proxy tests even
+    // while nodeproxy had successfully installed the table as root.
+    let nft = match Command::new("nft")
         .args(["list", "table", "inet", "not_k8s_svc"])
         .output()
-        .or_else(|_| {
-            Command::new("sudo")
-                .args(["nft", "list", "table", "inet", "not_k8s_svc"])
-                .output()
-        });
-    let nft = match nft {
-        Ok(output) => output,
-        Err(_) => {
-            return Err(skip_test(
-                "nodeproxy/nftables is unavailable; bootstrap with the proxy enabled and a usable nftables host",
-            ))
-        }
+    {
+        Ok(output) if output.status.success() => output,
+        _ => match Command::new("sudo")
+            .args(["nft", "list", "table", "inet", "not_k8s_svc"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => {
+                return Err(skip_test(
+                    "nodeproxy/nftables is unavailable; bootstrap with the proxy enabled and a usable nftables host",
+                ))
+            }
+        },
     };
     if !nft.status.success() {
         return Err(skip_test(

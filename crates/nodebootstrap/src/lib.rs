@@ -28,9 +28,9 @@ use anyhow::{bail, Context, Result};
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
-/// and nodecontroller -> nodescheduler -> CNI readiness -> apiserver network
-/// endpoint refresh -> the remaining
-/// replacement services.
+/// -> nodecontroller long enough for node-CIDR allocation -> CNI readiness
+/// -> apiserver network endpoint refresh -> nodecontroller restart and
+/// nodescheduler -> the remaining replacement services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
@@ -46,14 +46,14 @@ use anyhow::{bail, Context, Result};
 /// apply against). `cni` runs after the apiserver is up because flanneld's
 /// kube-subnet-manager mode needs a live kubeconfig. Nodelet then generates
 /// its serving certificate; `targets::enable_nodelet_proxy` may restart the
-/// apiserver to trust that CA. The replacement scheduler/controller are
-/// deliberately installed only after that first planned restart and after
-/// the RBAC authorizer barrier. The scheduler must be running before the
-/// later network endpoint refresh: otherwise CoreDNS stays Pending and no
-/// CNI bridge is created for that refresh to discover. `nodecontroller` is
-/// the deliberate exception to the CNI barrier: its node-ipam controller
-/// allocates the PodCIDR that flanneld needs before it can lease this node a
-/// subnet.
+/// apiserver to trust that CA. The replacement controller is deliberately
+/// started after the RBAC authorizer barrier, before CNI readiness, because
+/// its node-ipam controller allocates the PodCIDR that flanneld needs before
+/// it can lease this node a subnet. Once that subnet exists, the final
+/// apiserver network-endpoint refresh is performed and nodecontroller is
+/// restarted so neither it nor the scheduler keeps watches from the
+/// pre-refresh apiserver instance. The scheduler therefore starts only after
+/// the final planned restart.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     if cfg.remove_control_plane {
@@ -121,17 +121,25 @@ pub fn run_all() -> Result<()> {
         services::remove_nodelet(&cfg);
     }
     if !cfg.skip_control_plane {
-        // With flannel, this is the final kube-apiserver restart: the first
-        // instance starts before cni0 exists and advertises loopback, while
-        // pods need the bridge address to reach the apiserver Service. Do it
-        // before RBAC verification and before starting either replacement
-        // controller, otherwise their initial watches can race the restart
-        // and observe transient 403s while the new apiserver reloads RBAC.
-        if !cfg.skip_nodelet && cfg.with_cri {
+        // RBAC must be present before nodecontroller starts. With flannel,
+        // nodecontroller then needs to run briefly so node-ipam allocates the
+        // PodCIDR that flanneld needs before it can write subnet.env.
+        rbac::run_with(&cfg)?;
+        if !cfg.skip_nodelet
+            && cfg.with_cri
+            && cfg.cni_provider.as_deref() == Some("flannel")
+        {
+            services::ensure_nodecontroller(&cfg)?;
             cni::wait_for_flannel_subnet(&cfg)?;
+
+            // This is the final kube-apiserver restart: the first instance
+            // starts before cni0 exists and advertises loopback, while pods
+            // need the bridge address to reach the apiserver Service. The
+            // controller that allocated the subnet is restarted below after
+            // this refresh, so neither replacement controller begins its
+            // normal watch lifecycle against the old apiserver instance.
             targets::refresh_network_advertise_address(&cfg)?;
         }
-        rbac::run_with(&cfg)?;
         services::ensure_nodecontroller(&cfg)?;
         services::ensure_nodescheduler(&cfg)?;
     }
