@@ -114,6 +114,7 @@ fn transaction_request(request: &Value) -> Result<pb::TxnRequest> {
                 key: decode_field(compare, "key")?,
                 range_end: Vec::new(),
                 result: pb::compare::CompareResult::Equal as i32,
+                target: pb::compare::CompareTarget::Mod as i32,
                 target_union: Some(pb::compare::TargetUnion::ModRevision(integer_field(
                     compare,
                     "modRevision",
