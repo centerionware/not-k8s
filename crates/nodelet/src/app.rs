@@ -66,11 +66,32 @@ pub async fn run() -> Result<()> {
     // Pick the runtime. Mock needs nothing; CRI needs the `cri` feature + containerd
     // (and the kube Client, to resolve ConfigMap/Secret volumes — CRI itself has
     // no concept of those, only host-path bind mounts).
+    info!("initializing pod runtime");
     let runtime: Arc<dyn PodRuntime> = build_runtime(&cfg, client.clone()).await?;
+    info!("pod runtime initialized");
 
     // Register the node and seed status + lease before we start reconciling pods.
-    let images = runtime.node_images().await.unwrap_or_default();
-    let runtime_handlers = runtime.runtime_handlers().await.unwrap_or_default();
+    let images = match tokio::time::timeout(Duration::from_secs(15), runtime.node_images()).await {
+        Ok(result) => result.unwrap_or_else(|e| {
+            warn!(error = ?e, "CRI image inventory failed during node startup; continuing with an empty image list");
+            Vec::new()
+        }),
+        Err(_) => {
+            warn!("CRI image inventory timed out during node startup; continuing with an empty image list");
+            Vec::new()
+        }
+    };
+    let runtime_handlers = match tokio::time::timeout(Duration::from_secs(15), runtime.runtime_handlers()).await {
+        Ok(result) => result.unwrap_or_else(|e| {
+            warn!(error = ?e, "CRI runtime-handler query failed during node startup; continuing with no runtime handlers");
+            Vec::new()
+        }),
+        Err(_) => {
+            warn!("CRI runtime-handler query timed out during node startup; continuing with no runtime handlers");
+            Vec::new()
+        }
+    };
+    info!(image_count = images.len(), runtime_handler_count = runtime_handlers.len(), "registering node");
     node::register(
         &client,
         &cfg,
@@ -182,6 +203,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     .memory_manager_static
                     .then(|| nodelet::memory_manager::MemoryManager::new(nodelet::topology::read_numa_memory(std::path::Path::new("/sys/devices/system/node"))));
                 let userns = nodelet::userns::UsernsAllocator::new(cfg.userns_base_uid, cfg.userns_length, cfg.userns_max_pods);
+                info!(endpoint = %cfg.cri_endpoint, "connecting to CRI endpoint");
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
@@ -209,6 +231,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                 )
                 .await
                 .context("connecting to CRI endpoint")?;
+                info!(endpoint = %cfg.cri_endpoint, "connected to CRI endpoint");
                 Ok(Arc::new(rt))
             }
             #[cfg(not(feature = "cri"))]
