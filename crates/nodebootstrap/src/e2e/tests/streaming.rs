@@ -1,14 +1,12 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
+use futures::{AsyncBufReadExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, PostParams};
+use kube::api::{Api, AttachParams, LogParams, PostParams};
 use serde_json::json;
-use std::process::{Output, Stdio};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::process::{Child, Command};
 
 fn needs_cri() -> Result<()> {
     anyhow::ensure!(
@@ -45,41 +43,14 @@ async fn create_pod(context: &E2eContext, name: &str, command: &[&str]) -> Resul
         .await
 }
 
-fn kubectl_output(namespace: &str, args: &[&str]) -> Result<Output> {
-    std::process::Command::new("kubectl")
-        .arg("-n")
-        .arg(namespace)
-        .args(args)
-        .output()
-        .with_context(|| format!("running kubectl -n {namespace} {args:?}"))
-}
-
-fn ensure_kubectl_success(output: &Output, description: &str) -> Result<String> {
-    anyhow::ensure!(
-        output.status.success(),
-        "{description} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 fn contains_later_line(output: &str, prefix: &str) -> bool {
     (2..=8).any(|line| output.contains(&format!("{prefix}{line}")))
 }
 
-async fn stream_until(namespace: &str, args: &[&str], prefix: &str) -> Result<String> {
-    let mut child = Command::new("kubectl")
-        .arg("-n")
-        .arg(namespace)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("starting kubectl -n {namespace} {args:?}"))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .context("kubectl streaming command did not expose stdout")?;
+async fn stream_until<R>(mut stdout: R, prefix: &str) -> Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut bytes = Vec::new();
     let read_result = tokio::time::timeout(Duration::from_secs(40), async {
         let mut buffer = [0_u8; 1024];
@@ -97,25 +68,33 @@ async fn stream_until(namespace: &str, args: &[&str], prefix: &str) -> Result<St
         Ok::<(), std::io::Error>(())
     })
     .await;
-    let _ = child.kill().await;
-    let _ = child.wait().await;
     read_result
-        .context("timed out waiting for a later line from the kubectl stream")??;
+        .context("timed out waiting for a later line from the stream")??;
     let output = String::from_utf8_lossy(&bytes).into_owned();
     anyhow::ensure!(
         output.contains(&format!("{prefix}1")),
-        "kubectl stream produced no initial {prefix}1 line: {output:?}"
+        "stream produced no initial {prefix}1 line: {output:?}"
     );
     anyhow::ensure!(
         contains_later_line(&output, prefix),
-        "kubectl stream disconnected after its first line: {output:?}"
+        "stream disconnected after its first line: {output:?}"
     );
     Ok(output)
 }
 
-async fn stop_child(child: &mut Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+async fn exec_output(context: &E2eContext, name: &str, command: &[&str]) -> Result<String> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let params = AttachParams::default()
+        .container("app")
+        .stdout(true)
+        .stderr(false);
+    let mut process = pods.exec(name, command.iter().copied(), &params).await?;
+    let mut stdout = Vec::new();
+    if let Some(mut stream) = process.stdout() {
+        stream.read_to_end(&mut stdout).await?;
+    }
+    process.join().await?;
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 pub(super) async fn kubectl_logs_returns_real_output(context: &E2eContext) -> Result<()> {
@@ -124,13 +103,11 @@ pub(super) async fn kubectl_logs_returns_real_output(context: &E2eContext) -> Re
     }
     let name = "logs-check";
     create_pod(context, name, &["sh", "-c", "echo hello-from-nodelet-logs; sleep 3600"]).await?;
-    let output = ensure_kubectl_success(
-        &kubectl_output(&context.namespace, &["logs", name])?,
-        "kubectl logs",
-    )?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let output = pods.logs(name, &LogParams::default()).await?;
     anyhow::ensure!(
         output.contains("hello-from-nodelet-logs"),
-        "kubectl logs did not return the container output: {output:?}"
+        "logs did not return the container output: {output:?}"
     );
     Ok(())
 }
@@ -150,7 +127,31 @@ pub(super) async fn kubectl_logs_follow_streams_new_output(context: &E2eContext)
         ],
     )
     .await?;
-    let _ = stream_until(&context.namespace, &["logs", "-f", name], "line-").await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let mut logs = pods
+        .log_stream(
+            name,
+            &LogParams {
+                follow: true,
+                ..Default::default()
+            },
+        )
+        .await?
+        .lines();
+    let output = tokio::time::timeout(Duration::from_secs(40), async {
+        let mut output = String::new();
+        while let Some(line) = logs.try_next().await? {
+            output.push_str(&line);
+            output.push('\n');
+            if output.contains("line-1") && contains_later_line(&output, "line-") {
+                return Ok::<String, anyhow::Error>(output);
+            }
+        }
+        Ok(output)
+    })
+    .await
+    .context("timed out waiting for a later line from the log stream")??;
+    anyhow::ensure!(contains_later_line(&output, "line-"), "log stream disconnected after its first line: {output:?}");
     Ok(())
 }
 
@@ -162,16 +163,10 @@ pub(super) async fn kubectl_exec_runs_a_command_and_returns_its_output(
     }
     let name = "exec-check";
     create_pod(context, name, &["sleep", "3600"]).await?;
-    let output = ensure_kubectl_success(
-        &kubectl_output(
-            &context.namespace,
-            &["exec", name, "--", "echo", "hello-from-exec"],
-        )?,
-        "kubectl exec",
-    )?;
+    let output = exec_output(context, name, &["echo", "hello-from-exec"]).await?;
     anyhow::ensure!(
         output.contains("hello-from-exec"),
-        "kubectl exec did not return the command output: {output:?}"
+        "exec did not return the command output: {output:?}"
     );
     Ok(())
 }
@@ -193,49 +188,51 @@ pub(super) async fn kubectl_attach_streams_the_containers_stdout(
         ],
     )
     .await?;
-    let _ = stream_until(&context.namespace, &["attach", name], "attach-line-").await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let params = AttachParams::default()
+        .container("app")
+        .stdout(true)
+        .stderr(false);
+    let mut process = pods.attach(name, &params).await?;
+    let output = if let Some(stdout) = process.stdout() {
+        stream_until(stdout, "attach-line-").await?
+    } else {
+        anyhow::bail!("attach did not expose container stdout")
+    };
+    process.abort();
+    anyhow::ensure!(contains_later_line(&output, "attach-line-"));
     Ok(())
 }
 
-async fn port_forward_response(namespace: &str, name: &str) -> Result<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let local_port = listener.local_addr()?.port();
-    drop(listener);
-    let port_mapping = format!("{local_port}:8080");
-    let mut child = Command::new("kubectl")
-        .arg("-n")
-        .arg(namespace)
-        .arg("port-forward")
-        .arg(name)
-        .arg(&port_mapping)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("starting kubectl port-forward")?;
-
+async fn port_forward_response(context: &E2eContext, name: &str) -> Result<String> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let mut forwarder = pods.portforward(name, &[8080]).await?;
+    let mut stream = forwarder
+        .take_stream(8080)
+        .context("port-forward did not expose the container port")?;
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await?;
     let response = tokio::time::timeout(Duration::from_secs(40), async {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
         loop {
-            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", local_port)).await {
-                stream
-                    .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                    .await?;
-                let mut bytes = Vec::new();
-                if tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut bytes))
-                    .await
-                    .is_ok()
-                {
-                    let response = String::from_utf8_lossy(&bytes).into_owned();
-                    if response.contains("port-forward-marker") {
-                        return Ok::<String, std::io::Error>(response);
-                    }
-                }
+            let count = stream.read(&mut buffer).await?;
+            if count == 0 {
+                break;
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            bytes.extend_from_slice(&buffer[..count]);
+            let response = String::from_utf8_lossy(&bytes);
+            if response.contains("port-forward-marker") {
+                return Ok::<String, std::io::Error>(response.into_owned());
+            }
         }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     })
-    .await;
-    stop_child(&mut child).await;
-    Ok(response.context("timed out waiting for kubectl port-forward to reach the container")??)
+    .await
+    .context("timed out waiting for port-forward to reach the container")??;
+    forwarder.abort();
+    Ok(response)
 }
 
 pub(super) async fn kubectl_port_forward_reaches_a_real_container_port(
@@ -255,7 +252,7 @@ pub(super) async fn kubectl_port_forward_reaches_a_real_container_port(
         ],
     )
     .await?;
-    let response = port_forward_response(&context.namespace, name).await?;
+    let response = port_forward_response(context, name).await?;
     anyhow::ensure!(
         response.contains("port-forward-marker"),
         "port-forward response did not contain the container marker: {response:?}"
