@@ -28,9 +28,10 @@ use anyhow::{bail, Context, Result};
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
-/// -> nodecontroller long enough for node-CIDR allocation -> CNI readiness
-/// -> apiserver network endpoint refresh -> nodecontroller restart and
-/// nodescheduler -> the remaining replacement services.
+/// -> nodecontroller long enough for node-CIDR allocation -> nodescheduler
+/// long enough for CoreDNS to create cni0 -> CNI readiness -> apiserver
+/// network endpoint refresh -> nodecontroller and nodescheduler restart ->
+/// the remaining replacement services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
@@ -52,8 +53,9 @@ use anyhow::{bail, Context, Result};
 /// it can lease this node a subnet. Once that subnet exists, the final
 /// apiserver network-endpoint refresh is performed and nodecontroller is
 /// restarted so neither it nor the scheduler keeps watches from the
-/// pre-refresh apiserver instance. The scheduler therefore starts only after
-/// the final planned restart.
+/// pre-refresh apiserver instance. The scheduler is started before the CNI
+/// barrier so CoreDNS can be scheduled and nodelet can create cni0 for the
+/// endpoint refresh to discover, then restarted after that refresh.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     if cfg.remove_control_plane {
@@ -130,6 +132,7 @@ pub fn run_all() -> Result<()> {
             && cfg.cni_provider.as_deref() == Some("flannel")
         {
             services::ensure_nodecontroller(&cfg)?;
+            services::ensure_nodescheduler(&cfg)?;
             cni::wait_for_flannel_subnet(&cfg)?;
 
             // This is the final kube-apiserver restart: the first instance
