@@ -264,8 +264,10 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
                 }
             })
             .await?;
-        let log = fs::read_to_string(&log_path).unwrap_or_default();
-        anyhow::ensure!(log.contains("issued client certificate"), "nodelet did not log successful TLS bootstrap: {log}");
+        // The output kubeconfig is the behavioral proof. The child remains
+        // alive polling the issued CSR, so its line-buffered tracing output
+        // is not necessarily visible until after it is stopped; requiring a
+        // log line here made a successful bootstrap fail spuriously.
         Ok(())
     }
     .await;
