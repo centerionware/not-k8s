@@ -633,7 +633,11 @@ pub(super) async fn datastore_enforces_compare_and_swap(
         "failure": [{"requestRange": {"key": b64("/registry/cas")}}]
     });
     let output = store.rpc("etcdserverpb.KV/Txn", &txn.to_string())?;
-    anyhow::ensure!(!output.contains("\"succeeded\": true"), "stale CAS unexpectedly succeeded");
+    let succeeded = serde_json::from_str::<Value>(&output)?
+        .get("succeeded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    anyhow::ensure!(!succeeded, "stale CAS unexpectedly succeeded");
     anyhow::ensure!(get_value(&store, "/registry/cas")? == "v2", "stale CAS changed the value");
     Ok(())
 }
@@ -647,15 +651,19 @@ pub(super) async fn datastore_creates_a_key_only_if_absent(
         "success": [{"requestPut": {"key": b64("/registry/new"), "value": b64("first")}}],
         "failure": []
     });
-    anyhow::ensure!(
-        store.rpc("etcdserverpb.KV/Txn", &txn.to_string())?.contains("\"succeeded\": true"),
-        "create-if-absent transaction did not succeed"
-    );
+    let output = store.rpc("etcdserverpb.KV/Txn", &txn.to_string())?;
+    let succeeded = serde_json::from_str::<Value>(&output)?
+        .get("succeeded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    anyhow::ensure!(succeeded, "create-if-absent transaction did not succeed");
     anyhow::ensure!(get_value(&store, "/registry/new")? == "first", "created value was wrong");
-    anyhow::ensure!(
-        !store.rpc("etcdserverpb.KV/Txn", &txn.to_string())?.contains("\"succeeded\": true"),
-        "create-if-absent transaction overwrote an existing key"
-    );
+    let output = store.rpc("etcdserverpb.KV/Txn", &txn.to_string())?;
+    let succeeded = serde_json::from_str::<Value>(&output)?
+        .get("succeeded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    anyhow::ensure!(!succeeded, "create-if-absent transaction overwrote an existing key");
     Ok(())
 }
 
