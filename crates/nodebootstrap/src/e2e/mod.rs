@@ -1060,6 +1060,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_a_long_lived_watch_survives_a_service_churn_burst",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion",
         group: TestGroup::CsiDra,
     },
@@ -1957,6 +1961,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart" => {
             service_proxy::nodeproxy_rebuilds_the_whole_ruleset_after_a_restart(context).await
+        }
+        "test_a_long_lived_watch_survives_a_service_churn_burst" => {
+            service_proxy::a_long_lived_watch_survives_a_service_churn_burst(context).await
         }
         "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion" => {
             storage::pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion(context).await

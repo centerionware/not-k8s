@@ -3,6 +3,7 @@ use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
+use k8s_openapi::api::rbac::v1::{Role, RoleBinding};
 use kube::api::{Api, AttachParams, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::process::Command;
@@ -15,9 +16,18 @@ async fn create_backend(context: &E2eContext, name: &str) -> Result<()> {
 }
 
 async fn exec_output(context: &E2eContext, pod: &str, command: &[&str]) -> Result<String> {
+    exec_output_in(context, pod, "app", command).await
+}
+
+async fn exec_output_in(
+    context: &E2eContext,
+    pod: &str,
+    container: &str,
+    command: &[&str],
+) -> Result<String> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let params = AttachParams::default()
-        .container("app")
+        .container(container)
         .stdout(true)
         .stderr(false);
     let mut process = pods.exec(pod, command.iter().copied(), &params).await?;
@@ -663,4 +673,127 @@ pub(super) async fn nodeproxy_rebuilds_the_whole_ruleset_after_a_restart(
             Ok(receives_marker(&format!("{cluster_ip}:18105")).await?)
         })
         .await
+}
+
+pub(super) async fn a_long_lived_watch_survives_a_service_churn_burst(
+    context: &E2eContext,
+) -> Result<()> {
+    require_service_proxy()?;
+    let role_name = "established-conn-watcher-pods";
+    let roles: Api<Role> = Api::namespaced(context.client.clone(), &context.namespace);
+    let bindings: Api<RoleBinding> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let role: Role = serde_json::from_value(json!({
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": role_name},
+        "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}]
+    }))?;
+    let binding: RoleBinding = serde_json::from_value(json!({
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": role_name},
+        "subjects": [{"kind": "ServiceAccount", "name": "default", "namespace": context.namespace}],
+        "roleRef": {"kind": "Role", "name": role_name, "apiGroup": "rbac.authorization.k8s.io"}
+    }))?;
+    roles.create(&PostParams::default(), &role).await?;
+    bindings.create(&PostParams::default(), &binding).await?;
+
+    let pod_name = "established-conn-watcher";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": pod_name},
+        "spec": {
+            "serviceAccountName": "default",
+            "containers": [{
+                "name": "watcher",
+                "image": "curlimages/curl:8.10.1",
+                "command": ["sh", "-c", format!(
+                    "TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert $CACERT -H \"Authorization: Bearer $TOKEN\" \"https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/{}/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err & echo $! > /tmp/watch.pid; wait $(cat /tmp/watch.pid); echo WATCH_EXIT=$? >> /tmp/watch.err; sleep 3600",
+                    context.namespace
+                )]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("long-lived watch Pod to reach Running", Duration::from_secs(120), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(pod_name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+
+    context
+        .wait_until("watch Pod to establish its API connection", Duration::from_secs(45), || {
+            let context = context.clone();
+            async move {
+                let bytes = exec_output_in(&context, pod_name, "watcher", &["sh", "-c", "wc -c < /tmp/watch.out"]).await
+                    .unwrap_or_default();
+                let alive = exec_output_in(&context, pod_name, "watcher", &["sh", "-c", "kill -0 $(cat /tmp/watch.pid)"]).await
+                    .is_ok();
+                Ok(bytes.trim().parse::<u64>().unwrap_or_default() > 0 && alive)
+            }
+        })
+        .await?;
+
+    for index in 1..=25 {
+        create_service_for_selector(
+            context,
+            &format!("churn-svc-{index}"),
+            "ClusterIP",
+            80,
+            None,
+            &format!("churn-svc-{index}-nonexistent"),
+        )
+        .await?;
+    }
+    restart_nodeproxy()?;
+    tokio::time::sleep(Duration::from_secs(20)).await;
+
+    let bytes = exec_output_in(
+        context,
+        pod_name,
+        "watcher",
+        &["sh", "-c", "wc -c < /tmp/watch.out"],
+    )
+    .await?;
+    let alive = exec_output_in(
+        context,
+        pod_name,
+        "watcher",
+        &["sh", "-c", "kill -0 $(cat /tmp/watch.pid)"],
+    )
+    .await
+    .is_ok();
+    let error_log = exec_output_in(
+        context,
+        pod_name,
+        "watcher",
+        &["sh", "-c", "cat /tmp/watch.err"],
+    )
+    .await
+    .unwrap_or_default();
+    anyhow::ensure!(
+        bytes.trim().parse::<u64>().unwrap_or_default() > 0,
+        "long-lived watch received no bytes after Service churn"
+    );
+    anyhow::ensure!(
+        alive,
+        "curl exited during Service churn; watch error log: {error_log}"
+    );
+    anyhow::ensure!(
+        !error_log.contains("connection reset by peer"),
+        "Service churn reset the long-lived pod-to-apiserver connection: {error_log}"
+    );
+    Ok(())
 }
