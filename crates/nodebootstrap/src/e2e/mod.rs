@@ -54,6 +54,8 @@ mod garbage_collection;
 mod generic_ephemeral_volume;
 #[path = "tests/hooks.rs"]
 mod hooks;
+#[path = "tests/host_recovery.rs"]
+mod host_recovery;
 #[path = "tests/node_status.rs"]
 mod node_status;
 #[path = "tests/namespace.rs"]
@@ -94,6 +96,8 @@ mod security;
 mod service_proxy;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
+#[path = "tests/static_pods.rs"]
+mod static_pods;
 #[path = "tests/storage.rs"]
 mod storage;
 #[path = "tests/streaming.rs"]
@@ -350,6 +354,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_in_place_resize_updates_memory_limit_without_restarting",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores",
         group: TestGroup::General,
     },
@@ -363,6 +371,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_log_rotation_creates_a_rotated_file",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_static_pod_creates_a_mirror_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_pending_pod_recovers_after_the_node_failure_is_fixed",
         group: TestGroup::General,
     },
     TestCase {
@@ -483,6 +499,18 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_scheduler_honours_a_matching_node_selector",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_rejects_a_pod_that_does_not_fit",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_preempts_a_lower_priority_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_scheduler_does_not_preempt_when_policy_forbids_it",
         group: TestGroup::General,
     },
     TestCase {
@@ -1184,6 +1212,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_env_resource_field_ref_reports_the_containers_own_limits" => {
             resources::env_resource_field_ref_reports_the_containers_own_limits(context).await
         }
+        "test_in_place_resize_updates_memory_limit_without_restarting" => {
+            resources::in_place_resize_updates_memory_limit_without_restarting(context).await
+        }
         "test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores" => {
             resource_managers::cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores(context).await
         }
@@ -1195,6 +1226,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_log_rotation_creates_a_rotated_file" => {
             resource_managers::log_rotation_creates_a_rotated_file(context).await
+        }
+        "test_static_pod_creates_a_mirror_pod" => {
+            static_pods::static_pod_creates_a_mirror_pod(context).await
+        }
+        "test_a_pending_pod_recovers_after_the_node_failure_is_fixed" => {
+            host_recovery::pending_pod_recovers_after_the_node_failure_is_fixed(context).await
         }
         "test_endpointslice_is_produced_for_a_selected_pod" => {
             endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await
@@ -1281,6 +1318,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_honours_a_matching_node_selector" => {
             scheduler::scheduler_honours_a_matching_node_selector(context).await
+        }
+        "test_scheduler_rejects_a_pod_that_does_not_fit" => {
+            scheduler::scheduler_rejects_a_pod_that_does_not_fit(context).await
+        }
+        "test_scheduler_preempts_a_lower_priority_pod" => {
+            scheduler::scheduler_preempts_a_lower_priority_pod(context).await
+        }
+        "test_scheduler_does_not_preempt_when_policy_forbids_it" => {
+            scheduler::scheduler_does_not_preempt_when_policy_forbids_it(context).await
         }
         "test_scheduler_leaves_an_impossible_selector_pending" => {
             scheduler::scheduler_leaves_an_impossible_selector_pending(context).await

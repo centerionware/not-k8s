@@ -4,6 +4,7 @@ use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, PostParams};
 use serde_json::json;
+use std::process::Command;
 use std::time::Duration;
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
@@ -130,6 +131,107 @@ async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<
         .and_then(|status| status.state)
         .and_then(|state| state.terminated)
         .and_then(|terminated| terminated.message))
+}
+
+pub(super) async fn in_place_resize_updates_memory_limit_without_restarting(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("in-place resize checks require the CRI runtime"));
+    }
+    let name = "in-place-resize";
+    create_pod(
+        context,
+        name,
+        json!({
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "resources": {"limits": {"memory": "134217728"}}
+            }]
+        }),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("resize Pod to reach Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    let exec = |args: &[&str]| -> Result<std::process::Output> {
+        Command::new("kubectl")
+            .args(["exec", "-n", &context.namespace, name, "--"])
+            .args(args)
+            .output()
+            .context("reading the resize Pod cgroup")
+    };
+    let before = exec(&["cat", "/sys/fs/cgroup/memory.max"])?;
+    if !before.status.success() {
+        return Err(skip_test(
+            "the resize Pod could not read /sys/fs/cgroup/memory.max; this node may use cgroup v1",
+        ));
+    }
+    anyhow::ensure!(
+        String::from_utf8_lossy(&before.stdout).trim() == "134217728",
+        "initial memory.max was {:?}, expected 134217728",
+        String::from_utf8_lossy(&before.stdout).trim()
+    );
+    let patch = Command::new("kubectl")
+        .args([
+            "--namespace",
+            &context.namespace,
+            "patch",
+            "pod",
+            name,
+            "--subresource",
+            "resize",
+            "--type",
+            "merge",
+            "-p",
+            r#"{"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"268435456"}}}]}}"#,
+        ])
+        .output()
+        .context("patching the Pod resize subresource")?;
+    if !patch.status.success() {
+        return Err(skip_test(format!(
+            "the apiserver does not support the Pod resize subresource: {}",
+            String::from_utf8_lossy(&patch.stderr)
+        )));
+    }
+    context
+        .wait_until("container memory.max to reflect the in-place resize", Duration::from_secs(60), || {
+            let output = exec(&["cat", "/sys/fs/cgroup/memory.max"]);
+            async move {
+                Ok(output.is_ok_and(|output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() == "268435456"
+                }))
+            }
+        })
+        .await?;
+    let status = pods.get(name).await?.status.context("resize Pod has no status")?;
+    let container = status
+        .container_statuses
+        .unwrap_or_default()
+        .into_iter()
+        .find(|container| container.name == "app")
+        .context("resize Pod has no app container status")?;
+    anyhow::ensure!(
+        container.restart_count == 0,
+        "in-place resize restarted the container {} times",
+        container.restart_count
+    );
+    Ok(())
 }
 
 async fn read_cgroup_value(

@@ -2,6 +2,7 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::scheduling::v1::PriorityClass;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
 use std::process::Command;
@@ -142,6 +143,171 @@ pub(super) async fn scheduler_honours_a_matching_node_selector(
             }
         })
         .await
+}
+
+pub(super) async fn scheduler_rejects_a_pod_that_does_not_fit(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    let name = "scheduler-too-large";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"], "resources": {"requests": {"cpu": "10000"}}}]
+        }),
+    )
+    .await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until("oversized Pod to remain unbound", Duration::from_secs(45), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get(name).await?.spec.and_then(|spec| spec.node_name).is_none()) }
+        })
+        .await?;
+    let pod = pods.get(name).await?;
+    let message = serde_json::to_value(pod)?
+        .pointer("/status/conditions")
+        .and_then(Value::as_array)
+        .and_then(|conditions| {
+            conditions.iter().find_map(|condition| {
+                condition
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .filter(|message| message.contains("Insufficient cpu"))
+            })
+        });
+    anyhow::ensure!(
+        message.is_some(),
+        "an oversized Pod stayed unbound but did not report an Insufficient cpu scheduling reason"
+    );
+    Ok(())
+}
+
+fn priority_class(name: &str, value: i32, preemption_policy: Option<&str>) -> PriorityClass {
+    let mut class = json!({
+        "apiVersion": "scheduling.k8s.io/v1",
+        "kind": "PriorityClass",
+        "metadata": {"name": name},
+        "value": value,
+        "globalDefault": false,
+        "description": "nodebootstrap e2e priority class"
+    });
+    if let Some(policy) = preemption_policy {
+        class["preemptionPolicy"] = json!(policy);
+    }
+    serde_json::from_value(class).expect("PriorityClass test fixture is valid")
+}
+
+async fn priority_scenario(
+    context: &E2eContext,
+    low_name: &str,
+    high_name: &str,
+    high_priority_class: &str,
+    high_preemption_policy: Option<&str>,
+) -> Result<()> {
+    require_nodescheduler()?;
+    require_single_node(context).await?;
+    let node = first_node(context).await?;
+    let allocatable = serde_json::to_value(node)?
+        .pointer("/status/allocatable/cpu")
+        .and_then(Value::as_str)
+        .and_then(allocatable_cpu_millicores)
+        .context("the Node has no usable allocatable CPU")?;
+    let request = allocatable * 60 / 100;
+    anyhow::ensure!(request > 0, "the Node has no CPU available for priority tests");
+    let classes: Api<PriorityClass> = Api::all(context.client.clone());
+    let low_class = priority_class("nodebootstrap-e2e-low", 100, None);
+    let high_class = priority_class(
+        high_priority_class,
+        100_000,
+        high_preemption_policy,
+    );
+    classes.create(&PostParams::default(), &low_class).await?;
+    classes.create(&PostParams::default(), &high_class).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let result = async {
+        create_pod(
+            context,
+            low_name,
+            json!({"priorityClassName": "nodebootstrap-e2e-low", "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"], "resources": {"requests": {"cpu": format!("{request}m")}}}]}),
+        )
+        .await?;
+        context
+            .wait_until("low-priority Pod to be scheduled", Duration::from_secs(90), || {
+                pod_is_scheduled(context, low_name)
+            })
+            .await?;
+        create_pod(
+            context,
+            high_name,
+            json!({"priorityClassName": high_priority_class, "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "300"], "resources": {"requests": {"cpu": format!("{request}m")}}}]}),
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    let result = match result {
+        Ok(()) => {
+            if high_preemption_policy == Some("Never") {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                anyhow::ensure!(
+                    !pod_is_scheduled(context, high_name).await?,
+                    "a high-priority Pod with preemptionPolicy=Never was scheduled despite insufficient capacity"
+                );
+                anyhow::ensure!(
+                    pods.get_opt(low_name).await?.is_some(),
+                    "preemptionPolicy=Never unexpectedly removed the lower-priority Pod"
+                );
+                Ok(())
+            } else {
+                context
+                    .wait_until("high-priority Pod to preempt the low-priority Pod", Duration::from_secs(120), || {
+                        pod_is_scheduled(context, high_name)
+                    })
+                    .await?;
+                context
+                    .wait_until("preempted low-priority Pod to disappear", Duration::from_secs(90), || {
+                        let pods = pods.clone();
+                        async move { Ok(pods.get_opt(low_name).await?.is_none()) }
+                    })
+                    .await
+            }
+        }
+        Err(error) => Err(error),
+    };
+    let _ = pods.delete(low_name, &DeleteParams::default()).await;
+    let _ = pods.delete(high_name, &DeleteParams::default()).await;
+    let _ = classes.delete("nodebootstrap-e2e-low", &DeleteParams::default()).await;
+    let _ = classes.delete(high_priority_class, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn scheduler_preempts_a_lower_priority_pod(
+    context: &E2eContext,
+) -> Result<()> {
+    priority_scenario(
+        context,
+        "scheduler-preempt-low",
+        "scheduler-preempt-high",
+        "nodebootstrap-e2e-high",
+        None,
+    )
+    .await
+}
+
+pub(super) async fn scheduler_does_not_preempt_when_policy_forbids_it(
+    context: &E2eContext,
+) -> Result<()> {
+    priority_scenario(
+        context,
+        "scheduler-no-preempt-low",
+        "scheduler-no-preempt-high",
+        "nodebootstrap-e2e-never",
+        Some("Never"),
+    )
+    .await
 }
 
 pub(super) async fn scheduler_leaves_an_impossible_selector_pending(

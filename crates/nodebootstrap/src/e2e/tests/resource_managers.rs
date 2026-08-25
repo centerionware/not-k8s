@@ -60,12 +60,12 @@ fn require_cri_and_systemd() -> Result<()> {
     ))
 }
 
-struct NodeletEnvOverride {
+pub(super) struct NodeletEnvOverride {
     drop_in: PathBuf,
 }
 
 impl NodeletEnvOverride {
-    fn install(env: &[(&str, &str)]) -> Result<Self> {
+    pub(super) fn install(env: &[(&str, &str)]) -> Result<Self> {
         let drop_in_dir = Path::new("/etc/systemd/system/nodelet.service.d");
         let drop_in = drop_in_dir.join(format!(
             "nodebootstrap-e2e-resource-manager-{}.conf",
