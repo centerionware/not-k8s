@@ -195,11 +195,14 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
             let insertion = format!(
                 "{section}\n      config_path = \"/etc/containerd/certs.d\""
             );
-            let updated = config_path_text
-                .replacen(section, &insertion, 1);
+            let updated = if config_path_text.contains(section) {
+                config_path_text.replacen(section, &insertion, 1)
+            } else {
+                format!("{config_path_text}\n\n{insertion}\n")
+            };
             anyhow::ensure!(
                 updated != config_path_text,
-                "containerd config has no CRI registry section to configure"
+                "could not add the CRI registry config to containerd"
             );
             fs::copy(config_path, &config_backup)?;
             let updated_path = work.join("config.updated.toml");
