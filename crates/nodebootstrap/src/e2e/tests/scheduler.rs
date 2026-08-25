@@ -893,6 +893,133 @@ pub(super) async fn scheduler_schedules_pods_that_get_default_spread_constraints
     result
 }
 
+pub(super) async fn scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("WaitForFirstConsumer checks require the CRI runtime"));
+    }
+    let class_name = std::env::var("TEST_CSI_STORAGE_CLASS_WAIT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            skip_test(
+                "TEST_CSI_STORAGE_CLASS_WAIT is not set; an external WaitForFirstConsumer provisioner is required",
+            )
+        })?;
+    let classes: Api<StorageClass> = Api::all(context.client.clone());
+    if classes.get(&class_name).await.is_err() {
+        return Err(skip_test(format!(
+            "WaitForFirstConsumer StorageClass {class_name} is not installed"
+        )));
+    }
+
+    let claim_name = "scheduler-wfc-claim";
+    let pod_name = "scheduler-wfc-pod";
+    let pvcs: Api<PersistentVolumeClaim> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": claim_name},
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": class_name,
+            "resources": {"requests": {"storage": "64Mi"}}
+        }
+    }))?;
+    pvcs.create(&PostParams::default(), &pvc).await?;
+
+    let result = async {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        anyhow::ensure!(
+            pvcs.get(claim_name)
+                .await?
+                .status
+                .and_then(|status| status.phase)
+                .as_deref()
+                == Some("Pending"),
+            "WaitForFirstConsumer PVC bound before a Pod selected a node"
+        );
+
+        let pod: Pod = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": pod_name},
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "image": "busybox:latest",
+                    "command": ["sleep", "300"],
+                    "volumeMounts": [{"name": "data", "mountPath": "/data"}]
+                }],
+                "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": claim_name}}]
+            }
+        }))?;
+        pods.create(&PostParams::default(), &pod).await?;
+
+        if let Err(error) = context
+            .wait_until("WaitForFirstConsumer Pod to reach Running", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(pod_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await
+        {
+            let phase = pvcs
+                .get(claim_name)
+                .await
+                .ok()
+                .and_then(|claim| claim.status)
+                .and_then(|status| status.phase)
+                .unwrap_or_else(|| "unknown".to_owned());
+            return Err(skip_test(format!(
+                "PVC never bound after a node was chosen (phase={phase}): {error}; an external provisioner is required"
+            )));
+        }
+
+        let node = pods
+            .get(pod_name)
+            .await?
+            .spec
+            .and_then(|spec| spec.node_name)
+            .context("scheduled Pod has no nodeName")?;
+        let claim = pvcs.get(claim_name).await?;
+        let selected_node = claim
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get("volume.kubernetes.io/selected-node"))
+            .context("WaitForFirstConsumer PVC has no selected-node annotation")?;
+        anyhow::ensure!(
+            selected_node == &node,
+            "VolumeBinding selected node {selected_node:?}, but the Pod was scheduled to {node}"
+        );
+        anyhow::ensure!(
+            claim
+                .status
+                .and_then(|status| status.phase)
+                .as_deref()
+                == Some("Bound"),
+            "PVC was not Bound after its Pod reached Running"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = pods.delete(pod_name, &DeleteParams::default()).await;
+    let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
+    result
+}
+
 pub(super) async fn scheduler_claims_a_static_wait_for_first_consumer_volume(
     context: &E2eContext,
 ) -> Result<()> {

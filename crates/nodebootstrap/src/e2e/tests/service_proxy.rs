@@ -299,16 +299,18 @@ pub(super) async fn headless_service_does_not_break_other_services(
 ) -> Result<()> {
     let headless_backend = "headless-backend";
     create_backend(context, headless_backend).await?;
-    create_service_for_selector(
-        context,
-        "headless-service",
-        "ClusterIP",
-        18094,
-        None,
-        headless_backend,
-    )
-    .await?;
     let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    let headless: Service = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "headless-service"},
+        "spec": {
+            "clusterIP": "None",
+            "selector": {"app": headless_backend},
+            "ports": [{"name": "http", "port": 18094, "targetPort": 8080}]
+        }
+    }))?;
+    services.create(&PostParams::default(), &headless).await?;
     let cluster_ip = services
         .get("headless-service")
         .await?
@@ -340,6 +342,10 @@ pub(super) async fn headless_service_does_not_break_other_services(
             }
         })
         .await?;
+    anyhow::ensure!(
+        !nft_table()?.contains("None"),
+        "headless Service's clusterIP=None reached the nodeproxy nftables ruleset"
+    );
 
     let probe = "headless-probe";
     create_backend(context, probe).await?;
@@ -757,7 +763,6 @@ pub(super) async fn a_long_lived_watch_survives_a_service_churn_burst(
         )
         .await?;
     }
-    restart_nodeproxy()?;
     tokio::time::sleep(Duration::from_secs(20)).await;
 
     let bytes = exec_output_in(

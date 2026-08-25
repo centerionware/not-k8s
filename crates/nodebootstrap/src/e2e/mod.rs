@@ -188,7 +188,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "kubernetes_service_has_reachable_endpoint",
+        name: "test_kubernetes_service_has_a_reachable_endpoint",
         group: TestGroup::General,
     },
     TestCase {
@@ -440,15 +440,15 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_datastore_upgrades_a_populated_single_member_into_a_one_member_cluster",
+        name: "test_upgrade_a_populated_single_member_into_a_one_member_cluster",
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_datastore_refuses_direct_upgrade_to_a_multi_member_cluster",
+        name: "test_upgrade_straight_to_a_multi_member_cluster_is_refused",
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_datastore_shutdown_leaves_no_listener_behind",
+        name: "test_upgrade_a_dead_member_leaves_nothing_listening_behind_it",
         group: TestGroup::General,
     },
     TestCase {
@@ -592,7 +592,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_host_port_reaches_the_container_on_the_node_ip",
+        name: "test_host_port_publishes_the_container_on_the_nodes_own_ip",
         group: TestGroup::General,
     },
     TestCase {
@@ -632,7 +632,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
-        name: "test_dynamic_csi_registration_is_visible_on_the_node",
+        name: "test_dynamic_csi_registration_actually_registered_the_driver",
         group: TestGroup::CsiDra,
     },
     TestCase {
@@ -641,6 +641,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_credential_provider_config_unset_by_default",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull",
         group: TestGroup::General,
     },
     TestCase {
@@ -680,7 +684,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_scheduler_honours_a_matching_node_selector",
+        name: "test_scheduler_honours_a_node_selector_that_matches",
         group: TestGroup::General,
     },
     TestCase {
@@ -696,7 +700,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_scheduler_leaves_an_impossible_selector_pending",
+        name: "test_scheduler_honours_a_node_selector_that_matches_nothing",
         group: TestGroup::General,
     },
     TestCase {
@@ -704,7 +708,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_scheduler_ignores_a_pod_for_another_scheduler",
+        name: "test_scheduler_ignores_pods_for_another_scheduler",
         group: TestGroup::General,
     },
     TestCase {
@@ -732,6 +736,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_scheduler_claims_a_static_wait_for_first_consumer_volume",
         group: TestGroup::CsiDra,
     },
@@ -744,11 +752,11 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_restart_policy_never_nonzero_exit_is_failed",
+        name: "test_restart_policy_never_exit_nonzero_is_failed",
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_terminated_container_reports_its_exit_code",
+        name: "test_exited_container_reports_terminated_state_with_exit_code",
         group: TestGroup::General,
     },
     TestCase {
@@ -764,7 +772,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_container_status_id_has_runtime_scheme",
+        name: "test_container_status_container_id_has_a_runtime_scheme_prefix",
         group: TestGroup::General,
     },
     TestCase {
@@ -800,7 +808,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_liveness_probe_failure_restarts_container",
+        name: "test_liveness_probe_failure_restarts_the_container",
         group: TestGroup::General,
     },
     TestCase {
@@ -848,7 +856,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_service_account_token_projected_volume_mints_a_token",
+        name: "test_service_account_token_projected_volume_mints_a_real_token",
         group: TestGroup::General,
     },
     TestCase {
@@ -860,7 +868,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_empty_dir_memory_is_backed_by_tmpfs",
+        name: "test_empty_dir_medium_memory_is_backed_by_tmpfs",
         group: TestGroup::General,
     },
     TestCase {
@@ -880,7 +888,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_host_path_directory_or_create_creates_missing_directory",
+        name: "test_host_path_directory_or_create_creates_a_missing_directory",
         group: TestGroup::General,
     },
     TestCase {
@@ -928,11 +936,11 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_read_only_root_filesystem_blocks_writes",
+        name: "test_read_only_root_filesystem_is_enforced",
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_writable_root_filesystem_allows_writes",
+        name: "test_without_read_only_root_filesystem_writes_succeed",
         group: TestGroup::General,
     },
     TestCase {
@@ -1008,11 +1016,11 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_poststart_hook_runs_before_container_exit",
+        name: "test_poststart_hook_runs_after_container_start",
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_termination_message_path_is_read_back_into_status",
+        name: "test_termination_message_path_is_read_back_into_container_status",
         group: TestGroup::General,
     },
     TestCase {
@@ -1040,7 +1048,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_headless_service_does_not_break_other_services",
+        name: "test_headless_service_programs_no_rules_and_does_not_break_others",
         group: TestGroup::General,
     },
     TestCase {
@@ -1084,7 +1092,7 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
-        name: "test_pv_binder_requests_dynamic_provisioning_from_storage_class",
+        name: "test_pv_binder_requests_dynamic_provisioning_from_the_storage_class",
         group: TestGroup::CsiDra,
     },
     TestCase {
@@ -1338,7 +1346,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "apiserver_serves_resources" => apiserver_serves_resources(context.client.clone()).await,
         "node_is_ready" => node_is_ready(context.client.clone()).await,
-        "kubernetes_service_has_reachable_endpoint" => {
+        "test_kubernetes_service_has_a_reachable_endpoint" => {
             kubernetes_service_has_reachable_endpoint(context.client.clone()).await
         }
         "test_basic_pod_runs" => pods::basic_pod_runs(context).await,
@@ -1519,13 +1527,13 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_datastore_survives_a_restart_with_its_data" => {
             datastore::datastore_survives_a_restart_with_its_data(context).await
         }
-        "test_datastore_upgrades_a_populated_single_member_into_a_one_member_cluster" => {
+        "test_upgrade_a_populated_single_member_into_a_one_member_cluster" => {
             datastore::datastore_upgrades_a_populated_single_member_into_a_one_member_cluster(context).await
         }
-        "test_datastore_refuses_direct_upgrade_to_a_multi_member_cluster" => {
+        "test_upgrade_straight_to_a_multi_member_cluster_is_refused" => {
             datastore::datastore_refuses_direct_upgrade_to_a_multi_member_cluster(context).await
         }
-        "test_datastore_shutdown_leaves_no_listener_behind" => {
+        "test_upgrade_a_dead_member_leaves_nothing_listening_behind_it" => {
             datastore::datastore_shutdown_leaves_no_listener_behind(context).await
         }
         "test_datastore_refuses_a_cluster_it_cannot_be_part_of" => {
@@ -1633,7 +1641,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_host_network_pod_uses_the_node_network_namespace" => {
             networking::host_network_pod_uses_the_node_network_namespace(context).await
         }
-        "test_host_port_reaches_the_container_on_the_node_ip" => {
+        "test_host_port_publishes_the_container_on_the_nodes_own_ip" => {
             networking::host_port_reaches_the_container_on_the_node_ip(context).await
         }
         "test_host_network_pod_needs_no_explicit_port_mapping" => {
@@ -1663,12 +1671,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_plugin_registry_watches_for_dra_drivers_too" => {
             dra::plugin_registry_watches_for_dra_drivers_too(context).await
         }
-        "test_dynamic_csi_registration_is_visible_on_the_node" => {
+        "test_dynamic_csi_registration_actually_registered_the_driver" => {
             pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
         }
         "test_resource_api_group_is_enabled" => dra::resource_api_group_is_enabled(context).await,
         "test_credential_provider_config_unset_by_default" => {
             credential_provider::credential_provider_config_unset_by_default(context).await
+        }
+        "test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull" => {
+            credential_provider::credential_provider_supplies_auth_for_an_otherwise_rejected_pull(context).await
         }
         "test_dra_claim_is_allocated_and_reserved_for_the_pod" => {
             dra::dra_claim_is_allocated_and_reserved_for_the_pod(context).await
@@ -1695,7 +1706,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_scheduler_schedules_a_pod_an_http_extender_approves" => {
             scheduler::scheduler_schedules_a_pod_an_http_extender_approves(context).await
         }
-        "test_scheduler_honours_a_matching_node_selector" => {
+        "test_scheduler_honours_a_node_selector_that_matches" => {
             scheduler::scheduler_honours_a_matching_node_selector(context).await
         }
         "test_scheduler_rejects_a_pod_that_does_not_fit" => {
@@ -1707,13 +1718,13 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_scheduler_does_not_preempt_when_policy_forbids_it" => {
             scheduler::scheduler_does_not_preempt_when_policy_forbids_it(context).await
         }
-        "test_scheduler_leaves_an_impossible_selector_pending" => {
+        "test_scheduler_honours_a_node_selector_that_matches_nothing" => {
             scheduler::scheduler_leaves_an_impossible_selector_pending(context).await
         }
         "test_scheduler_leaves_a_gated_pod_alone" => {
             scheduler::scheduler_leaves_a_gated_pod_alone(context).await
         }
-        "test_scheduler_ignores_a_pod_for_another_scheduler" => {
+        "test_scheduler_ignores_pods_for_another_scheduler" => {
             scheduler::scheduler_ignores_a_pod_for_another_scheduler(context).await
         }
         "test_scheduler_honours_pod_affinity" => {
@@ -1734,6 +1745,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_scheduler_schedules_pods_that_get_default_spread_constraints" => {
             scheduler::scheduler_schedules_pods_that_get_default_spread_constraints(context).await
         }
+        "test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen" => {
+            scheduler::scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen(context).await
+        }
         "test_scheduler_claims_a_static_wait_for_first_consumer_volume" => {
             scheduler::scheduler_claims_a_static_wait_for_first_consumer_volume(context).await
         }
@@ -1743,10 +1757,10 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_restart_policy_never_exit_zero_is_succeeded" => {
             lifecycle::restart_policy_never_exit_zero_is_succeeded(context).await
         }
-        "test_restart_policy_never_nonzero_exit_is_failed" => {
+        "test_restart_policy_never_exit_nonzero_is_failed" => {
             lifecycle::restart_policy_never_nonzero_exit_is_failed(context).await
         }
-        "test_terminated_container_reports_its_exit_code" => {
+        "test_exited_container_reports_terminated_state_with_exit_code" => {
             lifecycle::terminated_container_reports_its_exit_code(context).await
         }
         "test_guaranteed_pod_reports_guaranteed_qos" => {
@@ -1758,7 +1772,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_pod_exceeding_its_active_deadline_is_terminated" => {
             lifecycle::pod_exceeding_its_active_deadline_is_terminated(context).await
         }
-        "test_container_status_id_has_runtime_scheme" => {
+        "test_container_status_container_id_has_a_runtime_scheme_prefix" => {
             lifecycle::container_status_id_has_runtime_scheme(context).await
         }
         "test_crash_loop_backoff_reports_waiting_reason" => {
@@ -1785,7 +1799,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_readiness_probe_gates_ready_condition" => {
             probes::readiness_probe_gates_ready_condition(context).await
         }
-        "test_liveness_probe_failure_restarts_container" => {
+        "test_liveness_probe_failure_restarts_the_container" => {
             probes::liveness_probe_failure_restarts_container(context).await
         }
         "test_liveness_probes_own_grace_period_overrides_the_pods" => {
@@ -1821,7 +1835,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_projected_volume_merges_configmap_and_downward_api" => {
             volumes::projected_volume_merges_configmap_and_downward_api(context).await
         }
-        "test_service_account_token_projected_volume_mints_a_token" => {
+        "test_service_account_token_projected_volume_mints_a_real_token" => {
             volumes::service_account_token_projected_volume_mints_a_token(context).await
         }
         "test_host_aliases_are_written_to_etc_hosts" => {
@@ -1830,7 +1844,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_host_aliases_still_work_under_host_users_false" => {
             volumes::host_aliases_still_work_under_host_users_false(context).await
         }
-        "test_empty_dir_memory_is_backed_by_tmpfs" => {
+        "test_empty_dir_medium_memory_is_backed_by_tmpfs" => {
             volumes::empty_dir_memory_is_backed_by_tmpfs(context).await
         }
         "test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs" => {
@@ -1845,7 +1859,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_host_path_directory_mounts_the_real_host_directory" => {
             volumes::host_path_directory_mounts_the_real_host_directory(context).await
         }
-        "test_host_path_directory_or_create_creates_missing_directory" => {
+        "test_host_path_directory_or_create_creates_a_missing_directory" => {
             volumes::host_path_directory_or_create_creates_missing_directory(context).await
         }
         "test_mount_propagation_host_to_container_still_mounts_normally" => {
@@ -1881,10 +1895,10 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_fsgroup_chowns_materialized_volumes" => {
             volumes::fsgroup_chowns_materialized_volumes(context).await
         }
-        "test_read_only_root_filesystem_blocks_writes" => {
+        "test_read_only_root_filesystem_is_enforced" => {
             security::read_only_root_filesystem_blocks_writes(context).await
         }
-        "test_writable_root_filesystem_allows_writes" => {
+        "test_without_read_only_root_filesystem_writes_succeed" => {
             security::writable_root_filesystem_allows_writes(context).await
         }
         "test_run_as_user_is_applied" => {
@@ -1939,10 +1953,10 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             process::share_process_namespace_puts_every_container_in_one_pid_namespace(context).await
         }
         "test_host_pid_sees_host_processes" => process::host_pid_sees_host_processes(context).await,
-        "test_poststart_hook_runs_before_container_exit" => {
+        "test_poststart_hook_runs_after_container_start" => {
             hooks::poststart_hook_runs_before_container_exit(context).await
         }
-        "test_termination_message_path_is_read_back_into_status" => {
+        "test_termination_message_path_is_read_back_into_container_status" => {
             hooks::termination_message_path_is_read_back_into_status(context).await
         }
         "test_lifecycle_stop_signal_is_honored_by_the_runtime" => {
@@ -1963,7 +1977,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_service_with_no_endpoints_does_not_wedge_the_ruleset" => {
             service_proxy::service_with_no_endpoints_does_not_wedge_the_ruleset(context).await
         }
-        "test_headless_service_does_not_break_other_services" => {
+        "test_headless_service_programs_no_rules_and_does_not_break_others" => {
             service_proxy::headless_service_does_not_break_other_services(context).await
         }
         "test_clusterip_is_reachable_from_inside_a_pod" => {
@@ -1996,7 +2010,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion" => {
             storage::pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion(context).await
         }
-        "test_pv_binder_requests_dynamic_provisioning_from_storage_class" => {
+        "test_pv_binder_requests_dynamic_provisioning_from_the_storage_class" => {
             storage::pv_binder_requests_dynamic_provisioning_from_storage_class(context).await
         }
         "test_pod_mounts_a_persistent_volume_claim" => {
