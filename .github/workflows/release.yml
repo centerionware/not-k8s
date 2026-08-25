@@ -126,7 +126,7 @@ jobs:
               else
                 needs_drivers=false
               fi
-              matrix="$(jq --argjson shard "$shard" --argjson needs_drivers "$needs_drivers" \
+              matrix="$(jq -c --argjson shard "$shard" --argjson needs_drivers "$needs_drivers" \
                 '.include += [{shard: $shard, needs_drivers: $needs_drivers}]' <<<"$matrix")"
             fi
           done
