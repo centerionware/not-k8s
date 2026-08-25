@@ -4,6 +4,7 @@ use anyhow::Result;
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use serde_json::json;
+use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
@@ -185,6 +186,35 @@ pub(super) async fn host_aliases_are_written_to_etc_hosts(context: &E2eContext) 
                 Ok(terminated_message(&context, name)
                     .await?
                     .is_some_and(|message| message.contains("203.0.113.10") && message.contains("e2e-alias.test")))
+            }
+        })
+        .await
+}
+
+pub(super) async fn host_aliases_still_work_under_host_users_false(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("hostUsers and hostAliases checks require the CRI runtime"));
+    }
+    let name = "hostaliases-userns";
+    create_pod(
+        context,
+        name,
+        json!({
+            "hostUsers": false,
+            "hostAliases": [{"ip": "10.1.2.3", "hostnames": ["custom.example.com"]}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "grep '10.1.2.3.*custom.example.com' /etc/hosts > /dev/termination-log"]}]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("hostAliases with hostUsers=false", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.contains("10.1.2.3")))
             }
         })
         .await
@@ -458,6 +488,60 @@ pub(super) async fn host_path_directory_type_rejects_a_nonexistent_path(
         .await;
     let _ = std::fs::remove_dir_all(&host_path);
     wait_result
+}
+
+pub(super) async fn fsgroup_never_applies_to_hostpath_volumes(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("hostPath fsGroup checks require the CRI runtime"));
+    }
+    let host_path = host_path_test_dir("fsgroup-hostpath");
+    std::fs::create_dir_all(&host_path)?;
+    let original_gid = std::fs::metadata(&host_path)?.gid();
+    let name = "fsgroup-hostpath";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let create_result = create_pod(
+        context,
+        name,
+        json!({
+            "securityContext": {"fsGroup": 4322},
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "host", "mountPath": "/host"}]}]
+        }),
+    )
+    .await;
+    if let Err(error) = create_result {
+        let _ = std::fs::remove_dir_all(&host_path);
+        return Err(error);
+    }
+    let result = async {
+        context
+            .wait_until("hostPath fsGroup Pod Running", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let gid = std::fs::metadata(&host_path)?.gid();
+        anyhow::ensure!(
+            gid == original_gid,
+            "fsGroup changed hostPath directory gid from {original_gid} to {gid}"
+        );
+        Ok(())
+    };
+    let result = result.await;
+    let _ = pods.delete(name, &kube::api::DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    result
 }
 
 pub(super) async fn fsgroup_chowns_materialized_volumes(context: &E2eContext) -> Result<()> {

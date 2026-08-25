@@ -516,6 +516,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_host_aliases_still_work_under_host_users_false",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_empty_dir_memory_is_backed_by_tmpfs",
         group: TestGroup::General,
     },
@@ -541,6 +545,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_host_path_directory_type_rejects_a_nonexistent_path",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_fsgroup_never_applies_to_hostpath_volumes",
         group: TestGroup::General,
     },
     TestCase {
@@ -1125,6 +1133,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_host_aliases_are_written_to_etc_hosts" => {
             volumes::host_aliases_are_written_to_etc_hosts(context).await
         }
+        "test_host_aliases_still_work_under_host_users_false" => {
+            volumes::host_aliases_still_work_under_host_users_false(context).await
+        }
         "test_empty_dir_memory_is_backed_by_tmpfs" => {
             volumes::empty_dir_memory_is_backed_by_tmpfs(context).await
         }
@@ -1145,6 +1156,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_path_directory_type_rejects_a_nonexistent_path" => {
             volumes::host_path_directory_type_rejects_a_nonexistent_path(context).await
+        }
+        "test_fsgroup_never_applies_to_hostpath_volumes" => {
+            volumes::fsgroup_never_applies_to_hostpath_volumes(context).await
         }
         "test_fsgroup_chowns_materialized_volumes" => {
             volumes::fsgroup_chowns_materialized_volumes(context).await
