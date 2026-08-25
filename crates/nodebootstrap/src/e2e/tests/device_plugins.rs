@@ -6,12 +6,15 @@ use kube::api::{Api, AttachParams, DeleteParams, ListParams, PostParams};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::process::Command;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::UnixListener;
+use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, wrappers::UnixListenerStream, Stream};
 use tonic::{Request, Response, Status};
@@ -57,6 +60,33 @@ fn plugin_registry_path() -> Result<PathBuf> {
             "plugin registry directory {path} is not present on this deployment"
         )))
     }
+}
+
+fn root_command(program: &str, args: &[&str]) -> std::process::Command {
+    let root = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
+    let mut command = if root {
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        command
+    } else {
+        let mut command = std::process::Command::new("sudo");
+        command.arg("-n").arg(program).args(args);
+        command
+    };
+    command
+}
+
+fn run_root(program: &str, args: &[&str]) -> Result<()> {
+    let output = root_command(program, args).output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 #[derive(Default)]
@@ -229,6 +259,8 @@ impl DevicePlugin for DevicePluginService {
 }
 
 struct FakeDevicePlugin {
+    registry: PathBuf,
+    registry_mode: Option<u32>,
     socket: PathBuf,
     state: Arc<Mutex<PluginState>>,
     shutdown: Option<oneshot::Sender<()>>,
@@ -239,17 +271,44 @@ impl FakeDevicePlugin {
     async fn start(context: &E2eContext) -> Result<Self> {
         needs_cri()?;
         let registry = plugin_registry_path()?;
+        let original_mode = fs::metadata(&registry)
+            .context("reading plugin registry permissions")?
+            .permissions()
+            .mode()
+            & 0o777;
         let socket = registry.join(format!(
             "nodebootstrap-device-{}.sock",
             std::process::id()
         ));
         let _ = fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket).with_context(|| {
-            format!(
-                "binding fake device-plugin socket {}; run the e2e runner with access to the plugin registry",
-                socket.display()
-            )
-        })?;
+        let (listener, registry_mode) = match UnixListener::bind(&socket) {
+            Ok(listener) => (listener, None),
+            Err(first_error) => {
+                let mode = "0777";
+                if let Err(chmod_error) =
+                    run_root("chmod", &[mode, registry.to_str().unwrap_or_default()])
+                {
+                    return Err(skip_test(format!(
+                        "cannot bind fake device-plugin socket {} ({first_error}) and cannot grant temporary registry access ({chmod_error})",
+                        socket.display()
+                    )));
+                }
+                match UnixListener::bind(&socket) {
+                    Ok(listener) => (listener, Some(original_mode)),
+                    Err(error) => {
+                        let restore = format!("{original_mode:04o}");
+                        let _ = run_root(
+                            "chmod",
+                            &[&restore, registry.to_str().unwrap_or_default()],
+                        );
+                        return Err(anyhow::anyhow!(
+                            "binding fake device-plugin socket {} after chmod: {error}",
+                            socket.display()
+                        ));
+                    }
+                }
+            }
+        };
         let endpoint = socket.to_string_lossy().into_owned();
         let state = Arc::new(Mutex::new(PluginState::default()));
         let registration = RegistrationServer::new(RegistrationService { endpoint });
@@ -268,6 +327,8 @@ impl FakeDevicePlugin {
                 .await
         });
         let plugin = Self {
+            registry,
+            registry_mode,
             socket,
             state,
             shutdown: Some(shutdown),
@@ -310,6 +371,7 @@ impl FakeDevicePlugin {
             let _ = task.await;
         }
         let _ = fs::remove_file(&self.socket);
+        self.restore_registry_mode();
         let nodes: Api<Node> = Api::all(context.client.clone());
         let _ = context
             .wait_until(
@@ -359,6 +421,16 @@ impl FakeDevicePlugin {
             .map(|state| state.prestart.iter().any(|ids| ids.join(",") == expected))
             .unwrap_or(false)
     }
+
+    fn restore_registry_mode(&mut self) {
+        if let Some(mode) = self.registry_mode.take() {
+            let mode = format!("{mode:04o}");
+            let _ = run_root(
+                "chmod",
+                &[&mode, self.registry.to_str().unwrap_or_default()],
+            );
+        }
+    }
 }
 
 impl Drop for FakeDevicePlugin {
@@ -370,6 +442,7 @@ impl Drop for FakeDevicePlugin {
             task.abort();
         }
         let _ = fs::remove_file(&self.socket);
+        self.restore_registry_mode();
     }
 }
 
