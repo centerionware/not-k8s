@@ -36,6 +36,8 @@ mod daemonset;
 mod disruption;
 #[path = "tests/deployment.rs"]
 mod deployment;
+#[path = "tests/device_plugins.rs"]
+mod device_plugins;
 #[path = "tests/ephemeral_containers.rs"]
 mod ephemeral_containers;
 #[path = "tests/endpoint_slice.rs"]
@@ -321,6 +323,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_pod_teardown_actually_removes_the_sandbox",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_allocated_resources_status_absent_without_device_resources",
         group: TestGroup::General,
     },
     TestCase {
@@ -967,6 +973,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_teardown_actually_removes_the_sandbox" => {
             garbage_collection::pod_teardown_actually_removes_the_sandbox(context).await
+        }
+        "test_allocated_resources_status_absent_without_device_resources" => {
+            device_plugins::allocated_resources_status_absent_without_device_resources(context).await
         }
         "test_host_network_pod_uses_the_node_network_namespace" => {
             networking::host_network_pod_uses_the_node_network_namespace(context).await
