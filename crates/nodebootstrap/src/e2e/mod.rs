@@ -1385,7 +1385,43 @@ fn select_tests(only: Option<&str>, shard: Option<&str>) -> Result<Vec<&'static 
             selected.push(test.name);
         }
     }
-    Ok(selected)
+    // The shell harness kept tests that restart a host service or rewrite a
+    // systemd environment override at the end of the run. Preserve the
+    // existing shard assignment, but apply the same stable partition inside
+    // each shard so an ordinary test never starts while one of these fixtures
+    // is still restoring the node.
+    let (ordinary, disruptive): (Vec<_>, Vec<_>) = selected
+        .into_iter()
+        .partition(|name| !is_environment_reconfiguring_test(name));
+    Ok(ordinary.into_iter().chain(disruptive).collect())
+}
+
+fn is_environment_reconfiguring_test(name: &str) -> bool {
+    matches!(
+        name,
+        "test_pending_pod_recovers_after_the_node_failure_is_fixed"
+            | "test_config_file_sets_a_value_env_did_not_override"
+            | "test_config_file_precedence_a_real_env_var_still_wins"
+            | "test_config_dir_merges_files_in_filename_order"
+            | "test_limited_swap_gives_burstable_pods_proportional_swap"
+            | "test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores"
+            | "test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container"
+            | "test_memory_manager_pins_guaranteed_containers_to_a_numa_node"
+            | "test_log_rotation_creates_a_rotated_file"
+            | "test_static_pod_creates_a_mirror_pod"
+            | "test_orphaned_sandbox_gc_reaps_a_pod_deleted_while_nodelet_is_down"
+            | "test_unreferenced_image_is_not_removed_below_the_watermark"
+            | "test_image_gc_removes_unreferenced_images_above_the_watermark"
+            | "test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull"
+            | "test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection"
+            | "test_scheduler_schedules_a_pod_an_http_extender_approves"
+            | "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart"
+            | "test_client_certificate_authentication_works"
+            | "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host"
+            | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
+            | "test_the_node_still_reconciles_pods_after_an_apiserver_restart"
+            | "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers"
+    )
 }
 
 fn assigned_to_shard(group: TestGroup, position: usize, shard: Shard) -> bool {
@@ -2237,6 +2273,21 @@ mod tests {
     #[test]
     fn an_unknown_only_pattern_is_an_error() {
         assert!(select_tests(Some("does_not_exist"), None).is_err());
+    }
+
+    #[test]
+    fn disruptive_environment_tests_run_after_ordinary_tests_in_each_shard() {
+        for index in 1..=5 {
+            let selected = select_tests(None, Some(&format!("{index}/5"))).unwrap();
+            let mut deferred = false;
+            for name in selected {
+                if is_environment_reconfiguring_test(name) {
+                    deferred = true;
+                } else {
+                    assert!(!deferred, "ordinary test {name} followed a disruptive test");
+                }
+            }
+        }
     }
 
     #[test]
