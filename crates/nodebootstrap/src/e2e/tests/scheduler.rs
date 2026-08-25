@@ -4,7 +4,29 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
+use std::process::Command;
 use std::time::Duration;
+
+fn nodescheduler_is_active() -> bool {
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", "nodescheduler.service"])
+        .status()
+        .is_ok_and(|status| status.success())
+        || Command::new("pgrep")
+            .args(["-x", "nodescheduler"])
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
+fn require_nodescheduler() -> Result<()> {
+    if nodescheduler_is_active() {
+        Ok(())
+    } else {
+        Err(skip_test(
+            "nodescheduler is not active; bootstrap with the replacement scheduler to exercise its lease",
+        ))
+    }
+}
 
 async fn first_node(context: &E2eContext) -> Result<Node> {
     Api::<Node>::all(context.client.clone())
@@ -423,4 +445,39 @@ pub(super) async fn scheduler_respects_a_taint_and_its_toleration(
         .await;
     restore?;
     result
+}
+
+pub(super) async fn scheduler_holds_the_leader_lease(context: &E2eContext) -> Result<()> {
+    require_nodescheduler()?;
+    let leases: Api<k8s_openapi::api::coordination::v1::Lease> =
+        Api::namespaced(context.client.clone(), "kube-system");
+    let lease = leases.get("kube-scheduler").await?;
+    let value = serde_json::to_value(lease)?;
+    let holder = value
+        .pointer("/spec/holderIdentity")
+        .and_then(Value::as_str)
+        .filter(|holder| !holder.is_empty());
+    anyhow::ensure!(
+        holder.is_some(),
+        "nodescheduler must hold the kube-scheduler lease in kube-system"
+    );
+    let first = value
+        .pointer("/spec/renewTime")
+        .and_then(Value::as_str)
+        .filter(|renew_time| !renew_time.is_empty())
+        .context("the kube-scheduler lease has no renewTime")?
+        .to_string();
+    context
+        .wait_until("nodescheduler to renew the kube-scheduler lease", Duration::from_secs(45), || {
+            let leases = leases.clone();
+            let first = first.clone();
+            async move {
+                let lease = serde_json::to_value(leases.get("kube-scheduler").await?)?;
+                Ok(lease
+                    .pointer("/spec/renewTime")
+                    .and_then(Value::as_str)
+                    .is_some_and(|renew_time| !renew_time.is_empty() && renew_time != first))
+            }
+        })
+        .await
 }

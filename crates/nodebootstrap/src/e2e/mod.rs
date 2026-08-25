@@ -338,6 +338,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_scheduler_holds_the_leader_lease",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_node_allocatable_cgroup_exists_and_is_capped",
         group: TestGroup::General,
     },
@@ -1079,6 +1083,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_config_dir_merges_files_in_filename_order" => {
             config_file::config_dir_merges_files_in_filename_order(context).await
+        }
+        "test_scheduler_holds_the_leader_lease" => {
+            scheduler::scheduler_holds_the_leader_lease(context).await
         }
         "test_node_allocatable_cgroup_exists_and_is_capped" => {
             cgroup::node_allocatable_cgroup_exists_and_is_capped(context).await
