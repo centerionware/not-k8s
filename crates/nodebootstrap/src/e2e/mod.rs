@@ -510,6 +510,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_image_volume_source_mounts_a_read_only_image",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_configmap_volume_updates_live_without_pod_restart",
         group: TestGroup::General,
     },
@@ -1111,6 +1115,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_empty_dir_memory_is_backed_by_tmpfs" => {
             volumes::empty_dir_memory_is_backed_by_tmpfs(context).await
+        }
+        "test_image_volume_source_mounts_a_read_only_image" => {
+            volumes::image_volume_source_mounts_a_read_only_image(context).await
         }
         "test_configmap_volume_updates_live_without_pod_restart" => {
             volumes::configmap_volume_updates_live_without_pod_restart(context).await

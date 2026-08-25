@@ -1,4 +1,5 @@
 use super::context::E2eContext;
+use super::skip_test;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
 use kube::api::{Api, Patch, PatchParams, PostParams};
@@ -208,6 +209,41 @@ pub(super) async fn empty_dir_memory_is_backed_by_tmpfs(context: &E2eContext) ->
                 Ok(terminated_message(&context, name)
                     .await?
                     .is_some_and(|message| message.contains("tmpfs") && message.contains("/cache")))
+            }
+        })
+        .await
+}
+
+pub(super) async fn image_volume_source_mounts_a_read_only_image(
+    context: &E2eContext,
+) -> Result<()> {
+    if let Err(error) = crate::config::Config::from_env().and_then(|config| {
+        anyhow::ensure!(
+            config.nodelet_runtime() == "cri",
+            "image volumes require the CRI runtime",
+        );
+        Ok(())
+    }) {
+        return Err(skip_test(error.to_string()));
+    }
+    let name = "image-volume-check";
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "volumes": [{"name": "img", "image": {"reference": "busybox:latest", "pullPolicy": "IfNotPresent"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "test -x /img/bin/sh && (echo x > /img/should-fail-readonly 2>/dev/null && echo WROTE || echo BLOCKED) > /dev/termination-log"], "volumeMounts": [{"name": "img", "mountPath": "/img"}]}]
+        }),
+    )
+    .await?;
+    context
+        .wait_until("image volume Pod to report its read-only mount", Duration::from_secs(120), || {
+            let context = context.clone();
+            async move {
+                Ok(terminated_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "BLOCKED"))
             }
         })
         .await
