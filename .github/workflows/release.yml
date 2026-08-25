@@ -16,6 +16,36 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  prepare-e2e-results:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository for results reset
+        uses: actions/checkout@v7
+
+      - name: Clear the e2e-results branch for this release run
+        env:
+          RESULTS_BRANCH: e2e-results
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan "$RESULTS_BRANCH"
+          git rm -rf . >/dev/null 2>&1 || true
+          cat > README.md <<EOF
+          # e2e results
+
+          - commit: $GITHUB_SHA
+          - workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - started (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          - release gate: true
+
+          Each shard writes its complete output to results-shard-N.txt.
+          EOF
+          git add README.md
+          git commit -m "e2e results: start release run ${GITHUB_SHA:0:12}"
+          git push --force origin "HEAD:$RESULTS_BRANCH"
+
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -54,7 +84,7 @@ jobs:
           retention-days: 1
 
   e2e:
-    needs: build-and-test
+    needs: [build-and-test, prepare-e2e-results]
     strategy:
       fail-fast: false
       matrix:
@@ -73,8 +103,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: nodebootstrap-e2e-binaries
@@ -95,9 +123,16 @@ jobs:
       - name: Make the admin kubeconfig readable
         run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
       - name: Run bootstrap-native e2e checks
+        id: e2e
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-        run: ./dist-bin/nodebootstrap --e2e --shard=${{ matrix.shard }}/5
+        run: |
+          set +e
+          ./dist-bin/nodebootstrap --e2e --shard=${{ matrix.shard }}/5 2>&1 | tee /tmp/e2e-raw.txt
+          exit_code=${PIPESTATUS[0]}
+          sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Validate worker bootstrap without flannel or proxy
         run: |
           set -euo pipefail
@@ -111,12 +146,57 @@ jobs:
               --proxy=none \
               --skip-nodelet
       - name: Dump bootstrap service state on failure
-        if: failure()
+        if: failure() || steps.e2e.outputs.exit_code != '0'
         run: |
           sudo systemctl --no-pager --full status kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld || true
           for unit in kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld; do
             sudo journalctl -u "$unit" -n 80 --no-pager || true
           done
+
+      - name: Publish this shard's release e2e results
+        if: always()
+        env:
+          RESULTS_BRANCH: e2e-results
+          RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "shard: ${SHARD}/5"
+            echo "exit code: ${RUN_EXIT_CODE:-unknown}"
+            echo "release gate: true"
+            echo "----------------------------------------"
+            cat /tmp/e2e-results.txt 2>/dev/null || echo "(no results captured — the job failed before the Rust e2e runner started)"
+          } > /tmp/e2e-results-final.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git reset --hard HEAD
+          git fetch origin "$RESULTS_BRANCH"
+          git checkout -B "$RESULTS_BRANCH" "origin/$RESULTS_BRANCH"
+          cp /tmp/e2e-results-final.txt "results-shard-${SHARD}.txt"
+          git add "results-shard-${SHARD}.txt"
+          git commit -m "e2e results: release shard ${SHARD}/5 for ${GITHUB_SHA:0:12}"
+
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:$RESULTS_BRANCH"; then
+              pushed=true
+              break
+            fi
+            echo "results branch changed concurrently; rebasing (attempt $attempt)"
+            git fetch origin "$RESULTS_BRANCH"
+            git rebase "origin/$RESULTS_BRANCH"
+            sleep $((attempt * 5))
+          done
+          [[ "$pushed" == true ]]
+
+      - name: Fail the job if the e2e suite failed
+        if: steps.e2e.outputs.exit_code != '0'
+        run: exit 1
 
   build-release:
     needs: e2e
