@@ -194,7 +194,11 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
     fs::create_dir_all(&work)?;
     let registry_name = "nodebootstrap-e2e-registry";
     let registry_port = 5001u16;
-    let registry_host = format!("localhost:{registry_port}");
+    // Use the IPv4 loopback address explicitly.  `localhost` can resolve to
+    // ::1 on the runner while Docker publishes only an IPv4 socket, and a
+    // stale localhost certs.d entry can make containerd try HTTPS before the
+    // fixture's HTTP hosts.toml is considered.
+    let registry_host = format!("127.0.0.1:{registry_port}");
     let image = format!("{registry_host}/credential-provider-check:1");
     let config_path = containerd_config_path();
     let original_config = fs::read_to_string(config_path)
@@ -223,7 +227,14 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
         let htpasswd_path = work.join("htpasswd");
         fs::write(&htpasswd_path, htpasswd.stdout)?;
         let registry = Command::new("docker")
-            .args(["run", "-d", "--name", registry_name, "-p", "5001:5000"])
+            .args([
+                "run",
+                "-d",
+                "--name",
+                registry_name,
+                "-p",
+                "127.0.0.1:5001:5000",
+            ])
             .args([
                 "-v",
                 &format!("{}:/auth/htpasswd:ro", htpasswd_path.display()),
@@ -272,6 +283,10 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
                 "server = \"http://{registry_host}\"\n\n[host.\"http://{registry_host}\"]\ncapabilities = [\"pull\", \"resolve\", \"push\"]\n"
             ),
         )?;
+        // A cancelled or timed-out e2e run can leave a certs.d directory
+        // behind.  Remove it before installing this fixture so an unrelated
+        // CA/TLS entry cannot override the explicit HTTP endpoint below.
+        root_run("rm", &["-rf", hosts_dir.to_str().context("hosts path is not UTF-8")?])?;
         root_run("mkdir", &["-p", hosts_dir.to_str().context("hosts path is not UTF-8")?])?;
         root_run(
             "install",
