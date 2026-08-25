@@ -80,6 +80,8 @@ mod readiness_gates;
 mod replicaset;
 #[path = "tests/resource_quota.rs"]
 mod resource_quota;
+#[path = "tests/resource_managers.rs"]
+mod resource_managers;
 #[path = "tests/resources.rs"]
 mod resources;
 #[path = "tests/runtime_class.rs"]
@@ -341,6 +343,22 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_env_resource_field_ref_reports_the_containers_own_limits",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_memory_manager_pins_guaranteed_containers_to_a_numa_node",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_log_rotation_creates_a_rotated_file",
         group: TestGroup::General,
     },
     TestCase {
@@ -1150,6 +1168,18 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_env_resource_field_ref_reports_the_containers_own_limits" => {
             resources::env_resource_field_ref_reports_the_containers_own_limits(context).await
+        }
+        "test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores" => {
+            resource_managers::cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores(context).await
+        }
+        "test_cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container" => {
+            resource_managers::cpu_manager_retroactively_shrinks_an_already_running_shared_pool_container(context).await
+        }
+        "test_memory_manager_pins_guaranteed_containers_to_a_numa_node" => {
+            resource_managers::memory_manager_pins_guaranteed_containers_to_a_numa_node(context).await
+        }
+        "test_log_rotation_creates_a_rotated_file" => {
+            resource_managers::log_rotation_creates_a_rotated_file(context).await
         }
         "test_endpointslice_is_produced_for_a_selected_pod" => {
             endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await
