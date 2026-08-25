@@ -576,6 +576,18 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_device_plugin_advertises_capacity_and_allocates_into_a_container",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_device_plugin_health_transition_updates_allocated_resources_status",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_device_plugin_preferred_allocation_and_prestart",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_host_network_pod_uses_the_node_network_namespace",
         group: TestGroup::General,
     },
@@ -1608,6 +1620,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_allocated_resources_status_absent_without_device_resources" => {
             device_plugins::allocated_resources_status_absent_without_device_resources(context).await
+        }
+        "test_device_plugin_advertises_capacity_and_allocates_into_a_container" => {
+            device_plugins::device_plugin_advertises_capacity_and_allocates_into_a_container(context).await
+        }
+        "test_device_plugin_health_transition_updates_allocated_resources_status" => {
+            device_plugins::device_plugin_health_transition_updates_allocated_resources_status(context).await
+        }
+        "test_device_plugin_preferred_allocation_and_prestart" => {
+            device_plugins::device_plugin_preferred_allocation_and_prestart(context).await
         }
         "test_host_network_pod_uses_the_node_network_namespace" => {
             networking::host_network_pod_uses_the_node_network_namespace(context).await
