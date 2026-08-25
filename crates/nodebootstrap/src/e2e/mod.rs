@@ -818,6 +818,26 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_mount_propagation_host_to_container_sees_a_new_host_mount",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_mount_propagation_private_default_does_not_see_a_new_host_mount",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_recursive_read_only_if_possible_falls_back_without_erroring",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_sub_path_expr_expands_a_downward_api_env_var",
         group: TestGroup::General,
     },
@@ -1701,6 +1721,21 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_recursive_read_only_still_mounts_read_only_normally" => {
             volumes::recursive_read_only_still_mounts_read_only_normally(context).await
+        }
+        "test_mount_propagation_host_to_container_sees_a_new_host_mount" => {
+            volumes::mount_propagation_host_to_container_sees_a_new_host_mount(context).await
+        }
+        "test_mount_propagation_private_default_does_not_see_a_new_host_mount" => {
+            volumes::mount_propagation_private_default_does_not_see_a_new_host_mount(context).await
+        }
+        "test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too" => {
+            volumes::recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too(context).await
+        }
+        "test_recursive_read_only_if_possible_falls_back_without_erroring" => {
+            volumes::recursive_read_only_if_possible_falls_back_without_erroring(context).await
+        }
+        "test_recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability" => {
+            volumes::recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability(context).await
         }
         "test_sub_path_expr_expands_a_downward_api_env_var" => {
             volumes::sub_path_expr_expands_a_downward_api_env_var(context).await

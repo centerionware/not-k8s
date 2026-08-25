@@ -1,12 +1,14 @@
 use super::context::E2eContext;
 use super::skip_test;
-use anyhow::Result;
-use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret};
-use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
+use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::{ConfigMap, Node, Pod, Secret};
+use kube::api::{Api, AttachParams, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -33,6 +35,57 @@ async fn terminated_message(context: &E2eContext, name: &str) -> Result<Option<S
         .and_then(|status| status.state)
         .and_then(|state| state.terminated)
         .and_then(|terminated| terminated.message))
+}
+
+fn privileged_available() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0")
+        || Command::new("sudo")
+            .args(["-n", "true"])
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
+fn run_privileged(program: &str, args: &[&str]) -> Result<()> {
+    let uid = Command::new("id").arg("-u").output()?;
+    let mut command = if String::from_utf8_lossy(&uid.stdout).trim() == "0" {
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg(program).args(args);
+        command
+    };
+    let output = command.output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+async fn exec_in_pod(context: &E2eContext, pod: &str, args: &[&str]) -> Result<(bool, String)> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let params = AttachParams::default()
+        .container("app")
+        .stdout(true)
+        .stderr(false);
+    let mut process = pods.exec(pod, args.iter().copied(), &params).await?;
+    let status = process.take_status();
+    let mut stdout = Vec::new();
+    if let Some(mut stream) = process.stdout() {
+        stream.read_to_end(&mut stdout).await?;
+    }
+    process.join().await?;
+    let succeeded = match status {
+        Some(status) => status.await.is_some_and(|status| status.is_success()),
+        None => true,
+    };
+    Ok((succeeded, String::from_utf8_lossy(&stdout).into_owned()))
 }
 
 pub(super) async fn configmap_and_secret_volumes_are_materialized(
@@ -636,6 +689,222 @@ pub(super) async fn recursive_read_only_still_mounts_read_only_normally(
     let _ = pods.delete(name, &DeleteParams::default()).await;
     let _ = std::fs::remove_dir_all(&host_path);
     result
+}
+
+pub(super) async fn mount_propagation_host_to_container_sees_a_new_host_mount(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("mount propagation checks require the CRI runtime"));
+    }
+    if !privileged_available() {
+        return Err(skip_test("host mount propagation checks require root or passwordless sudo"));
+    }
+    let host_path = host_path_test_dir("mount-propagation-h2c");
+    let source_path = host_path_test_dir("mount-propagation-source");
+    let nested_path = format!("{host_path}/newmount");
+    std::fs::create_dir_all(&nested_path)?;
+    std::fs::create_dir_all(&source_path)?;
+    std::fs::write(format!("{source_path}/marker"), "from-a-new-host-mount")?;
+    let name = "mount-propagation-h2c-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "host", "mountPath": "/hostvol", "mountPropagation": "HostToContainer"}]}]
+        }),
+    )
+    .await?;
+    let result = async {
+        context
+            .wait_until("HostToContainer propagation Pod", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move { Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some("Running")) }
+            })
+            .await?;
+        run_privileged("mount", &["--bind", &source_path, &nested_path])
+            .map_err(|error| skip_test(format!("host bind mount unavailable: {error}")))?;
+        context
+            .wait_until("new host mount to propagate into the Pod", Duration::from_secs(30), || {
+                async move {
+                    let (succeeded, output) = exec_in_pod(context, name, &["cat", "/hostvol/newmount/marker"]).await?;
+                    Ok(succeeded && output.contains("from-a-new-host-mount"))
+                }
+            })
+            .await
+    }
+    .await;
+    let _ = run_privileged("umount", &[&nested_path]);
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    let _ = std::fs::remove_dir_all(&source_path);
+    result
+}
+
+pub(super) async fn mount_propagation_private_default_does_not_see_a_new_host_mount(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("mount propagation checks require the CRI runtime"));
+    }
+    if !privileged_available() {
+        return Err(skip_test("host mount propagation checks require root or passwordless sudo"));
+    }
+    let host_path = host_path_test_dir("mount-propagation-private");
+    let source_path = host_path_test_dir("mount-propagation-private-source");
+    let nested_path = format!("{host_path}/newmount");
+    std::fs::create_dir_all(&nested_path)?;
+    std::fs::create_dir_all(&source_path)?;
+    std::fs::write(format!("{source_path}/marker"), "from-a-new-host-mount")?;
+    let name = "mount-propagation-private-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "host", "mountPath": "/hostvol"}]}]
+        }),
+    )
+    .await?;
+    let result = async {
+        context
+            .wait_until("Private propagation Pod", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move { Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some("Running")) }
+            })
+            .await?;
+        run_privileged("mount", &["--bind", &source_path, &nested_path])
+            .map_err(|error| skip_test(format!("host bind mount unavailable: {error}")))?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let (_, output) = exec_in_pod(context, name, &["cat", "/hostvol/newmount/marker"]).await?;
+        anyhow::ensure!(!output.contains("from-a-new-host-mount"), "Private mount propagation leaked a host-side mount into the container");
+        Ok(())
+    }
+    .await;
+    let _ = run_privileged("umount", &[&nested_path]);
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    let _ = std::fs::remove_dir_all(&source_path);
+    result
+}
+
+pub(super) async fn recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("recursive read-only checks require the CRI runtime"));
+    }
+    if !privileged_available() {
+        return Err(skip_test("nested recursive read-only checks require root or passwordless sudo"));
+    }
+    let host_path = host_path_test_dir("recursive-readonly-nested");
+    let source_path = host_path_test_dir("recursive-readonly-nested-source");
+    let nested_path = format!("{host_path}/nested");
+    std::fs::create_dir_all(&nested_path)?;
+    std::fs::create_dir_all(&source_path)?;
+    run_privileged("mount", &["--bind", &source_path, &nested_path])
+        .map_err(|error| skip_test(format!("nested host bind mount unavailable: {error}")))?;
+    let name = "recursive-readonly-nested-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "host", "mountPath": "/hostvol", "readOnly": true, "recursiveReadOnly": "Enabled"}]}]
+        }),
+    )
+    .await?;
+    let result = async {
+        context
+            .wait_until("recursiveReadOnly nested Pod", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move { Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some("Running")) }
+            })
+            .await?;
+        let (succeeded, _) = exec_in_pod(context, name, &["touch", "/hostvol/nested/test"]).await?;
+        anyhow::ensure!(!succeeded, "recursiveReadOnly allowed a write inside the nested mount");
+        Ok(())
+    }
+    .await;
+    let _ = run_privileged("umount", &[&nested_path]);
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    let _ = std::fs::remove_dir_all(&source_path);
+    result
+}
+
+async fn recursive_read_only_if_possible(
+    context: &E2eContext,
+    name: &str,
+    require_capability_match: bool,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("recursive read-only checks require the CRI runtime"));
+    }
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let node = nodes
+        .list(&Default::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .context("cluster has no Node")?;
+    let node_value = serde_json::to_value(node)?;
+    let capability = node_value
+        .pointer("/status/runtimeHandlers/0/features/recursiveReadOnlyMounts")
+        .and_then(serde_json::Value::as_bool);
+    if require_capability_match && capability.is_none() {
+        return Err(skip_test("runtime handler did not advertise a boolean recursiveReadOnlyMounts capability"));
+    }
+    let host_path = host_path_test_dir(name);
+    std::fs::create_dir_all(&host_path)?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({"volumes": [{"name": "host", "hostPath": {"path": host_path, "type": "Directory"}}], "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"], "volumeMounts": [{"name": "host", "mountPath": "/host", "readOnly": true, "recursiveReadOnly": "IfPossible"}]}]}),
+    )
+    .await?;
+    let result = context
+        .wait_until("recursiveReadOnly IfPossible Pod", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move { Ok(pods.get(name).await?.status.and_then(|status| status.phase).as_deref() == Some("Running")) }
+        })
+        .await
+        .and_then(|_| async {
+            let pod_value = serde_json::to_value(pods.get(name).await?)?;
+            let got = pod_value
+                .pointer("/status/containerStatuses/0/volumeMounts")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|mounts| mounts.iter().find(|mount| mount.get("name").and_then(serde_json::Value::as_str) == Some("host")))
+                .and_then(|mount| mount.get("recursiveReadOnly").and_then(serde_json::Value::as_str))
+                .context("IfPossible status omitted recursiveReadOnly")?;
+            anyhow::ensure!(got == "Enabled" || got == "Disabled", "IfPossible reported invalid value {got}");
+            if let Some(capability) = capability {
+                let expected = if capability { "Enabled" } else { "Disabled" };
+                anyhow::ensure!(got == expected, "IfPossible reported {got}, but runtime handler advertised {expected}");
+            }
+            Ok(())
+        });
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    result
+}
+
+pub(super) async fn recursive_read_only_if_possible_falls_back_without_erroring(
+    context: &E2eContext,
+) -> Result<()> {
+    recursive_read_only_if_possible(context, "recursive-readonly-ifpossible-check", false).await
+}
+
+pub(super) async fn recursive_read_only_if_possible_tracks_the_runtime_handlers_own_capability(
+    context: &E2eContext,
+) -> Result<()> {
+    recursive_read_only_if_possible(context, "recursive-readonly-capability-check", true).await
 }
 
 pub(super) async fn fsgroup_never_applies_to_hostpath_volumes(
