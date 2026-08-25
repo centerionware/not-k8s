@@ -111,14 +111,30 @@ fn try_prebuilt(cfg: &Config) -> Result<bool> {
 
 fn install_prebuilt(src: &str, dest: &std::path::Path) -> Result<()> {
     anyhow::ensure!(std::path::Path::new(src).is_file(), "prebuilt binary path doesn't exist or isn't a file: {src}");
-    std::fs::copy(src, dest).with_context(|| format!("staging prebuilt {src} to {}", dest.display()))?;
+    install_binary(std::path::Path::new(src), dest)
+        .with_context(|| format!("staging prebuilt {src} to {}", dest.display()))?;
+    tracing::info!(src, dest = %dest.display(), "staged prebuilt binary");
+    Ok(())
+}
+
+/// Replace an installed executable without truncating the file currently used
+/// by a running service. Linux rejects opening an active executable for
+/// replacement with `ETXTBSY`; a same-directory temporary copy followed by
+/// rename gives the service the old inode until its next restart and makes the
+/// new inode available atomically.
+fn install_binary(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let name = dest.file_name().and_then(|name| name.to_str()).unwrap_or("binary");
+    let temporary = dest.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temporary);
+    std::fs::copy(src, &temporary).with_context(|| format!("copying {} to {}", src.display(), temporary.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("making {} executable", dest.display()))?;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", temporary.display()))?;
     }
-    tracing::info!(src, dest = %dest.display(), "staged prebuilt binary");
+    std::fs::rename(&temporary, dest)
+        .with_context(|| format!("installing {} as {}", temporary.display(), dest.display()))?;
     Ok(())
 }
 
@@ -139,13 +155,7 @@ fn build_from_source(cfg: &Config) -> Result<()> {
     let stage = |bin: &str| -> Result<()> {
         let src = target_release.join(bin);
         let dest = dest_dir.join(bin);
-        std::fs::copy(&src, &dest).with_context(|| format!("staging {} to {}", src.display(), dest.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
-                .with_context(|| format!("making {} executable", dest.display()))?;
-        }
+        install_binary(&src, &dest).with_context(|| format!("staging {} to {}", src.display(), dest.display()))?;
         Ok(())
     };
 
