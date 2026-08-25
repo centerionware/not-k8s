@@ -1,15 +1,88 @@
 use super::context::E2eContext;
+use super::grpc::podresources;
 use super::skip_test;
 use anyhow::{Context, Result};
+use std::fs;
 use std::os::unix::fs::FileTypeExt;
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use k8s_openapi::api::core::v1::Node;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::api::storage::v1::CSINode;
 use kube::api::{Api, ListParams, PostParams};
 use serde_json::json;
-use std::process::Command;
 use std::time::Duration;
+use tonic::transport::{Channel, Endpoint, Uri};
+use tokio::net::UnixStream;
+
+type PodResourcesClient = podresources::pod_resources_lister_client::PodResourcesListerClient<Channel>;
+
+async fn connect_pod_resources(socket: &Path) -> Result<PodResourcesClient> {
+    let socket = socket.to_path_buf();
+    let channel = Endpoint::try_from("http://localhost")
+        .context("invalid PodResources endpoint")?
+        .connect_with_connector(tower::service_fn(move |_: Uri| {
+            let socket = socket.clone();
+            async move {
+                let stream = UnixStream::connect(socket).await?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+            }
+        }))
+        .await
+        .context("connecting to the PodResources Unix socket")?;
+    Ok(PodResourcesClient::new(channel))
+}
+
+fn root_command(program: &str, args: &[&str]) -> std::process::Command {
+    let is_root = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
+    let mut command = if is_root {
+        std::process::Command::new(program)
+    } else {
+        let mut command = std::process::Command::new("sudo");
+        command.arg("-n").arg(program);
+        command
+    };
+    command.args(args);
+    command
+}
+
+fn run_root(program: &str, args: &[&str]) -> Result<()> {
+    let output = root_command(program, args).output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+struct SocketModeGuard {
+    path: PathBuf,
+    original_mode: u32,
+}
+
+impl SocketModeGuard {
+    fn grant(path: &Path) -> Result<Self> {
+        let original_mode = fs::metadata(path)?.permissions().mode() & 0o777;
+        let path_string = path.to_string_lossy().into_owned();
+        run_root("chmod", &["0666", &path_string])?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            original_mode,
+        })
+    }
+}
+
+impl Drop for SocketModeGuard {
+    fn drop(&mut self) {
+        let mode = format!("{:04o}", self.original_mode);
+        let path = self.path.to_string_lossy().into_owned();
+        let _ = run_root("chmod", &[&mode, &path]);
+    }
+}
 
 pub(super) async fn pod_resources_socket_is_created_on_a_cri_node(
     _context: &E2eContext,
@@ -44,23 +117,8 @@ pub(super) async fn pod_resources_grpc_query_returns_real_data(
     if socket.is_empty() {
         return Err(skip_test("PodResources API is disabled on this deployment"));
     }
-    let grpcurl_available = std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| directory.join("grpcurl").is_file())
-    });
-    if !grpcurl_available {
-        return Err(skip_test(
-            "grpcurl is not on PATH; the full e2e setup installs it for PodResources checks",
-        ));
-    }
-    let proto = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../nodelet/proto/podresources.proto");
-    if !proto.is_file() {
-        return Err(skip_test(format!(
-            "PodResources proto is not present at {}",
-            proto.display()
-        )));
-    }
-    if !Path::new(&socket).is_file() && !Path::new(&socket).exists() {
+    let socket_path = Path::new(&socket);
+    if !socket_path.exists() {
         return Err(skip_test(format!(
             "PodResources socket {socket} is not present on this deployment"
         )));
@@ -74,27 +132,6 @@ pub(super) async fn pod_resources_grpc_query_returns_real_data(
         "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]}
     }))?;
     pods.create(&PostParams::default(), &pod).await?;
-    let proto_dir = proto
-        .parent()
-        .context("PodResources proto has no parent directory")?;
-    let grpcurl = |args: &[&str]| -> Result<(bool, String)> {
-        let output = Command::new("sudo")
-            .arg("grpcurl")
-            .args(["-plaintext", "-unix", "-import-path"])
-            .arg(proto_dir)
-            .args(["-proto"])
-            .arg(&proto)
-            .args(args)
-            .arg(&socket)
-            .output()
-            .context("running sudo grpcurl against PodResources")?;
-        let output_text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok((output.status.success(), output_text))
-    };
     let result = async {
         context
             .wait_until("PodResources test Pod Running", Duration::from_secs(90), || {
@@ -110,22 +147,48 @@ pub(super) async fn pod_resources_grpc_query_returns_real_data(
                 }
             })
             .await?;
-        let (list_ok, list_output) = grpcurl(&["v1.PodResourcesLister/List"])?;
-        anyhow::ensure!(list_ok, "PodResources List failed: {list_output}");
+        let mut _socket_access = None;
+        let mut client = match connect_pod_resources(socket_path).await {
+            Ok(client) => client,
+            Err(first_error) => {
+                _socket_access = Some(SocketModeGuard::grant(socket_path).map_err(|access_error| {
+                    anyhow::anyhow!(
+                        "connecting to PodResources failed ({first_error}); temporary socket access also failed: {access_error}"
+                    )
+                })?);
+                connect_pod_resources(socket_path)
+                    .await
+                    .context("connecting to PodResources after granting temporary socket access")?
+            }
+        };
+        let list = client
+            .list(podresources::ListPodResourcesRequest {})
+            .await
+            .context("PodResources List RPC failed")?
+            .into_inner();
         anyhow::ensure!(
-            list_output.contains(name),
-            "PodResources List did not include the running Pod {name}: {list_output}"
+            list.pod_resources
+                .iter()
+                .any(|pod| pod.name == name && pod.namespace == context.namespace),
+            "PodResources List did not include the running Pod {name}"
         );
-        let (get_ok, get_output) = grpcurl(&[
-            "-d",
-            &format!("{{\"podName\":\"does-not-exist\",\"podNamespace\":\"{}\"}}", context.namespace),
-            "v1.PodResourcesLister/Get",
-        ])?;
-        anyhow::ensure!(!get_ok, "PodResources Get for a nonexistent Pod unexpectedly succeeded");
-        anyhow::ensure!(
-            get_output.contains("NotFound"),
-            "PodResources Get did not return NotFound: {get_output}"
-        );
+        match client
+            .get(podresources::GetPodResourcesRequest {
+                pod_name: "does-not-exist".to_string(),
+                pod_namespace: context.namespace.clone(),
+            })
+            .await
+        {
+            Err(status) if status.code() == tonic::Code::NotFound => {}
+            Err(status) => anyhow::bail!(
+                "PodResources Get for a nonexistent Pod returned {:?}: {}",
+                status.code(),
+                status.message()
+            ),
+            Ok(_) => anyhow::bail!(
+                "PodResources Get for a nonexistent Pod unexpectedly succeeded"
+            ),
+        }
         Ok(())
     }
     .await;

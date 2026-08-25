@@ -132,6 +132,9 @@ pub(super) mod grpc {
     pub mod peer {
         tonic::include_proto!("notk8s.nodestore.peer.v1");
     }
+    pub mod podresources {
+        tonic::include_proto!("v1");
+    }
 }
 
 use context::E2eContext;
