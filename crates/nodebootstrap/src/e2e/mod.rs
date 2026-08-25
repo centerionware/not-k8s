@@ -119,6 +119,21 @@ mod volumes;
 #[path = "tests/watch_recovery.rs"]
 mod watch_recovery;
 
+pub(super) mod grpc {
+    pub mod authpb {
+        tonic::include_proto!("authpb");
+    }
+    pub mod mvccpb {
+        tonic::include_proto!("mvccpb");
+    }
+    pub mod etcdserverpb {
+        tonic::include_proto!("etcdserverpb");
+    }
+    pub mod peer {
+        tonic::include_proto!("notk8s.nodestore.peer.v1");
+    }
+}
+
 use context::E2eContext;
 
 const CSI_DRA_SHARDS: usize = 2;

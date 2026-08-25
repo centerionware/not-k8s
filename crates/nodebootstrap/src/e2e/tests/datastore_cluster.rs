@@ -16,9 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-const RPC_PROTO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../nodestore/proto");
-const PEER_PROTO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../nodestore/proto");
-
 fn b64(value: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(value)
 }
@@ -41,7 +38,7 @@ fn required_binary() -> Result<PathBuf> {
 }
 
 fn require_tools() -> Result<()> {
-    for tool in ["grpcurl", "openssl"] {
+    for tool in ["openssl"] {
         let available = Command::new(tool)
             .arg("--version")
             .output()
@@ -239,15 +236,13 @@ impl Cluster {
             .with_context(|| format!("cluster has no member {id}"))
     }
 
-    fn grpcurl(&self, id: u64, peer: bool, method: &str, request: &str) -> Result<String> {
+    fn grpc_call(&self, id: u64, peer: bool, method: &str, request: &str) -> Result<String> {
         let member = self.member(id)?;
-        let (ca, cert, key, proto, import_path, address) = if peer {
+        let (ca, cert, key, address) = if peer {
             (
                 &self.pki.peer_ca,
                 &self.pki.peer_cert,
                 &self.pki.peer_key,
-                "peer.proto",
-                PEER_PROTO_DIR,
                 format!("127.0.0.1:{}", member.peer_port),
             )
         } else {
@@ -255,35 +250,22 @@ impl Cluster {
                 &self.pki.client_ca,
                 &self.pki.client_cert,
                 &self.pki.client_key,
-                "rpc.proto",
-                RPC_PROTO_DIR,
                 format!("127.0.0.1:{}", member.client_port),
             )
         };
-        let service = if peer {
-            method.to_string()
-        } else {
-            method.to_string()
-        };
-        let output = Command::new("grpcurl")
-            .args(["-cacert", ca.to_str().context("CA path is not UTF-8")?])
-            .args(["-cert", cert.to_str().context("certificate path is not UTF-8")?])
-            .args(["-key", key.to_str().context("key path is not UTF-8")?])
-            .args(["-max-time", "10", "-import-path", import_path, "-proto", proto, "-d", request])
-            .arg(address)
-            .arg(service)
-            .output()
-            .context("calling datastore cluster through grpcurl")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "grpcurl {method} on member {id} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        super::datastore::grpc_json_call(
+            ca.clone(),
+            cert.clone(),
+            key.clone(),
+            address,
+            peer,
+            method.to_owned(),
+            request.to_owned(),
+        )
     }
 
     fn peer_status(&self, id: u64) -> Result<Value> {
-        Ok(serde_json::from_str(&self.grpcurl(
+        Ok(serde_json::from_str(&self.grpc_call(
             id,
             true,
             "notk8s.nodestore.peer.v1.Peer/Status",
@@ -324,7 +306,7 @@ impl Cluster {
     }
 
     fn put(&self, id: u64, key: &str, value: &str) -> Result<String> {
-        self.grpcurl(
+        self.grpc_call(
             id,
             false,
             "etcdserverpb.KV/Put",
@@ -333,7 +315,7 @@ impl Cluster {
     }
 
     fn get(&self, id: u64, key: &str) -> Result<String> {
-        let output = self.grpcurl(
+        let output = self.grpc_call(
             id,
             false,
             "etcdserverpb.KV/Range",

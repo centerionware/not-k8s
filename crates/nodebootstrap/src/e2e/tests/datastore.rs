@@ -1,17 +1,303 @@
 use super::context::E2eContext;
+use super::grpc::{etcdserverpb as pb, mvccpb};
 use super::skip_test;
 use anyhow::{Context, Result};
 use base64::Engine;
 use serde_json::{json, Value};
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const RPC_PROTO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../nodestore/proto");
-
 fn b64(value: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(value)
+}
+
+fn decode_field(request: &Value, field: &str) -> Result<Vec<u8>> {
+    let value = request
+        .get(field)
+        .and_then(Value::as_str)
+        .with_context(|| format!("request has no base64 {field} field"))?;
+    Ok(base64::engine::general_purpose::STANDARD.decode(value)?)
+}
+
+fn integer_field(request: &Value, field: &str) -> Result<i64> {
+    let value = request
+        .get(field)
+        .with_context(|| format!("request has no {field} field"))?;
+    match value {
+        Value::String(value) => Ok(value.parse()?),
+        Value::Number(value) => value
+            .as_i64()
+            .with_context(|| format!("{field} was not an integer")),
+        _ => anyhow::bail!("{field} was not an integer"),
+    }
+}
+
+fn optional_bytes(request: &Value, field: &str) -> Result<Vec<u8>> {
+    request
+        .get(field)
+        .map(|value| {
+            value
+                .as_str()
+                .with_context(|| format!("{field} was not base64 text"))
+                .and_then(|value| Ok(base64::engine::general_purpose::STANDARD.decode(value)?))
+        })
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+
+fn response_header(header: Option<&pb::ResponseHeader>) -> Value {
+    header
+        .map(|header| json!({"revision": header.revision.to_string()}))
+        .unwrap_or(Value::Null)
+}
+
+fn key_value_json(kv: &mvccpb::KeyValue) -> Value {
+    json!({
+        "key": b64_bytes(&kv.key),
+        "value": b64_bytes(&kv.value),
+        "createRevision": kv.create_revision.to_string(),
+        "modRevision": kv.mod_revision.to_string(),
+        "version": kv.version.to_string(),
+        "lease": kv.lease.to_string()
+    })
+}
+
+fn b64_bytes(value: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(value)
+}
+
+fn request_op(value: &Value) -> Result<pb::RequestOp> {
+    if let Some(put) = value.get("requestPut") {
+        return Ok(pb::RequestOp {
+            request: Some(pb::request_op::Request::RequestPut(pb::PutRequest {
+                key: decode_field(put, "key")?,
+                value: decode_field(put, "value")?,
+                lease: 0,
+                prev_kv: false,
+                ignore_value: false,
+                ignore_lease: false,
+            })),
+        });
+    }
+    if let Some(range) = value.get("requestRange") {
+        return Ok(pb::RequestOp {
+            request: Some(pb::request_op::Request::RequestRange(pb::RangeRequest {
+                key: decode_field(range, "key")?,
+                range_end: optional_bytes(range, "rangeEnd")?,
+                ..Default::default()
+            })),
+        });
+    }
+    anyhow::bail!("unsupported transaction request operation: {value}")
+}
+
+fn transaction_request(request: &Value) -> Result<pb::TxnRequest> {
+    let compare = request
+        .get("compare")
+        .and_then(Value::as_array)
+        .context("transaction has no compare list")?
+        .iter()
+        .map(|compare| {
+            let result = compare
+                .get("result")
+                .and_then(Value::as_str)
+                .context("comparison has no result")?;
+            anyhow::ensure!(result == "EQUAL", "unsupported comparison result {result}");
+            let target = compare
+                .get("target")
+                .and_then(Value::as_str)
+                .context("comparison has no target")?;
+            anyhow::ensure!(target == "MOD", "unsupported comparison target {target}");
+            Ok(pb::Compare {
+                key: decode_field(compare, "key")?,
+                range_end: Vec::new(),
+                result: pb::compare::CompareResult::Equal as i32,
+                target_union: Some(pb::compare::TargetUnion::ModRevision(integer_field(
+                    compare,
+                    "modRevision",
+                )?)),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let operations = |field: &str| -> Result<Vec<pb::RequestOp>> {
+        request
+            .get(field)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(request_op)
+            .collect()
+    };
+    Ok(pb::TxnRequest {
+        compare,
+        success: operations("success")?,
+        failure: operations("failure")?,
+    })
+}
+
+async fn connect(
+    address: String,
+    ca: PathBuf,
+    cert: PathBuf,
+    key: PathBuf,
+) -> Result<tonic::transport::Channel> {
+    let tls = tonic::transport::ClientTlsConfig::new()
+        .ca_certificate(tonic::transport::Certificate::from_pem(fs::read(ca)?))
+        .identity(tonic::transport::Identity::from_pem(fs::read(cert)?, fs::read(key)?))
+        .domain_name("localhost");
+    Ok(tonic::transport::Endpoint::from_shared(format!("https://{address}"))?
+        .tls_config(tls)?
+        .connect()
+        .await?)
+}
+
+pub(super) fn grpc_json_call(
+    ca: PathBuf,
+    cert: PathBuf,
+    key: PathBuf,
+    address: String,
+    peer: bool,
+    method: String,
+    request: String,
+) -> Result<String> {
+    let thread = std::thread::spawn(move || -> Result<String> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async move {
+            let request: Value = serde_json::from_str(&request)?;
+            let channel = connect(address, ca, cert, key).await?;
+            if peer {
+                let response = pb_peer_status(channel).await?;
+                return Ok(json!({
+                    "memberId": response.member_id.to_string(),
+                    "leaderId": response.leader_id.to_string(),
+                    "term": response.term.to_string(),
+                    "appliedIndex": response.applied_index.to_string(),
+                    "revision": response.revision.to_string(),
+                    "role": response.role,
+                    "leaderClientUrl": response.leader_client_url,
+                    "voters": response.voters.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    "learners": response.learners.iter().map(ToString::to_string).collect::<Vec<_>>()
+                }).to_string());
+            }
+            match method.as_str() {
+                "etcdserverpb.Maintenance/Status" => {
+                    let response = pb::maintenance_client::MaintenanceClient::new(channel)
+                        .status(pb::StatusRequest {})
+                        .await?
+                        .into_inner();
+                    Ok(json!({
+                        "header": response_header(response.header.as_ref()),
+                        "version": response.version,
+                        "leader": response.leader.to_string(),
+                        "raftIndex": response.raft_index.to_string(),
+                        "raftTerm": response.raft_term.to_string(),
+                        "raftAppliedIndex": response.raft_applied_index.to_string()
+                    }).to_string())
+                }
+                "etcdserverpb.KV/Range" => {
+                    let response = pb::kv_client::KvClient::new(channel)
+                        .range(pb::RangeRequest {
+                            key: decode_field(&request, "key")?,
+                            range_end: optional_bytes(&request, "rangeEnd")?,
+                            revision: request.get("revision").map_or(Ok(0), |value| {
+                                match value {
+                                    Value::String(value) => Ok(value.parse()?),
+                                    Value::Number(value) => Ok(value.as_i64().unwrap_or_default()),
+                                    _ => anyhow::bail!("revision was not an integer"),
+                                }
+                            })?,
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_inner();
+                    Ok(json!({
+                        "header": response_header(response.header.as_ref()),
+                        "kvs": response.kvs.iter().map(key_value_json).collect::<Vec<_>>(),
+                        "more": response.more,
+                        "count": response.count.to_string()
+                    }).to_string())
+                }
+                "etcdserverpb.KV/Put" => {
+                    let response = pb::kv_client::KvClient::new(channel)
+                        .put(pb::PutRequest {
+                            key: decode_field(&request, "key")?,
+                            value: decode_field(&request, "value")?,
+                            lease: request.get("lease").map_or(Ok(0), |value| match value {
+                                Value::String(value) => Ok(value.parse()?),
+                                Value::Number(value) => Ok(value.as_i64().unwrap_or_default()),
+                                _ => anyhow::bail!("lease was not an integer"),
+                            })?,
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_inner();
+                    Ok(json!({"header": response_header(response.header.as_ref())}).to_string())
+                }
+                "etcdserverpb.KV/DeleteRange" => {
+                    let response = pb::kv_client::KvClient::new(channel)
+                        .delete_range(pb::DeleteRangeRequest {
+                            key: decode_field(&request, "key")?,
+                            range_end: optional_bytes(&request, "rangeEnd")?,
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_inner();
+                    Ok(json!({
+                        "header": response_header(response.header.as_ref()),
+                        "deleted": response.deleted.to_string()
+                    }).to_string())
+                }
+                "etcdserverpb.KV/Txn" => {
+                    let response = pb::kv_client::KvClient::new(channel)
+                        .txn(transaction_request(&request)?)
+                        .await?
+                        .into_inner();
+                    Ok(json!({
+                        "header": response_header(response.header.as_ref()),
+                        "succeeded": response.succeeded
+                    }).to_string())
+                }
+                "etcdserverpb.KV/Compact" => {
+                    let response = pb::kv_client::KvClient::new(channel)
+                        .compact(pb::CompactionRequest {
+                            revision: integer_field(&request, "revision")?,
+                            physical: false,
+                        })
+                        .await?
+                        .into_inner();
+                    Ok(json!({"header": response_header(response.header.as_ref())}).to_string())
+                }
+                "etcdserverpb.Lease/LeaseGrant" => {
+                    let response = pb::lease_client::LeaseClient::new(channel)
+                        .lease_grant(pb::LeaseGrantRequest {
+                            ttl: integer_field(&request, "TTL")?,
+                            id: 0,
+                        })
+                        .await?
+                        .into_inner();
+                    Ok(json!({
+                        "ID": response.id.to_string(),
+                        "TTL": response.ttl.to_string(),
+                        "header": response_header(response.header.as_ref())
+                    }).to_string())
+                }
+                _ => anyhow::bail!("unsupported datastore RPC {method}"),
+            }
+        })
+    });
+    thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("datastore gRPC client thread panicked"))?
+}
+
+async fn pb_peer_status(channel: tonic::transport::Channel) -> Result<super::grpc::peer::StatusReply> {
+    Ok(super::grpc::peer::peer_client::PeerClient::new(channel)
+        .status(super::grpc::peer::StatusRequest {})
+        .await?
+        .into_inner())
 }
 
 fn nodestore_binary() -> Result<PathBuf> {
@@ -32,13 +318,6 @@ fn nodestore_binary() -> Result<PathBuf> {
     }
 }
 
-fn grpcurl_available() -> bool {
-    Command::new("grpcurl")
-        .arg("-version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 pub(super) struct DatastoreProcess {
     child: Child,
     dir: PathBuf,
@@ -49,9 +328,6 @@ pub(super) struct DatastoreProcess {
 
 impl DatastoreProcess {
     pub(super) fn start() -> Result<Self> {
-        if !grpcurl_available() {
-            return Err(skip_test("datastore wire tests require grpcurl"));
-        }
         let binary = nodestore_binary()?;
         let dir = std::env::temp_dir().join(format!(
             "nodebootstrap-datastore-{}",
@@ -155,36 +431,15 @@ impl DatastoreProcess {
 
     pub(super) fn rpc(&self, method: &str, request: &str) -> Result<String> {
         let pki = self.client_dir();
-        let ca = pki.join("ca.crt");
-        let cert = pki.join("client.crt");
-        let key = pki.join("client.key");
-        let output = Command::new("grpcurl")
-            .args([
-                "-cacert",
-                ca.to_str().context("CA path is not UTF-8")?,
-                "-cert",
-                cert.to_str().context("client cert path is not UTF-8")?,
-                "-key",
-                key.to_str().context("client key path is not UTF-8")?,
-                "-max-time",
-                "10",
-                "-import-path",
-                RPC_PROTO_DIR,
-                "-proto",
-                "rpc.proto",
-                "-d",
-                request,
-                &self.address,
-                method,
-            ])
-            .output()
-            .with_context(|| format!("calling {method} through grpcurl"))?;
-        anyhow::ensure!(
-            output.status.success(),
-            "grpcurl {method} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        grpc_json_call(
+            pki.join("ca.crt"),
+            pki.join("client.crt"),
+            pki.join("client.key"),
+            self.address.clone(),
+            false,
+            method.to_owned(),
+            request.to_owned(),
+        )
     }
 
     fn wait_ready(&self) -> Result<()> {
@@ -376,21 +631,108 @@ pub(super) async fn datastore_creates_a_key_only_if_absent(
     Ok(())
 }
 
-fn spawn_watch(store: &DatastoreProcess, request: &str, path: &Path) -> Result<Child> {
+struct WatchTask {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<Result<()>>>,
+}
+
+impl WatchTask {
+    fn kill(&mut self) -> Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("datastore watch thread panicked"))??;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for WatchTask {
+    fn drop(&mut self) {
+        let _ = self.kill();
+    }
+}
+
+fn watch_response_json(response: &pb::WatchResponse) -> Value {
+    let event_name = |event: &mvccpb::Event| {
+        if event.r#type == mvccpb::event::EventType::Delete as i32 {
+            "DELETE"
+        } else {
+            "PUT"
+        }
+    };
+    json!({
+        "header": response_header(response.header.as_ref()),
+        "watchId": response.watch_id.to_string(),
+        "created": response.created,
+        "canceled": response.canceled,
+        "events": response.events.iter().map(|event| json!({
+            "type": event_name(event),
+            "kv": event.kv.as_ref().map(key_value_json)
+        })).collect::<Vec<_>>()
+    })
+}
+
+fn spawn_watch(store: &DatastoreProcess, request: &str, path: &Path) -> Result<WatchTask> {
+    let request: Value = serde_json::from_str(request)?;
+    let create = request
+        .get("createRequest")
+        .context("watch request has no createRequest")?;
+    let watch_request = pb::WatchRequest {
+        request_union: Some(pb::watch_request::RequestUnion::CreateRequest(
+            pb::WatchCreateRequest {
+                key: decode_field(create, "key")?,
+                range_end: optional_bytes(create, "rangeEnd")?,
+                start_revision: create
+                    .get("startRevision")
+                    .map_or(Ok(0), |value| match value {
+                        Value::String(value) => Ok(value.parse()?),
+                        Value::Number(value) => Ok(value.as_i64().unwrap_or_default()),
+                        _ => anyhow::bail!("startRevision was not an integer"),
+                    })?,
+                ..Default::default()
+            },
+        )),
+    };
     let pki = store.client_dir();
-    let output = File::create(path)?;
-    Command::new("grpcurl")
-        .args([
-            "-cacert", pki.join("ca.crt").to_str().context("CA path is not UTF-8")?,
-            "-cert", pki.join("client.crt").to_str().context("client cert path is not UTF-8")?,
-            "-key", pki.join("client.key").to_str().context("client key path is not UTF-8")?,
-            "-max-time", "15", "-import-path", RPC_PROTO_DIR, "-proto", "rpc.proto",
-            "-d", request, &store.address, "etcdserverpb.Watch/Watch",
-        ])
-        .stdout(Stdio::from(output))
-        .stderr(Stdio::null())
-        .spawn()
-        .context("starting nodestore watch stream")
+    let address = store.address.clone();
+    let path = path.to_owned();
+    let (stop, mut stop_rx) = tokio::sync::oneshot::channel();
+    let thread = std::thread::spawn(move || -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async move {
+            let channel = connect(
+                address,
+                pki.join("ca.crt"),
+                pki.join("client.crt"),
+                pki.join("client.key"),
+            )
+            .await?;
+            let mut stream = pb::watch_client::WatchClient::new(channel)
+                .watch(futures::stream::iter([watch_request]))
+                .await?
+                .into_inner();
+            let mut output = File::create(path)?;
+            loop {
+                tokio::select! {
+                    response = stream.message() => {
+                        let Some(response) = response? else { break };
+                        writeln!(output, "{}", watch_response_json(&response))?;
+                        output.flush()?;
+                    }
+                    _ = &mut stop_rx => break,
+                }
+            }
+            Ok(())
+        })
+    });
+    Ok(WatchTask {
+        stop: Some(stop),
+        thread: Some(thread),
+    })
 }
 
 pub(super) async fn datastore_streams_watch_events_as_they_happen(
