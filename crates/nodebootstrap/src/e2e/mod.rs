@@ -348,6 +348,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_limited_swap_gives_burstable_pods_proportional_swap",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_hugepages_limit_is_enforced_via_cgroup",
         group: TestGroup::General,
     },
@@ -1433,6 +1437,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_no_swap_default_disables_swap_via_cgroup" => {
             resources::no_swap_default_disables_swap_via_cgroup(context).await
+        }
+        "test_limited_swap_gives_burstable_pods_proportional_swap" => {
+            resources::limited_swap_gives_burstable_pods_proportional_swap(context).await
         }
         "test_hugepages_limit_is_enforced_via_cgroup" => {
             resources::hugepages_limit_is_enforced_via_cgroup(context).await

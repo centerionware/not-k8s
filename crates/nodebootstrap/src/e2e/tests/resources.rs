@@ -4,6 +4,9 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, AttachParams, Patch, PatchParams, PostParams};
 use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
@@ -286,6 +289,155 @@ pub(super) async fn no_swap_default_disables_swap_via_cgroup(
         value.trim() == "0",
         "default NoSwap memory.swap.max was {:?}, expected 0",
         value.trim()
+    );
+    Ok(())
+}
+
+fn privileged(program: &str, args: &[&str]) -> Result<()> {
+    let uid = Command::new("id").arg("-u").output()?;
+    let mut command = if String::from_utf8_lossy(&uid.stdout).trim() == "0" {
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg(program).args(args);
+        command
+    };
+    let output = command.output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+struct TemporarySwapFile(Option<PathBuf>);
+
+impl Drop for TemporarySwapFile {
+    fn drop(&mut self) {
+        let Some(path) = self.0.take() else {
+            return;
+        };
+        let path = path.to_string_lossy();
+        let _ = privileged("swapoff", &[path.as_ref()]);
+        let _ = privileged("rm", &["-f", path.as_ref()]);
+    }
+}
+
+pub(super) async fn limited_swap_gives_burstable_pods_proportional_swap(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("LimitedSwap checks require the CRI runtime"));
+    }
+    if !Command::new("systemctl")
+        .args(["show", "nodelet.service", "--property=LoadState", "--value"])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "loaded"
+        })
+    {
+        return Err(skip_test(
+            "LimitedSwap checks require a systemd-managed nodelet.service",
+        ));
+    }
+
+    let swap_total = fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| {
+            contents
+                .lines()
+                .find(|line| line.starts_with("SwapTotal:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or_default();
+    let temporary_swap = if swap_total == 0 {
+        let path = std::env::temp_dir().join(format!(
+            "nodebootstrap-e2e-swap-{}",
+            std::process::id()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        if privileged("fallocate", &["-l", "512M", &path_string]).is_err()
+            && privileged(
+                "dd",
+                &[
+                    "if=/dev/zero",
+                    &format!("of={path_string}"),
+                    "bs=1M",
+                    "count=512",
+                    "status=none",
+                ],
+            )
+            .is_err()
+        {
+            let _ = privileged("rm", &["-f", &path_string]);
+            return Err(skip_test(
+                "could not create a temporary swapfile; LimitedSwap needs real swap",
+            ));
+        }
+        let enabled = privileged("chmod", &["600", &path_string])
+            .and_then(|_| privileged("mkswap", &[&path_string]))
+            .and_then(|_| privileged("swapon", &[&path_string]));
+        if enabled.is_err() {
+            let _ = privileged("rm", &["-f", &path_string]);
+            return Err(skip_test(
+                "could not enable a temporary swapfile; this host does not permit swapon",
+            ));
+        }
+        TemporarySwapFile(Some(path))
+    } else {
+        TemporarySwapFile(None)
+    };
+    let _nodelet_env = match super::resource_managers::NodeletEnvOverride::install(&[
+        ("NODELET_MEMORY_SWAP_BEHAVIOR", "LimitedSwap"),
+    ]) {
+        Ok(override_guard) => override_guard,
+        Err(error) => {
+            drop(temporary_swap);
+            return Err(skip_test(format!(
+                "could not restart nodelet with LimitedSwap: {error}"
+            )));
+        }
+    };
+
+    let burstable = "limited-swap-burstable";
+    create_pod(
+        context,
+        burstable,
+        json!({"requests": {"memory": "64Mi"}, "limits": {"memory": "256Mi"}}),
+    )
+    .await?;
+    let burstable_swap = exec_output(context, burstable, &["cat", "/sys/fs/cgroup/memory.swap.max"])
+        .await
+        .map_err(|error| skip_test(format!("memory.swap.max is unavailable; this host may use cgroup v1: {error}")))?;
+    let burstable_swap = burstable_swap.trim();
+    let burstable_swap = burstable_swap
+        .parse::<u64>()
+        .map_err(|_| skip_test(format!("memory.swap.max was not numeric: {burstable_swap:?}")))?;
+    anyhow::ensure!(
+        burstable_swap > 0,
+        "a bounded Burstable Pod under LimitedSwap should get a nonzero memory.swap.max"
+    );
+
+    let guaranteed = "limited-swap-guaranteed";
+    create_pod(
+        context,
+        guaranteed,
+        json!({
+            "requests": {"memory": "64Mi", "cpu": "100m"},
+            "limits": {"memory": "64Mi", "cpu": "100m"}
+        }),
+    )
+    .await?;
+    let guaranteed_swap =
+        exec_output(context, guaranteed, &["cat", "/sys/fs/cgroup/memory.swap.max"]).await?;
+    anyhow::ensure!(
+        guaranteed_swap.trim() == "0",
+        "a Guaranteed Pod should have memory.swap.max=0 under LimitedSwap, got {:?}",
+        guaranteed_swap.trim()
     );
     Ok(())
 }
