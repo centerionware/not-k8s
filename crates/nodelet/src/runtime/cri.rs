@@ -358,6 +358,11 @@ pub struct CriRuntime {
     /// (`ImagePullBackOff`). See `container_state.rs`'s
     /// `pull_backoff_ready()`/`record_pull_backoff()`.
     pull_backoff: Mutex<HashMap<String, (u64, u64, u32)>>,
+    /// Configuration errors for containers that cannot be created at all.
+    /// These need to be retained separately from CRI container state so
+    /// build_status() can expose a waiting reason even though
+    /// CreateContainer was never issued.
+    config_errors: Mutex<HashMap<String, String>>,
     /// `"sandbox_id/container_name" -> the previous container instance's
     /// terminated details`, captured right before that instance is
     /// removed to make way for a fresh one (round 75; found in round
@@ -623,6 +628,7 @@ impl CriRuntime {
             restart_counts: Mutex::new(HashMap::new()),
             restart_backoff: Mutex::new(HashMap::new()),
             pull_backoff: Mutex::new(HashMap::new()),
+            config_errors: Mutex::new(HashMap::new()),
             last_terminated: Mutex::new(HashMap::new()),
             csi,
             device_plugins,

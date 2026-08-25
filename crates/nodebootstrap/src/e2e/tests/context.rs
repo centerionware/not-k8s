@@ -14,10 +14,16 @@ pub(super) struct E2eContext {
 
 impl E2eContext {
     pub(super) async fn create(client: Client) -> Result<Self> {
+        // Keep the generated namespace short enough that a test Pod's
+        // setHostnameAsFQDN value can fit Linux's 64-byte hostname limit.
+        // The process id plus the low 32 bits of the monotonic-ish clock
+        // value still make collisions across concurrent runners negligible,
+        // while the full nanosecond value made otherwise valid FQDN tests
+        // fail before the container could start.
         let namespace = format!(
-            "nodebootstrap-e2e-{}-{}",
+            "nk-e2e-{}-{:08x}",
             std::process::id(),
-            unique_suffix()
+            unique_suffix() as u32
         );
         let namespaces: Api<Namespace> = Api::all(client.clone());
         namespaces

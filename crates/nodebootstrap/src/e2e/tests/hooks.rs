@@ -42,6 +42,16 @@ async fn release_deletion_finalizer(pods: &Api<Pod>, name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn add_deletion_finalizer(pods: &Api<Pod>, name: &str) -> Result<()> {
+    pods.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({"metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]}})),
+    )
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn poststart_hook_runs_before_container_exit(
     context: &E2eContext,
 ) -> Result<()> {
@@ -111,7 +121,6 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
         context,
         name,
         json!({
-            "metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]},
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
@@ -135,6 +144,7 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
             }
         })
         .await?;
+    add_deletion_finalizer(&pods, name).await?;
     pods.delete(name, &DeleteParams::default()).await?;
     let result = context
         .wait_until(
@@ -161,7 +171,6 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
         context,
         name,
         json!({
-            "metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]},
             "terminationGracePeriodSeconds": 15,
             "containers": [{
                 "name": "app",
@@ -186,6 +195,7 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
             }
         })
         .await?;
+    add_deletion_finalizer(&pods, name).await?;
     pods.delete(name, &DeleteParams::default()).await?;
     let result = context
         .wait_until("preStop termination message", Duration::from_secs(30), || {

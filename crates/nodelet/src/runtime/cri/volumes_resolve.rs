@@ -211,7 +211,10 @@ impl CriRuntime {
                         // below excludes it entirely.
                         host_path_volume_names.insert(v.name.clone());
                     }
-                    Err(e) => warn!(volume = %v.name, path = %hp.path, host_path_type = %hp.type_.as_deref().unwrap_or(""), error = %e, "hostPath volume failed validation; container(s) mounting it won't get this path"),
+                    Err(e) => {
+                        warn!(volume = %v.name, path = %hp.path, host_path_type = %hp.type_.as_deref().unwrap_or(""), error = %e, "hostPath volume failed validation");
+                        out.insert(v.name.clone(), ResolvedVolume::Invalid(e));
+                    }
                 }
             } else {
                 warn!(

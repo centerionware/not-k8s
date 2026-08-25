@@ -264,7 +264,8 @@ impl CriRuntime {
             "Always" => true,
             "Never" => {
                 if !already_present {
-                    anyhow::bail!("imagePullPolicy: Never, but image '{image}' is not present on this node");
+                    self.record_config_error(sandbox_id, &container.name, "ErrImageNeverPull");
+                    return Ok(());
                 }
                 false
             }
@@ -308,6 +309,7 @@ impl CriRuntime {
         if kind == ContainerKind::App {
             self.clear_pull_backoff_for(sandbox_id, &container.name);
         }
+        self.clear_config_error_for(sandbox_id, &container.name);
 
         // Round 88: this pod's own userns range, if it has one — the same
         // one run_sandbox() already allocated and applied at the sandbox
@@ -319,6 +321,30 @@ impl CriRuntime {
         let userns_mapping = (!id.host_users).then(|| self.userns.assigned(&id.uid)).flatten();
         let handler_supports_recursive_ro = self.handler_supports_recursive_ro(runtime_handler);
         let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, handler_supports_recursive_ro);
+        // A container running as a non-root UID inside a pod user namespace
+        // sees host-owned bind mounts through the mapped UID range. Make the
+        // mount point writable by that effective container UID; otherwise a
+        // valid runAsUser + hostUsers=false Pod fails before its command can
+        // produce any observable status.
+        if let (Some((host_base, _)), Some(run_as_user)) = (
+            userns_mapping,
+            container
+                .security_context
+                .as_ref()
+                .and_then(|sc| sc.run_as_user)
+                .or_else(|| pod_sc.and_then(|sc| sc.run_as_user)),
+        ) {
+            if run_as_user >= 0 {
+                let owner = host_base.saturating_add(run_as_user as u32);
+                for mount in container.volume_mounts.as_deref().unwrap_or_default() {
+                    if let Some(ResolvedVolume::HostPath(path)) = volumes.get(&mount.name) {
+                        if let Err(e) = chown_uid_gid(path, owner) {
+                            warn!(path = %path.display(), owner, error = ?e, "failed to chown a user-namespace volume to runAsUser");
+                        }
+                    }
+                }
+            }
+        }
         // `containerStatuses[].volumeMounts` (round 91; found in round 89's
         // re-audit): entirely derived from the spec, no RPC needed — cached
         // here (same key shape as `container_users`) for `build_status()`
@@ -362,16 +388,19 @@ impl CriRuntime {
             if !host_path.exists() {
                 std::fs::File::create(&host_path).context("creating termination-message host file")?;
             }
-            // Round 123 (found live in CI): same real ownership requirement
-            // as `resolve_volumes()`'s own userns chown loop and the
-            // /etc/hosts mount just above — left at nodelet's own default
-            // (host root, since nodelet creates this file running as host
-            // root), it's outside the sandbox's mapped range and the
-            // container's own writes to /dev/termination-log would hit the
-            // same silent EACCES the etc-hosts/emptyDir case did.
-            if let Some((host_base, _length)) = userns_mapping {
-                if let Err(e) = chown_userns_base(&host_path, host_base) {
-                    warn!(path = %host_path.display(), host_base, error = ?e, "failed to chown termination-message file to the pod's userns base uid/gid");
+            // Nodelet creates this file as root. A non-root container must
+            // own it before it can write its termination message. Under a
+            // pod user namespace the host-side owner is the mapped UID.
+            let uid = container
+                .security_context
+                .as_ref()
+                .and_then(|sc| sc.run_as_user)
+                .or_else(|| pod_sc.and_then(|sc| sc.run_as_user))
+                .unwrap_or(0);
+            if uid >= 0 {
+                let owner = userns_mapping.map(|(base, _)| base.saturating_add(uid as u32)).unwrap_or(uid as u32);
+                if let Err(e) = chown_uid_gid(&host_path, owner) {
+                    warn!(path = %host_path.display(), owner, error = ?e, "failed to chown termination-message file to the container user");
                 }
             }
             let container_path =
