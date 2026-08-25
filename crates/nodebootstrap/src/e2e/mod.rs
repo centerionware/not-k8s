@@ -46,6 +46,8 @@ mod dra;
 mod ephemeral_containers;
 #[path = "tests/endpoint_slice.rs"]
 mod endpoint_slice;
+#[path = "tests/eviction.rs"]
+mod eviction;
 #[path = "tests/garbage_collection.rs"]
 mod garbage_collection;
 #[path = "tests/generic_ephemeral_volume.rs"]
@@ -216,6 +218,30 @@ const TESTS: &[TestCase] = &[
     TestCase {
         name: "test_pod_mounts_a_generic_ephemeral_volume",
         group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_pod_exceeding_an_empty_dir_size_limit_is_evicted",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_eviction_manual_procedure",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_eviction_priority_tiebreak_manual_procedure",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_eviction_exceeds_requests_tiebreak_manual_procedure",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_eviction_soft_grace_period_manual_procedure",
+        group: TestGroup::General,
     },
     TestCase {
         name: "test_node_is_ready_with_capacity_advertised",
@@ -1001,6 +1027,22 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_mounts_a_generic_ephemeral_volume" => {
             generic_ephemeral_volume::pod_mounts_a_generic_ephemeral_volume(context).await
+        }
+        "test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted" => {
+            eviction::pod_exceeding_its_own_ephemeral_storage_limit_is_evicted(context).await
+        }
+        "test_pod_exceeding_an_empty_dir_size_limit_is_evicted" => {
+            eviction::pod_exceeding_an_empty_dir_size_limit_is_evicted(context).await
+        }
+        "test_eviction_manual_procedure" => eviction::eviction_manual_procedure(context).await,
+        "test_eviction_priority_tiebreak_manual_procedure" => {
+            eviction::eviction_priority_tiebreak_manual_procedure(context).await
+        }
+        "test_eviction_exceeds_requests_tiebreak_manual_procedure" => {
+            eviction::eviction_exceeds_requests_tiebreak_manual_procedure(context).await
+        }
+        "test_eviction_soft_grace_period_manual_procedure" => {
+            eviction::eviction_soft_grace_period_manual_procedure(context).await
         }
         "test_node_is_ready_with_capacity_advertised" => {
             node_status::node_is_ready_with_capacity_advertised(context).await
