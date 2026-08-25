@@ -83,6 +83,17 @@ fn rust_target_is_installed(target: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Select nodebootstrap's managed Rust installation for the rest of this
+/// process. Bootstrap normally re-execs through sudo, so the caller's HOME
+/// can otherwise make rustup install into one home while Cargo looks in
+/// another.
+fn use_managed_rust(cfg: &Config) {
+    let toolchain_dir = cfg.toolchain_dir();
+    std::env::set_var("RUSTUP_HOME", toolchain_dir.join("rustup"));
+    std::env::set_var("CARGO_HOME", toolchain_dir.join("cargo"));
+    prepend_path(&toolchain_dir.join("cargo/bin"));
+}
+
 pub fn ensure_rust(cfg: &Config) -> Result<()> {
     put_toolchain_bin_on_path(cfg);
     let arch = cfg.arch();
@@ -93,6 +104,10 @@ pub fn ensure_rust(cfg: &Config) -> Result<()> {
              (https://github.com/thepowersgang/mrustc), out of scope here"
         )
     })?;
+    let managed_cargo_bin = cfg.toolchain_dir().join("cargo/bin");
+    if managed_cargo_bin.join("cargo").is_file() || managed_cargo_bin.join("rustup").is_file() {
+        use_managed_rust(cfg);
+    }
     if cargo_is_new_enough() {
         if rust_target_is_installed(target) {
             tracing::info!(
@@ -147,6 +162,7 @@ pub fn ensure_rust(cfg: &Config) -> Result<()> {
     let status = std::process::Command::new("sh")
         .arg(&rustup_init)
         .args(["-y", "--default-toolchain", "stable", "--target", target, "--no-modify-path"])
+        .env("HOME", &toolchain_dir)
         .env("RUSTUP_HOME", toolchain_dir.join("rustup"))
         .env("CARGO_HOME", toolchain_dir.join("cargo"))
         .status()
@@ -156,11 +172,21 @@ pub fn ensure_rust(cfg: &Config) -> Result<()> {
         "rustup could not install a toolchain for {target} -- this architecture has no official \
          prebuilt rustc"
     );
-    // Unlike every other tool this module fetches, rustup's own cargo
-    // lands in $CARGO_HOME/bin (toolchain_dir/cargo/bin), not
-    // toolchain_dir/bin -- put_toolchain_bin_on_path() doesn't cover this
-    // one, so it's handled directly here.
-    prepend_path(&toolchain_dir.join("cargo/bin"));
+    // Unlike every other tool this module fetches, rustup's own cargo and
+    // rustup land in $CARGO_HOME/bin. Keep that environment selected for the
+    // rest of this process and explicitly install the target again: rustup-init
+    // can treat an existing settings file as an idempotent no-op while still
+    // returning success, leaving Cargo without libcore for musl.
+    use_managed_rust(cfg);
+    let status = std::process::Command::new("rustup")
+        .args(["target", "add", target])
+        .status()
+        .context("installing the static musl Rust target")?;
+    anyhow::ensure!(status.success(), "rustup could not install the static musl Rust target {target}");
+    anyhow::ensure!(
+        cargo_is_new_enough() && rust_target_is_installed(target),
+        "Rust installed but static musl target {target} is still unavailable"
+    );
     tracing::info!("Rust installed via rustup into {}", toolchain_dir.join("cargo/bin").display());
     Ok(())
 }

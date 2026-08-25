@@ -407,7 +407,15 @@ pub(super) async fn limited_swap_gives_burstable_pods_proportional_swap(
     create_pod(
         context,
         burstable,
-        json!({"requests": {"memory": "64Mi"}, "limits": {"memory": "256Mi"}}),
+        json!({
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "resources": {"requests": {"memory": "64Mi"}, "limits": {"memory": "256Mi"}}
+            }]
+        }),
     )
     .await?;
     let burstable_swap = exec_output(context, burstable, &["cat", "/sys/fs/cgroup/memory.swap.max"])
@@ -427,8 +435,16 @@ pub(super) async fn limited_swap_gives_burstable_pods_proportional_swap(
         context,
         guaranteed,
         json!({
-            "requests": {"memory": "64Mi", "cpu": "100m"},
-            "limits": {"memory": "64Mi", "cpu": "100m"}
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "resources": {
+                    "requests": {"memory": "64Mi", "cpu": "100m"},
+                    "limits": {"memory": "64Mi", "cpu": "100m"}
+                }
+            }]
         }),
     )
     .await?;

@@ -380,6 +380,12 @@ impl DatastoreProcess {
 
     fn cluster_child(&self, initial_cluster: &str) -> Result<Child> {
         let binary = nodestore_binary()?;
+        let client_pki = self.data_dir().join("pki/client");
+        // The standalone fixture has already generated one self-contained
+        // client TLS domain. Reuse that material for the throwaway peer
+        // process; this test exercises the refusal to convert state directly
+        // into a multi-member cluster, not separate peer PKI provisioning.
+        let peer_pki = &client_pki;
         Ok(Command::new(binary)
             .arg("nodestore")
             .env("NODESTORE_MEMBER_ID", "1")
@@ -395,6 +401,12 @@ impl DatastoreProcess {
                 format!("https://{}", self.peer_address),
             )
             .env("NODESTORE_DATA_DIR", self.dir.join("data"))
+            .env("NODESTORE_CERT_FILE", client_pki.join("server.crt"))
+            .env("NODESTORE_KEY_FILE", client_pki.join("server.key"))
+            .env("NODESTORE_TRUSTED_CA_FILE", client_pki.join("ca.crt"))
+            .env("NODESTORE_PEER_CERT_FILE", peer_pki.join("server.crt"))
+            .env("NODESTORE_PEER_KEY_FILE", peer_pki.join("server.key"))
+            .env("NODESTORE_PEER_TRUSTED_CA_FILE", peer_pki.join("ca.crt"))
             .stdout(Stdio::null())
             .stderr(Stdio::from(File::create(&self.log_path)?))
             .spawn()
@@ -595,7 +607,15 @@ pub(super) async fn datastore_enforces_compare_and_swap(
     let stale = current
         .pointer("/kvs/0/modRevision")
         .context("CAS key had no modRevision")?
-        .to_string();
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            current
+                .pointer("/kvs/0/modRevision")
+                .and_then(Value::as_i64)
+                .map(|value| value.to_string())
+        })
+        .context("CAS modRevision was not an integer")?;
     store.rpc(
         "etcdserverpb.KV/Put",
         &json!({"key": b64("/registry/cas"), "value": b64("v2")}).to_string(),

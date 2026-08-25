@@ -312,6 +312,10 @@ fn cargo_build(cfg: &Config, repo_root: &std::path::Path, extra_args: &[&str]) -
     command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
     command.env("CARGO_PROFILE_RELEASE_STRIP", "symbols");
     command.env("CARGO_PROFILE_RELEASE_PANIC", "abort");
+    if cfg.toolchain_dir().join("cargo/bin/cargo").is_file() {
+        command.env("RUSTUP_HOME", cfg.toolchain_dir().join("rustup"));
+        command.env("CARGO_HOME", cfg.toolchain_dir().join("cargo"));
+    }
     if cfg.with_cri && matches!(package, Some("nodelet" | "notk8s")) {
         command.args(["--features", "cri"]);
     }

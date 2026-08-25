@@ -160,6 +160,13 @@ fn write_scheduler_override(contents: Option<&str>) -> Result<()> {
             }
         }
     } else if let Some(contents) = contents {
+        let parent = path
+            .parent()
+            .context("scheduler override path has no parent")?
+            .to_str()
+            .context("scheduler override parent is not UTF-8")?;
+        let mkdir = Command::new("sudo").args(["mkdir", "-p", parent]).status()?;
+        anyhow::ensure!(mkdir.success(), "sudo mkdir failed creating scheduler override directory");
         let mut child = Command::new("sudo")
             .args(["tee", path.to_str().context("scheduler override path is not UTF-8")?])
             .stdin(Stdio::piped())
