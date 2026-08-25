@@ -361,10 +361,20 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
 
     let arch = cfg.arch();
     let goarch = cni_go_arch(&arch);
-    if !crate::pkg::command_exists("flanneld") {
+    let dest = toolchain_bin.join("flanneld");
+
+    // Prefer the host distribution's flannel package. This is the normal
+    // install path; the official release and source build below are only
+    // fallbacks for distributions that do not package flannel.
+    if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
+        let names =
+            PkgNames { apt: "flannel", dnf: "flannel", pacman: "flannel", apk: "flannel", zypper: "flannel", xbps: "flannel" };
+        let _ = pkg_install("flannel", &names)?;
+    }
+
+    if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
         if let Some(goarch) = goarch {
             const VERSION: &str = "0.25.6";
-            let dest = toolchain_bin.join("flanneld");
             tracing::info!(arch = goarch, "fetching official flannel release");
             if fetch_url(
                 &format!("https://github.com/flannel-io/flannel/releases/download/v{VERSION}/flanneld-{goarch}"),
@@ -376,10 +386,10 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
             }
         }
     }
-    if !crate::pkg::command_exists("flanneld") {
+    if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
         build_flanneld_from_source(cfg, &toolchain_bin)?;
     }
-    anyhow::ensure!(crate::pkg::command_exists("flanneld"), "could not obtain a flanneld binary for arch '{arch}'");
+    anyhow::ensure!(resolve_executable("flanneld", cfg).is_some() || is_executable(&dest), "could not obtain a flanneld binary for arch '{arch}'");
 
     let cni_flannel = std::path::Path::new(CNI_BIN_DIR).join("flannel");
     if !is_executable(&cni_flannel) {
