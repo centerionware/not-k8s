@@ -580,6 +580,26 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_container_status_reports_resolved_user",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_container_status_reports_recursive_read_only",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_users_false_gets_a_real_user_namespace",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_users_false_volume_still_reads_and_writes_normally",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_sysctls_are_applied_to_the_sandbox",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_proc_mount_default_masks_proc_kcore",
         group: TestGroup::General,
     },
@@ -1192,6 +1212,21 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_run_as_user_is_applied" => {
             security::run_as_user_is_applied(context).await
+        }
+        "test_container_status_reports_resolved_user" => {
+            security::container_status_reports_resolved_user(context).await
+        }
+        "test_container_status_reports_recursive_read_only" => {
+            security::container_status_reports_recursive_read_only(context).await
+        }
+        "test_host_users_false_gets_a_real_user_namespace" => {
+            security::host_users_false_gets_a_real_user_namespace(context).await
+        }
+        "test_host_users_false_volume_still_reads_and_writes_normally" => {
+            security::host_users_false_volume_still_reads_and_writes_normally(context).await
+        }
+        "test_sysctls_are_applied_to_the_sandbox" => {
+            security::sysctls_are_applied_to_the_sandbox(context).await
         }
         "test_proc_mount_default_masks_proc_kcore" => {
             security::proc_mount_default_masks_proc_kcore(context).await
