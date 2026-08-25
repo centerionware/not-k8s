@@ -160,6 +160,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_tls_bootstrap_issues_a_real_client_certificate",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_combined_binary_contains_every_component",
         group: TestGroup::General,
     },
@@ -1284,6 +1288,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "external_cni_mode_disables_flannel" => bootstrap::external_cni_mode_disables_flannel(context).await,
         "test_graceful_node_shutdown_manual_note" => {
             bootstrap::graceful_node_shutdown_manual_note(context).await
+        }
+        "test_tls_bootstrap_issues_a_real_client_certificate" => {
+            bootstrap::tls_bootstrap_issues_a_real_client_certificate(context).await
         }
         "test_combined_binary_contains_every_component" => {
             build_layout::combined_binary_contains_every_component(context).await
