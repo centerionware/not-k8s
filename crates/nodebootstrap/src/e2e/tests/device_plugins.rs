@@ -10,7 +10,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::UnixListener;
@@ -67,7 +66,7 @@ fn root_command(program: &str, args: &[&str]) -> std::process::Command {
         .arg("-u")
         .output()
         .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
-    let mut command = if root {
+    let command = if root {
         let mut command = std::process::Command::new(program);
         command.args(args);
         command
