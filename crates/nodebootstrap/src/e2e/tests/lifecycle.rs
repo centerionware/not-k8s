@@ -1,7 +1,8 @@
 use super::context::E2eContext;
+use super::skip_test;
 use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, PostParams};
+use kube::api::{Api, DeleteParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
 
@@ -254,6 +255,55 @@ pub(super) async fn crash_loop_backoff_reports_waiting_reason(
             }
         })
         .await
+}
+
+pub(super) async fn crash_loop_backoff_throttles_immediate_restarts(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("crash-loop backoff checks require the CRI runtime"));
+    }
+    let name = "crash-loop-backoff";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "exit 1"]}]}),
+    )
+    .await?;
+    context
+        .wait_until("crash-loop first restart", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.container_statuses)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|status| status.name == "app")
+                    .is_some_and(|status| status.restart_count >= 1))
+            }
+        })
+        .await?;
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let restart_count = pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.container_statuses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|status| status.name == "app")
+        .map(|status| status.restart_count)
+        .unwrap_or_default();
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    anyhow::ensure!(
+        (1..=6).contains(&restart_count),
+        "crash-loop restart count {restart_count} was outside the throttled range 1..=6"
+    );
+    Ok(())
 }
 
 pub(super) async fn image_pull_policy_never_fails_when_image_is_absent(

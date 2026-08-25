@@ -188,6 +188,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_crash_loop_backoff_throttles_immediate_restarts",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed",
         group: TestGroup::General,
     },
@@ -926,6 +930,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_crashing_container_restarts_and_increments_restart_count" => {
             pods::crashing_container_restarts(context).await
+        }
+        "test_crash_loop_backoff_throttles_immediate_restarts" => {
+            lifecycle::crash_loop_backoff_throttles_immediate_restarts(context).await
         }
         "test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed" => {
             pods::pod_with_a_finalizer_tears_down_but_stays_until_removed(context).await
