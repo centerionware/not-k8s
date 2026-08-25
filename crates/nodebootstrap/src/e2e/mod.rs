@@ -250,6 +250,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_node_reports_hugepages_capacity_when_reserved",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pressure_conditions_are_present_and_normally_false",
         group: TestGroup::General,
     },
@@ -542,7 +546,15 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_crash_loop_backoff_reports_waiting_reason_and_last_state",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_image_pull_policy_never_fails_when_image_is_absent",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_image_pull_policy_if_not_present_skips_the_registry_round_trip",
         group: TestGroup::General,
     },
     TestCase {
@@ -1101,6 +1113,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_node_is_ready_with_capacity_advertised" => {
             node_status::node_is_ready_with_capacity_advertised(context).await
         }
+        "test_node_reports_hugepages_capacity_when_reserved" => {
+            node_status::node_reports_hugepages_capacity_when_reserved(context).await
+        }
         "test_pressure_conditions_are_present_and_normally_false" => {
             node_status::pressure_conditions_are_present(context).await
         }
@@ -1312,8 +1327,14 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_crash_loop_backoff_reports_waiting_reason" => {
             lifecycle::crash_loop_backoff_reports_waiting_reason(context).await
         }
+        "test_crash_loop_backoff_reports_waiting_reason_and_last_state" => {
+            lifecycle::crash_loop_backoff_reports_waiting_reason_and_last_state(context).await
+        }
         "test_image_pull_policy_never_fails_when_image_is_absent" => {
             lifecycle::image_pull_policy_never_fails_when_image_is_absent(context).await
+        }
+        "test_image_pull_policy_if_not_present_skips_the_registry_round_trip" => {
+            lifecycle::image_pull_policy_if_not_present_skips_the_registry_round_trip(context).await
         }
         "test_pod_status_reports_host_ips_plural" => {
             lifecycle::pod_status_reports_host_ips_plural(context).await

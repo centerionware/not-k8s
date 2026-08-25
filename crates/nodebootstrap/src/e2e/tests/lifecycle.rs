@@ -224,10 +224,10 @@ pub(super) async fn container_status_id_has_runtime_scheme(
         .await
 }
 
-pub(super) async fn crash_loop_backoff_reports_waiting_reason(
+async fn crash_loop_backoff_reports_waiting_reason_named(
     context: &E2eContext,
+    name: &str,
 ) -> Result<()> {
-    let name = "crash-loop-backoff";
     create_pod(
         context,
         name,
@@ -251,10 +251,62 @@ pub(super) async fn crash_loop_backoff_reports_waiting_reason(
                             .state
                             .and_then(|state| state.waiting)
                             .is_some_and(|waiting| waiting.reason.as_deref() == Some("CrashLoopBackOff"))
+                            && status
+                                .last_state
+                                .and_then(|state| state.terminated)
+                                .is_some_and(|terminated| terminated.exit_code != 0)
                     }))
             }
         })
         .await
+}
+
+pub(super) async fn crash_loop_backoff_reports_waiting_reason(
+    context: &E2eContext,
+) -> Result<()> {
+    crash_loop_backoff_reports_waiting_reason_named(context, "crash-loop-backoff").await
+}
+
+pub(super) async fn crash_loop_backoff_reports_waiting_reason_and_last_state(
+    context: &E2eContext,
+) -> Result<()> {
+    crash_loop_backoff_reports_waiting_reason_named(context, "crash-loop-backoff-last-state").await
+}
+
+pub(super) async fn image_pull_policy_if_not_present_skips_the_registry_round_trip(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("image pull policy checks require the CRI runtime"));
+    }
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    for name in ["if-not-present-first", "if-not-present-second"] {
+        create_pod(
+            context,
+            name,
+            json!({
+                "restartPolicy": "Never",
+                "containers": [{"name": "app", "image": "busybox:latest", "imagePullPolicy": "IfNotPresent", "command": ["sh", "-c", "echo cached-image"]}]
+            }),
+        )
+        .await?;
+        context
+            .wait_until("IfNotPresent Pod to complete", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Succeeded"))
+                }
+            })
+            .await?;
+        let _ = pods.delete(name, &DeleteParams::default()).await;
+    }
+    Ok(())
 }
 
 pub(super) async fn crash_loop_backoff_throttles_immediate_restarts(

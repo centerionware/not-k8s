@@ -47,6 +47,41 @@ pub(super) async fn node_is_ready_with_capacity_advertised(
     Ok(())
 }
 
+pub(super) async fn node_reports_hugepages_capacity_when_reserved(
+    context: &E2eContext,
+) -> Result<()> {
+    let reserved = std::fs::read_to_string("/proc/sys/vm/nr_hugepages")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or_default();
+    if reserved == 0 {
+        return Err(super::skip_test(
+            "no hugepages are reserved on this node; Node.status hugepages capacity cannot be exercised",
+        ));
+    }
+    let node = e2e_node(context).await?;
+    let status = node.status.context("Node has no status")?;
+    let capacity = status
+        .capacity
+        .as_ref()
+        .context("Node.status.capacity is missing")?;
+    let allocatable = status
+        .allocatable
+        .as_ref()
+        .context("Node.status.allocatable is missing")?;
+    let (key, value) = capacity
+        .iter()
+        .find(|(key, _)| key.starts_with("hugepages-"))
+        .context("reserved hugepages exist but Node.status.capacity has no hugepages-* resource")?;
+    let value = value.0.trim();
+    anyhow::ensure!(value != "0" && !value.is_empty(), "Node capacity {key} is zero");
+    anyhow::ensure!(
+        allocatable.get(key).map(|quantity| quantity.0.trim()) == Some(value),
+        "Node allocatable {key} does not match capacity {value}"
+    );
+    Ok(())
+}
+
 pub(super) async fn pressure_conditions_are_present(context: &E2eContext) -> Result<()> {
     let node = e2e_node(context).await?;
     let conditions = node
