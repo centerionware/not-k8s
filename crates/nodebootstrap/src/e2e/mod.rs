@@ -40,6 +40,8 @@ mod disruption;
 mod deployment;
 #[path = "tests/datastore.rs"]
 mod datastore;
+#[path = "tests/datastore_cluster.rs"]
+mod datastore_cluster;
 #[path = "tests/device_plugins.rs"]
 mod device_plugins;
 #[path = "tests/dra.rs"]
@@ -427,6 +429,42 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_datastore_refuses_a_malformed_cluster_spec",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cluster_elects_a_single_leader",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cluster_replicates_a_write_to_every_member",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_follower_forwards_writes_to_the_leader",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_the_cluster_keeps_serving_when_a_follower_dies",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_the_cluster_survives_the_leader_being_killed",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_minority_refuses_writes_rather_than_inventing_them",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_restarted_member_catches_up_on_what_it_missed",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_the_cluster_tolerates_a_slow_link",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_partitioned_leader_steps_down_and_the_majority_elects_another",
         group: TestGroup::General,
     },
     TestCase {
@@ -1345,6 +1383,33 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_datastore_refuses_a_malformed_cluster_spec" => {
             datastore::datastore_refuses_a_malformed_cluster_spec(context).await
+        }
+        "test_cluster_elects_a_single_leader" => {
+            datastore_cluster::cluster_elects_a_single_leader(context).await
+        }
+        "test_cluster_replicates_a_write_to_every_member" => {
+            datastore_cluster::cluster_replicates_a_write_to_every_member(context).await
+        }
+        "test_a_follower_forwards_writes_to_the_leader" => {
+            datastore_cluster::follower_forwards_writes_to_the_leader(context).await
+        }
+        "test_the_cluster_keeps_serving_when_a_follower_dies" => {
+            datastore_cluster::cluster_keeps_serving_when_a_follower_dies(context).await
+        }
+        "test_the_cluster_survives_the_leader_being_killed" => {
+            datastore_cluster::cluster_survives_the_leader_being_killed(context).await
+        }
+        "test_a_minority_refuses_writes_rather_than_inventing_them" => {
+            datastore_cluster::minority_refuses_writes_rather_than_inventing_them(context).await
+        }
+        "test_a_restarted_member_catches_up_on_what_it_missed" => {
+            datastore_cluster::restarted_member_catches_up_on_what_it_missed(context).await
+        }
+        "test_the_cluster_tolerates_a_slow_link" => {
+            datastore_cluster::cluster_tolerates_a_slow_link(context).await
+        }
+        "test_a_partitioned_leader_steps_down_and_the_majority_elects_another" => {
+            datastore_cluster::partitioned_leader_steps_down_and_majority_elects_another(context).await
         }
         "test_a_pending_pod_recovers_after_the_node_failure_is_fixed" => {
             host_recovery::pending_pod_recovers_after_the_node_failure_is_fixed(context).await

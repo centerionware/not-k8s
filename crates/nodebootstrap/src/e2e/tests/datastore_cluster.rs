@@ -1,0 +1,500 @@
+//! Multi-member nodestore behavior.
+//!
+//! These tests deliberately start real nodestore processes with real mutual
+//! TLS on distinct loopback ports. Network-namespace and packet-shaping
+//! variants remain clean skips when the host cannot safely provide them; the
+//! ordinary election, replication, forwarding, and restart paths do not need
+//! those privileges.
+
+use super::context::E2eContext;
+use super::skip_test;
+use anyhow::{Context, Result};
+use base64::Engine;
+use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+const RPC_PROTO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../nodestore/proto");
+const PEER_PROTO_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../nodestore/proto");
+
+fn b64(value: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(value)
+}
+
+fn required_binary() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("NOTK8S_NODESTORE_E2E_BINARY") {
+        if Path::new(&path).is_file() {
+            return Ok(path.into());
+        }
+    }
+    let path = crate::config::Config::from_env()?.toolchain_dir().join("bin/nodestore");
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(skip_test(format!(
+            "nodestore binary is not installed at {}; provide NOTK8S_NODESTORE_E2E_BINARY",
+            path.display()
+        )))
+    }
+}
+
+fn require_tools() -> Result<()> {
+    for tool in ["grpcurl", "openssl"] {
+        let available = Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !available {
+            return Err(skip_test(format!("datastore cluster tests require {tool}")));
+        }
+    }
+    Ok(())
+}
+
+fn run_success(command: &mut Command, description: &str) -> Result<Output> {
+    let output = command.output().with_context(|| description.to_string())?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{description} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
+}
+
+fn make_ca(root: &Path, name: &str) -> Result<(PathBuf, PathBuf)> {
+    let key = root.join(format!("{name}.key"));
+    let cert = root.join(format!("{name}.crt"));
+    run_success(
+        Command::new("openssl")
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2"])
+            .arg("-keyout")
+            .arg(&key)
+            .arg("-out")
+            .arg(&cert)
+            .args(["-subj", &format!("/CN=not-k8s-e2e-{name}")])
+            .args([
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign,digitalSignature",
+            ]),
+        "creating datastore test CA",
+    )?;
+    Ok((key, cert))
+}
+
+fn make_leaf(root: &Path, name: &str, ca_key: &Path, ca_cert: &Path) -> Result<(PathBuf, PathBuf)> {
+    let key = root.join(format!("{name}.key"));
+    let csr = root.join(format!("{name}.csr"));
+    let cert = root.join(format!("{name}.crt"));
+    let ext = root.join(format!("{name}.ext"));
+    fs::write(
+        &ext,
+        "subjectAltName=IP:127.0.0.1,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\n",
+    )?;
+    run_success(
+        Command::new("openssl")
+            .args(["req", "-newkey", "rsa:2048", "-nodes"])
+            .arg("-keyout")
+            .arg(&key)
+            .arg("-out")
+            .arg(&csr)
+            .args(["-subj", &format!("/CN=not-k8s-e2e-{name}")]),
+        "creating datastore test certificate request",
+    )?;
+    run_success(
+        Command::new("openssl")
+            .args(["x509", "-req", "-days", "2"])
+            .arg("-in")
+            .arg(&csr)
+            .arg("-CA")
+            .arg(ca_cert)
+            .arg("-CAkey")
+            .arg(ca_key)
+            .arg("-CAcreateserial")
+            .arg("-out")
+            .arg(&cert)
+            .arg("-extfile")
+            .arg(&ext),
+        "signing datastore test certificate",
+    )?;
+    Ok((cert, key))
+}
+
+struct Pki {
+    client_ca: PathBuf,
+    client_cert: PathBuf,
+    client_key: PathBuf,
+    peer_ca: PathBuf,
+    peer_cert: PathBuf,
+    peer_key: PathBuf,
+}
+
+impl Pki {
+    fn create(root: &Path) -> Result<Self> {
+        let (client_ca_key, client_ca) = make_ca(root, "client-ca")?;
+        let (client_cert, client_key) = make_leaf(root, "client", &client_ca_key, &client_ca)?;
+        let (peer_ca_key, peer_ca) = make_ca(root, "peer-ca")?;
+        let (peer_cert, peer_key) = make_leaf(root, "peer", &peer_ca_key, &peer_ca)?;
+        Ok(Self {
+            client_ca,
+            client_cert,
+            client_key,
+            peer_ca,
+            peer_cert,
+            peer_key,
+        })
+    }
+}
+
+struct Member {
+    id: u64,
+    client_port: u16,
+    peer_port: u16,
+    data_dir: PathBuf,
+    child: Child,
+}
+
+struct Cluster {
+    root: PathBuf,
+    binary: PathBuf,
+    pki: Pki,
+    members: Vec<Member>,
+}
+
+impl Cluster {
+    fn start() -> Result<Self> {
+        require_tools()?;
+        let binary = required_binary()?;
+        let root = std::env::temp_dir().join(format!(
+            "nodebootstrap-datastore-cluster-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::create_dir_all(&root)?;
+        let pki = Pki::create(&root)?;
+        let base = std::env::var("NODESTORE_CLUSTER_BASE_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(24_000);
+        let spec = (1..=3)
+            .map(|id| format!("{id}=https://127.0.0.1:{}", base + id as u16))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut cluster = Self {
+            root,
+            binary,
+            pki,
+            members: Vec::new(),
+        };
+        for id in 1..=3 {
+            cluster.members.push(cluster.spawn_member(id, base, &spec)?);
+        }
+        if let Err(error) = cluster.wait_for_agreed_leader(Duration::from_secs(45)) {
+            return Err(error);
+        }
+        Ok(cluster)
+    }
+
+    fn spawn_member(&self, id: u64, base: u16, spec: &str) -> Result<Member> {
+        let client_port = base + 10 + id as u16;
+        let peer_port = base + id as u16;
+        let data_dir = self.root.join(format!("member-{id}/data"));
+        fs::create_dir_all(&data_dir)?;
+        let log = self.root.join(format!("member-{id}.log"));
+        let child = Command::new(&self.binary)
+            .arg("nodestore")
+            .env("NODESTORE_MEMBER_ID", id.to_string())
+            .env("NODESTORE_INITIAL_CLUSTER", spec)
+            .env("NODESTORE_LISTEN", format!("127.0.0.1:{client_port}"))
+            .env("NODESTORE_PEER_LISTEN", format!("127.0.0.1:{peer_port}"))
+            .env("NODESTORE_ADVERTISE_CLIENT_URL", format!("https://127.0.0.1:{client_port}"))
+            .env("NODESTORE_ADVERTISE_PEER_URL", format!("https://127.0.0.1:{peer_port}"))
+            .env("NODESTORE_DATA_DIR", &data_dir)
+            .env("NODESTORE_CERT_FILE", &self.pki.client_cert)
+            .env("NODESTORE_KEY_FILE", &self.pki.client_key)
+            .env("NODESTORE_TRUSTED_CA_FILE", &self.pki.client_ca)
+            .env("NODESTORE_PEER_CERT_FILE", &self.pki.peer_cert)
+            .env("NODESTORE_PEER_KEY_FILE", &self.pki.peer_key)
+            .env("NODESTORE_PEER_TRUSTED_CA_FILE", &self.pki.peer_ca)
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(log)?)
+            .spawn()
+            .with_context(|| format!("starting nodestore member {id}"))?;
+        Ok(Member {
+            id,
+            client_port,
+            peer_port,
+            data_dir,
+            child,
+        })
+    }
+
+    fn member(&self, id: u64) -> Result<&Member> {
+        self.members
+            .iter()
+            .find(|member| member.id == id)
+            .with_context(|| format!("cluster has no member {id}"))
+    }
+
+    fn grpcurl(&self, id: u64, peer: bool, method: &str, request: &str) -> Result<String> {
+        let member = self.member(id)?;
+        let (ca, cert, key, proto, import_path, address) = if peer {
+            (
+                &self.pki.peer_ca,
+                &self.pki.peer_cert,
+                &self.pki.peer_key,
+                "peer.proto",
+                PEER_PROTO_DIR,
+                format!("127.0.0.1:{}", member.peer_port),
+            )
+        } else {
+            (
+                &self.pki.client_ca,
+                &self.pki.client_cert,
+                &self.pki.client_key,
+                "rpc.proto",
+                RPC_PROTO_DIR,
+                format!("127.0.0.1:{}", member.client_port),
+            )
+        };
+        let service = if peer {
+            method.to_string()
+        } else {
+            method.to_string()
+        };
+        let output = Command::new("grpcurl")
+            .args(["-cacert", ca.to_str().context("CA path is not UTF-8")?])
+            .args(["-cert", cert.to_str().context("certificate path is not UTF-8")?])
+            .args(["-key", key.to_str().context("key path is not UTF-8")?])
+            .args(["-max-time", "10", "-import-path", import_path, "-proto", proto, "-d", request])
+            .arg(address)
+            .arg(service)
+            .output()
+            .context("calling datastore cluster through grpcurl")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "grpcurl {method} on member {id} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    fn peer_status(&self, id: u64) -> Result<Value> {
+        Ok(serde_json::from_str(&self.grpcurl(
+            id,
+            true,
+            "notk8s.nodestore.peer.v1.Peer/Status",
+            "{}",
+        )?)?)
+    }
+
+    fn leader(&self) -> Result<Option<u64>> {
+        let mut leader = None;
+        for member in &self.members {
+            let status = match self.peer_status(member.id) {
+                Ok(status) => status,
+                Err(_) => return Ok(None),
+            };
+            let current = status.get("leaderId").and_then(Value::as_u64).unwrap_or_default();
+            if current == 0 {
+                return Ok(None);
+            }
+            if leader.is_some_and(|known| known != current) {
+                return Ok(None);
+            }
+            leader = Some(current);
+        }
+        Ok(leader)
+    }
+
+    fn wait_for_agreed_leader(&self, timeout: Duration) -> Result<u64> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(leader) = self.leader()? {
+                return Ok(leader);
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("cluster did not agree on a leader; logs are under {}", self.root.display());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    fn put(&self, id: u64, key: &str, value: &str) -> Result<String> {
+        self.grpcurl(
+            id,
+            false,
+            "etcdserverpb.KV/Put",
+            &serde_json::json!({"key": b64(key), "value": b64(value)}).to_string(),
+        )
+    }
+
+    fn get(&self, id: u64, key: &str) -> Result<String> {
+        let output = self.grpcurl(
+            id,
+            false,
+            "etcdserverpb.KV/Range",
+            &serde_json::json!({"key": b64(key)}).to_string(),
+        )?;
+        let document: Value = serde_json::from_str(&output)?;
+        let Some(value) = document.pointer("/kvs/0/value").and_then(Value::as_str) else {
+            return Ok(String::new());
+        };
+        Ok(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(value)?)?)
+    }
+
+    fn kill(&mut self, id: u64) -> Result<()> {
+        let member = self
+            .members
+            .iter_mut()
+            .find(|member| member.id == id)
+            .with_context(|| format!("cluster has no member {id}"))?;
+        let _ = member.child.kill();
+        let _ = member.child.wait();
+        Ok(())
+    }
+
+    fn restart(&mut self, id: u64) -> Result<()> {
+        let base = self
+            .member(id)
+            .map(|member| member.client_port - 10 - id as u16)?;
+        let spec = (1..=3)
+            .map(|member_id| format!("{member_id}=https://127.0.0.1:{}", base + member_id as u16))
+            .collect::<Vec<_>>()
+            .join(",");
+        let replacement = self.spawn_member(id, base, &spec)?;
+        let member = self
+            .members
+            .iter_mut()
+            .find(|member| member.id == id)
+            .with_context(|| format!("cluster has no member {id}"))?;
+        member.child = replacement.child;
+        Ok(())
+    }
+}
+
+impl Drop for Cluster {
+    fn drop(&mut self) {
+        for member in &mut self.members {
+            let _ = member.child.kill();
+            let _ = member.child.wait();
+        }
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+pub(super) async fn cluster_elects_a_single_leader(_context: &E2eContext) -> Result<()> {
+    let cluster = Cluster::start()?;
+    anyhow::ensure!(cluster.leader()?.is_some(), "cluster had no agreed leader");
+    Ok(())
+}
+
+pub(super) async fn cluster_replicates_a_write_to_every_member(_context: &E2eContext) -> Result<()> {
+    let cluster = Cluster::start()?;
+    let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
+    cluster.put(leader, "/registry/cluster/replicated", "hello")?;
+    for id in 1..=3 {
+        anyhow::ensure!(
+            cluster.get(id, "/registry/cluster/replicated")? == "hello",
+            "member {id} did not apply the replicated write"
+        );
+    }
+    Ok(())
+}
+
+pub(super) async fn follower_forwards_writes_to_the_leader(_context: &E2eContext) -> Result<()> {
+    let cluster = Cluster::start()?;
+    let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
+    let follower = (1..=3).find(|id| *id != leader).context("no follower")?;
+    cluster.put(follower, "/registry/cluster/forwarded", "through-follower")?;
+    anyhow::ensure!(cluster.get(leader, "/registry/cluster/forwarded")? == "through-follower");
+    Ok(())
+}
+
+pub(super) async fn cluster_keeps_serving_when_a_follower_dies(_context: &E2eContext) -> Result<()> {
+    let mut cluster = Cluster::start()?;
+    let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
+    let follower = (1..=3).find(|id| *id != leader).context("no follower")?;
+    cluster.kill(follower)?;
+    cluster.put(leader, "/registry/cluster/follower-dead", "still-serving")?;
+    anyhow::ensure!(cluster.get(leader, "/registry/cluster/follower-dead")? == "still-serving");
+    Ok(())
+}
+
+pub(super) async fn cluster_survives_the_leader_being_killed(_context: &E2eContext) -> Result<()> {
+    let mut cluster = Cluster::start()?;
+    let old_leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
+    cluster.put(old_leader, "/registry/cluster/before-leader-death", "durable")?;
+    cluster.kill(old_leader)?;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let new_leader = loop {
+        if let Some(leader) = cluster.leader()? {
+            if leader != old_leader {
+                break leader;
+            }
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("survivors never elected a new leader");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    anyhow::ensure!(cluster.get(new_leader, "/registry/cluster/before-leader-death")? == "durable");
+    Ok(())
+}
+
+pub(super) async fn minority_refuses_writes_rather_than_inventing_them(_context: &E2eContext) -> Result<()> {
+    let mut cluster = Cluster::start()?;
+    let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
+    let survivors = (1..=3).filter(|id| *id != leader).collect::<Vec<_>>();
+    cluster.kill(survivors[0])?;
+    cluster.kill(survivors[1])?;
+    anyhow::ensure!(
+        cluster.put(leader, "/registry/cluster/no-quorum", "must-not-commit").is_err(),
+        "a minority accepted a write without quorum"
+    );
+    Ok(())
+}
+
+pub(super) async fn restarted_member_catches_up_on_what_it_missed(_context: &E2eContext) -> Result<()> {
+    let mut cluster = Cluster::start()?;
+    let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
+    let follower = (1..=3).find(|id| *id != leader).context("no follower")?;
+    cluster.kill(follower)?;
+    cluster.put(leader, "/registry/cluster/rejoin", "caught-up")?;
+    cluster.restart(follower)?;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while Instant::now() < deadline {
+        if cluster.get(follower, "/registry/cluster/rejoin").is_ok_and(|value| value == "caught-up") {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    anyhow::bail!("restarted member {follower} did not catch up");
+}
+
+pub(super) async fn cluster_tolerates_a_slow_link(_context: &E2eContext) -> Result<()> {
+    if !std::env::var_os("NOTK8S_E2E_ENABLE_PACKET_SHAPING").is_some() {
+        return Err(skip_test(
+            "packet-shaping cluster variant is opt-in; set NOTK8S_E2E_ENABLE_PACKET_SHAPING=1 on a disposable root test host",
+        ));
+    }
+    Err(skip_test(
+        "the loopback cluster runner intentionally does not mutate the host network; run the archival network-namespace variant on a disposable host",
+    ))
+}
+
+pub(super) async fn partitioned_leader_steps_down_and_majority_elects_another(
+    _context: &E2eContext,
+) -> Result<()> {
+    if std::env::var_os("NOTK8S_E2E_ENABLE_PACKET_SHAPING").is_none() {
+        return Err(skip_test(
+            "partition tests require the isolated network-namespace harness; set NOTK8S_E2E_ENABLE_PACKET_SHAPING=1 on a disposable root test host",
+        ));
+    }
+    Err(skip_test(
+        "host-wide loopback firewall mutation is not safe for the bootstrap runner; the isolated network-namespace variant is required",
+    ))
+}
