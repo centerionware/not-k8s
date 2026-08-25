@@ -43,6 +43,8 @@ pub(super) struct DatastoreProcess {
     child: Child,
     dir: PathBuf,
     address: String,
+    peer_address: String,
+    log_path: PathBuf,
 }
 
 impl DatastoreProcess {
@@ -61,15 +63,23 @@ impl DatastoreProcess {
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(23_790);
         let address = format!("127.0.0.1:{port}");
+        let peer_address = format!("127.0.0.1:{}", port + 100);
+        let log_path = dir.join("nodestore.log");
         let child = Command::new(&binary)
             .arg("nodestore")
             .env("NODESTORE_LISTEN", &address)
             .env("NODESTORE_DATA_DIR", dir.join("data"))
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(File::create(&log_path)?))
             .spawn()
             .with_context(|| format!("starting {}", binary.display()))?;
-        let process = Self { child, dir, address };
+        let process = Self {
+            child,
+            dir,
+            address,
+            peer_address,
+            log_path,
+        };
         process.wait_ready()?;
         Ok(process)
     }
@@ -84,6 +94,63 @@ impl DatastoreProcess {
 
     pub(super) fn address(&self) -> &str {
         &self.address
+    }
+
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    fn cluster_child(&self, initial_cluster: &str) -> Result<Child> {
+        let binary = nodestore_binary()?;
+        Ok(Command::new(binary)
+            .arg("nodestore")
+            .env("NODESTORE_MEMBER_ID", "1")
+            .env("NODESTORE_INITIAL_CLUSTER", initial_cluster)
+            .env("NODESTORE_LISTEN", &self.address)
+            .env("NODESTORE_PEER_LISTEN", &self.peer_address)
+            .env(
+                "NODESTORE_ADVERTISE_CLIENT_URL",
+                format!("https://{}", self.address),
+            )
+            .env(
+                "NODESTORE_ADVERTISE_PEER_URL",
+                format!("https://{}", self.peer_address),
+            )
+            .env("NODESTORE_DATA_DIR", self.dir.join("data"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(File::create(&self.log_path)?))
+            .spawn()
+            .context("starting nodestore with cluster configuration")?)
+    }
+
+    fn restart_as_one_member_cluster(&mut self) -> Result<()> {
+        self.stop();
+        let spec = format!("1=https://{}", self.peer_address);
+        self.child = self.cluster_child(&spec)?;
+        self.wait_ready()
+    }
+
+    fn start_with_unsafe_multi_member_configuration(&mut self) -> Result<String> {
+        self.stop();
+        let peer_port = self
+            .peer_address
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            .context("peer address had no numeric port")?;
+        let spec = format!(
+            "1=https://{},2=https://127.0.0.1:{},3=https://127.0.0.1:{}",
+            self.peer_address,
+            peer_port + 1,
+            peer_port + 2
+        );
+        let mut child = self.cluster_child(&spec)?;
+        let status = child.wait()?;
+        anyhow::ensure!(
+            !status.success(),
+            "unsafe multi-member conversion unexpectedly started"
+        );
+        Ok(fs::read_to_string(&self.log_path).unwrap_or_default())
     }
 
     pub(super) fn rpc(&self, method: &str, request: &str) -> Result<String> {
@@ -137,15 +204,14 @@ impl DatastoreProcess {
     }
 
     pub(super) fn restart(&mut self) -> Result<()> {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.stop();
         let binary = nodestore_binary()?;
         self.child = Command::new(binary)
             .arg("nodestore")
             .env("NODESTORE_LISTEN", &self.address)
             .env("NODESTORE_DATA_DIR", self.dir.join("data"))
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(File::create(&self.log_path)?))
             .spawn()
             .context("restarting nodestore")?;
         self.wait_ready()
@@ -443,6 +509,93 @@ pub(super) async fn datastore_survives_a_restart_with_its_data(
     store.restart()?;
     anyhow::ensure!(get_value(&store, "/registry/durable")? == "persisted", "data did not survive restart");
     anyhow::ensure!(revision(&store)? == before, "revision changed across restart");
+    Ok(())
+}
+
+pub(super) async fn datastore_upgrades_a_populated_single_member_into_a_one_member_cluster(
+    _context: &E2eContext,
+) -> Result<()> {
+    let mut store = start_store().await?;
+    store.rpc(
+        "etcdserverpb.KV/Put",
+        &json!({"key": b64("/registry/before-upgrade"), "value": b64("original")}).to_string(),
+    )?;
+    anyhow::ensure!(
+        !store.data_dir().join("raft.db").exists(),
+        "single-member store unexpectedly had a raft log before conversion"
+    );
+    store.restart_as_one_member_cluster()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if get_value(&store, "/registry/before-upgrade")
+            .is_ok_and(|value| value == "original")
+        {
+            store.rpc(
+                "etcdserverpb.KV/Put",
+                &json!({"key": b64("/registry/after-upgrade"), "value": b64("committed-by-raft")}).to_string(),
+            )?;
+            anyhow::ensure!(
+                get_value(&store, "/registry/after-upgrade")? == "committed-by-raft",
+                "converted one-member cluster did not commit a new write"
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    anyhow::bail!(
+        "converted one-member cluster did not recover its existing data; log: {}",
+        fs::read_to_string(&store.log_path).unwrap_or_default()
+    )
+}
+
+pub(super) async fn datastore_refuses_direct_upgrade_to_a_multi_member_cluster(
+    _context: &E2eContext,
+) -> Result<()> {
+    let mut store = start_store().await?;
+    store.rpc(
+        "etcdserverpb.KV/Put",
+        &json!({"key": b64("/registry/precious"), "value": b64("data")}).to_string(),
+    )?;
+    let log = store.start_with_unsafe_multi_member_configuration()?;
+    anyhow::ensure!(
+        log.contains("MemberAdd"),
+        "unsafe multi-member conversion did not explain the safe MemberAdd path: {log}"
+    );
+    anyhow::ensure!(
+        store.data_dir().join("state.db").exists(),
+        "unsafe conversion removed the existing state database"
+    );
+    anyhow::ensure!(
+        store
+            .rpc(
+                "etcdserverpb.KV/Put",
+                &json!({"key": b64("/registry/should-not-work"), "value": b64("x")}).to_string(),
+            )
+            .is_err(),
+        "unsafe multi-member conversion left the client API serving"
+    );
+    Ok(())
+}
+
+pub(super) async fn datastore_shutdown_leaves_no_listener_behind(
+    _context: &E2eContext,
+) -> Result<()> {
+    let mut store = start_store().await?;
+    store.rpc(
+        "etcdserverpb.KV/Put",
+        &json!({"key": b64("/registry/alive"), "value": b64("yes")}).to_string(),
+    )?;
+    store.stop();
+    anyhow::ensure!(
+        store.child.try_wait()?.is_some(),
+        "nodestore child remained running after shutdown"
+    );
+    anyhow::ensure!(
+        store
+            .rpc("etcdserverpb.Maintenance/Status", "{}")
+            .is_err(),
+        "nodestore still answered after its process was stopped"
+    );
     Ok(())
 }
 

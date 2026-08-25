@@ -436,6 +436,18 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_datastore_upgrades_a_populated_single_member_into_a_one_member_cluster",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_refuses_direct_upgrade_to_a_multi_member_cluster",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_datastore_shutdown_leaves_no_listener_behind",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_datastore_refuses_a_cluster_it_cannot_be_part_of",
         group: TestGroup::General,
     },
@@ -1483,6 +1495,15 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_datastore_survives_a_restart_with_its_data" => {
             datastore::datastore_survives_a_restart_with_its_data(context).await
+        }
+        "test_datastore_upgrades_a_populated_single_member_into_a_one_member_cluster" => {
+            datastore::datastore_upgrades_a_populated_single_member_into_a_one_member_cluster(context).await
+        }
+        "test_datastore_refuses_direct_upgrade_to_a_multi_member_cluster" => {
+            datastore::datastore_refuses_direct_upgrade_to_a_multi_member_cluster(context).await
+        }
+        "test_datastore_shutdown_leaves_no_listener_behind" => {
+            datastore::datastore_shutdown_leaves_no_listener_behind(context).await
         }
         "test_datastore_refuses_a_cluster_it_cannot_be_part_of" => {
             datastore::datastore_refuses_a_cluster_it_cannot_be_part_of(context).await
