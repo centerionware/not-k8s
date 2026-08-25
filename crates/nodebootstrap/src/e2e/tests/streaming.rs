@@ -185,7 +185,7 @@ pub(super) async fn kubectl_attach_streams_the_containers_stdout(
         &[
             "sh",
             "-c",
-            "for i in 1 2 3 4 5 6 7 8; do echo attach-line-$i; sleep 1; done; sleep 3600",
+            "sleep 10; for i in 1 2 3 4 5 6 7 8; do echo attach-line-$i; sleep 1; done; sleep 3600",
         ],
     )
     .await?;
