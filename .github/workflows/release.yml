@@ -215,7 +215,12 @@ jobs:
           set +e
           export KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
           kubectl_cmd() {
-            sudo kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
+            local -a kubectl_args=(--kubeconfig "$KUBECONFIG" --request-timeout=30s "$@")
+            if [[ "$(id -u)" == 0 ]]; then
+              kubectl "${kubectl_args[@]}"
+            else
+              sudo kubectl "${kubectl_args[@]}"
+            fi
           }
 
           echo "=========================================="
@@ -232,11 +237,18 @@ jobs:
           echo "── pods not Running/Completed ──"
           kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
 
-          for unit in kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld containerd; do
-            echo "── $unit.service status ──"
-            sudo systemctl status "$unit.service" --no-pager -l || true
-            echo "── $unit.service logs (last 300 lines) ──"
-            sudo journalctl -u "$unit.service" --no-pager -n 300 || true
+          echo "── all installed service state and logs ──"
+          mapfile -t services < <(
+            {
+              sudo systemctl list-units --type=service --all --no-legend --no-pager
+              sudo systemctl list-unit-files --type=service --no-legend --no-pager
+            } | awk '{print $1}' | sed '/^$/d' | sort -u
+          )
+          for unit in "${services[@]}"; do
+            echo "── $unit state ──"
+            sudo systemctl status "$unit" --no-pager -l || true
+            echo "── $unit logs (last 300 lines) ──"
+            sudo journalctl -u "$unit" --no-pager -n 300 || true
           done
 
           echo "── scheduler lease ──"

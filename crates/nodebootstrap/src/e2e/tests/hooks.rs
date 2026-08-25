@@ -126,7 +126,11 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", "trap 'echo got-usr1 > /shared/signal.txt; exit 7' USR1; sleep 3600"],
+                // Keep the shell returning to its trap handler.  BusyBox ash
+                // can defer traps while it waits for one long-lived child
+                // (the former `sleep 3600`), which made this test report a
+                // false failure even though CRI had sent SIGUSR1.
+                "command": ["sh", "-c", "trap 'echo got-usr1 > /shared/signal.txt; exit 7' USR1; while true; do sleep 1; done"],
                 "lifecycle": {"stopSignal": "SIGUSR1"},
                 "volumeMounts": [{"name": "shared", "mountPath": "/shared"}]
             }],

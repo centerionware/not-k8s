@@ -387,6 +387,9 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
         }
     }
     if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
+        anyhow::ensure!(source_flannel_build_enabled(),
+            "no packaged or official flanneld binary is available; refusing an implicit source build (set NODEBOOTSTRAP_BUILD_FLANNEL_FROM_SOURCE=1 to opt in)"
+        );
         build_flanneld_from_source(cfg, &toolchain_bin)?;
     }
     anyhow::ensure!(resolve_executable("flanneld", cfg).is_some() || is_executable(&dest), "could not obtain a flanneld binary for arch '{arch}'");
@@ -402,10 +405,17 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
         }
     }
     if !is_executable(&cni_flannel) {
+        anyhow::ensure!(source_flannel_build_enabled(),
+            "no packaged or official flannel CNI plugin is available; refusing an implicit source build (set NODEBOOTSTRAP_BUILD_FLANNEL_FROM_SOURCE=1 to opt in)"
+        );
         build_flannel_cni_plugin_from_source(cfg, goarch, &cni_flannel)?;
     }
     anyhow::ensure!(is_executable(&cni_flannel), "could not obtain the flannel CNI plugin binary for arch '{arch}'");
     Ok(())
+}
+
+fn source_flannel_build_enabled() -> bool {
+    std::env::var("NODEBOOTSTRAP_BUILD_FLANNEL_FROM_SOURCE").is_ok_and(|value| value == "1" || value == "true")
 }
 
 /// Deepest fallback: clone `flannel-io/flannel` and build its flanneld entry
