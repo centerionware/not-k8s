@@ -313,7 +313,8 @@ pub(super) async fn apiserver_watch_delivers_through_nodestore(
         )
         .await?;
     let configmaps: Api<ConfigMap> = Api::namespaced(client, "nodestore-watch");
-    let mut watch = configmaps.watch(&WatchParams::default(), "0").await?;
+    let watch = configmaps.watch(&WatchParams::default(), "0").await?;
+    futures::pin_mut!(watch);
     let mut data = BTreeMap::new();
     data.insert("k".to_owned(), "v".to_owned());
     configmaps

@@ -14,6 +14,7 @@ pub(super) async fn resource_api_group_is_enabled(context: &E2eContext) -> Resul
     };
     if !group
         .recommended_resources()
+        .iter()
         .any(|(resource, _)| resource.plural == "resourceclaims")
     {
         return Err(skip_test(

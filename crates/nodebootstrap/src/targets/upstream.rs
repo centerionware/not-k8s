@@ -227,7 +227,7 @@ fn wait_for_readyz(spec: &TargetSpec) {
 /// Builds a `ureq::Agent` whose TLS trust root is exactly `ca_pem_path` --
 /// nothing else, not the system CA store -- since the only thing this
 /// agent ever talks to is our own freshly-minted apiserver on loopback.
-fn trusting_agent(ca_pem_path: &std::path::Path) -> Result<ureq::Agent> {
+pub(crate) fn trusting_agent(ca_pem_path: &std::path::Path) -> Result<ureq::Agent> {
     let ca_pem = std::fs::read(ca_pem_path).with_context(|| format!("reading {}", ca_pem_path.display()))?;
     let mut root_store = rustls::RootCertStore::empty();
     for cert in rustls_pemfile::certs(&mut ca_pem.as_slice()) {

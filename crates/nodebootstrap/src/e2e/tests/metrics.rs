@@ -1,10 +1,11 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
+use http::Request;
+use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
 use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::api::{Api, ListParams, PostParams};
 use serde_json::json;
-use std::process::Command;
 use std::time::Duration;
 
 fn needs_cri() -> Result<()> {
@@ -55,41 +56,56 @@ async fn node_internal_ip(context: &E2eContext) -> Result<String> {
         .context("the cluster has no Node InternalIP for direct nodelet metrics access")
 }
 
-fn create_token() -> Option<String> {
-    let output = Command::new("kubectl")
-        .args(["-n", "default", "create", "token", "default", "--duration=5m"])
-        .output()
-        .ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string()
-    })
+async fn create_token(context: &E2eContext) -> Result<String> {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/namespaces/default/serviceaccounts/default/token")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&TokenRequest {
+            metadata: Default::default(),
+            spec: TokenRequestSpec {
+                audiences: vec!["https://kubernetes.default.svc".to_owned()],
+                bound_object_ref: None,
+                expiration_seconds: Some(300),
+            },
+            status: None,
+        })?)?;
+    context
+        .client
+        .request::<TokenRequest>(request)
+        .await?
+        .status
+        .map(|status| status.token)
+        .context("TokenRequest response had no status.token")
 }
 
-fn fetch_endpoint(node_ip: &str, token: &str, path: &str) -> Option<String> {
+fn fetch_endpoint(agent: &ureq::Agent, node_ip: &str, token: &str, path: &str) -> Option<String> {
     let port = std::env::var("NODELET_SERVER_PORT").unwrap_or_else(|_| "10250".to_string());
     let url = format!("https://{node_ip}:{port}{path}");
-    let authorization = format!("Authorization: Bearer {token}");
-    let output = Command::new("curl")
-        .args(["-ksS", "--max-time", "5", "-H", &authorization, &url])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    agent
+        .get(&url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .call()
+        .ok()?
+        .into_string()
+        .ok()
 }
 
 async fn endpoint_body(context: &E2eContext, pod_name: &str, path: &str) -> Result<String> {
-    let token = create_token().ok_or_else(|| {
-        skip_test("could not mint a default ServiceAccount token for the nodelet metrics endpoint")
+    let token = create_token(context).await.map_err(|error| {
+        skip_test(format!(
+            "could not mint a default ServiceAccount token for the nodelet metrics endpoint: {error}"
+        ))
     })?;
     if token.is_empty() {
         return Err(skip_test(
-            "kubectl create token returned an empty token for the nodelet metrics endpoint",
+            "TokenRequest returned an empty token for the nodelet metrics endpoint",
         ));
     }
+    let agent = crate::targets::upstream::trusting_agent(
+        &crate::config::Config::from_env()?.nodelet_server_ca_path(),
+    )
+    .map_err(|error| skip_test(format!("could not load the nodelet server CA: {error}")))?;
     let node_ip = node_internal_ip(context).await?;
     let body = std::sync::Arc::new(std::sync::Mutex::new(None));
     let body_for_check = body.clone();
@@ -104,7 +120,7 @@ async fn endpoint_body(context: &E2eContext, pod_name: &str, path: &str) -> Resu
                 let path = path.to_string();
                 let pod_name = pod_name.to_string();
                 async move {
-                    let Some(value) = fetch_endpoint(&node_ip, &token, &path) else {
+                    let Some(value) = fetch_endpoint(&agent, &node_ip, &token, &path) else {
                         return Ok(false);
                     };
                     if value.contains(&pod_name) {

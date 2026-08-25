@@ -84,7 +84,7 @@ pub(super) async fn replacement_control_plane_identities_can_read_all_watch_inpu
 
     let dra_group = discovery::group(&context.client, "resource.k8s.io").await.ok();
     if let Some(dra_group) = dra_group {
-        let dra_resources = dra_group.recommended_resources().collect::<Vec<_>>();
+        let dra_resources = dra_group.recommended_resources();
         for resource in [
             "resourceclaims.resource.k8s.io",
             "deviceclasses.resource.k8s.io",
