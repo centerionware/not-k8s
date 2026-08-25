@@ -126,7 +126,7 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", "trap 'echo got-usr1 > /dev/termination-log; exit 7' USR1; sleep 3600"],
+                "command": ["sh", "-c", "trap 'echo got-usr1 > /shared/signal.txt; exit 7' USR1; sleep 3600"],
                 "lifecycle": {"stopSignal": "SIGUSR1"},
                 "volumeMounts": [{"name": "shared", "mountPath": "/shared"}]
             }],
