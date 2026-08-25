@@ -45,6 +45,7 @@ pub(super) async fn static_pod_creates_a_mirror_pod(context: &E2eContext) -> Res
     context
         .wait_until("static Pod mirror to reach Running", Duration::from_secs(120), || {
             let pods = pods.clone();
+            let mirror = mirror.clone();
             async move {
                 Ok(pods
                     .get(&mirror)
@@ -69,6 +70,7 @@ pub(super) async fn static_pod_creates_a_mirror_pod(context: &E2eContext) -> Res
     context
         .wait_until("static Pod mirror to disappear after manifest removal", Duration::from_secs(120), || {
             let pods = pods.clone();
+            let mirror = mirror.clone();
             async move { Ok(pods.get_opt(&mirror).await?.is_none()) }
         })
         .await?;

@@ -104,6 +104,8 @@ mod storage;
 mod streaming;
 #[path = "tests/termination.rs"]
 mod termination;
+#[path = "tests/topology.rs"]
+mod topology;
 #[path = "tests/volumes.rs"]
 mod volumes;
 #[path = "tests/watch_recovery.rs"]
@@ -735,6 +737,34 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_host_users_false_volume_still_reads_and_writes_normally",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_host_users_volume_ownership_translation_is_correct",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_supplemental_groups_policy_strict_ignores_image_group_membership",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_client_certificate_authentication_works",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_topology_manager_cross_provider_alignment_manual_note",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_topology_manager_restricted_spread_manual_note",
         group: TestGroup::General,
     },
     TestCase {
@@ -1495,6 +1525,27 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_host_users_false_volume_still_reads_and_writes_normally" => {
             security::host_users_false_volume_still_reads_and_writes_normally(context).await
+        }
+        "test_host_users_volume_ownership_translation_is_correct" => {
+            security::host_users_volume_ownership_translation_is_correct(context).await
+        }
+        "test_supplemental_groups_policy_strict_ignores_image_group_membership" => {
+            security::supplemental_groups_policy_strict_ignores_image_group_membership(context).await
+        }
+        "test_client_certificate_authentication_works" => {
+            security::client_certificate_authentication_works(context).await
+        }
+        "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host" => {
+            topology::topology_manager_does_not_reject_pods_on_a_single_numa_node_host(context).await
+        }
+        "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host" => {
+            topology::topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host(context).await
+        }
+        "test_topology_manager_cross_provider_alignment_manual_note" => {
+            topology::topology_manager_cross_provider_alignment_manual_note(context).await
+        }
+        "test_topology_manager_restricted_spread_manual_note" => {
+            topology::topology_manager_restricted_spread_manual_note(context).await
         }
         "test_sysctls_are_applied_to_the_sandbox" => {
             security::sysctls_are_applied_to_the_sandbox(context).await

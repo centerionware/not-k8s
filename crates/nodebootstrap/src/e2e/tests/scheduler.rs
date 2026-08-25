@@ -167,7 +167,8 @@ pub(super) async fn scheduler_rejects_a_pod_that_does_not_fit(
         })
         .await?;
     let pod = pods.get(name).await?;
-    let message = serde_json::to_value(pod)?
+    let pod_value = serde_json::to_value(pod)?;
+    let message = pod_value
         .pointer("/status/conditions")
         .and_then(Value::as_array)
         .and_then(|conditions| {

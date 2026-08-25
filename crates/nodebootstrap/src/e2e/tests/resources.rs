@@ -1,6 +1,6 @@
 use super::context::E2eContext;
 use super::skip_test;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, PostParams};
 use serde_json::json;
