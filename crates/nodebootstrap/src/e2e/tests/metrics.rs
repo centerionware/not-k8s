@@ -66,7 +66,7 @@ async fn create_token(context: &E2eContext) -> Result<String> {
             spec: TokenRequestSpec {
                 audiences: vec!["https://kubernetes.default.svc".to_owned()],
                 bound_object_ref: None,
-                expiration_seconds: Some(300),
+                expiration_seconds: Some(600),
             },
             status: None,
         })?)?;

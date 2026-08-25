@@ -194,6 +194,7 @@ jobs:
           exit 0
 
       - name: Validate worker bootstrap without flannel or proxy
+        if: matrix.shard == 5
         run: |
           set -euo pipefail
           sudo -E env \

@@ -515,10 +515,17 @@ fn revision(store: &DatastoreProcess) -> Result<String> {
     let value: Value = serde_json::from_str(
         &store.rpc("etcdserverpb.Maintenance/Status", "{}")?,
     )?;
-    value
+    let revision = value
         .pointer("/header/revision")
-        .map(Value::to_string)
-        .context("nodestore Status had no revision")
+        .context("nodestore Status had no revision")?;
+    match revision {
+        Value::String(value) => Ok(value.clone()),
+        Value::Number(value) => value
+            .as_i64()
+            .map(|value| value.to_string())
+            .context("nodestore Status revision was not an integer"),
+        _ => anyhow::bail!("nodestore Status revision was not an integer"),
+    }
 }
 
 async fn start_store() -> Result<DatastoreProcess> {

@@ -122,6 +122,49 @@ impl ApiServerHarness {
                 .arg(root.join("sa.pub")),
             "creating the apiserver service-account public key",
         )?;
+        run_success(
+            Command::new("openssl")
+                .args([
+                    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout",
+                ])
+                .arg(root.join("serving-ca.key"))
+                .args(["-out"])
+                .arg(root.join("serving-ca.crt"))
+                .args([
+                    "-days", "2", "-subj", "/CN=nodebootstrap-e2e-apiserver-ca",
+                    "-addext", "basicConstraints=critical,CA:true",
+                    "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                ]),
+            "creating the throwaway apiserver serving CA",
+        )?;
+        fs::write(
+            root.join("serving.ext"),
+            "basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n",
+        )?;
+        run_success(
+            Command::new("openssl")
+                .args(["req", "-newkey", "rsa:2048", "-nodes", "-keyout"])
+                .arg(root.join("serving.key"))
+                .args(["-out"])
+                .arg(root.join("serving.csr"))
+                .args(["-subj", "/CN=localhost"]),
+            "creating the throwaway apiserver serving request",
+        )?;
+        run_success(
+            Command::new("openssl")
+                .args(["x509", "-req", "-days", "2", "-in"])
+                .arg(root.join("serving.csr"))
+                .args(["-CA"])
+                .arg(root.join("serving-ca.crt"))
+                .args(["-CAkey"])
+                .arg(root.join("serving-ca.key"))
+                .args(["-CAcreateserial", "-out"])
+                .arg(root.join("serving.crt"))
+                .args(["-extfile"])
+                .arg(root.join("serving.ext")),
+            "signing the throwaway apiserver serving certificate",
+        )?;
         fs::write(root.join("tokens.csv"), format!("{API_TOKEN},e2e-admin,e2e-admin,system:masters\n"))?;
         let port = std::env::var("NODESTORE_APISERVER_TEST_PORT")
             .ok()
@@ -140,7 +183,7 @@ impl ApiServerHarness {
 
     fn client(&self) -> Result<Client> {
         let mut config = KubeConfig::new(format!("https://127.0.0.1:{}", self.port).parse()?);
-        config.accept_invalid_certs = true;
+        config.root_cert = Some(fs::read(self.root.join("serving-ca.crt"))?);
         config.auth_info.token = Some(API_TOKEN.to_owned().into());
         config.default_namespace = "default".to_owned();
         Client::try_from(config).context("building kube-rs client for throwaway apiserver")
@@ -155,6 +198,8 @@ impl ApiServerHarness {
             .arg(format!("--etcd-keyfile={}", self.store.client_dir().join("client.key").display()))
             .arg(format!("--secure-port={}", self.port))
             .arg(format!("--cert-dir={}", self.root.join("certs").display()))
+            .arg(format!("--tls-cert-file={}", self.root.join("serving.crt").display()))
+            .arg(format!("--tls-private-key-file={}", self.root.join("serving.key").display()))
             .arg(format!("--token-auth-file={}", self.root.join("tokens.csv").display()))
             .arg(format!("--service-account-key-file={}", self.root.join("sa.pub").display()))
             .arg(format!("--service-account-signing-key-file={}", self.root.join("sa.key").display()))
