@@ -372,6 +372,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_pod_resources_grpc_query_returns_real_data",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_plugin_registry_directory_exists",
         group: TestGroup::General,
     },
@@ -1088,6 +1092,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_pod_resources_socket_is_created_on_a_cri_node" => {
             pod_resources::pod_resources_socket_is_created_on_a_cri_node(context).await
+        }
+        "test_pod_resources_grpc_query_returns_real_data" => {
+            pod_resources::pod_resources_grpc_query_returns_real_data(context).await
         }
         "test_plugin_registry_directory_exists" => {
             pod_resources::plugin_registry_directory_exists(context).await
