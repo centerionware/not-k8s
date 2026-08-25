@@ -371,3 +371,65 @@ jobs:
           mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
           [[ "${#assets[@]}" -gt 0 ]]
           gh release create "$tag" --title "$tag" --notes-file release-notes.md "${assets[@]}"
+      - name: Update README install command to the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          published_tag="$(gh release view "v$VERSION" --json tagName --jq .tagName)"
+          published_version="${published_tag#v}"
+          [[ "$published_version" == "$VERSION" ]]
+
+          old_version="$(sed -nE 's#^wget https://github.com/centerionware/not-k8s/releases/download/v([0-9]+(\.[0-9]+)+)/notk8s-[0-9]+(\.[0-9]+)+-linux-aarch64-release$#\1#p' README.md | head -n1)"
+          [[ -n "$old_version" ]]
+          if [[ "$old_version" == "$published_version" ]]; then
+            echo "README already points at release $published_version"
+            exit 0
+          fi
+
+          OLD_VERSION="$old_version" NEW_VERSION="$published_version" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text()
+          old = os.environ["OLD_VERSION"]
+          new = os.environ["NEW_VERSION"]
+          pattern = re.compile(
+              rf"(wget https://github\.com/centerionware/not-k8s/releases/download/v)"
+              rf"{re.escape(old)}(/notk8s-){re.escape(old)}"
+              rf"(-linux-aarch64-release)"
+          )
+          updated, replacements = pattern.subn(
+              lambda match: f"{match.group(1)}{new}{match.group(2)}{new}{match.group(3)}",
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit(
+                  f"expected one README install command for release {old}, found {replacements}"
+              )
+          path.write_text(updated)
+          PY
+
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update README install version to $published_version"
+
+          branch="$GITHUB_REF_NAME"
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:$branch"; then
+              pushed=true
+              break
+            fi
+            echo "branch changed concurrently; rebasing (attempt $attempt)"
+            git fetch origin "$branch"
+            git rebase "origin/$branch"
+            sleep $((attempt * 5))
+          done
+          [[ "$pushed" == true ]]
