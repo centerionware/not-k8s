@@ -4,12 +4,20 @@ use super::context::E2eContext;
 use super::datastore::DatastoreProcess;
 use super::skip_test;
 use anyhow::{Context, Result};
+use futures::StreamExt;
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, WatchEvent, WatchParams};
+use kube::{Client, Config as KubeConfig};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 const KUBE_APISERVER_VERSION: &str = "v1.33.0";
 const API_TOKEN: &str = "nodebootstrap-e2e-token";
@@ -66,22 +74,6 @@ fn kube_apiserver_binary() -> Result<PathBuf> {
     Ok(path)
 }
 
-trait PermissionsExt {
-    fn set_mode(&mut self, mode: u32);
-}
-
-impl PermissionsExt for std::fs::Permissions {
-    fn set_mode(&mut self, mode: u32) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as UnixPermissionsExt;
-            *self = UnixPermissionsExt::from_mode(mode);
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-    }
-}
-
 fn run_success(command: &mut Command, description: &str) -> Result<Output> {
     let output = command.output().with_context(|| description.to_string())?;
     anyhow::ensure!(
@@ -96,15 +88,11 @@ struct ApiServerHarness {
     store: DatastoreProcess,
     api: Option<Child>,
     root: PathBuf,
-    kubeconfig: PathBuf,
     port: u16,
 }
 
 impl ApiServerHarness {
-    fn start() -> Result<Self> {
-        if !command_available("kubectl") {
-            return Err(skip_test("datastore apiserver tests require kubectl"));
-        }
+    async fn start() -> Result<Self> {
         if !command_available("openssl") {
             return Err(skip_test("datastore apiserver tests require openssl"));
         }
@@ -139,23 +127,23 @@ impl ApiServerHarness {
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(17_443);
-        let kubeconfig = root.join("kubeconfig");
-        fs::write(
-            &kubeconfig,
-            format!(
-                "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    server: https://127.0.0.1:{port}\n    insecure-skip-tls-verify: true\n  name: nodestore-e2e\ncontexts:\n- context: {{cluster: nodestore-e2e, user: e2e-admin}}\n  name: nodestore-e2e\ncurrent-context: nodestore-e2e\nusers:\n- name: e2e-admin\n  user:\n    token: {API_TOKEN}\n"
-            ),
-        )?;
         let mut harness = Self {
             store,
             api: None,
             root,
-            kubeconfig,
             port,
         };
         harness.start_api(binary)?;
-        harness.wait_ready()?;
+        harness.wait_ready().await?;
         Ok(harness)
+    }
+
+    fn client(&self) -> Result<Client> {
+        let mut config = KubeConfig::new(format!("https://127.0.0.1:{}", self.port).parse()?);
+        config.accept_invalid_certs = true;
+        config.auth_info.token = Some(API_TOKEN.to_owned());
+        config.default_namespace = "default".to_owned();
+        Client::try_from(config).context("building kube-rs client for throwaway apiserver")
     }
 
     fn start_api(&mut self, binary: PathBuf) -> Result<()> {
@@ -184,30 +172,12 @@ impl ApiServerHarness {
         Ok(())
     }
 
-    fn kubectl(&self, args: &[&str]) -> Result<Output> {
-        Command::new("kubectl")
-            .arg("--kubeconfig")
-            .arg(&self.kubeconfig)
-            .args(args)
-            .output()
-            .context("running kubectl against throwaway apiserver")
-    }
-
-    fn kubectl_success(&self, args: &[&str]) -> Result<String> {
-        let output = self.kubectl(args)?;
-        anyhow::ensure!(
-            output.status.success(),
-            "kubectl {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
-    fn wait_ready(&mut self) -> Result<()> {
+    async fn wait_ready(&mut self) -> Result<()> {
+        let client = self.client()?;
+        let namespaces: Api<Namespace> = Api::all(client);
         let deadline = Instant::now() + Duration::from_secs(90);
         loop {
-            if self.kubectl(&["get", "--raw", "/readyz"]).is_ok_and(|output| output.status.success()) {
+            if namespaces.list(&ListParams::default()).await.is_ok() {
                 return Ok(());
             }
             if self
@@ -232,12 +202,12 @@ impl ApiServerHarness {
         }
     }
 
-    fn restart_api(&mut self) -> Result<()> {
+    async fn restart_api(&mut self) -> Result<()> {
         self.stop_api();
         self.store.restart()?;
         let binary = kube_apiserver_binary()?;
         self.start_api(binary)?;
-        self.wait_ready()
+        self.wait_ready().await
     }
 }
 
@@ -251,10 +221,18 @@ impl Drop for ApiServerHarness {
 pub(super) async fn real_apiserver_starts_and_serves_against_nodestore(
     _context: &E2eContext,
 ) -> Result<()> {
-    let harness = ApiServerHarness::start()?;
-    let namespaces = harness.kubectl_success(&["get", "namespaces", "-o", "name"])?;
-    anyhow::ensure!(namespaces.contains("namespace/default"));
-    anyhow::ensure!(namespaces.contains("namespace/kube-system"));
+    let harness = ApiServerHarness::start().await?;
+    let client = harness.client()?;
+    let namespaces: Api<Namespace> = Api::all(client);
+    let names = namespaces
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .filter_map(|namespace| namespace.metadata.name)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(names.iter().any(|name| name == "default"));
+    anyhow::ensure!(names.iter().any(|name| name == "kube-system"));
     let range: Value = serde_json::from_str(&harness.store.rpc(
         "etcdserverpb.KV/Range",
         r#"{"key":"L3JlZ2lzdHJ5Lw==","rangeEnd":"L3JlZ2lzdHJ5MA=="}"#,
@@ -269,84 +247,138 @@ pub(super) async fn real_apiserver_starts_and_serves_against_nodestore(
 pub(super) async fn apiserver_crud_round_trips_through_nodestore(
     _context: &E2eContext,
 ) -> Result<()> {
-    let harness = ApiServerHarness::start()?;
-    harness.kubectl_success(&["create", "namespace", "nodestore-crud"])?;
-    harness.kubectl_success(&[
-        "-n",
-        "nodestore-crud",
-        "create",
-        "configmap",
-        "probe",
-        "--from-literal=k=v1",
-    ])?;
-    anyhow::ensure!(
-        harness.kubectl_success(&["-n", "nodestore-crud", "get", "configmap", "probe", "-o", "jsonpath={.data.k}"])?
-            == "v1"
-    );
-    let rv1 = harness.kubectl_success(&[
-        "-n", "nodestore-crud", "get", "configmap", "probe", "-o", "jsonpath={.metadata.resourceVersion}",
-    ])?;
-    harness.kubectl_success(&[
-        "-n", "nodestore-crud", "create", "configmap", "probe", "--from-literal=k=v2", "--dry-run=client", "-o", "yaml",
-    ])?;
-    harness.kubectl_success(&[
-        "-n", "nodestore-crud", "patch", "configmap", "probe", "--type=merge", "-p", r#"{"data":{"k":"v2"}}"#,
-    ])?;
-    let rv2 = harness.kubectl_success(&[
-        "-n", "nodestore-crud", "get", "configmap", "probe", "-o", "jsonpath={.metadata.resourceVersion}",
-    ])?;
+    let harness = ApiServerHarness::start().await?;
+    let client = harness.client()?;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    namespaces
+        .create(
+            &PostParams::default(),
+            &Namespace {
+                metadata: ObjectMeta {
+                    name: Some("nodestore-crud".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await?;
+    let configmaps: Api<ConfigMap> = Api::namespaced(client, "nodestore-crud");
+    let mut data = BTreeMap::new();
+    data.insert("k".to_owned(), "v1".to_owned());
+    let created = configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: ObjectMeta {
+                    name: Some("probe".to_owned()),
+                    ..Default::default()
+                },
+                data: Some(data),
+                ..Default::default()
+            },
+        )
+        .await?;
+    anyhow::ensure!(created.data.as_ref().and_then(|data| data.get("k")) == Some(&"v1".to_owned()));
+    let rv1 = created.metadata.resource_version.clone();
+    let updated = configmaps
+        .patch(
+            "probe",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"data": {"k": "v2"}})),
+        )
+        .await?;
+    anyhow::ensure!(updated.data.as_ref().and_then(|data| data.get("k")) == Some(&"v2".to_owned()));
+    let rv2 = updated.metadata.resource_version;
     anyhow::ensure!(rv1 != rv2, "CRUD update did not advance resourceVersion");
-    harness.kubectl_success(&["-n", "nodestore-crud", "delete", "configmap", "probe"])?;
+    configmaps.delete("probe", &DeleteParams::default()).await?;
     Ok(())
 }
 
 pub(super) async fn apiserver_watch_delivers_through_nodestore(
     _context: &E2eContext,
 ) -> Result<()> {
-    let harness = ApiServerHarness::start()?;
-    harness.kubectl_success(&["create", "namespace", "nodestore-watch"])?;
-    let path = harness.root.join("watch.json");
-    let output = File::create(&path)?;
-    let mut watch = Command::new("kubectl")
-        .arg("--kubeconfig")
-        .arg(&harness.kubeconfig)
-        .args(["-n", "nodestore-watch", "get", "configmaps", "--watch", "--output-watch-events", "-o", "json"])
-        .stdout(Stdio::from(output))
-        .stderr(Stdio::null())
-        .spawn()
-        .context("starting apiserver watch")?;
-    std::thread::sleep(Duration::from_secs(2));
-    harness.kubectl_success(&["-n", "nodestore-watch", "create", "configmap", "watched", "--from-literal=k=v"])?;
-    harness.kubectl_success(&["-n", "nodestore-watch", "delete", "configmap", "watched"])?;
+    let harness = ApiServerHarness::start().await?;
+    let client = harness.client()?;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    namespaces
+        .create(
+            &PostParams::default(),
+            &Namespace {
+                metadata: ObjectMeta {
+                    name: Some("nodestore-watch".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await?;
+    let configmaps: Api<ConfigMap> = Api::namespaced(client, "nodestore-watch");
+    let mut watch = configmaps.watch(&WatchParams::default(), "0").await?;
+    let mut data = BTreeMap::new();
+    data.insert("k".to_owned(), "v".to_owned());
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: ObjectMeta {
+                    name: Some("watched".to_owned()),
+                    ..Default::default()
+                },
+                data: Some(data),
+                ..Default::default()
+            },
+        )
+        .await?;
+    configmaps.delete("watched", &DeleteParams::default()).await?;
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        let body = fs::read_to_string(&path).unwrap_or_default();
-        if body.contains("DELETED") {
-            let _ = watch.kill();
-            let _ = watch.wait();
-            anyhow::ensure!(body.contains("watched"), "DELETE watch event lost object identity");
-            return Ok(());
+        let event = tokio::time::timeout(Duration::from_secs(1), watch.next()).await;
+        if let Ok(Some(event)) = event {
+            if let WatchEvent::Deleted(configmap) = event? {
+                anyhow::ensure!(configmap.metadata.name.as_deref() == Some("watched"), "DELETE watch event lost object identity");
+                return Ok(());
+            }
         }
-        std::thread::sleep(Duration::from_millis(250));
     }
-    let _ = watch.kill();
-    let _ = watch.wait();
-    anyhow::bail!("apiserver watch did not deliver the deletion: {}", fs::read_to_string(path).unwrap_or_default())
+    anyhow::bail!("apiserver watch did not deliver the deletion")
 }
 
 pub(super) async fn apiserver_state_survives_a_datastore_restart(
     _context: &E2eContext,
 ) -> Result<()> {
-    let mut harness = ApiServerHarness::start()?;
-    harness.kubectl_success(&["create", "namespace", "nodestore-durable"])?;
-    harness.kubectl_success(&[
-        "-n", "nodestore-durable", "create", "configmap", "kept", "--from-literal=k=v",
-    ])?;
-    harness.restart_api()?;
-    anyhow::ensure!(
-        harness.kubectl_success(&[
-            "-n", "nodestore-durable", "get", "configmap", "kept", "-o", "jsonpath={.data.k}",
-        ])? == "v"
-    );
+    let mut harness = ApiServerHarness::start().await?;
+    let client = harness.client()?;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    namespaces
+        .create(
+            &PostParams::default(),
+            &Namespace {
+                metadata: ObjectMeta {
+                    name: Some("nodestore-durable".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await?;
+    let configmaps: Api<ConfigMap> = Api::namespaced(client, "nodestore-durable");
+    let mut data = BTreeMap::new();
+    data.insert("k".to_owned(), "v".to_owned());
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: ObjectMeta {
+                    name: Some("kept".to_owned()),
+                    ..Default::default()
+                },
+                data: Some(data),
+                ..Default::default()
+            },
+        )
+        .await?;
+    harness.restart_api().await?;
+    let kept = configmaps.get("kept").await?;
+    anyhow::ensure!(kept.data.as_ref().and_then(|data| data.get("k")) == Some(&"v".to_owned()));
     Ok(())
 }
