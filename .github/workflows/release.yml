@@ -185,10 +185,69 @@ jobs:
       - name: Dump bootstrap service state on failure
         if: failure() || steps.e2e.outputs.exit_code != '0'
         run: |
-          sudo systemctl --no-pager --full status kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld || true
-          for unit in kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld; do
-            sudo journalctl -u "$unit" -n 80 --no-pager || true
+          set +e
+          export KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
+          kubectl_cmd() {
+            sudo kubectl --kubeconfig "$KUBECONFIG" --request-timeout=30s "$@"
+          }
+
+          echo "=========================================="
+          echo "release-e2e-debug-dump: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "=========================================="
+          echo "── disk space ──"
+          df -h /
+
+          echo "── node status ──"
+          kubectl_cmd get nodes -o wide
+          kubectl_cmd describe nodes
+          echo "── all pods (every namespace) ──"
+          kubectl_cmd get pods -A -o wide
+          echo "── pods not Running/Completed ──"
+          kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
+
+          for unit in kube-apiserver nodestore nodelet nodeproxy nodescheduler nodecontroller flanneld containerd; do
+            echo "── $unit.service status ──"
+            sudo systemctl status "$unit.service" --no-pager -l || true
+            echo "── $unit.service logs (last 300 lines) ──"
+            sudo journalctl -u "$unit.service" --no-pager -n 300 || true
           done
+
+          echo "── scheduler lease ──"
+          kubectl_cmd get lease kube-scheduler -n kube-system -o yaml | head -30
+          echo "── controller-manager lease ──"
+          kubectl_cmd get lease kube-controller-manager -n kube-system -o yaml | head -30
+          echo "── kube-apiserver request/readiness signals ──"
+          sudo journalctl -u kube-apiserver.service --no-pager -n 800 \
+            | grep -iE '429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed' || true
+          echo "── nodecontroller volume/attach signals ──"
+          sudo journalctl -u nodecontroller.service --no-pager -n 1200 \
+            | grep -iE 'attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat' || true
+
+          echo "── volumeattachments ──"
+          kubectl_cmd get volumeattachments.storage.k8s.io -o wide
+          echo "── csidrivers ──"
+          kubectl_cmd get csidrivers.storage.k8s.io -o yaml
+          echo "── csinodes ──"
+          kubectl_cmd get csinodes.storage.k8s.io -o yaml
+          echo "── recent events (last 100) ──"
+          kubectl_cmd get events -A --sort-by=.lastTimestamp | tail -100
+
+          echo "── controller RBAC and authorization ──"
+          kubectl_cmd get clusterrole system:controller:replicaset-controller -o yaml
+          kubectl_cmd get clusterrolebindings -o yaml \
+            | grep -B5 -A15 'name: replicaset-controller\|controller-sa-replicaset-controller' || true
+          kubectl_cmd auth can-i patch replicasets/status \
+            --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system
+          kubectl_cmd auth can-i update replicasets/status \
+            --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system
+          kubectl_cmd auth can-i patch endpointslices \
+            --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
+          kubectl_cmd auth can-i update endpointslices \
+            --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
+          kubectl_cmd get clusterrole system:controller:endpointslice-controller -o yaml
+          echo "=========================================="
+          echo "release-e2e-debug-dump: end"
+          echo "=========================================="
 
       - name: Publish this shard's release e2e results
         if: always()
