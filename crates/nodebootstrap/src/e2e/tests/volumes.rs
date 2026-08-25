@@ -262,6 +262,7 @@ pub(super) async fn host_aliases_still_work_under_host_users_false(
         json!({
             "hostUsers": false,
             "hostAliases": [{"ip": "10.1.2.3", "hostnames": ["custom.example.com"]}],
+            "restartPolicy": "Never",
             "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "grep '10.1.2.3.*custom.example.com' /etc/hosts > /dev/termination-log"]}]
         }),
     )

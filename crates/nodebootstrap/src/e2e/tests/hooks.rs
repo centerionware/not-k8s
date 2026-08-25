@@ -126,7 +126,8 @@ pub(super) async fn lifecycle_stop_signal_is_honored_by_the_runtime(
                 "image": "busybox:latest",
                 "command": ["sh", "-c", "trap 'echo got-usr1 > /dev/termination-log; exit 7' USR1; sleep 3600"],
                 "lifecycle": {"stopSignal": "SIGUSR1"}
-            }]
+            }],
+            "os": {"name": "linux"}
         }),
     )
     .await?;
