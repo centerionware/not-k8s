@@ -106,6 +106,7 @@ async fn endpoint_body(context: &E2eContext, pod_name: &str, path: &str) -> Resu
         &crate::config::Config::from_env()?.nodelet_server_ca_path(),
     )
     .map_err(|error| skip_test(format!("could not load the nodelet server CA: {error}")))?;
+    let agent_ref = &agent;
     let node_ip = node_internal_ip(context).await?;
     let body = std::sync::Arc::new(std::sync::Mutex::new(None));
     let body_for_check = body.clone();
@@ -119,8 +120,9 @@ async fn endpoint_body(context: &E2eContext, pod_name: &str, path: &str) -> Resu
                 let token = token.clone();
                 let path = path.to_string();
                 let pod_name = pod_name.to_string();
+                let agent = agent_ref;
                 async move {
-                    let Some(value) = fetch_endpoint(&agent, &node_ip, &token, &path) else {
+                    let Some(value) = fetch_endpoint(agent, &node_ip, &token, &path) else {
                         return Ok(false);
                     };
                     if value.contains(&pod_name) {
