@@ -72,20 +72,32 @@ fn containerd_config_path() -> &'static Path {
     Path::new("/etc/containerd/config.toml")
 }
 
-fn configure_containerd_registry(config: &str, registry_host: &str) -> String {
+fn configure_containerd_registry(config: &str) -> String {
     let section = r#"[plugins."io.containerd.grpc.v1.cri".registry]"#;
     let config_line = r#"config_path = "/etc/containerd/certs.d""#;
-    let mirror_section = format!(
-        r#"[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{registry_host}"]"#
-    );
-    let mirror_line = format!(r#"endpoint = ["http://{registry_host}"]"#);
 
     let mut output = Vec::with_capacity(config.len() + 256);
     let mut in_registry_section = false;
+    let mut in_legacy_mirror_section = false;
     let mut saw_registry_section = false;
     let mut saw_config_path = false;
     for line in config.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with(r#"[plugins."io.containerd.grpc.v1.cri".registry.mirrors."#) {
+            // containerd rejects legacy registry.mirrors tables when the
+            // modern config_path form is present. The hosts.toml fixture
+            // below is the supported replacement and also lets us express
+            // the intentionally-plain-HTTP local registry.
+            in_legacy_mirror_section = true;
+            continue;
+        }
+        if in_legacy_mirror_section {
+            if trimmed.starts_with('[') {
+                in_legacy_mirror_section = false;
+            } else {
+                continue;
+            }
+        }
         if trimmed == section {
             in_registry_section = true;
             saw_registry_section = true;
@@ -118,13 +130,6 @@ fn configure_containerd_registry(config: &str, registry_host: &str) -> String {
 
     let mut updated = output.join("\n");
     if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    if !updated.contains(&mirror_section) {
-        updated.push('\n');
-        updated.push_str(&mirror_section);
-        updated.push('\n');
-        updated.push_str(&mirror_line);
         updated.push('\n');
     }
     updated
@@ -258,7 +263,7 @@ pub(super) async fn credential_provider_supplies_auth_for_an_otherwise_rejected_
             })
             .await?;
 
-        let updated = configure_containerd_registry(&original_config, &registry_host);
+        let updated = configure_containerd_registry(&original_config);
         if updated != original_config {
             fs::copy(config_path, &config_backup)?;
             let updated_path = work.join("config.updated.toml");
