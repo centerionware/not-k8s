@@ -122,7 +122,9 @@ pub async fn handle(
         Route::Attach { namespace, pod, container } => {
             exec::handle_attach(state, req, &namespace, &pod, &container, &parse_query(&query)).await
         }
-        Route::PortForward { namespace, pod } => exec::handle_port_forward(state, req, &namespace, &pod).await,
+        Route::PortForward { namespace, pod } => {
+            exec::handle_port_forward(state, req, &namespace, &pod, &parse_query(&query)).await
+        }
         Route::StatsSummary => stats::handle_stats_summary(&state).await,
         Route::MetricsResource => prom_metrics::handle_metrics_resource(&state).await,
         Route::MetricsCadvisor => prom_metrics::handle_metrics_cadvisor(&state).await,

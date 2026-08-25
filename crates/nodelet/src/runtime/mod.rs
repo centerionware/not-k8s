@@ -318,8 +318,8 @@ pub trait PodRuntime: Send + Sync {
     }
 
     /// Same idea again, for forwarding TCP ports into a pod's network namespace.
-    async fn port_forward_url(&self, namespace: &str, name: &str) -> anyhow::Result<String> {
-        let _ = (namespace, name);
+    async fn port_forward_url(&self, namespace: &str, name: &str, ports: &[i32]) -> anyhow::Result<String> {
+        let _ = (namespace, name, ports);
         anyhow::bail!("port-forward is not supported by this runtime")
     }
 

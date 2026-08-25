@@ -62,8 +62,18 @@ pub async fn handle_attach(
     proxy_to_target(req, target).await
 }
 
-pub async fn handle_port_forward(state: Arc<ServerState>, req: Request<Incoming>, namespace: &str, pod: &str) -> Response<BoxedBody> {
-    let target = state.runtime.port_forward_url(namespace, pod).await;
+pub async fn handle_port_forward(
+    state: Arc<ServerState>,
+    req: Request<Incoming>,
+    namespace: &str,
+    pod: &str,
+    query: &[(String, String)],
+) -> Response<BoxedBody> {
+    let ports = super::routes::query_values(query, "port")
+        .into_iter()
+        .filter_map(|value| value.parse::<i32>().ok())
+        .collect::<Vec<_>>();
+    let target = state.runtime.port_forward_url(namespace, pod, &ports).await;
     proxy_to_target(req, target).await
 }
 

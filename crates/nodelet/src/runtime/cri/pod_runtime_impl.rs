@@ -545,13 +545,13 @@ impl PodRuntime for CriRuntime {
         Ok(resp.url)
     }
 
-    async fn port_forward_url(&self, namespace: &str, name: &str) -> Result<String> {
+    async fn port_forward_url(&self, namespace: &str, name: &str, ports: &[i32]) -> Result<String> {
         let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
             anyhow::bail!("pod {namespace}/{name} not found")
         };
         let mut rt = self.rt.clone();
         let resp = rt
-            .port_forward(PortForwardRequest { pod_sandbox_id: sandbox_id, port: Vec::new() })
+            .port_forward(PortForwardRequest { pod_sandbox_id: sandbox_id, port: ports.to_vec() })
             .await
             .context("PortForward")?
             .into_inner();
