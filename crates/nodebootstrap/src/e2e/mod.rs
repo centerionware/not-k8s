@@ -42,6 +42,8 @@ mod deployment;
 mod datastore;
 #[path = "tests/datastore_cluster.rs"]
 mod datastore_cluster;
+#[path = "tests/datastore_apiserver.rs"]
+mod datastore_apiserver;
 #[path = "tests/device_plugins.rs"]
 mod device_plugins;
 #[path = "tests/dra.rs"]
@@ -465,6 +467,22 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_a_partitioned_leader_steps_down_and_the_majority_elects_another",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_a_real_apiserver_starts_and_serves_against_nodestore",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_apiserver_crud_round_trips_through_nodestore",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_apiserver_watch_delivers_through_nodestore",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_apiserver_state_survives_a_datastore_restart",
         group: TestGroup::General,
     },
     TestCase {
@@ -1410,6 +1428,18 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_a_partitioned_leader_steps_down_and_the_majority_elects_another" => {
             datastore_cluster::partitioned_leader_steps_down_and_majority_elects_another(context).await
+        }
+        "test_a_real_apiserver_starts_and_serves_against_nodestore" => {
+            datastore_apiserver::real_apiserver_starts_and_serves_against_nodestore(context).await
+        }
+        "test_apiserver_crud_round_trips_through_nodestore" => {
+            datastore_apiserver::apiserver_crud_round_trips_through_nodestore(context).await
+        }
+        "test_apiserver_watch_delivers_through_nodestore" => {
+            datastore_apiserver::apiserver_watch_delivers_through_nodestore(context).await
+        }
+        "test_apiserver_state_survives_a_datastore_restart" => {
+            datastore_apiserver::apiserver_state_survives_a_datastore_restart(context).await
         }
         "test_a_pending_pod_recovers_after_the_node_failure_is_fixed" => {
             host_recovery::pending_pod_recovers_after_the_node_failure_is_fixed(context).await

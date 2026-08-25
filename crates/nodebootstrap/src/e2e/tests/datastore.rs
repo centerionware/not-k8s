@@ -39,14 +39,14 @@ fn grpcurl_available() -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-struct DatastoreProcess {
+pub(super) struct DatastoreProcess {
     child: Child,
     dir: PathBuf,
     address: String,
 }
 
 impl DatastoreProcess {
-    fn start() -> Result<Self> {
+    pub(super) fn start() -> Result<Self> {
         if !grpcurl_available() {
             return Err(skip_test("datastore wire tests require grpcurl"));
         }
@@ -74,11 +74,19 @@ impl DatastoreProcess {
         Ok(process)
     }
 
-    fn client_dir(&self) -> PathBuf {
+    pub(super) fn client_dir(&self) -> PathBuf {
         self.dir.join("data/pki/client")
     }
 
-    fn rpc(&self, method: &str, request: &str) -> Result<String> {
+    pub(super) fn data_dir(&self) -> PathBuf {
+        self.dir.join("data")
+    }
+
+    pub(super) fn address(&self) -> &str {
+        &self.address
+    }
+
+    pub(super) fn rpc(&self, method: &str, request: &str) -> Result<String> {
         let pki = self.client_dir();
         let ca = pki.join("ca.crt");
         let cert = pki.join("client.crt");
@@ -128,7 +136,7 @@ impl DatastoreProcess {
         }
     }
 
-    fn restart(&mut self) -> Result<()> {
+    pub(super) fn restart(&mut self) -> Result<()> {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let binary = nodestore_binary()?;
