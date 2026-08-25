@@ -1,9 +1,11 @@
 name: Release pipeline
 
 # Manual only: this workflow builds and publishes the Rust binaries after a
-# real bootstrap-native e2e check. The Rust e2e registry retains the former
-# five-way layout: CSI/DRA tests use shards 1-2, and ordinary tests use all
-# five shards.
+# real bootstrap-native e2e check. The standalone nodebootstrap binary is
+# built once for the debug/e2e gate, then its source builder produces the
+# release-profile artifacts for each target. The Rust e2e registry retains
+# the former five-way layout: CSI/DRA tests use shards 1-2, and ordinary
+# tests use all five shards.
 on:
   workflow_dispatch:
 
@@ -22,14 +24,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - name: Build all debug binaries
+      - name: Build the Rust bootstrapper and combined debug runtime applet
         run: |
           set -euo pipefail
-          cargo build --features cri -p nodelet
-          cargo build -p nodeproxy
-          cargo build -p nodestore
-          cargo build -p nodescheduler
-          cargo build -p nodecontroller
           cargo build -p nodebootstrap
           cargo build --features cri -p notk8s
       - name: Run all unit tests
@@ -44,10 +41,16 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodecontroller
           sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
           sudo -E env "PATH=$PATH" cargo test -p notk8s
+      - name: Stage the bootstrapper and combined runtime applet for e2e
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-bin
+          install -m0755 target/debug/nodebootstrap e2e-bin/nodebootstrap
+          install -m0755 target/debug/notk8s e2e-bin/notk8s
       - uses: actions/upload-artifact@v4
         with:
-          name: notk8s-debug-binary
-          path: target/debug/notk8s
+          name: nodebootstrap-e2e-binaries
+          path: e2e-bin/
           retention-days: 1
 
   e2e:
@@ -74,13 +77,16 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: notk8s-debug-binary
+          name: nodebootstrap-e2e-binaries
           path: dist-bin
       - name: Bootstrap a real cluster with the Rust applet
         run: |
           set -euo pipefail
-          chmod +x dist-bin/notk8s
-          sudo -E ./dist-bin/notk8s bootstrap \
+          chmod +x dist-bin/nodebootstrap dist-bin/notk8s
+          sudo -E env \
+            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
+            NOTK8S_BUILD_LAYOUT=combined \
+            ./dist-bin/nodebootstrap \
             --layout=combined \
             --proxy=nodeproxy \
             --datastore=nodestore \
@@ -91,9 +97,19 @@ jobs:
       - name: Run bootstrap-native e2e checks
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-        run: ./dist-bin/notk8s bootstrap --e2e --shard=${{ matrix.shard }}/5
+        run: ./dist-bin/nodebootstrap --e2e --shard=${{ matrix.shard }}/5
       - name: Validate worker bootstrap without flannel or proxy
-        run: sudo -E ./dist-bin/notk8s bootstrap --worker --kubeconfig=/etc/nodebootstrap/admin.kubeconfig --without-flannel --proxy=none --skip-nodelet
+        run: |
+          set -euo pipefail
+          sudo -E env \
+            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
+            NOTK8S_BUILD_LAYOUT=combined \
+            ./dist-bin/nodebootstrap \
+              --worker \
+              --kubeconfig=/etc/nodebootstrap/admin.kubeconfig \
+              --without-flannel \
+              --proxy=none \
+              --skip-nodelet
       - name: Dump bootstrap service state on failure
         if: failure()
         run: |
@@ -161,30 +177,39 @@ jobs:
           echo "$cargo_var=$cc_bin" >> "$GITHUB_ENV"
           echo "$cc_var=$cc_bin" >> "$GITHUB_ENV"
           echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
-      - name: Build debug and release binaries
+      - name: Build the host bootstrap builder
+        run: cargo build -p nodebootstrap
+      - name: Build release artifacts through nodebootstrap
         run: |
           set -euo pipefail
           target="--target=${{ matrix.target }}"
-          for profile in debug release; do
-            profile_flag=()
-            [[ "$profile" == release ]] && profile_flag+=(--release)
-            cargo build "${profile_flag[@]}" --features cri -p nodelet "$target"
-            cargo build "${profile_flag[@]}" -p nodeproxy "$target"
-            cargo build "${profile_flag[@]}" -p nodestore "$target"
-            cargo build "${profile_flag[@]}" -p nodescheduler "$target"
-            cargo build "${profile_flag[@]}" -p nodecontroller "$target"
-            cargo build "${profile_flag[@]}" -p nodebootstrap "$target"
-            cargo build "${profile_flag[@]}" --features cri -p notk8s "$target"
+          stage="$GITHUB_WORKSPACE/nodebootstrap-stage"
+          mkdir -p "$stage"
+          NODEBOOTSTRAP_ARCH="${{ matrix.arch }}" \
+          NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+          NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
+          NODEBOOTSTRAP_SOURCE=compile \
+          NOTK8S_BUILD_LAYOUT=both \
+            ./target/debug/nodebootstrap fetch
+
+          # Keep debug artifacts for diagnostics and the existing release
+          # asset contract. The optimized release artifacts above are built
+          # and staged by nodebootstrap's own source-build path.
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          for bin in "${bins[@]}"; do
+            case "$bin" in
+              nodelet|notk8s) cargo build --features cri -p "$bin" "$target" ;;
+              *) cargo build -p "$bin" "$target" ;;
+            esac
           done
       - name: Stage and verify static binaries
         run: |
           set -euo pipefail
           mkdir -p dist
           bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
-          for profile in debug release; do
-            for bin in "${bins[@]}"; do
-              cp "target/${{ matrix.target }}/$profile/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
-            done
+          for bin in "${bins[@]}"; do
+            cp "target/${{ matrix.target }}/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
+            cp "$GITHUB_WORKSPACE/nodebootstrap-stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
           done
           failed=0
           for file in dist/*; do
