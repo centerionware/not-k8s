@@ -17,6 +17,15 @@ pub enum Source {
     Release,
 }
 
+/// Cargo profile used by the source builder. Debug is intentionally the
+/// ordinary fast profile for e2e iteration; release carries the static size
+/// and optimization settings from the workspace's release profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildProfile {
+    Debug,
+    Release,
+}
+
 /// Combined (`bin/notk8s`, one multi-call binary) vs. split (`bin/nodelet` +
 /// `bin/nodeproxy` + ...) — see `CLAUDE.md`'s "Two build layouts" section.
 /// Combined is the default here as it is release-wide.
@@ -79,6 +88,7 @@ pub struct Config {
     /// `Some("flannel")` is the only provider this crate installs itself.
     pub cni_provider: Option<String>,
     pub source: Source,
+    pub build_profile: BuildProfile,
     pub layout: Layout,
     /// Release tag to fetch when `source == Release`; `None` means latest.
     pub release_tag: Option<String>,
@@ -333,6 +343,11 @@ impl Config {
             Ok("both") => Layout::Both,
             _ => Layout::Combined,
         };
+        let build_profile = match std::env::var("NOTK8S_BUILD_PROFILE").as_deref() {
+            Ok("debug") => BuildProfile::Debug,
+            Ok("release") | Err(_) => BuildProfile::Release,
+            Ok(other) => anyhow::bail!("NOTK8S_BUILD_PROFILE must be debug or release, got '{other}'"),
+        };
         Ok(Config {
             with_cri: !matches!(std::env::var("NODEBOOTSTRAP_WITH_CRI").as_deref(), Ok("0" | "false")),
             skip_toolchain: flag("NODEBOOTSTRAP_SKIP_TOOLCHAIN"),
@@ -358,6 +373,7 @@ impl Config {
             without_flannel,
             cni_provider,
             source,
+            build_profile,
             layout,
             release_tag: std::env::var("NODEBOOTSTRAP_RELEASE_TAG").ok(),
             target: Target::Upstream,

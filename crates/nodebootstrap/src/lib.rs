@@ -149,6 +149,7 @@ pub fn run_embedded(args: &[String]) -> Result<()> {
         matches!(arg.as_str(), "--from-source" | "--force-source-build" | "--release")
             || arg.starts_with("--source=")
             || arg.starts_with("--tag=")
+            || arg.starts_with("--profile=")
             || arg == "--update"
             || arg == "--layout=split"
             || arg == "--layout=both"
@@ -333,6 +334,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NOTK8S_BUILD_LAYOUT", value);
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--profile=") {
+            anyhow::ensure!(matches!(value, "debug" | "release"), "--profile must be debug or release");
+            std::env::set_var("NOTK8S_BUILD_PROFILE", value);
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--cni=") {
             anyhow::ensure!(matches!(value, "flannel" | "none"), "--cni must be flannel or none");
             std::env::set_var("NODEBOOTSTRAP_CNI", value);
@@ -431,7 +437,12 @@ fn dispatch(subcommand: Option<&str>) -> Result<()> {
         Some("containerd") => containerd::run_with(&cfg),
         Some("cni") => cni::run_with(&cfg),
         Some("flanneld") => cni::run_flanneld(),
-        Some("fetch") => fetch::run_with(&cfg),
+        Some("fetch") => {
+            if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
+                toolchain::run_with(&cfg)?;
+            }
+            fetch::run_with(&cfg)
+        }
         Some("pki") => pki::run_with(&cfg),
         Some("kubeconfig") => kubeconfig::run_with(&cfg),
         Some("targets") => targets::run_with(&cfg),
@@ -464,6 +475,7 @@ fn print_help() {
     println!("  --from-source          build components from this checkout");
     println!("  --release [--tag=TAG]  fetch published component binaries");
     println!("  --layout=combined|split|both");
+    println!("  --profile=debug|release  select the source-build Cargo profile");
     println!("  --proxy=none           omit nodeproxy service");
     println!("  --without-flannel      skip flannel and remember external CNI for updates");
     println!("  --cni=none             use an externally-managed CNI for this run");

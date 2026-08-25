@@ -2,8 +2,8 @@ name: Release pipeline
 
 # Manual only: this workflow builds and publishes the Rust binaries after a
 # real bootstrap-native e2e check. The standalone nodebootstrap binary is
-# built once for the debug/e2e gate, then its source builder produces the
-# release-profile artifacts for each target. The Rust e2e registry retains
+# built once for the debug/e2e gate, then its source builder produces both
+# debug and release artifacts for each target. The Rust e2e registry retains
 # the former five-way layout: CSI/DRA tests use shards 1-2, and ordinary
 # tests use all five shards.
 on:
@@ -48,17 +48,16 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - name: Build the Rust bootstrapper and combined debug runtime applet
+      - name: Build the Rust bootstrapper for the unit-test stage
         run: |
           set -euo pipefail
           cargo build -p nodebootstrap
-          cargo build --features cri -p notk8s
       - name: Run all unit tests
         run: |
           set -euo pipefail
@@ -74,13 +73,27 @@ jobs:
       - name: Stage the bootstrapper and combined runtime applet for e2e
         run: |
           set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools musl-dev linux-libc-dev
+          stage="$GITHUB_WORKSPACE/e2e-source-stage"
+          rm -rf "$stage" e2e-bin
           mkdir -p e2e-bin
-          install -m0755 target/debug/nodebootstrap e2e-bin/nodebootstrap
-          install -m0755 target/debug/notk8s e2e-bin/notk8s
+          NODEBOOTSTRAP_ARCH=x86_64 \
+          NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+          NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
+          NODEBOOTSTRAP_SOURCE=compile \
+          NOTK8S_BUILD_LAYOUT=combined \
+          NOTK8S_BUILD_PROFILE=debug \
+            ./target/debug/nodebootstrap fetch
+          install -m0755 "$stage/bin/nodebootstrap" e2e-bin/nodebootstrap
+          install -m0755 "$stage/bin/notk8s" e2e-bin/notk8s
       - uses: actions/upload-artifact@v4
         with:
-          name: nodebootstrap-e2e-binaries
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: e2e-bin/
+          # GitHub's minimum is one day; cleanup-e2e-artifact removes this
+          # run-scoped artifact after the release e2e matrix consumes it.
           retention-days: 1
 
   e2e:
@@ -105,7 +118,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
-          name: nodebootstrap-e2e-binaries
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: dist-bin
       - name: Bootstrap a real cluster with the Rust applet
         run: |
@@ -221,6 +234,25 @@ jobs:
         if: steps.e2e.outputs.exit_code != '0'
         run: exit 1
 
+  cleanup-e2e-artifact:
+    needs: [build-and-test, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the run-scoped e2e source artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == ("nodebootstrap-e2e-source-" + env.GITHUB_RUN_ID)) | .id' \
+            | head -n1)"
+          if [[ -n "$artifact_id" ]]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          fi
+
   build-release:
     needs: e2e
     strategy:
@@ -285,34 +317,32 @@ jobs:
       - name: Build release artifacts through nodebootstrap
         run: |
           set -euo pipefail
-          target="--target=${{ matrix.target }}"
-          stage="$GITHUB_WORKSPACE/nodebootstrap-stage"
-          mkdir -p "$stage"
-          NODEBOOTSTRAP_ARCH="${{ matrix.arch }}" \
-          NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
-          NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
-          NODEBOOTSTRAP_SOURCE=compile \
-          NOTK8S_BUILD_LAYOUT=both \
-            ./target/debug/nodebootstrap fetch
-
-          # Keep debug artifacts for diagnostics and the existing release
-          # asset contract. The optimized release artifacts above are built
-          # and staged by nodebootstrap's own source-build path.
+          rm -rf "$GITHUB_WORKSPACE/nodebootstrap-stage" dist
+          mkdir -p dist
           bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
-          for bin in "${bins[@]}"; do
-            case "$bin" in
-              nodelet|notk8s) cargo build --features cri -p "$bin" "$target" ;;
-              *) cargo build -p "$bin" "$target" ;;
-            esac
+          for profile in debug release; do
+            stage="$GITHUB_WORKSPACE/nodebootstrap-stage/$profile"
+            mkdir -p "$stage"
+            NODEBOOTSTRAP_ARCH="${{ matrix.arch }}" \
+            NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+            NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
+            NODEBOOTSTRAP_SOURCE=compile \
+            NOTK8S_BUILD_LAYOUT=both \
+            NOTK8S_BUILD_PROFILE="$profile" \
+              ./target/debug/nodebootstrap fetch
+            for bin in "${bins[@]}"; do
+              cp "$stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
+            done
           done
       - name: Stage and verify static binaries
         run: |
           set -euo pipefail
-          mkdir -p dist
           bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
           for bin in "${bins[@]}"; do
-            cp "target/${{ matrix.target }}/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
-            cp "$GITHUB_WORKSPACE/nodebootstrap-stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
+            for profile in debug release; do
+              file="dist/$bin-linux-${{ matrix.arch }}-$profile"
+              [[ -f "$file" ]] || { echo "missing bootstrap-built artifact: $file"; exit 1; }
+            done
           done
           failed=0
           for file in dist/*; do
@@ -326,9 +356,11 @@ jobs:
           (( failed == 0 ))
       - uses: actions/upload-artifact@v4
         with:
-          name: notk8s-${{ matrix.arch }}
+          name: notk8s-${{ matrix.arch }}-${{ github.run_id }}
           path: dist/
-          retention-days: 5
+          # GitHub's minimum is one day; cleanup-release-artifacts removes
+          # these run-scoped assets after publication (normally within 15m).
+          retention-days: 1
 
   publish-release:
     needs: build-release
@@ -341,7 +373,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: notk8s-*
+          pattern: notk8s-*-${{ github.run_id }}
           merge-multiple: true
       - name: Determine and record the next release version
         id: version
@@ -456,3 +488,21 @@ jobs:
             sleep $((attempt * 5))
           done
           [[ "$pushed" == true ]]
+
+  cleanup-release-artifacts:
+    needs: [build-release, publish-release]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete run-scoped release build artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("notk8s-")) | .id' \
+            | while read -r artifact_id; do
+                [[ -z "$artifact_id" ]] || gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+              done

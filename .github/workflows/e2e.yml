@@ -56,8 +56,54 @@ jobs:
           git commit -m "e2e results: start run ${GITHUB_SHA:0:12}"
           git push --force origin "HEAD:$RESULTS_BRANCH"
 
-  e2e:
+  build-source-runtime:
     needs: prepare-e2e-results
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Build the host bootstrapper
+        run: cargo build -p nodebootstrap
+
+      - name: Prepare the x86_64 static musl target
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools musl-dev linux-libc-dev
+
+      - name: Build the combined debug runtime through nodebootstrap
+        run: |
+          set -euo pipefail
+          stage="$GITHUB_WORKSPACE/e2e-source-stage"
+          rm -rf "$stage" e2e-bin
+          mkdir -p e2e-bin
+          NODEBOOTSTRAP_ARCH=x86_64 \
+          NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+          NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
+          NODEBOOTSTRAP_SOURCE=compile \
+          NOTK8S_BUILD_LAYOUT=combined \
+          NOTK8S_BUILD_PROFILE=debug \
+            ./target/debug/nodebootstrap fetch
+          install -m0755 "$stage/bin/nodebootstrap" e2e-bin/nodebootstrap
+          install -m0755 "$stage/bin/notk8s" e2e-bin/notk8s
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
+          path: e2e-bin/
+          # GitHub's minimum is one day; cleanup-e2e-artifact removes this
+          # run-scoped artifact as soon as every shard has consumed it.
+          retention-days: 1
+
+  e2e:
+    needs: [prepare-e2e-results, build-source-runtime]
     strategy:
       fail-fast: false
       matrix:
@@ -78,12 +124,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Build the Rust bootstrapper
-        run: |
-          set -euo pipefail
-          cargo build -p nodebootstrap
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
+          path: dist-bin
 
       - name: Bootstrap a real cluster with Rust
         env:
@@ -100,11 +144,11 @@ jobs:
           if [[ "$NETWORK" == external ]]; then
             args+=(--without-flannel --proxy=none)
           fi
+          chmod +x dist-bin/nodebootstrap dist-bin/notk8s
           sudo -E env \
-            NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
-            NODEBOOTSTRAP_SOURCE=compile \
+            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
             NOTK8S_BUILD_LAYOUT=combined \
-            ./target/debug/nodebootstrap --from-source "${args[@]:1}"
+            ./dist-bin/nodebootstrap "${args[@]:1}"
 
       - name: Make the admin kubeconfig readable
         run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
@@ -143,7 +187,7 @@ jobs:
             ONLY=external_cni
           fi
           [[ -z "$ONLY" ]] || args+=("--only=$ONLY")
-          ./target/debug/nodebootstrap "${args[@]:1}" 2>&1 | tee /tmp/e2e-raw.txt
+          ./dist-bin/nodebootstrap "${args[@]:1}" 2>&1 | tee /tmp/e2e-raw.txt
           exit_code=${PIPESTATUS[0]}
           sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
@@ -153,9 +197,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E env \
-            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/target/debug/notk8s" \
+            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
             NOTK8S_BUILD_LAYOUT=combined \
-            ./target/debug/nodebootstrap \
+            ./dist-bin/nodebootstrap \
               --worker \
               --kubeconfig=/etc/nodebootstrap/admin.kubeconfig \
               --without-flannel \
@@ -213,3 +257,22 @@ jobs:
       - name: Fail the job if the e2e suite failed
         if: steps.e2e.outputs.exit_code != '0'
         run: exit 1
+
+  cleanup-e2e-artifact:
+    needs: [build-source-runtime, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the run-scoped source artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == ("nodebootstrap-e2e-source-" + env.GITHUB_RUN_ID)) | .id' \
+            | head -n1)"
+          if [[ -n "$artifact_id" ]]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          fi
