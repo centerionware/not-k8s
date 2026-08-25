@@ -380,3 +380,44 @@ pub(super) async fn proc_mount_default_masks_proc_kcore(context: &E2eContext) ->
     }
     Ok(())
 }
+
+pub(super) async fn proc_mount_unmasked_leaves_proc_kcore_readable(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("procMount checks require the CRI runtime"));
+    }
+    let name = "proc-mount-unmasked";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "hostUsers": false,
+            "securityContext": {"procMount": "Unmasked"},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "head -c 4 /proc/kcore 2>/dev/null | wc -c > /dev/termination-log"]}]
+        }),
+    )
+    .await?;
+    let result = async {
+        context
+            .wait_until("unmasked procMount termination message", Duration::from_secs(90), || {
+                let context = context.clone();
+                async move { Ok(termination_message(&context, name).await?.is_some()) }
+            })
+            .await?;
+        let bytes = termination_message(context, name)
+            .await?
+            .unwrap_or_default();
+        if bytes.trim() == "0" {
+            return Err(skip_test(
+                "the runtime kept /proc/kcore masked with procMount=Unmasked",
+            ));
+        }
+        Ok(())
+    }
+    .await;
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    result
+}
