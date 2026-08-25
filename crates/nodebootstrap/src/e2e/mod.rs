@@ -288,6 +288,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_no_swap_default_disables_swap_via_cgroup",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_hugepages_limit_is_enforced_via_cgroup",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_cpu_limit_is_enforced_via_cgroup",
         group: TestGroup::General,
     },
@@ -1001,6 +1009,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_memory_limit_is_enforced_via_cgroup" => {
             resources::memory_limit_is_enforced_via_cgroup(context).await
+        }
+        "test_no_swap_default_disables_swap_via_cgroup" => {
+            resources::no_swap_default_disables_swap_via_cgroup(context).await
+        }
+        "test_hugepages_limit_is_enforced_via_cgroup" => {
+            resources::hugepages_limit_is_enforced_via_cgroup(context).await
         }
         "test_cpu_limit_is_enforced_via_cgroup" => {
             resources::cpu_limit_is_enforced_via_cgroup(context).await

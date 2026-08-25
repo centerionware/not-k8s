@@ -173,6 +173,52 @@ pub(super) async fn memory_limit_is_enforced_via_cgroup(context: &E2eContext) ->
     Ok(())
 }
 
+pub(super) async fn no_swap_default_disables_swap_via_cgroup(
+    context: &E2eContext,
+) -> Result<()> {
+    let value = read_cgroup_value(
+        context,
+        "no-swap-cgroup",
+        "/sys/fs/cgroup/memory.swap.max",
+        json!({"limits": {"memory": "67108864"}}),
+    )
+    .await?;
+    anyhow::ensure!(
+        value.trim() == "0",
+        "default NoSwap memory.swap.max was {:?}, expected 0",
+        value.trim()
+    );
+    Ok(())
+}
+
+pub(super) async fn hugepages_limit_is_enforced_via_cgroup(
+    context: &E2eContext,
+) -> Result<()> {
+    if std::fs::read_to_string("/proc/sys/vm/nr_hugepages")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or_default()
+        == 0
+    {
+        return Err(skip_test(
+            "no hugepages are reserved on this node; HugePages cgroup limits cannot be exercised",
+        ));
+    }
+    let value = read_cgroup_value(
+        context,
+        "hugepages-limit-cgroup",
+        "/sys/fs/cgroup/hugetlb.2MB.max",
+        json!({"limits": {"hugepages-2Mi": "4Mi", "memory": "67108864"}}),
+    )
+    .await?;
+    anyhow::ensure!(
+        value.trim() == "4194304",
+        "hugetlb.2MB.max was {:?}, expected 4194304",
+        value.trim()
+    );
+    Ok(())
+}
+
 pub(super) async fn cpu_limit_is_enforced_via_cgroup(context: &E2eContext) -> Result<()> {
     let value = read_cgroup_value(
         context,
