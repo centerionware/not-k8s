@@ -342,6 +342,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_scheduler_wakes_a_pending_pod_on_a_real_event",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_node_allocatable_cgroup_exists_and_is_capped",
         group: TestGroup::General,
     },
@@ -1086,6 +1090,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_holds_the_leader_lease" => {
             scheduler::scheduler_holds_the_leader_lease(context).await
+        }
+        "test_scheduler_wakes_a_pending_pod_on_a_real_event" => {
+            scheduler::scheduler_wakes_a_pending_pod_on_a_real_event(context).await
         }
         "test_node_allocatable_cgroup_exists_and_is_capped" => {
             cgroup::node_allocatable_cgroup_exists_and_is_capped(context).await

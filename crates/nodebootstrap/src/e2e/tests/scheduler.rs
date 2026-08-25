@@ -5,7 +5,7 @@ use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use serde_json::{json, Map, Value};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn nodescheduler_is_active() -> bool {
     Command::new("systemctl")
@@ -480,4 +480,83 @@ pub(super) async fn scheduler_holds_the_leader_lease(context: &E2eContext) -> Re
             }
         })
         .await
+}
+
+fn allocatable_cpu_millicores(value: &str) -> Option<u64> {
+    if let Some(value) = value.strip_suffix('m') {
+        return value.parse().ok();
+    }
+    if let Some(value) = value.strip_suffix('n') {
+        return value.parse::<u64>().ok().map(|nanos| nanos / 1_000_000);
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .map(|cores| cores.saturating_mul(1_000))
+}
+
+pub(super) async fn scheduler_wakes_a_pending_pod_on_a_real_event(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    require_single_node(context).await?;
+    let node = first_node(context).await?;
+    let allocatable = serde_json::to_value(node)?
+        .pointer("/status/allocatable/cpu")
+        .and_then(Value::as_str)
+        .context("the Node has no allocatable CPU quantity")?;
+    let each = allocatable_cpu_millicores(allocatable)
+        .map(|milli| milli * 60 / 100)
+        .filter(|milli| *milli > 0)
+        .context("the Node reports no usable allocatable CPU")?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let blocker = "scheduler-event-blocker";
+    let waiter = "scheduler-event-waiter";
+    let pod_spec = |cpu: u64| {
+        json!({
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "300"],
+                "resources": {"requests": {"cpu": format!("{cpu}m")}}
+            }]
+        })
+    };
+    let result = async {
+        create_pod(context, blocker, pod_spec(each)).await?;
+        context
+            .wait_until("scheduler blocker to be bound", Duration::from_secs(60), || {
+                pod_is_scheduled(context, blocker)
+            })
+            .await?;
+        create_pod(context, waiter, pod_spec(each)).await?;
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        anyhow::ensure!(
+            !pod_is_scheduled(context, waiter).await?,
+            "the second 60%-CPU Pod was scheduled alongside the blocker"
+        );
+
+        pods.delete(blocker, &DeleteParams::default()).await?;
+        context
+            .wait_until("scheduler blocker to disappear", Duration::from_secs(120), || {
+                let pods = pods.clone();
+                async move { Ok(pods.get_opt(blocker).await?.is_none()) }
+            })
+            .await?;
+        let freed = Instant::now();
+        context
+            .wait_until("waiting Pod to be scheduled after the blocker disappears", Duration::from_secs(120), || {
+                pod_is_scheduled(context, waiter)
+            })
+            .await?;
+        anyhow::ensure!(
+            freed.elapsed() < Duration::from_secs(60),
+            "the pending Pod was not scheduled promptly after the resource-freeing delete; the scheduler event hint may be missing"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = pods.delete(blocker, &DeleteParams::default()).await;
+    let _ = pods.delete(waiter, &DeleteParams::default()).await;
+    result
 }
