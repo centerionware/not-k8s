@@ -122,12 +122,35 @@ jobs:
             --controller-manager=nodecontroller
       - name: Make the admin kubeconfig readable
         run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
+
+      - name: Install reference CSI and DRA drivers on shards 1 and 2
+        if: matrix.needs_drivers
+        env:
+          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+        run: |
+          set -euo pipefail
+          # The test cases are Rust now, but the real reference-driver
+          # deployment helper remains archived with the old harness. Fetch it
+          # only for the two driver shards; it is not part of the release tree.
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodebootstrap-e2e-full-setup.sh
+          chmod +x /tmp/nodebootstrap-e2e-full-setup.sh
+          sudo -E timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
+
       - name: Run bootstrap-native e2e checks
         id: e2e
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: |
           set +e
+          if [[ "${{ matrix.needs_drivers }}" == true ]]; then
+            export TEST_DRA_DEVICE_CLASS=gpu.example.com
+            export TEST_CSI_STORAGE_CLASS=csi-hostpath-sc
+            export TEST_CSI_ATTACH_STORAGE_CLASS=csi-hostpath-sc
+            export TEST_CSI_INLINE_DRIVER=hostpath.csi.k8s.io
+            export TEST_CSI_BLOCK_STORAGE_CLASS=csi-hostpath-block-sc
+            export TEST_CSI_STORAGE_CLASS_WAIT=csi-hostpath-sc-wait
+          fi
           ./dist-bin/nodebootstrap --e2e --shard=${{ matrix.shard }}/5 2>&1 | tee /tmp/e2e-raw.txt
           exit_code=${PIPESTATUS[0]}
           sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
