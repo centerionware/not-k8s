@@ -5,7 +5,6 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, PostParams};
 use serde_json::json;
 use std::fs;
-use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -62,18 +61,21 @@ fn require_cri_and_systemd() -> Result<()> {
 }
 
 fn wait_for_nodelet_server() -> Result<()> {
-    let port = std::env::var("NODELET_SERVER_PORT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(10250);
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    // A raw TCP connect followed by closing the socket reaches nodelet's TLS
+    // listener without sending a ClientHello, which intentionally produces a
+    // noisy "tls handshake eof" warning. systemd's active state is the
+    // readiness signal we need here and does not manufacture a fake client.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
+        if Command::new("systemctl")
+            .args(["is-active", "--quiet", "nodelet.service"])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            anyhow::bail!("nodelet service did not reopen its server on {address}");
+            anyhow::bail!("nodelet service did not become active after restart");
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -110,6 +112,7 @@ impl NodeletEnvOverride {
             run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
             run_privileged("install", &["-m", "0644", local.as_ref(), drop_in_text.as_ref()])?;
             run_privileged("systemctl", &["daemon-reload"])?;
+            run_privileged("systemctl", &["reset-failed", "nodelet.service"])?;
             run_privileged("systemctl", &["restart", "nodelet.service"])
         })();
         let _ = fs::remove_file(local.as_ref());
@@ -124,6 +127,7 @@ impl Drop for NodeletEnvOverride {
         let drop_in = self.drop_in.to_string_lossy();
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["reset-failed", "nodelet.service"]);
         let _ = run_privileged("systemctl", &["restart", "nodelet.service"]);
         let _ = wait_for_nodelet_server();
     }

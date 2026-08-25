@@ -1198,8 +1198,6 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     let client = Client::try_from(kube_config).context(
         "building the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first",
     )?;
-    let context = E2eContext::create(client).await?;
-
     if let Some(shard) = shard {
         println!("bootstrap e2e: {} test(s), shard {shard}", selected.len());
     } else {
@@ -1212,25 +1210,58 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
         let started = Instant::now();
         print!("▶ {name} ... ");
         let _ = std::io::stdout().flush();
-        match tokio::time::timeout(Duration::from_secs(300), run_test(name, &context)).await {
+        // The shell harness gave every test a fresh namespace and removed it
+        // before the next test started. Reusing one namespace here left every
+        // successful test's Pods, Services, and controller-owned children in
+        // the shard until the very end. On a single-node runner that consumed
+        // the node's pod budget and made later failures look unrelated (for
+        // example, a ClusterIP or CSI timeout reported as "Too many pods").
+        // Clean each namespace before continuing. The workflow's next
+        // diagnostic phase collects service state and logs; retaining a
+        // failed namespace would let one failure poison later tests.
+        let test_context = match E2eContext::create(client.clone()).await {
+            Ok(context) => context,
+            Err(error) => {
+                println!("FAIL ({}ms)", started.elapsed().as_millis());
+                eprintln!("    creating the per-test namespace failed: {error:#}");
+                failures.push(name);
+                continue;
+            }
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(300),
+            run_test(name, &test_context),
+        )
+        .await;
+        match result {
             Ok(Ok(())) => {
+                test_context.cleanup().await;
                 passed += 1;
                 println!("PASS ({}ms)", started.elapsed().as_millis());
             }
             Ok(Err(error)) => {
                 if let Some(skip) = error.downcast_ref::<SkipTest>() {
+                    test_context.cleanup().await;
                     skipped += 1;
                     println!("SKIP ({}; {}ms)", skip, started.elapsed().as_millis());
                 } else {
+                    // A failed test must not poison later tests with its
+                    // Pods, Services, PVCs, or controller-owned children.
+                    // The following workflow diagnostic phase collects
+                    // service state and logs, so retaining the namespace is
+                    // not worth allowing a failure cascade on a one-node
+                    // runner.
+                    test_context.cleanup().await;
                     println!("FAIL ({}ms)", started.elapsed().as_millis());
                     eprintln!("    {error:#}");
                     failures.push(name);
                 }
             }
             Err(_) => {
+                test_context.cleanup().await;
                 println!("FAIL ({}ms)", started.elapsed().as_millis());
                 eprintln!(
-                    "    test exceeded the 300-second safety timeout; the next test will run after diagnostics"
+                    "    test exceeded the 300-second safety timeout; the next test will run after cleanup"
                 );
                 failures.push(name);
             }
@@ -1238,7 +1269,6 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     }
 
     if failures.is_empty() {
-        context.cleanup().await;
         println!("Results: {passed} passed, {skipped} skipped, 0 failed");
         Ok(())
     } else {

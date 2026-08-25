@@ -549,13 +549,28 @@ impl CriRuntime {
             }
             None => HashMap::new(),
         };
+        let mut volume_attributes: HashMap<String, String> = csi
+            .volume_attributes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        // Kubernetes marks direct `volumes[].csi` publishes explicitly. A
+        // driver such as the reference hostpath driver uses this bit to
+        // create the synthetic volume on NodePublishVolume; without it, the
+        // deterministic handle below is treated as a pre-created volume ID
+        // and the inline mount fails with NotFound.
+        volume_attributes.insert(
+            "csi.storage.k8s.io/ephemeral".to_string(),
+            "true".to_string(),
+        );
 
         Some(crate::runtime::csi::CsiVolumeSource {
             driver: csi.driver.clone(),
             volume_handle: csi_ephemeral_volume_handle(pod_uid, volume_name),
             fs_type: csi.fs_type.clone().unwrap_or_default(),
             read_only: csi.read_only.unwrap_or(false),
-            volume_attributes: csi.volume_attributes.clone().unwrap_or_default().into_iter().collect(),
+            volume_attributes,
             // Ephemeral inline volumes never stage (no NodeStageVolume) and
             // have no attach concept (no VolumeAttachment) — see
             // `CsiDrivers::mount()`'s `ephemeral` parameter.

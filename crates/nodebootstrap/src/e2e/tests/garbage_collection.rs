@@ -70,6 +70,7 @@ fn containerd_has_image(ctr: &str, image: &str) -> Result<bool> {
 async fn restart_nodelet_with_override(context: &E2eContext, contents: &str) -> Result<()> {
     write_nodelet_gc_override(Some(contents))?;
     run_systemctl(&["daemon-reload",])?;
+    run_systemctl(&["reset-failed", "nodelet.service"])?;
     run_systemctl(&["restart", "nodelet.service"])?;
     context
         .wait_until("nodelet to become active after image-GC configuration", Duration::from_secs(60), || async {

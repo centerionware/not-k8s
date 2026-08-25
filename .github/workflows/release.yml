@@ -163,6 +163,19 @@ jobs:
       - name: Make the admin kubeconfig readable
         run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
 
+      - name: Reserve huge pages for e2e tests
+        run: |
+          set -euo pipefail
+          reserved="$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)"
+          if [[ "$reserved" -eq 0 ]]; then
+            echo 64 | sudo tee /proc/sys/vm/nr_hugepages >/dev/null
+            reserved="$(cat /proc/sys/vm/nr_hugepages)"
+          fi
+          if [[ "$reserved" -eq 0 ]]; then
+            echo "failed to reserve huge pages for the release e2e suite" >&2
+            exit 1
+          fi
+
       - name: Install reference CSI and DRA drivers on shards 1 and 2
         if: matrix.needs_drivers
         env:

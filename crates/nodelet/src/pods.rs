@@ -283,6 +283,11 @@ impl PodController {
         if tasks.contains_key(&key) {
             return;
         }
+        // Seed readiness synchronously. The supervisor repeats this when its
+        // task starts, but the first status write happens immediately after
+        // this method returns and must not observe the health map's default
+        // of Ready=true for a container whose probe has not run yet.
+        probes::initialize_health(&self.health, ns, name, &containers);
         // Round 44 (found in round 35's re-audit): the pod's own
         // terminationGracePeriodSeconds, used when a liveness probe's own
         // override isn't set — same default (30) real kubelet applies.

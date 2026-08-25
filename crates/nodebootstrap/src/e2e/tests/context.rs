@@ -88,8 +88,28 @@ impl E2eContext {
 
     pub(super) async fn cleanup(&self) {
         let namespaces: Api<Namespace> = Api::all(self.client.clone());
-        let _ = namespaces
+        if namespaces
             .delete(&self.namespace, &DeleteParams::default())
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        // Namespace deletion is asynchronous. Wait for the namespace to be
+        // gone before starting another test, otherwise terminating Pods can
+        // still consume the single runner node's pod budget and make the
+        // next test fail with an unrelated scheduling error.
+        let _ = self
+            .wait_until(
+                "the e2e namespace and its resources to be deleted",
+                Duration::from_secs(30),
+                || {
+                    let namespaces = namespaces.clone();
+                    let namespace = self.namespace.clone();
+                    async move { Ok(namespaces.get_opt(&namespace).await?.is_none()) }
+                },
+            )
             .await;
     }
 }

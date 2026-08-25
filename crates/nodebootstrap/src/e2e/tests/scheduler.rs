@@ -424,29 +424,31 @@ pub(super) async fn scheduler_rejects_a_pod_that_does_not_fit(
     )
     .await?;
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let events: Api<Event> = Api::namespaced(context.client.clone(), &context.namespace);
     context
-        .wait_until("oversized Pod to remain unbound", Duration::from_secs(45), || {
-            let pods = pods.clone();
-            async move { Ok(pods.get(name).await?.spec.and_then(|spec| spec.node_name).is_none()) }
-        })
+        .wait_until(
+            "oversized Pod to remain unbound with an Insufficient cpu scheduling event",
+            Duration::from_secs(60),
+            || {
+                let pods = pods.clone();
+                let events = events.clone();
+                async move {
+                    let pod = pods.get(name).await?;
+                    if pod.spec.and_then(|spec| spec.node_name).is_some() {
+                        return Ok(false);
+                    }
+                    Ok(events.list(&ListParams::default()).await?.items.iter().any(|event| {
+                        event.involved_object.name.as_deref() == Some(name)
+                            && event.reason.as_deref() == Some("FailedScheduling")
+                            && event
+                                .message
+                                .as_deref()
+                                .is_some_and(|message| message.contains("Insufficient cpu"))
+                    }))
+                }
+            },
+        )
         .await?;
-    let pod = pods.get(name).await?;
-    let pod_value = serde_json::to_value(pod)?;
-    let message = pod_value
-        .pointer("/status/conditions")
-        .and_then(Value::as_array)
-        .and_then(|conditions| {
-            conditions.iter().find_map(|condition| {
-                condition
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .filter(|message| message.contains("Insufficient cpu"))
-            })
-        });
-    anyhow::ensure!(
-        message.is_some(),
-        "an oversized Pod stayed unbound but did not report an Insufficient cpu scheduling reason"
-    );
     Ok(())
 }
 
