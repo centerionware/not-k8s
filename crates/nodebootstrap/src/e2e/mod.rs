@@ -13,7 +13,6 @@ use std::fmt;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[path = "tests/batch.rs"]
@@ -1238,14 +1237,14 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
         }
     }
 
-    if !failures.is_empty() {
-        dump_failure_diagnostics();
-    }
-    context.cleanup().await;
     if failures.is_empty() {
+        context.cleanup().await;
         println!("Results: {passed} passed, {skipped} skipped, 0 failed");
         Ok(())
     } else {
+        // Leave the test namespace and its status/events in place for the
+        // workflow's next-phase diagnostics step. A failed run is disposable
+        // CI state, and removing it here would erase the evidence we need.
         bail!(
             "bootstrap e2e failed: {} test(s): {}",
             failures.len(),
@@ -1254,69 +1253,14 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     }
 }
 
-const DIAGNOSTIC_UNITS: &[&str] = &[
-    "kube-apiserver",
-    "nodestore",
-    "nodelet",
-    "nodeproxy",
-    "nodescheduler",
-    "nodecontroller",
-    "flanneld",
-    "containerd",
-];
-
-fn privileged_diagnostic_command(program: &str, args: &[&str]) -> Command {
-    let root = Command::new("id")
-        .arg("-u")
-        .output()
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
-    let mut command = if root {
-        Command::new(program)
-    } else {
-        let mut command = Command::new("sudo");
-        command.arg("-n").arg(program);
-        command
-    };
-    command.args(args);
-    command
-}
-
-fn print_diagnostic_command(label: &str, program: &str, args: &[&str]) {
-    println!("── {label} ──");
-    match privileged_diagnostic_command(program, args).output() {
-        Ok(output) => {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-            eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-        Err(error) => eprintln!("{program} failed: {error}"),
+/// Print the tests selected by the same shard/filter logic as `run`, without
+/// loading a kubeconfig or contacting a cluster. CI uses this to omit empty
+/// matrix entries before provisioning a runner.
+pub fn list(only: Option<&str>, shard: Option<&str>) -> Result<()> {
+    for name in select_tests(only, shard)? {
+        println!("{name}");
     }
-}
-
-/// Keep the old shell harness's failure signal available from the Rust path:
-/// capture every installed component while the failed test's namespace and
-/// host state still exist. The workflow also performs its kubernetes-object
-/// dump, but it cannot recover this snapshot when a test times out or the
-/// namespace cleanup has already started.
-fn dump_failure_diagnostics() {
-    println!("==========================================");
-    println!("bootstrap e2e component diagnostics");
-    println!("==========================================");
-    print_diagnostic_command("disk space", "df", &["-h", "/"]);
-    for unit in DIAGNOSTIC_UNITS {
-        print_diagnostic_command(
-            &format!("{unit}.service status"),
-            "systemctl",
-            &["status", &format!("{unit}.service"), "--no-pager", "-l"],
-        );
-        print_diagnostic_command(
-            &format!("{unit}.service logs (last 300 lines)"),
-            "journalctl",
-            &["-u", &format!("{unit}.service"), "--no-pager", "-n", "300"],
-        );
-    }
-    println!("==========================================");
-    println!("bootstrap e2e component diagnostics: end");
-    println!("==========================================");
+    Ok(())
 }
 
 /// Prefer an explicitly supplied kubeconfig. A nodebootstrap-created cluster

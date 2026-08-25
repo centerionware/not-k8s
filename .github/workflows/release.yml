@@ -96,22 +96,49 @@ jobs:
           # run-scoped artifact after the release e2e matrix consumes it.
           retention-days: 1
 
+  plan-e2e:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
+          path: dist-bin
+
+      - name: Plan only non-empty shards
+        id: plan
+        run: |
+          set -euo pipefail
+          chmod +x dist-bin/nodebootstrap
+          matrix='{"include":[]}'
+          for shard in 1 2 3 4 5; do
+            selected="$(./dist-bin/nodebootstrap --e2e-list "--shard=${shard}/5")"
+            if [[ -n "$selected" ]]; then
+              if (( shard <= 2 )); then
+                needs_drivers=true
+              else
+                needs_drivers=false
+              fi
+              matrix="$(jq --argjson shard "$shard" --argjson needs_drivers "$needs_drivers" \
+                '.include += [{shard: $shard, needs_drivers: $needs_drivers}]' <<<"$matrix")"
+            fi
+          done
+          echo "$matrix" | tee /tmp/release-e2e-matrix.json
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   e2e:
-    needs: [build-and-test, prepare-e2e-results]
+    needs: [build-and-test, prepare-e2e-results, plan-e2e]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - shard: 1
-            needs_drivers: true
-          - shard: 2
-            needs_drivers: true
-          - shard: 3
-            needs_drivers: false
-          - shard: 4
-            needs_drivers: false
-          - shard: 5
-            needs_drivers: false
+        include: ${{ fromJSON(needs.plan-e2e.outputs.matrix).include }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -170,7 +197,7 @@ jobs:
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Validate worker bootstrap without flannel or proxy
-        if: matrix.shard == 5
+        if: matrix.shard == 5 && steps.e2e.outputs.exit_code == '0'
         run: |
           set -euo pipefail
           sudo -E env \
@@ -182,7 +209,7 @@ jobs:
               --without-flannel \
               --proxy=none \
               --skip-nodelet
-      - name: Dump bootstrap service state on failure
+      - name: Dump all service state and logs on failure
         if: failure() || steps.e2e.outputs.exit_code != '0'
         run: |
           set +e
@@ -192,7 +219,7 @@ jobs:
           }
 
           echo "=========================================="
-          echo "release-e2e-debug-dump: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "all service state and logs on failure: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "=========================================="
           echo "── disk space ──"
           df -h /
@@ -246,7 +273,7 @@ jobs:
             --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
           kubectl_cmd get clusterrole system:controller:endpointslice-controller -o yaml
           echo "=========================================="
-          echo "release-e2e-debug-dump: end"
+          echo "all service state and logs on failure: end"
           echo "=========================================="
 
       - name: Publish this shard's release e2e results

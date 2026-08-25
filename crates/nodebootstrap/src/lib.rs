@@ -192,6 +192,10 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
         print_help();
         return Ok(());
     }
+    if command.e2e_list {
+        anyhow::ensure!(command.subcommand.is_none(), "--e2e-list cannot be combined with a subcommand");
+        return e2e::list(command.only.as_deref(), command.shard.as_deref());
+    }
     if command.e2e {
         anyhow::ensure!(command.subcommand.is_none(), "--e2e cannot be combined with a subcommand");
         return e2e::run(command.only.as_deref(), command.shard.as_deref());
@@ -215,6 +219,7 @@ fn install_tls_provider() -> Result<()> {
 struct ParsedArgs {
     subcommand: Option<String>,
     e2e: bool,
+    e2e_list: bool,
     only: Option<String>,
     shard: Option<String>,
     help: bool,
@@ -229,6 +234,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
         }
         if arg == "--e2e" {
             parsed.e2e = true;
+            continue;
+        }
+        if arg == "--e2e-list" {
+            parsed.e2e = true;
+            parsed.e2e_list = true;
             continue;
         }
         if let Some(value) = arg.strip_prefix("--only=") {
@@ -492,6 +502,7 @@ fn print_help() {
     println!("  --member-id=N          member id to remove with --remove-control-plane");
     println!("  --node-name=NAME       Kubernetes node name (defaults to hostname)");
     println!("  --e2e                  run bootstrap-native end-to-end checks");
+    println!("  --e2e-list             list selected e2e checks without contacting a cluster");
     println!("  --only=TEST[,TEST...]  select e2e tests by name substring");
     println!("  --shard=N/5            run one of the five CI e2e shards");
     println!("  --skip-control-plane   legacy: stage services against an existing cluster");
