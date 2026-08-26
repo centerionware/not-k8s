@@ -47,7 +47,7 @@ pub mod watch;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{error, info};
 
 /// Install rustls' default CryptoProvider, unless something already did.
 ///
