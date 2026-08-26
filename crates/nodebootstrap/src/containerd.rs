@@ -239,6 +239,16 @@ fn ensure_config() -> Result<bool> {
         config = config.replace(r#"snapshotter = "overlayfs""#, r#"snapshotter = "native""#);
     }
 
+    // The CRI plugin must be allowed to apply OCI hugetlb limits. Some
+    // distro/containerd configs disable this even though the host exposes
+    // the controller, which silently leaves every container at the kernel's
+    // unlimited hugetlb value.
+    let hugetlb_enabled = config.contains("disable_hugetlb_controller = true");
+    if hugetlb_enabled {
+        tracing::info!("enabling containerd CRI hugetlb limits");
+        config = config.replace("disable_hugetlb_controller = true", "disable_hugetlb_controller = false");
+    }
+
     // CDI device injection, off by default -- see this module's doc
     // comment and container-runtime.sh's own for why not-k8s's DRA support
     // needs this on.
@@ -247,7 +257,7 @@ fn ensure_config() -> Result<bool> {
     }
 
     std::fs::write(CONFIG_PATH, config).context("writing patched config.toml")?;
-    Ok(wrote_fresh)
+    Ok(wrote_fresh || hugetlb_enabled)
 }
 
 /// The "Known CI gotcha" fix from `CLAUDE.md`: strip `"cri"` out of
