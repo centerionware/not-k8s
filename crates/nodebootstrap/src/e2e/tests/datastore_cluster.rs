@@ -270,7 +270,7 @@ impl Cluster {
             match self.leader() {
                 Ok(Some(leader)) => return Ok(leader),
                 Ok(None) => {}
-                Err(error) => last_status_error = Some(error.to_string()),
+                Err(error) => last_status_error = Some(format!("{error:#}")),
             }
             for member in &mut self.members {
                 if let Some(status) = member.child.try_wait()? {
