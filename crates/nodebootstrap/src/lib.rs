@@ -29,9 +29,9 @@ use anyhow::{bail, Context, Result};
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
 /// -> nodecontroller long enough for node-CIDR allocation -> nodescheduler
-/// long enough for CoreDNS to create cni0 -> CNI readiness -> apiserver
-/// network endpoint refresh -> nodecontroller and nodescheduler restart ->
-/// the remaining replacement services.
+/// -> CNI seed Pod and readiness -> apiserver network endpoint refresh ->
+/// nodecontroller and nodescheduler restart -> the remaining replacement
+/// services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
@@ -54,8 +54,9 @@ use anyhow::{bail, Context, Result};
 /// apiserver network-endpoint refresh is performed and nodecontroller is
 /// restarted so neither it nor the scheduler keeps watches from the
 /// pre-refresh apiserver instance. The scheduler is started before the CNI
-/// barrier so CoreDNS can be scheduled and nodelet can create cni0 for the
-/// endpoint refresh to discover, then restarted after that refresh.
+/// barrier so a disposable seed Pod can be scheduled and nodelet can create
+/// cni0 for the endpoint refresh to discover, then restarted after that
+/// refresh.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
     if cfg.remove_control_plane {

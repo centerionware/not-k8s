@@ -21,6 +21,11 @@
 //! those two identities.
 
 use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::{Pod, ServiceAccount};
+use kube::api::{Api, DeleteParams, PostParams};
+use kube::config::Kubeconfig;
+use kube::Client;
+use serde_json::json;
 
 use crate::config::Config;
 use crate::service_mgr::{self, SupervisedService};
@@ -101,6 +106,7 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
         return Ok(());
     }
 
+    ensure_cni_seed_pod(cfg)?;
     let advertise_address = wait_for_cni_address()?;
     let bin_dir = cfg.toolchain_dir().join("bin");
     let bin = bin_dir.join("kube-apiserver");
@@ -115,8 +121,122 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
     crate::service_reconciler::reset_and_wait_for_reachable_endpoint(
         &cfg.kubeconfig_dir().join("admin.kubeconfig"),
     )?;
+    remove_cni_seed_pod(cfg);
     tracing::info!(address = %advertise_address, "kube-apiserver now advertises the reachable CNI gateway");
     Ok(())
+}
+
+/// Create one real, disposable Pod before waiting for `cni0`. The replacement
+/// scheduler and nodelet are both event-driven: applying CoreDNS is not a
+/// sufficient barrier because its Deployment/ReplicaSet may not have
+/// produced a Pod yet. A directly-created seed preserves the old shell
+/// bootstrap's smoke Pod behavior while keeping the bootstrap path in Rust.
+/// The Pod gets its own explicitly-created ServiceAccount and does not mount a
+/// token, so this does not depend on a serviceaccount controller that
+/// nodecontroller intentionally does not replace yet.
+fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
+    let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let kubeconfig = Kubeconfig::read_from(&kubeconfig_path)
+        .with_context(|| format!("reading {} for the CNI seed Pod", kubeconfig_path.display()))?;
+    let client = Client::try_from(kubeconfig).context("building the CNI seed Pod Kubernetes client")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building the CNI seed Pod runtime")?;
+
+    runtime.block_on(async move {
+        let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+        let service_accounts: Api<ServiceAccount> = Api::namespaced(client, "kube-system");
+        const NAME: &str = "nodebootstrap-cni-seed";
+
+        if pods.get_opt(NAME).await?.is_some() {
+            tracing::info!(pod = NAME, "reusing existing CNI seed Pod");
+            return Ok::<_, anyhow::Error>(());
+        }
+
+        if service_accounts.get_opt(NAME).await?.is_none() {
+            let service_account: ServiceAccount = serde_json::from_value(json!({
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {"name": NAME, "namespace": "kube-system"}
+            }))
+            .context("rendering the CNI seed ServiceAccount")?;
+            service_accounts
+                .create(&PostParams::default(), &service_account)
+                .await
+                .context("creating the CNI seed ServiceAccount")?;
+        }
+
+        let pod: Pod = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": NAME,
+                "namespace": "kube-system",
+                "labels": {"app.kubernetes.io/name": "nodebootstrap-cni-seed"}
+            },
+            "spec": {
+                "serviceAccountName": NAME,
+                "automountServiceAccountToken": false,
+                "restartPolicy": "Never",
+                "containers": [{
+                    "name": "seed",
+                    "image": "busybox:latest",
+                    "command": ["sleep", "600"]
+                }]
+            }
+        }))
+        .context("rendering the CNI seed Pod")?;
+        pods.create(&PostParams::default(), &pod)
+            .await
+            .context("creating the CNI seed Pod")?;
+        tracing::info!(pod = NAME, "created CNI seed Pod to trigger the node CNI");
+        Ok::<_, anyhow::Error>(())
+    })
+}
+
+/// A failed bootstrap intentionally leaves the seed Pod behind for the
+/// failure dump. On the successful path, remove it after the apiserver has
+/// switched to the reachable CNI gateway; the bridge remains managed by
+/// flannel and no bootstrap workload is left in the cluster.
+fn remove_cni_seed_pod(cfg: &Config) {
+    let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let kubeconfig = match Kubeconfig::read_from(&kubeconfig_path) {
+        Ok(kubeconfig) => kubeconfig,
+        Err(error) => {
+            tracing::warn!(?error, "could not read kubeconfig to remove the CNI seed Pod");
+            return;
+        }
+    };
+    let client = match Client::try_from(kubeconfig) {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(?error, "could not build a client to remove the CNI seed Pod");
+            return;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::warn!(?error, "could not build a runtime to remove the CNI seed Pod");
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+        let service_accounts: Api<ServiceAccount> = Api::namespaced(client, "kube-system");
+        if let Err(error) = pods.delete("nodebootstrap-cni-seed", &DeleteParams::default()).await {
+            tracing::warn!(?error, "could not remove the CNI seed Pod");
+        } else {
+            tracing::info!(pod = "nodebootstrap-cni-seed", "removed CNI seed Pod");
+        }
+        if let Err(error) = service_accounts
+            .delete("nodebootstrap-cni-seed", &DeleteParams::default())
+            .await
+        {
+            tracing::warn!(?error, "could not remove the CNI seed ServiceAccount");
+        }
+    });
 }
 
 fn target_spec(cfg: &Config) -> TargetSpec {
