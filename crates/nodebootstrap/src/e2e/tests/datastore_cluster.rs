@@ -25,6 +25,14 @@ fn b64(value: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(value)
 }
 
+fn json_u64(value: Option<&Value>) -> Option<u64> {
+    value.and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })
+}
+
 fn required_binary() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("NOTK8S_NODESTORE_E2E_BINARY") {
         if Path::new(&path).is_file() {
@@ -265,7 +273,7 @@ impl Cluster {
                     continue;
                 }
             };
-            let current = status.get("leaderId").and_then(Value::as_u64).unwrap_or_default();
+            let current = json_u64(status.get("leaderId")).unwrap_or_default();
             if current == 0 {
                 continue;
             }
