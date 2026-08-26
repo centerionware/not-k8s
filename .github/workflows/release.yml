@@ -8,6 +8,12 @@ name: Release pipeline
 # tests use all five shards.
 on:
   workflow_dispatch:
+    inputs:
+      skip_e2e:
+        description: 'Skip e2e only when a separate full e2e run already passed'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -17,6 +23,7 @@ env:
 
 jobs:
   prepare-e2e-results:
+    if: ${{ !inputs.skip_e2e }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -71,6 +78,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
           sudo -E env "PATH=$PATH" cargo test -p notk8s
       - name: Stage the bootstrapper and combined runtime applet for e2e
+        if: ${{ !inputs.skip_e2e }}
         run: |
           set -euo pipefail
           rustup target add x86_64-unknown-linux-musl
@@ -89,6 +97,7 @@ jobs:
           install -m0755 "$stage/bin/nodebootstrap" e2e-bin/nodebootstrap
           install -m0755 "$stage/bin/notk8s" e2e-bin/notk8s
       - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.skip_e2e }}
         with:
           name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: e2e-bin/
@@ -97,6 +106,7 @@ jobs:
           retention-days: 1
 
   plan-e2e:
+    if: ${{ !inputs.skip_e2e }}
     needs: build-and-test
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -134,6 +144,7 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   e2e:
+    if: ${{ !inputs.skip_e2e }}
     needs: [build-and-test, prepare-e2e-results, plan-e2e]
     strategy:
       fail-fast: false
@@ -366,7 +377,10 @@ jobs:
           fi
 
   build-release:
-    needs: e2e
+    # A skip is an explicit manual release override after a separate full e2e
+    # run; unit tests still have to pass in this release run.
+    if: ${{ always() && needs.build-and-test.result == 'success' && (inputs.skip_e2e || needs.e2e.result == 'success') }}
+    needs: [build-and-test, e2e]
     strategy:
       fail-fast: false
       matrix:
@@ -406,11 +420,11 @@ jobs:
             else
               python3 -m pip install --quiet --user ziglang
               cat > /tmp/zigcc-armv7.py <<'PY'
-              import os
-              import sys
-              args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
-              os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "arm-linux-musleabihf", *args])
-              PY
+          import os
+          import sys
+          args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
+          os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "arm-linux-musleabihf", *args])
+          PY
               chmod 0755 /tmp/zigcc-armv7.py
               cc_bin=/tmp/zigcc-armv7.py
               rustflags_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
