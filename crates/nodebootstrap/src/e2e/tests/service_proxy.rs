@@ -102,10 +102,10 @@ async fn create_service_for_selector(
     Ok(())
 }
 
-async fn receives_marker(address: &str) -> Result<bool> {
+async fn receives_marker(address: &str, marker: &str) -> Result<bool> {
     Ok(fetch_response(address)
         .await?
-        .is_some_and(|response| response.contains("service-proxy-marker")))
+        .is_some_and(|response| response.contains(marker)))
 }
 
 async fn fetch_response(address: &str) -> Result<Option<String>> {
@@ -208,21 +208,6 @@ async fn service_cluster_ip(context: &E2eContext, name: &str) -> Result<String> 
         .context("Service did not receive a ClusterIP")
 }
 
-async fn terminated_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
-    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
-    Ok(pods
-        .get(name)
-        .await?
-        .status
-        .and_then(|status| status.container_statuses)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|status| status.name == "app")
-        .and_then(|status| status.state)
-        .and_then(|state| state.terminated)
-        .and_then(|terminated| terminated.message))
-}
-
 async fn node_internal_ip(context: &E2eContext) -> Result<String> {
     Api::<Node>::all(context.client.clone())
         .list(&ListParams::default())
@@ -260,7 +245,7 @@ pub(super) async fn clusterip_service_routes_to_its_backend_pod(
                 let Some(cluster_ip) = cluster_ip else {
                     return Ok(false);
                 };
-                receives_marker(&format!("{cluster_ip}:18090")).await
+                receives_marker(&format!("{cluster_ip}:18090"), "service-proxy-marker").await
             }
         })
         .await
@@ -276,7 +261,7 @@ pub(super) async fn nodeport_service_is_reachable_on_the_node_ip(
     context
         .wait_until("NodePort service to route", Duration::from_secs(90), || {
             let address = format!("{node_ip}:30080");
-            async move { receives_marker(&address).await }
+            async move { receives_marker(&address, "service-proxy-marker").await }
         })
         .await
 }
@@ -370,7 +355,7 @@ pub(super) async fn headless_service_does_not_break_other_services(
                 let Some(cluster_ip) = cluster_ip else {
                     return Ok(false);
                 };
-                receives_marker(&format!("{cluster_ip}:18095")).await
+                receives_marker(&format!("{cluster_ip}:18095"), "service-proxy-marker").await
             }
         })
         .await
@@ -398,17 +383,37 @@ pub(super) async fn clusterip_is_reachable_from_inside_a_pod(
         "metadata": {"name": client_name},
         "spec": {
             "restartPolicy": "Never",
-            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", format!("wget -qO- --timeout=5 http://{cluster_ip}:18093/ > /dev/termination-log")]}]
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "sleep 3600"]}]
         }
     }))?;
     pods.create(&PostParams::default(), &client).await?;
     context
+        .wait_until("ClusterIP client Pod Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(client_name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    context
+        .wait_until("ClusterIP Service nftables rule", Duration::from_secs(60), || async {
+            Ok(nft_table()?.contains(&cluster_ip))
+        })
+        .await?;
+    context
         .wait_until("ClusterIP access from a Pod", Duration::from_secs(90), || {
             let context = context.clone();
+            let cluster_ip = cluster_ip.clone();
             async move {
-                Ok(terminated_message(&context, client_name)
-                    .await?
-                    .is_some_and(|message| message.contains("service-proxy-marker")))
+                let url = format!("http://{cluster_ip}:18093/");
+                let output = exec_output(&context, client_name, &["wget", "-qO-", "--timeout=5", &url]).await;
+                Ok(output.is_ok_and(|output| output.contains("service-proxy-marker")))
             }
         })
         .await
@@ -477,6 +482,11 @@ pub(super) async fn a_pod_reaching_its_own_service_gets_hairpin_masquerade(
         nft_table()?.contains("masquerade"),
         "nodeproxy nftables table has no hairpin masquerade rule"
     );
+    context
+        .wait_until("hairpin Service nftables rule", Duration::from_secs(60), || async {
+            Ok(nft_table()?.contains(&cluster_ip))
+        })
+        .await?;
         context
         .wait_until("hairpin request to the backend's own Service", Duration::from_secs(60), || {
             let context = context.clone();
@@ -676,14 +686,19 @@ pub(super) async fn nodeproxy_rebuilds_the_whole_ruleset_after_a_restart(
         .await?;
     let cluster_ip = service_cluster_ip(context, service).await?;
     context
+        .wait_until("restart-check Service nftables rule", Duration::from_secs(60), || async {
+            Ok(nft_table()?.contains(&cluster_ip))
+        })
+        .await?;
+    context
         .wait_until("restart-check Service before restart", Duration::from_secs(60), || async {
-            Ok(receives_marker(&format!("{cluster_ip}:18105")).await?)
+            Ok(receives_marker(&format!("{cluster_ip}:18105"), "restart-marker").await?)
         })
         .await?;
     restart_nodeproxy()?;
     context
         .wait_until("restart-check Service after nodeproxy restart", Duration::from_secs(90), || async {
-            Ok(receives_marker(&format!("{cluster_ip}:18105")).await?)
+            Ok(receives_marker(&format!("{cluster_ip}:18105"), "restart-marker").await?)
         })
         .await
 }
