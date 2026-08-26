@@ -14,20 +14,13 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 const KUBE_APISERVER_VERSION: &str = "v1.33.0";
 const API_TOKEN: &str = "nodebootstrap-e2e-token";
-
-fn command_available(command: &str) -> bool {
-    Command::new(command)
-        .arg("--help")
-        .output()
-        .is_ok_and(|output| output.status.success() || output.status.code() == Some(1))
-}
 
 fn architecture() -> Result<&'static str> {
     match std::env::consts::ARCH {
@@ -74,16 +67,6 @@ fn kube_apiserver_binary() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn run_success(command: &mut Command, description: &str) -> Result<Output> {
-    let output = command.output().with_context(|| description.to_string())?;
-    anyhow::ensure!(
-        output.status.success(),
-        "{description} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(output)
-}
-
 struct ApiServerHarness {
     store: DatastoreProcess,
     api: Option<Child>,
@@ -93,9 +76,6 @@ struct ApiServerHarness {
 
 impl ApiServerHarness {
     async fn start() -> Result<Self> {
-        if !command_available("openssl") {
-            return Err(skip_test("datastore apiserver tests require openssl"));
-        }
         let binary = kube_apiserver_binary()?;
         let store = DatastoreProcess::start()?;
         let root = std::env::temp_dir().join(format!(
@@ -107,64 +87,16 @@ impl ApiServerHarness {
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&root)?;
-        run_success(
-            Command::new("openssl")
-                .args(["genrsa", "-out"])
-                .arg(root.join("sa.key"))
-                .arg("2048"),
-            "creating the apiserver service-account key",
-        )?;
-        run_success(
-            Command::new("openssl")
-                .args(["rsa", "-in"])
-                .arg(root.join("sa.key"))
-                .args(["-pubout", "-out"])
-                .arg(root.join("sa.pub")),
-            "creating the apiserver service-account public key",
-        )?;
-        run_success(
-            Command::new("openssl")
-                .args([
-                    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                    "-keyout",
-                ])
-                .arg(root.join("serving-ca.key"))
-                .args(["-out"])
-                .arg(root.join("serving-ca.crt"))
-                .args([
-                    "-days", "2", "-subj", "/CN=nodebootstrap-e2e-apiserver-ca",
-                    "-addext", "basicConstraints=critical,CA:true",
-                    "-addext", "keyUsage=critical,keyCertSign,cRLSign",
-                ]),
-            "creating the throwaway apiserver serving CA",
-        )?;
-        fs::write(
-            root.join("serving.ext"),
-            "basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n",
-        )?;
-        run_success(
-            Command::new("openssl")
-                .args(["req", "-newkey", "rsa:2048", "-nodes", "-keyout"])
-                .arg(root.join("serving.key"))
-                .args(["-out"])
-                .arg(root.join("serving.csr"))
-                .args(["-subj", "/CN=localhost"]),
-            "creating the throwaway apiserver serving request",
-        )?;
-        run_success(
-            Command::new("openssl")
-                .args(["x509", "-req", "-days", "2", "-in"])
-                .arg(root.join("serving.csr"))
-                .args(["-CA"])
-                .arg(root.join("serving-ca.crt"))
-                .args(["-CAkey"])
-                .arg(root.join("serving-ca.key"))
-                .args(["-CAcreateserial", "-out"])
-                .arg(root.join("serving.crt"))
-                .args(["-extfile"])
-                .arg(root.join("serving.ext")),
-            "signing the throwaway apiserver serving certificate",
-        )?;
+        let pki = crate::pki::generate(&crate::pki::ClusterPkiSpec {
+            service_ip: "127.0.0.1".parse()?,
+            extra_sans: Vec::new(),
+        })
+        .context("generating throwaway apiserver PKI")?;
+        fs::write(root.join("sa.key"), pki.sa_signing.key_pem)?;
+        fs::write(root.join("sa.pub"), pki.sa_signing.cert_pem)?;
+        fs::write(root.join("serving-ca.crt"), pki.ca.cert_pem)?;
+        fs::write(root.join("serving.crt"), pki.apiserver_serving.cert_pem)?;
+        fs::write(root.join("serving.key"), pki.apiserver_serving.key_pem)?;
         fs::write(root.join("tokens.csv"), format!("{API_TOKEN},e2e-admin,e2e-admin,system:masters\n"))?;
         let port = std::env::var("NODESTORE_APISERVER_TEST_PORT")
             .ok()

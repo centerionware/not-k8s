@@ -10,10 +10,14 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use base64::Engine;
+use rcgen::{
+    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType,
+};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn b64(value: &str) -> String {
@@ -37,87 +41,54 @@ fn required_binary() -> Result<PathBuf> {
     }
 }
 
-fn require_tools() -> Result<()> {
-    for tool in ["openssl"] {
-        let available = Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success());
-        if !available {
-            return Err(skip_test(format!("datastore cluster tests require {tool}")));
-        }
-    }
-    Ok(())
+struct TestCa {
+    cert: Certificate,
+    key: KeyPair,
+    cert_path: PathBuf,
 }
 
-fn run_success(command: &mut Command, description: &str) -> Result<Output> {
-    let output = command.output().with_context(|| description.to_string())?;
-    anyhow::ensure!(
-        output.status.success(),
-        "{description} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(output)
+fn make_ca(root: &Path, name: &str) -> Result<TestCa> {
+    let cert_path = root.join(format!("{name}.crt"));
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CommonName, format!("not-k8s-e2e-{name}"));
+    params.distinguished_name = distinguished_name;
+    let key = KeyPair::generate().context("generating datastore test CA key")?;
+    let cert = params
+        .self_signed(&key)
+        .context("self-signing datastore test CA")?;
+    fs::write(&cert_path, cert.pem())?;
+    Ok(TestCa {
+        cert,
+        key,
+        cert_path,
+    })
 }
 
-fn make_ca(root: &Path, name: &str) -> Result<(PathBuf, PathBuf)> {
-    let key = root.join(format!("{name}.key"));
-    let cert = root.join(format!("{name}.crt"));
-    run_success(
-        Command::new("openssl")
-            .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2"])
-            .arg("-keyout")
-            .arg(&key)
-            .arg("-out")
-            .arg(&cert)
-            .args(["-subj", &format!("/CN=not-k8s-e2e-{name}")])
-            .args([
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-                "-addext",
-                "keyUsage=critical,keyCertSign,cRLSign,digitalSignature",
-            ]),
-        "creating datastore test CA",
-    )?;
-    Ok((key, cert))
-}
-
-fn make_leaf(root: &Path, name: &str, ca_key: &Path, ca_cert: &Path) -> Result<(PathBuf, PathBuf)> {
-    let key = root.join(format!("{name}.key"));
-    let csr = root.join(format!("{name}.csr"));
-    let cert = root.join(format!("{name}.crt"));
-    let ext = root.join(format!("{name}.ext"));
-    fs::write(
-        &ext,
-        "subjectAltName=IP:127.0.0.1,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\n",
-    )?;
-    run_success(
-        Command::new("openssl")
-            .args(["req", "-newkey", "rsa:2048", "-nodes"])
-            .arg("-keyout")
-            .arg(&key)
-            .arg("-out")
-            .arg(&csr)
-            .args(["-subj", &format!("/CN=not-k8s-e2e-{name}")]),
-        "creating datastore test certificate request",
-    )?;
-    run_success(
-        Command::new("openssl")
-            .args(["x509", "-req", "-days", "2"])
-            .arg("-in")
-            .arg(&csr)
-            .arg("-CA")
-            .arg(ca_cert)
-            .arg("-CAkey")
-            .arg(ca_key)
-            .arg("-CAcreateserial")
-            .arg("-out")
-            .arg(&cert)
-            .arg("-extfile")
-            .arg(&ext),
-        "signing datastore test certificate",
-    )?;
-    Ok((cert, key))
+fn make_leaf(root: &Path, name: &str, ca: &TestCa) -> Result<(PathBuf, PathBuf)> {
+    let key_path = root.join(format!("{name}.key"));
+    let cert_path = root.join(format!("{name}.crt"));
+    let mut params = CertificateParams::new(vec!["localhost".to_owned()])
+        .context("building datastore test certificate parameters")?;
+    params
+        .subject_alt_names
+        .push(SanType::IpAddress("127.0.0.1".parse()?));
+    params.extended_key_usages = vec![
+        ExtendedKeyUsagePurpose::ServerAuth,
+        ExtendedKeyUsagePurpose::ClientAuth,
+    ];
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CommonName, format!("not-k8s-e2e-{name}"));
+    params.distinguished_name = distinguished_name;
+    let key = KeyPair::generate().context("generating datastore test certificate key")?;
+    let cert = params
+        .signed_by(&key, &ca.cert, &ca.key)
+        .context("signing datastore test certificate")?;
+    fs::write(&cert_path, cert.pem())?;
+    fs::write(&key_path, key.serialize_pem())?;
+    Ok((cert_path, key_path))
 }
 
 struct Pki {
@@ -131,15 +102,15 @@ struct Pki {
 
 impl Pki {
     fn create(root: &Path) -> Result<Self> {
-        let (client_ca_key, client_ca) = make_ca(root, "client-ca")?;
-        let (client_cert, client_key) = make_leaf(root, "client", &client_ca_key, &client_ca)?;
-        let (peer_ca_key, peer_ca) = make_ca(root, "peer-ca")?;
-        let (peer_cert, peer_key) = make_leaf(root, "peer", &peer_ca_key, &peer_ca)?;
+        let client_ca = make_ca(root, "client-ca")?;
+        let (client_cert, client_key) = make_leaf(root, "client", &client_ca)?;
+        let peer_ca = make_ca(root, "peer-ca")?;
+        let (peer_cert, peer_key) = make_leaf(root, "peer", &peer_ca)?;
         Ok(Self {
-            client_ca,
+            client_ca: client_ca.cert_path,
             client_cert,
             client_key,
-            peer_ca,
+            peer_ca: peer_ca.cert_path,
             peer_cert,
             peer_key,
         })
@@ -163,7 +134,6 @@ struct Cluster {
 
 impl Cluster {
     fn start() -> Result<Self> {
-        require_tools()?;
         let binary = required_binary()?;
         let root = std::env::temp_dir().join(format!(
             "nodebootstrap-datastore-cluster-{}-{}",
