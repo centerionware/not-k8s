@@ -42,6 +42,9 @@ Common commands after downloading the release binary:
                                      # nodelet; no local control plane, flannel, or proxy
 ./bootstrap --control-plane --join=https://cp-1:2379 --peer-url=https://cp-2:2380
                                      # add a nodestore control-plane member
+./bootstrap --control-plane --join=https://cp-1:2379 --peer-url=https://cp-2:2380 \
+  --advertise-address=192.0.2.12
+                                     # advertise this apiserver's reachable IP
 ./bootstrap --remove-control-plane --join=https://cp-1:2379 --member-id=123
                                      # remove the member, then remove local CP services
 ./bootstrap --e2e                   # run bootstrap-native checks against the cluster
@@ -79,6 +82,12 @@ local member also needs NODESTORE_CERT_FILE/KEY_FILE/TRUSTED_CA_FILE and the
 corresponding NODESTORE_PEER_* triple for its server and raft peer identities.
 Removal requires --member-id and a different reachable member as --join; local
 data and PKI are retained after service removal.
+
+`--advertise-address=IP` (or `NODEBOOTSTRAP_ADVERTISE_ADDRESS`) sets the
+address passed to each local kube-apiserver and is retained for later updates.
+Use the address reachable by the other control-plane nodes and by the cluster;
+when omitted, single-node flannel bootstrap discovers the CNI bridge after the
+initial startup.
 
 There is no shell installer or shell e2e command in the 0.7.1 tree. Download
 the combined `notk8s` binary, symlink it to `bootstrap`, and use the commands

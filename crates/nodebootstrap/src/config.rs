@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 
 const WITHOUT_FLANNEL_MARKER: &str = "without-flannel";
+const ADVERTISE_ADDRESS_MARKER: &str = "advertise-address";
 
 /// Where to fetch a component from, mirroring `bootstrap-release.sh`'s
 /// existing choice between compiling and downloading a published artifact.
@@ -105,6 +106,10 @@ pub struct Config {
     /// `nodeproxy`) installs it as normal.
     pub skip_nodeproxy: bool,
     pub skip_nodelet: bool,
+    /// IP address passed to kube-apiserver's `--advertise-address`. When it
+    /// is set, it is persisted so a later update keeps advertising the same
+    /// address instead of rediscovering a different interface.
+    pub advertise_address: Option<String>,
 }
 
 impl Config {
@@ -133,6 +138,10 @@ impl Config {
 
     pub fn without_flannel_marker(&self) -> std::path::PathBuf {
         self.state_dir().join(WITHOUT_FLANNEL_MARKER)
+    }
+
+    pub fn advertise_address_marker(&self) -> std::path::PathBuf {
+        self.state_dir().join(ADVERTISE_ADDRESS_MARKER)
     }
 
     /// The kubeconfig every node-side service should use to reach the API.
@@ -192,6 +201,16 @@ impl Config {
             tracing::info!(path = %marker.display(), "saved --without-flannel for future updates");
         } else if std::env::var("NODEBOOTSTRAP_CNI").as_deref() == Ok("flannel") {
             let _ = std::fs::remove_file(&marker);
+        }
+        if let Some(address) = &self.advertise_address {
+            let marker = self.advertise_address_marker();
+            if let Some(parent) = marker.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating nodebootstrap state dir {}", parent.display()))?;
+            }
+            std::fs::write(&marker, format!("{address}\n"))
+                .with_context(|| format!("saving apiserver advertise address at {}", marker.display()))?;
+            tracing::info!(address, path = %marker.display(), "saved apiserver advertise address for future updates");
         }
         Ok(())
     }
@@ -321,6 +340,21 @@ impl Config {
         let explicit_cni = std::env::var("NODEBOOTSTRAP_CNI");
         let state_dir = std::env::var("NODEBOOTSTRAP_STATE_DIR")
             .unwrap_or_else(|_| "/var/lib/nodebootstrap".to_string());
+        let advertise_address = std::env::var("NODEBOOTSTRAP_ADVERTISE_ADDRESS")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::fs::read_to_string(std::path::Path::new(&state_dir).join(ADVERTISE_ADDRESS_MARKER))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            });
+        if let Some(address) = &advertise_address {
+            anyhow::ensure!(
+                address.parse::<std::net::IpAddr>().is_ok(),
+                "NODEBOOTSTRAP_ADVERTISE_ADDRESS must be an IP address, got '{address}'"
+            );
+        }
         let marker_exists = std::path::Path::new(&state_dir)
             .join(WITHOUT_FLANNEL_MARKER)
             .is_file();
@@ -384,6 +418,7 @@ impl Config {
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
             skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none") || control_plane,
             skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET") || control_plane,
+            advertise_address,
         })
     }
 }

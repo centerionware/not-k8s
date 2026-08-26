@@ -307,6 +307,14 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NODEBOOTSTRAP_PEER_URL", value);
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--advertise-address=") {
+            anyhow::ensure!(!value.is_empty(), "--advertise-address requires an IP address");
+            value
+                .parse::<std::net::IpAddr>()
+                .context("--advertise-address must be an IP address")?;
+            std::env::set_var("NODEBOOTSTRAP_ADVERTISE_ADDRESS", value);
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--join-ca=") {
             anyhow::ensure!(!value.is_empty(), "--join-ca requires a CA bundle path");
             std::env::set_var("NODEBOOTSTRAP_JOIN_CA_FILE", value);
@@ -513,6 +521,7 @@ fn print_help() {
     println!("  --control-plane        join nodestore and install control-plane services only");
     println!("  --join=URL             existing nodestore endpoint for control-plane membership");
     println!("  --peer-url=URL         this node's advertised nodestore peer URL");
+    println!("  --advertise-address=IP kube-apiserver address advertised to the cluster");
     println!("  --join-ca=PATH         CA for nodestore membership RPCs");
     println!("  --join-cert=PATH       client certificate for membership RPCs");
     println!("  --join-key=PATH        client key for membership RPCs");

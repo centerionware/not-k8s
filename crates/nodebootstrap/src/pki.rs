@@ -98,7 +98,11 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         dir.display(),
         required.len()
     );
-    let cluster = generate(&ClusterPkiSpec::default())?;
+    let mut spec = ClusterPkiSpec::default();
+    if let Some(address) = &cfg.advertise_address {
+        spec.extra_sans.push(address.clone());
+    }
+    let cluster = generate(&spec)?;
     cluster.write_to_dir(&dir)?;
     tracing::info!(dir = %dir.display(), "wrote cluster PKI");
     Ok(())
@@ -162,12 +166,19 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         "kubernetes.default.svc.cluster.local".to_string(),
         "localhost".to_string(),
     ];
-    serving_sans.extend(spec.extra_sans.iter().cloned());
+    let mut serving_ips = vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip];
+    for san in &spec.extra_sans {
+        if let Ok(ip) = san.parse() {
+            serving_ips.push(ip);
+        } else {
+            serving_sans.push(san.clone());
+        }
+    }
     let apiserver_serving = issue_serving_cert(
         &ca_cert,
         &ca_key,
         &serving_sans,
-        &[std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip],
+        &serving_ips,
     )
     .context("issuing apiserver serving cert")?;
     let kube_apiserver_client = issue_client_cert(&ca_cert, &ca_key, "system:kube-apiserver", &[])

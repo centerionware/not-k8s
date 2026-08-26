@@ -93,16 +93,13 @@ pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
 }
 
 /// The first apiserver start happens before CNI has created `cni0`, so
-/// `target_spec()` has to fall back to loopback. That address is valid for
-/// nodebootstrap's own kubeconfigs but invalid as the `default/kubernetes`
-/// Service endpoint: the apiserver rejects loopback Endpoints, and pods then
-/// cannot reach the ClusterIP used by CSI/DRA sidecars. Once nodelet has
-/// started the bootstrap pods and flannel has written its subnet, `cni0`
-/// exists and its address is the bridge gateway for every pod on this node.
-/// Reinstall the unit once with that address so the apiserver's own
-/// bootstrap-controller publishes a usable endpoint.
+/// An explicit address is left untouched. Otherwise, once nodelet has started
+/// the bootstrap pod and flannel has written its subnet, `cni0` exists and its
+/// address is the bridge gateway for every pod on this node. Reinstall the
+/// unit once with that address so the apiserver's own bootstrap-controller
+/// publishes a usable endpoint.
 pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
-    if !cfg.with_cri || cfg.skip_nodelet || cfg.cni_provider.as_deref() != Some("flannel") {
+    if cfg.advertise_address.is_some() || !cfg.with_cri || cfg.skip_nodelet || cfg.cni_provider.as_deref() != Some("flannel") {
         return Ok(());
     }
 
@@ -243,7 +240,7 @@ fn target_spec(cfg: &Config) -> TargetSpec {
     TargetSpec {
         pki_dir: cfg.pki_dir(),
         etcd_servers: nodestore_etcd_servers(),
-        advertise_address: detect_advertise_address(),
+        advertise_address: cfg.advertise_address.clone().unwrap_or_else(detect_advertise_address),
         service_cidr: "10.43.0.0/16".to_string(),
         service_account_issuer: "https://kubernetes.default.svc.cluster.local".to_string(),
     }
@@ -415,14 +412,16 @@ fn nodestore_etcd_servers() -> String {
     std::env::var("NODEBOOTSTRAP_ETCD_SERVERS").unwrap_or_else(|_| "https://127.0.0.1:2379".to_string())
 }
 
-/// Same reasoning as `upstream-kube-apiserver.sh`'s `detect_advertise_address`:
-/// the CNI bridge's gateway address is what's reachable from inside a pod's
-/// network namespace, which loopback and the auto-detected external
-/// address both are not (see that script's comment for the two ways this
-/// was confirmed live). Falls back to loopback when no `cni0` exists yet
-/// (e.g. `--cni=none`).
+/// The explicit `--advertise-address`/`NODEBOOTSTRAP_ADVERTISE_ADDRESS` wins
+/// in `target_spec()`. For automatic single-node bootstrap, prefer the CNI
+/// bridge, then a non-loopback host address for the short pre-CNI window, and
+/// only use loopback when the host has no global IPv4 address at all. The
+/// later CNI handoff replaces the temporary host address with the bridge
+/// gateway, which is the address reachable from pod network namespaces.
 fn detect_advertise_address() -> String {
-    detect_cni_address().unwrap_or_else(|| "127.0.0.1".to_string())
+    detect_cni_address()
+        .or_else(detect_host_address)
+        .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 fn detect_cni_address() -> Option<String> {
@@ -437,6 +436,25 @@ fn detect_cni_address() -> Option<String> {
                 .nth(3)
                 .and_then(|cidr| cidr.split('/').next())
                 .map(str::to_string)
+        })
+}
+
+fn detect_host_address() -> Option<String> {
+    std::process::Command::new("ip")
+        .args(["-4", "-o", "addr", "show", "scope", "global"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                let _index = fields.next()?;
+                let interface = fields.next()?;
+                if interface == "cni0" || fields.next()? != "inet" {
+                    return None;
+                }
+                fields.next()?.split('/').next().map(str::to_string)
+            })
         })
 }
 
