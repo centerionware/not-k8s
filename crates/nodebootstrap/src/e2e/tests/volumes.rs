@@ -326,7 +326,7 @@ pub(super) async fn empty_dir_hugepages_is_backed_by_hugetlbfs(
         json!({
             "restartPolicy": "Never",
             "volumes": [{"name": "hugepool", "emptyDir": {"medium": "HugePages-2Mi", "sizeLimit": "4Mi"}}],
-            "containers": [{"name": "app", "image": "busybox:latest", "resources": {"limits": {"hugepages-2Mi": "4Mi", "memory": "67108864"}}, "command": ["stat", "-f", "-c", "%T", "/huge"], "volumeMounts": [{"name": "hugepool", "mountPath": "/huge"}]}]
+            "containers": [{"name": "app", "image": "busybox:latest", "resources": {"limits": {"hugepages-2Mi": "4Mi", "memory": "67108864"}}, "command": ["sh", "-c", "stat -f -c %T /huge > /dev/termination-log"], "volumeMounts": [{"name": "hugepool", "mountPath": "/huge"}]}]
         }),
     )
     .await?;

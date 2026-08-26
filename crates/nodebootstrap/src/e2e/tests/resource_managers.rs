@@ -61,16 +61,34 @@ fn require_cri_and_systemd() -> Result<()> {
 }
 
 fn wait_for_nodelet_server() -> Result<()> {
-    // A raw TCP connect followed by closing the socket reaches nodelet's TLS
-    // listener without sending a ClientHello, which intentionally produces a
-    // noisy "tls handshake eof" warning. systemd's active state is the
-    // readiness signal we need here and does not manufacture a fake client.
+    // systemd reports the unit active as soon as the nodelet process starts,
+    // before its async initialization has necessarily bound 10250. Inspect
+    // the kernel's socket table instead of making a raw TCP connect: closing
+    // that socket without a TLS ClientHello produces a spurious handshake
+    // warning in nodelet's log.
+    let port = std::env::var("NODELET_SERVER_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(10250);
+    let port = format!("{port:04X}");
+    let listener_ready = || {
+        ["/proc/net/tcp", "/proc/net/tcp6"].iter().any(|path| {
+            fs::read_to_string(path).ok().is_some_and(|contents| {
+                contents.lines().skip(1).any(|line| {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    fields.get(1).is_some_and(|address| address.ends_with(&format!(":{port}")))
+                        && fields.get(3) == Some(&"0A")
+                })
+            })
+        })
+    };
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if Command::new("systemctl")
             .args(["is-active", "--quiet", "nodelet.service"])
             .status()
             .is_ok_and(|status| status.success())
+            && listener_ready()
         {
             return Ok(());
         }

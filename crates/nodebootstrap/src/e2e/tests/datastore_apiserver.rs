@@ -155,7 +155,14 @@ impl ApiServerHarness {
         let namespaces: Api<Namespace> = Api::all(client);
         let deadline = Instant::now() + Duration::from_secs(90);
         loop {
-            if let Ok(list) = namespaces.list(&ListParams::default()).await {
+            // Do not send a kube-rs request while the child is still between
+            // spawn and bind. Its connector logs the expected refused
+            // connection at ERROR even though this loop is designed to retry;
+            // the raw listener probe keeps startup failures quiet without
+            // replacing kube-rs for the actual API readiness check below.
+            if tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.is_ok()
+                && let Ok(list) = namespaces.list(&ListParams::default()).await
+            {
                 let names: std::collections::HashSet<_> = list
                     .items
                     .into_iter()
@@ -176,7 +183,7 @@ impl ApiServerHarness {
             if Instant::now() >= deadline {
                 anyhow::bail!("standalone kube-apiserver did not become ready; log: {}", self.root.join("apiserver.log").display());
             }
-            std::thread::sleep(Duration::from_millis(500));
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
