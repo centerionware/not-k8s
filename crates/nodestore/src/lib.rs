@@ -244,29 +244,24 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
             .parse()
             .with_context(|| format!("NODESTORE_PEER_LISTEN={:?} is not a valid address", cfg.peer_listen))?;
         let peer_service = replication::peer_service::PeerService::new(handle, Arc::clone(&node));
-        let peer_tls_for_server = peer_tls.clone();
+        let material = peer_tls
+            .as_ref()
+            .context("a clustered member has no peer TLS material; refusing to serve raft in the clear")?;
+        let tls = tls::server_tls_config(material).context("building peer TLS config")?;
+        let incoming = tonic::transport::server::TcpIncoming::bind(peer_addr)
+            .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
+        info!(%peer_addr, "raft peer listener bound");
+        let peer_server = tonic::transport::Server::builder()
+            .tls_config(tls)
+            .context("applying peer TLS config")?
+            .add_service(pb::peer::peer_server::PeerServer::new(peer_service));
         let tx = peer_failed_tx.take().expect("the peer sender is taken exactly once");
-        info!(%peer_addr, member = cfg.member_id, "binding raft peer listener");
+        info!(%peer_addr, member = cfg.member_id, "serving raft peer listener");
         tokio::spawn(async move {
-            let result = async {
-                let material = peer_tls_for_server.context(
-                    "a clustered member has no peer TLS material; refusing to serve raft in the clear",
-                )?;
-                let tls = tls::server_tls_config(&material).context("building peer TLS config")?;
-                let listener = tokio::net::TcpListener::bind(peer_addr)
-                    .await
-                    .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
-                info!(%peer_addr, "raft peer listener bound");
-                let incoming = tonic::transport::server::TcpIncoming::from(listener);
-                tonic::transport::Server::builder()
-                    .tls_config(tls)
-                    .context("applying peer TLS config")?
-                    .add_service(pb::peer::peer_server::PeerServer::new(peer_service))
-                    .serve_with_incoming(incoming)
-                    .await
-                    .context("the raft peer server stopped")
-            }
-            .await;
+            let result = peer_server
+                .serve_with_incoming(incoming)
+                .await
+                .context("the raft peer server stopped");
             let error = match result {
                 Ok(()) => anyhow::anyhow!("the raft peer server exited unexpectedly"),
                 Err(e) => e,
