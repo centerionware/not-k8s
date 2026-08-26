@@ -248,10 +248,9 @@ impl Cluster {
     fn leader(&self) -> Result<Option<u64>> {
         let mut leader = None;
         for member in &self.members {
-            let status = match self.peer_status(member.id) {
-                Ok(status) => status,
-                Err(_) => return Ok(None),
-            };
+            let status = self
+                .peer_status(member.id)
+                .with_context(|| format!("reading peer status from member {}", member.id))?;
             let current = status.get("leaderId").and_then(Value::as_u64).unwrap_or_default();
             if current == 0 {
                 return Ok(None);
@@ -266,9 +265,12 @@ impl Cluster {
 
     fn wait_for_agreed_leader(&mut self, timeout: Duration) -> Result<u64> {
         let deadline = Instant::now() + timeout;
+        let mut last_status_error = None;
         loop {
-            if let Some(leader) = self.leader()? {
-                return Ok(leader);
+            match self.leader() {
+                Ok(Some(leader)) => return Ok(leader),
+                Ok(None) => {}
+                Err(error) => last_status_error = Some(error.to_string()),
             }
             for member in &mut self.members {
                 if let Some(status) = member.child.try_wait()? {
@@ -295,7 +297,10 @@ impl Cluster {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                anyhow::bail!("cluster did not agree on a leader; recent member logs:\n{logs}");
+                let status = last_status_error
+                    .map(|error| format!("\nlast peer-status error: {error}"))
+                    .unwrap_or_default();
+                anyhow::bail!("cluster did not agree on a leader; recent member logs:{status}\n{logs}");
             }
             std::thread::sleep(Duration::from_millis(500));
         }
