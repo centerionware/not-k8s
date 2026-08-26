@@ -138,13 +138,13 @@ fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
     let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
     let kubeconfig = Kubeconfig::read_from(&kubeconfig_path)
         .with_context(|| format!("reading {} for the CNI seed Pod", kubeconfig_path.display()))?;
-    let client = Client::try_from(kubeconfig).context("building the CNI seed Pod Kubernetes client")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building the CNI seed Pod runtime")?;
 
     runtime.block_on(async move {
+        let client = Client::try_from(kubeconfig).context("building the CNI seed Pod Kubernetes client")?;
         let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
         let service_accounts: Api<ServiceAccount> = Api::namespaced(client, "kube-system");
         const NAME: &str = "nodebootstrap-cni-seed";
@@ -208,13 +208,6 @@ fn remove_cni_seed_pod(cfg: &Config) {
             return;
         }
     };
-    let client = match Client::try_from(kubeconfig) {
-        Ok(client) => client,
-        Err(error) => {
-            tracing::warn!(?error, "could not build a client to remove the CNI seed Pod");
-            return;
-        }
-    };
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -223,6 +216,13 @@ fn remove_cni_seed_pod(cfg: &Config) {
         }
     };
     runtime.block_on(async move {
+        let client = match Client::try_from(kubeconfig) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(?error, "could not build a client to remove the CNI seed Pod");
+                return;
+            }
+        };
         let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
         let service_accounts: Api<ServiceAccount> = Api::namespaced(client, "kube-system");
         if let Err(error) = pods.delete("nodebootstrap-cni-seed", &DeleteParams::default()).await {
