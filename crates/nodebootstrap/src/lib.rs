@@ -214,6 +214,13 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
         anyhow::ensure!(command.subcommand.is_none(), "--e2e-list cannot be combined with a subcommand");
         return e2e::list(command.only.as_deref(), command.shard.as_deref());
     }
+    if command.e2e_needs_drivers {
+        anyhow::ensure!(
+            command.subcommand.is_none(),
+            "--e2e-needs-drivers cannot be combined with a subcommand"
+        );
+        return e2e::needs_drivers(command.only.as_deref(), command.shard.as_deref());
+    }
     if command.e2e {
         anyhow::ensure!(command.subcommand.is_none(), "--e2e cannot be combined with a subcommand");
         return e2e::run(command.only.as_deref(), command.shard.as_deref());
@@ -238,6 +245,7 @@ struct ParsedArgs {
     subcommand: Option<String>,
     e2e: bool,
     e2e_list: bool,
+    e2e_needs_drivers: bool,
     only: Option<String>,
     shard: Option<String>,
     help: bool,
@@ -257,6 +265,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
         if arg == "--e2e-list" {
             parsed.e2e = true;
             parsed.e2e_list = true;
+            continue;
+        }
+        if arg == "--e2e-needs-drivers" {
+            parsed.e2e = true;
+            parsed.e2e_needs_drivers = true;
             continue;
         }
         if let Some(value) = arg.strip_prefix("--only=") {
@@ -530,6 +543,7 @@ fn print_help() {
     println!("  --node-name=NAME       Kubernetes node name (defaults to hostname)");
     println!("  --e2e                  run bootstrap-native end-to-end checks");
     println!("  --e2e-list             list selected e2e checks without contacting a cluster");
+    println!("  --e2e-needs-drivers    print whether selected e2e checks need CSI/DRA setup");
     println!("  --only=TEST[,TEST...]  select e2e tests by name substring");
     println!("  --shard=N/5            run one of the five CI e2e shards");
     println!("  --skip-control-plane   legacy: stage services against an existing cluster");

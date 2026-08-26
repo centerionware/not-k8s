@@ -132,11 +132,13 @@ jobs:
           for shard in 1 2 3 4 5; do
             selected="$(./dist-bin/nodebootstrap "${args[@]}" "--shard=${shard}/5")"
             if [[ -n "$selected" ]]; then
-              if (( shard <= 2 )); then
-                needs_drivers=true
-              else
-                needs_drivers=false
-              fi
+              driver_args=(--e2e-needs-drivers "--shard=${shard}/5")
+              [[ -z "$ONLY" ]] || driver_args+=("--only=$ONLY")
+              needs_drivers="$(./dist-bin/nodebootstrap "${driver_args[@]}")"
+              [[ "$needs_drivers" == true || "$needs_drivers" == false ]] || {
+                echo "invalid driver requirement result for shard $shard: $needs_drivers" >&2
+                exit 1
+              }
               matrix="$(jq -c --argjson shard "$shard" --argjson needs_drivers "$needs_drivers" \
                 '.include += [{shard: $shard, needs_drivers: $needs_drivers}]' <<<"$matrix")"
             fi

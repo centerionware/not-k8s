@@ -1293,6 +1293,14 @@ pub fn list(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Report whether the selected checks require the reference CSI/DRA drivers.
+/// This intentionally reuses the exact same filter and shard assignment as
+/// `--e2e-list`, so CI does not have to maintain a second test classification.
+pub fn needs_drivers(only: Option<&str>, shard: Option<&str>) -> Result<()> {
+    println!("{}", selected_tests_need_drivers(only, shard)?);
+    Ok(())
+}
+
 /// Prefer an explicitly supplied kubeconfig. A nodebootstrap-created cluster
 /// has a stable fallback path, so `./bootstrap --e2e` works immediately after
 /// installation without requiring the caller to export an implementation-
@@ -1365,6 +1373,15 @@ fn select_tests(only: Option<&str>, shard: Option<&str>) -> Result<Vec<&'static 
     // each shard so an ordinary test never starts while one of these fixtures
     // is still restoring the node.
     Ok(reorder_environment_reconfiguring_tests(selected))
+}
+
+fn selected_tests_need_drivers(only: Option<&str>, shard: Option<&str>) -> Result<bool> {
+    let selected = select_tests(only, shard)?;
+    Ok(selected.iter().any(|name| {
+        TESTS
+            .iter()
+            .any(|test| test.name == *name && test.group == TestGroup::CsiDra)
+    }))
 }
 
 fn reorder_environment_reconfiguring_tests(selected: Vec<&'static str>) -> Vec<&'static str> {
@@ -2254,6 +2271,20 @@ mod tests {
     #[test]
     fn an_unknown_only_pattern_is_an_error() {
         assert!(select_tests(Some("does_not_exist"), None).is_err());
+    }
+
+    #[test]
+    fn driver_requirement_follows_selected_test_group() {
+        assert!(selected_tests_need_drivers(
+            Some("test_pod_mounts_a_generic_ephemeral_volume"),
+            None
+        )
+        .unwrap());
+        assert!(!selected_tests_need_drivers(
+            Some("test_node_is_ready_with_capacity_advertised"),
+            None
+        )
+        .unwrap());
     }
 
     #[test]
