@@ -242,11 +242,13 @@ fn ensure_config() -> Result<bool> {
     // The CRI plugin must be allowed to apply OCI hugetlb limits. Some
     // distro/containerd configs disable this even though the host exposes
     // the controller, which silently leaves every container at the kernel's
-    // unlimited hugetlb value.
-    let hugetlb_enabled = config.contains("disable_hugetlb_controller = true");
-    if hugetlb_enabled {
+    // unlimited hugetlb value. `containerd config default` may emit the
+    // default only as a comment, so patch the actual CRI runtime table and
+    // insert the setting when it is absent.
+    let (patched, hugetlb_changed) = enable_hugetlb_controller(&config);
+    if hugetlb_changed {
         tracing::info!("enabling containerd CRI hugetlb limits");
-        config = config.replace("disable_hugetlb_controller = true", "disable_hugetlb_controller = false");
+        config = patched;
     }
 
     // CDI device injection, off by default -- see this module's doc
@@ -257,7 +259,83 @@ fn ensure_config() -> Result<bool> {
     }
 
     std::fs::write(CONFIG_PATH, config).context("writing patched config.toml")?;
-    Ok(wrote_fresh || hugetlb_enabled)
+    Ok(wrote_fresh || hugetlb_changed)
+}
+
+fn enable_hugetlb_controller(config: &str) -> (String, bool) {
+    let mut output = Vec::new();
+    let mut in_cri_runtime = false;
+    let mut found_setting = false;
+    let mut changed = false;
+
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_cri_runtime && !found_setting {
+                output.push("  disable_hugetlb_controller = false".to_string());
+                changed = true;
+            }
+            in_cri_runtime = matches!(
+                trimmed,
+                "[plugins.\"io.containerd.grpc.v1.cri\"]"
+                    | "[plugins.'io.containerd.grpc.v1.cri']"
+                    | "[plugins.\"io.containerd.cri.v1.runtime\"]"
+                    | "[plugins.'io.containerd.cri.v1.runtime']"
+            );
+            found_setting = false;
+        }
+
+        if in_cri_runtime && !trimmed.starts_with('#') {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim() == "disable_hugetlb_controller" {
+                    found_setting = true;
+                    if value.trim_start().starts_with("true") {
+                        output.push(format!("{} = false", key.trim()));
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        output.push(line.to_string());
+    }
+
+    if in_cri_runtime && !found_setting {
+        output.push("  disable_hugetlb_controller = false".to_string());
+        changed = true;
+    }
+
+    (output.join("\n"), changed)
+}
+
+#[cfg(test)]
+mod containerd_config_tests {
+    use super::enable_hugetlb_controller;
+
+    #[test]
+    fn enables_an_existing_v1_setting() {
+        let config = "[plugins.\"io.containerd.grpc.v1.cri\"]\n  disable_hugetlb_controller = true\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains("disable_hugetlb_controller = false"));
+    }
+
+    #[test]
+    fn inserts_a_missing_v1_setting_without_touching_comments() {
+        let config = "[plugins.\"io.containerd.grpc.v1.cri\"]\n  # disable_hugetlb_controller = true\n[grpc]\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains("  # disable_hugetlb_controller = true"));
+        assert!(patched.contains("  disable_hugetlb_controller = false\n[grpc]"));
+    }
+
+    #[test]
+    fn supports_the_containerd_v2_runtime_section() {
+        let config = "[plugins.'io.containerd.cri.v1.runtime']\n  disable_hugetlb_controller = true\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains("disable_hugetlb_controller = false"));
+    }
 }
 
 /// The "Known CI gotcha" fix from `CLAUDE.md`: strip `"cri"` out of
