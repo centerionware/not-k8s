@@ -290,6 +290,17 @@ impl Cluster {
         }
     }
 
+    fn status_snapshot(&self) -> String {
+        self.members
+            .iter()
+            .map(|member| match self.peer_status(member.id) {
+                Ok(status) => format!("member {}: {status}", member.id),
+                Err(error) => format!("member {}: {error:#}", member.id),
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     fn wait_for_agreed_leader(&mut self, timeout: Duration) -> Result<u64> {
         let deadline = Instant::now() + timeout;
         let mut last_status_error = None;
@@ -333,7 +344,10 @@ impl Cluster {
                 let status = last_status_error
                     .map(|error| format!("\nlast peer-status error: {error}"))
                     .unwrap_or_default();
-                anyhow::bail!("cluster did not agree on a leader; recent member logs:{status}\n{logs}");
+                anyhow::bail!(
+                    "cluster did not agree on a leader; status snapshot: {}{status}\nrecent member logs:\n{logs}",
+                    self.status_snapshot()
+                );
             }
             std::thread::sleep(Duration::from_millis(500));
         }
