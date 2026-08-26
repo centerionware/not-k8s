@@ -16,6 +16,7 @@ use rcgen::{
 };
 use serde_json::Value;
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -249,10 +250,19 @@ impl Cluster {
 
     fn leader(&self) -> Result<Option<u64>> {
         let mut leader = None;
+        let mut errors = Vec::new();
         for member in &self.members {
-            let status = self
-                .peer_status(member.id)
-                .with_context(|| format!("reading peer status from member {}", member.id))?;
+            let status = match self.peer_status(member.id) {
+                Ok(status) => status,
+                Err(error) => {
+                    errors.push(format!(
+                        "member {}: {error:#}; raw TCP probe: {}",
+                        member.id,
+                        self.peer_tcp_probe(member)
+                    ));
+                    continue;
+                }
+            };
             let current = status.get("leaderId").and_then(Value::as_u64).unwrap_or_default();
             if current == 0 {
                 return Ok(None);
@@ -262,7 +272,21 @@ impl Cluster {
             }
             leader = Some(current);
         }
+        if !errors.is_empty() {
+            anyhow::bail!("{}", errors.join("; "));
+        }
         Ok(leader)
+    }
+
+    fn peer_tcp_probe(&self, member: &Member) -> String {
+        let address = format!("127.0.0.1:{}", member.peer_port);
+        match address.parse::<SocketAddr>() {
+            Ok(address) => match TcpStream::connect_timeout(&address, Duration::from_millis(500)) {
+                Ok(_) => "connects".to_string(),
+                Err(error) => format!("refused/unreachable: {error}"),
+            },
+            Err(error) => format!("invalid address: {error}"),
+        }
     }
 
     fn wait_for_agreed_leader(&mut self, timeout: Duration) -> Result<u64> {
