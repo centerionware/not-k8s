@@ -250,7 +250,8 @@ impl Cluster {
     }
 
     fn leader(&self) -> Result<Option<u64>> {
-        let mut leader = None;
+        let quorum = self.members.len() / 2 + 1;
+        let mut leaders = Vec::new();
         let mut errors = Vec::new();
         for member in &self.members {
             let status = match self.peer_status(member.id) {
@@ -266,17 +267,28 @@ impl Cluster {
             };
             let current = status.get("leaderId").and_then(Value::as_u64).unwrap_or_default();
             if current == 0 {
-                return Ok(None);
+                continue;
             }
-            if leader.is_some_and(|known| known != current) {
-                return Ok(None);
-            }
-            leader = Some(current);
+            leaders.push(current);
         }
-        if !errors.is_empty() {
+
+        // A member that is down is expected during the failover tests, and a
+        // single transient status connection failure must not turn an already
+        // elected quorum into a test failure. Require a consistent leader from
+        // a quorum, rather than requiring every member to answer this one
+        // diagnostic RPC.
+        if leaders.len() >= quorum {
+            let leader = leaders[0];
+            return Ok(leaders.iter().all(|candidate| *candidate == leader).then_some(leader));
+        }
+
+        // Keep the all-members-unreachable error for startup diagnostics, but
+        // treat partial reachability as an ordinary not-yet-agreed state so a
+        // surviving quorum can settle after a member is restarted or killed.
+        if errors.len() == self.members.len() {
             anyhow::bail!("{}", errors.join("; "));
         }
-        Ok(leader)
+        Ok(None)
     }
 
     fn peer_tcp_probe(&self, member: &Member) -> String {
