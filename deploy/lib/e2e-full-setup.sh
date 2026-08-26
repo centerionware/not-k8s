@@ -251,6 +251,16 @@ wait_for_dra_pod_ready() {
     done
     kubectl get pods -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin -o wide || true
     kubectl describe pods -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin || true
+    while IFS= read -r pod; do
+        [[ -n "$pod" ]] || continue
+        echo "=== DRA kubeletplugin logs ($pod) ===" >&2
+        kubectl logs "$pod" -n dra-example-driver --all-containers=true \
+            --timestamps --tail=200 2>&1 || true
+        echo "=== DRA kubeletplugin previous logs ($pod) ===" >&2
+        kubectl logs "$pod" -n dra-example-driver --all-containers=true \
+            --timestamps --previous --tail=200 2>&1 || true
+    done < <(kubectl get pods -n dra-example-driver \
+        -l app.kubernetes.io/component=kubeletplugin -o name 2>/dev/null || true)
     echo "DRA kubeletplugin pod never became Ready" >&2
     return 1
 }
