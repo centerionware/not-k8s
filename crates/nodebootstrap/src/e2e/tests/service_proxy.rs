@@ -19,6 +19,38 @@ async fn exec_output(context: &E2eContext, pod: &str, command: &[&str]) -> Resul
     exec_output_in(context, pod, "app", command).await
 }
 
+async fn exec_probe_output(
+    context: &E2eContext,
+    pod: &str,
+    command: &[&str],
+) -> Result<String> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let params = AttachParams::default()
+        .container("app")
+        .stdout(true)
+        .stderr(true);
+    let mut process = pods.exec(pod, command.iter().copied(), &params).await?;
+    let mut stdout = Vec::new();
+    if let Some(mut stream) = process.stdout() {
+        stream.read_to_end(&mut stdout).await?;
+    }
+    let mut stderr = Vec::new();
+    if let Some(mut stream) = process.stderr() {
+        stream.read_to_end(&mut stderr).await?;
+    }
+    process.join().await?;
+
+    let mut output = String::from_utf8_lossy(&stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr);
+    if !stderr.trim().is_empty() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&stderr);
+    }
+    Ok(output)
+}
+
 async fn exec_output_in(
     context: &E2eContext,
     pod: &str,
@@ -406,17 +438,41 @@ pub(super) async fn clusterip_is_reachable_from_inside_a_pod(
             Ok(nft_table()?.contains(&cluster_ip))
         })
         .await?;
-    context
+    let result = context
         .wait_until("ClusterIP access from a Pod", Duration::from_secs(90), || {
             let context = context.clone();
             let cluster_ip = cluster_ip.clone();
             async move {
                 let url = format!("http://{cluster_ip}:18093/");
-                let output = exec_output(&context, client_name, &["wget", "-qO-", "--timeout=5", &url]).await;
+                let output = exec_probe_output(
+                    &context,
+                    client_name,
+                    &["wget", "-qO-", "--timeout=5", &url],
+                )
+                .await;
                 Ok(output.is_ok_and(|output| output.contains("service-proxy-marker")))
             }
         })
+        .await;
+    if let Err(error) = &result {
+        let url = format!("http://{cluster_ip}:18093/");
+        eprintln!("ClusterIP request diagnostics: {error:#}");
+        match exec_probe_output(
+            context,
+            client_name,
+            &["wget", "-qO-", "--timeout=5", url.as_str()],
+        )
         .await
+        {
+            Ok(output) => eprintln!("ClusterIP request output: {output:?}"),
+            Err(probe_error) => eprintln!("ClusterIP exec error: {probe_error:#}"),
+        }
+        match nft_table() {
+            Ok(table) => eprintln!("nodeproxy nftables table at ClusterIP failure:\n{table}"),
+            Err(nft_error) => eprintln!("unable to read nodeproxy nftables table: {nft_error:#}"),
+        }
+    }
+    result
 }
 
 pub(super) async fn nodeproxy_runs_as_its_own_service_separate_from_nodelet(
@@ -487,13 +543,13 @@ pub(super) async fn a_pod_reaching_its_own_service_gets_hairpin_masquerade(
             Ok(nft_table()?.contains(&cluster_ip))
         })
         .await?;
-        context
+    let result = context
         .wait_until("hairpin request to the backend's own Service", Duration::from_secs(60), || {
             let context = context.clone();
             let cluster_ip = cluster_ip.clone();
             async move {
                 let url = format!("http://{cluster_ip}:18100/");
-                let output = exec_output(
+                let output = exec_probe_output(
                     &context,
                     name,
                     &["wget", "-qO-", "--timeout=5", url.as_str()],
@@ -502,7 +558,26 @@ pub(super) async fn a_pod_reaching_its_own_service_gets_hairpin_masquerade(
                 Ok(output.is_ok_and(|output| output.contains("hairpin-marker")))
             }
         })
+        .await;
+    if let Err(error) = &result {
+        let url = format!("http://{cluster_ip}:18100/");
+        eprintln!("hairpin request diagnostics: {error:#}");
+        match exec_probe_output(
+            context,
+            name,
+            &["wget", "-qO-", "--timeout=5", url.as_str()],
+        )
         .await
+        {
+            Ok(output) => eprintln!("hairpin request output: {output:?}"),
+            Err(probe_error) => eprintln!("hairpin exec error: {probe_error:#}"),
+        }
+        match nft_table() {
+            Ok(table) => eprintln!("nodeproxy nftables table at hairpin failure:\n{table}"),
+            Err(nft_error) => eprintln!("unable to read nodeproxy nftables table: {nft_error:#}"),
+        }
+    }
+    result
 }
 
 async fn ready_endpoint_count_from_api(
