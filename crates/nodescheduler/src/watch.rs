@@ -65,7 +65,10 @@
 
 use crate::cache::{Cache, PodInfo};
 use crate::config::Config;
-use crate::events::{node_action_types, pod_action_types, ActionType, ClusterEvent, EventResource};
+use crate::events::{
+    node_action_types, pod_action_types, pod_became_assigned, ActionType, ClusterEvent,
+    EventResource,
+};
 use crate::framework::ChangedObject;
 use crate::queue::SchedulingQueue;
 use futures::{stream::BoxStream, StreamExt};
@@ -1237,7 +1240,14 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
                     // An assigned pod changing can free capacity (it shrank)
                     // or change what anti-affinity sees (its labels moved).
                     if let Some(old) = &previous {
-                        let action = pod_action_types(old, &pod);
+                        let mut action = pod_action_types(old, &pod);
+                        if pod_became_assigned(old, &pod) {
+                            // A newly bound Pod can satisfy another Pod's
+                            // inter-pod affinity. The nodeName transition is
+                            // not otherwise represented by pod_action_types,
+                            // because it changes the Pod's event route.
+                            action |= ActionType::ADD;
+                        }
                         if !action.is_empty() {
                             targets.queue.move_all_to_active_or_backoff(
                                 ClusterEvent::new(EventResource::AssignedPod, action),
