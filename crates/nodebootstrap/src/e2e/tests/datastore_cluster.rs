@@ -190,6 +190,7 @@ impl Cluster {
             .env("NODESTORE_PEER_CERT_FILE", &self.pki.peer_cert)
             .env("NODESTORE_PEER_KEY_FILE", &self.pki.peer_key)
             .env("NODESTORE_PEER_TRUSTED_CA_FILE", &self.pki.peer_ca)
+            .env("RUST_LOG", "debug")
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_stderr))
             .spawn()
@@ -319,7 +320,13 @@ impl Cluster {
                         let log = fs::read_to_string(&member.log_path).unwrap_or_else(|error| {
                             format!("<could not read {}: {error}>", member.log_path.display())
                         });
-                        format!("member {} ({}):\n{}", member.id, member.log_path.display(), log_tail(&log))
+                        format!(
+                            "member {} ({}):\n{}\nprocess state:\n{}",
+                            member.id,
+                            member.log_path.display(),
+                            log_tail(&log),
+                            process_state(member),
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -383,6 +390,28 @@ impl Cluster {
         member.child = replacement.child;
         Ok(())
     }
+}
+
+fn process_state(member: &Member) -> String {
+    let pid = member.child.id();
+    let status = fs::read_to_string(format!("/proc/{pid}/status"))
+        .map(|status| {
+            status
+                .lines()
+                .filter(|line| line.starts_with("Name:") || line.starts_with("State:"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|error| format!("<could not read process status: {error}>"));
+    let tcp = fs::read_to_string(format!("/proc/{pid}/net/tcp"))
+        .map(|tcp| {
+            tcp.lines()
+                .filter(|line| line.contains(&format!(":{:04X}", member.peer_port)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_else(|error| format!("<could not read process TCP state: {error}>"));
+    format!("pid={pid} {status}\npeer port {}:\n{}", member.peer_port, tcp)
 }
 
 fn log_tail(log: &str) -> String {
