@@ -188,7 +188,7 @@ impl Cluster {
             .env("NODESTORE_PEER_KEY_FILE", &self.pki.peer_key)
             .env("NODESTORE_PEER_TRUSTED_CA_FILE", &self.pki.peer_ca)
             .stdout(Stdio::null())
-            .stderr(fs::File::create(log)?)
+            .stderr(fs::File::create(&log)?)
             .spawn()
             .with_context(|| format!("starting nodestore member {id}"))?;
         Ok(Member {
