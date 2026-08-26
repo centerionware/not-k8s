@@ -125,6 +125,15 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         std::net::SocketAddr,
         tonic::transport::server::TcpIncoming,
     )> = None;
+    // A peer-server failure has to bring the whole member down, not just its
+    // own task. A member that keeps serving the client API with a dead raft
+    // link answers reads it can no longer keep current and can never be
+    // replicated to again — it diverges from the cluster silently, which is
+    // strictly worse than being unreachable.
+    let (peer_failed_tx, peer_failed_rx) = tokio::sync::oneshot::channel::<anyhow::Error>();
+    // Kept alive for the whole function: with no raft the sender is never
+    // dropped, so the receiver simply never fires.
+    let mut peer_failed_tx = Some(peer_failed_tx);
 
     // Single member or a real cluster. The difference is confined to which
     // Consensus is installed and whether a peer server runs — everything
@@ -216,6 +225,39 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         .context("starting raft")?;
         consensus.attach(handle.clone());
 
+        // Start accepting peer traffic as soon as the driver exists. The
+        // listener was bound above to reserve the address, but waiting until
+        // after the whole clustered branch (including the pre-start probe)
+        // leaves the first election messages racing a multi-second startup
+        // gap. The transport is bounded and lossy by design, so the server
+        // must be live before the first tick can campaign.
+        let (peer_addr, incoming) = peer_incoming
+            .take()
+            .context("clustered member has no pre-bound raft peer listener")?;
+        let peer_service = replication::peer_service::PeerService::new(handle.clone(), Arc::clone(&node));
+        let material = peer_tls
+            .as_ref()
+            .context("a clustered member has no peer TLS material; refusing to serve raft in the clear")?;
+        let tls = tls::server_tls_config(material).context("building peer TLS config")?;
+        let peer_server = tonic::transport::Server::builder()
+            .tls_config(tls)
+            .context("applying peer TLS config")?
+            .add_service(pb::peer::peer_server::PeerServer::new(peer_service));
+        let tx = peer_failed_tx.take().expect("the peer sender is taken exactly once");
+        info!(%peer_addr, member = cfg.member_id, "serving raft peer listener");
+        tokio::spawn(async move {
+            let result = peer_server
+                .serve_with_incoming(incoming)
+                .await
+                .context("the raft peer server stopped");
+            let error = match result {
+                Ok(()) => anyhow::anyhow!("the raft peer server exited unexpectedly"),
+                Err(e) => e,
+            };
+            error!(error = %error, %peer_addr, "raft peer listener exited; stopping this member");
+            let _ = tx.send(error);
+        });
+
         tokio::spawn(replication::bootstrap::publish_address_book(
             handle.clone(),
             Arc::clone(&node),
@@ -244,48 +286,6 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
     // The peer server carries raft traffic and nothing else, on its own port.
     // A raft message is trusted absolutely by whoever receives it, so this is
     // never merged into the client listener.
-    // A peer-server failure has to bring the whole member down, not just its
-    // own task. A member that keeps serving the client API with a dead raft
-    // link answers reads it can no longer keep current and can never be
-    // replicated to again — it diverges from the cluster silently, which is
-    // strictly worse than being unreachable. This channel carries the failure
-    // back out to the select! at the end of this function.
-    let (peer_failed_tx, peer_failed_rx) = tokio::sync::oneshot::channel::<anyhow::Error>();
-    // Kept alive for the whole function: with no raft the sender is never
-    // dropped, so the receiver simply never fires.
-    let mut peer_failed_tx = Some(peer_failed_tx);
-
-    if let Some(handle) = raft.clone() {
-        let (peer_addr, incoming) = peer_incoming
-            .take()
-            .context("clustered member has no pre-bound raft peer listener")?;
-        let peer_service = replication::peer_service::PeerService::new(handle, Arc::clone(&node));
-        let material = peer_tls
-            .as_ref()
-            .context("a clustered member has no peer TLS material; refusing to serve raft in the clear")?;
-        let tls = tls::server_tls_config(material).context("building peer TLS config")?;
-        let peer_server = tonic::transport::Server::builder()
-            .tls_config(tls)
-            .context("applying peer TLS config")?
-            .add_service(pb::peer::peer_server::PeerServer::new(peer_service));
-        let tx = peer_failed_tx.take().expect("the peer sender is taken exactly once");
-        info!(%peer_addr, member = cfg.member_id, "serving raft peer listener");
-        tokio::spawn(async move {
-            let result = peer_server
-                .serve_with_incoming(incoming)
-                .await
-                .context("the raft peer server stopped");
-            let error = match result {
-                Ok(()) => anyhow::anyhow!("the raft peer server exited unexpectedly"),
-                Err(e) => e,
-            };
-            error!(error = %error, %peer_addr, "raft peer listener exited; stopping this member");
-            // The receiver is only gone if the client server has already
-            // stopped, in which case the process is on its way down anyway.
-            let _ = tx.send(error);
-        });
-    }
-
     tokio::spawn(server::compaction_loop(
         api.clone(),
         cfg.compact_interval_secs,
