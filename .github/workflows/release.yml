@@ -435,6 +435,7 @@ jobs:
             else
               python3 -m pip install --quiet --user ziglang
               cat > /tmp/zigcc-musl.py <<PY
+          #!/usr/bin/env python3
           import os
           import sys
           if sys.argv[1:] == ["-dumpmachine"]:
