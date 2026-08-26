@@ -257,11 +257,12 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
                     .await
                     .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
                 info!(%peer_addr, "raft peer listener bound");
+                let incoming = tonic::transport::server::TcpIncoming::from(listener);
                 tonic::transport::Server::builder()
                     .tls_config(tls)
                     .context("applying peer TLS config")?
                     .add_service(pb::peer::peer_server::PeerServer::new(peer_service))
-                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .serve_with_incoming(incoming)
                     .await
                     .context("the raft peer server stopped")
             }
