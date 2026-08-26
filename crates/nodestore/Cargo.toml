@@ -25,7 +25,7 @@ path = "src/main.rs"
 # everywhere else — nodestore depends on no other component crate.
 [dependencies]
 tokio = { workspace = true }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tonic = { workspace = true }
 rustls = { workspace = true }
 prost = { workspace = true }

@@ -246,27 +246,34 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         let peer_service = replication::peer_service::PeerService::new(handle, Arc::clone(&node));
         let peer_tls_for_server = peer_tls.clone();
         let tx = peer_failed_tx.take().expect("the peer sender is taken exactly once");
-        info!(%peer_addr, member = cfg.member_id, "serving raft peer traffic");
+        info!(%peer_addr, member = cfg.member_id, "binding raft peer listener");
         tokio::spawn(async move {
             let result = async {
                 let material = peer_tls_for_server.context(
                     "a clustered member has no peer TLS material; refusing to serve raft in the clear",
                 )?;
                 let tls = tls::server_tls_config(&material).context("building peer TLS config")?;
+                let listener = tokio::net::TcpListener::bind(peer_addr)
+                    .await
+                    .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
+                info!(%peer_addr, "raft peer listener bound");
                 tonic::transport::Server::builder()
                     .tls_config(tls)
                     .context("applying peer TLS config")?
                     .add_service(pb::peer::peer_server::PeerServer::new(peer_service))
-                    .serve(peer_addr)
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                     .await
                     .context("the raft peer server stopped")
             }
             .await;
-            if let Err(e) = result {
-                // The receiver is only gone if serve() has already returned,
-                // in which case the process is on its way down anyway.
-                let _ = tx.send(e);
-            }
+            let error = match result {
+                Ok(()) => anyhow::anyhow!("the raft peer server exited unexpectedly"),
+                Err(e) => e,
+            };
+            error!(error = %error, %peer_addr, "raft peer listener exited; stopping this member");
+            // The receiver is only gone if the client server has already
+            // stopped, in which case the process is on its way down anyway.
+            let _ = tx.send(error);
         });
     }
 
