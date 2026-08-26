@@ -78,11 +78,14 @@ async fn create_backend_with_marker(
     marker: &str,
 ) -> Result<()> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let response = format!(
+        "HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\n{marker}\\n"
+    );
     let pod: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {"name": name, "labels": {"app": selector}},
-        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", format!("while true; do printf '{marker}\\n' | nc -l -p 8080; done")] }]}
+        "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", format!("printf '{response}' > /tmp/response; while true; do nc -l -p 8080 < /tmp/response; done")] }]}
     }))?;
     pods.create(&PostParams::default(), &pod).await?;
     context
