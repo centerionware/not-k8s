@@ -122,6 +122,7 @@ struct Member {
     client_port: u16,
     peer_port: u16,
     data_dir: PathBuf,
+    log_path: PathBuf,
     child: Child,
 }
 
@@ -195,6 +196,7 @@ impl Cluster {
             client_port,
             peer_port,
             data_dir,
+            log_path: log,
             child,
         })
     }
@@ -262,14 +264,38 @@ impl Cluster {
         Ok(leader)
     }
 
-    fn wait_for_agreed_leader(&self, timeout: Duration) -> Result<u64> {
+    fn wait_for_agreed_leader(&mut self, timeout: Duration) -> Result<u64> {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(leader) = self.leader()? {
                 return Ok(leader);
             }
+            for member in &mut self.members {
+                if let Some(status) = member.child.try_wait()? {
+                    let log = fs::read_to_string(&member.log_path).unwrap_or_else(|error| {
+                        format!("<could not read {}: {error}>", member.log_path.display())
+                    });
+                    anyhow::bail!(
+                        "nodestore member {} exited with {status}; log {}:\n{}",
+                        member.id,
+                        member.log_path.display(),
+                        log_tail(&log)
+                    );
+                }
+            }
             if Instant::now() >= deadline {
-                anyhow::bail!("cluster did not agree on a leader; logs are under {}", self.root.display());
+                let logs = self
+                    .members
+                    .iter()
+                    .map(|member| {
+                        let log = fs::read_to_string(&member.log_path).unwrap_or_else(|error| {
+                            format!("<could not read {}: {error}>", member.log_path.display())
+                        });
+                        format!("member {} ({}):\n{}", member.id, member.log_path.display(), log_tail(&log))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                anyhow::bail!("cluster did not agree on a leader; recent member logs:\n{logs}");
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -328,6 +354,17 @@ impl Cluster {
     }
 }
 
+fn log_tail(log: &str) -> String {
+    const MAX_LINES: usize = 80;
+    let lines = log.lines().collect::<Vec<_>>();
+    lines
+        .iter()
+        .skip(lines.len().saturating_sub(MAX_LINES))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl Drop for Cluster {
     fn drop(&mut self) {
         for member in &mut self.members {
@@ -345,7 +382,7 @@ pub(super) async fn cluster_elects_a_single_leader(_context: &E2eContext) -> Res
 }
 
 pub(super) async fn cluster_replicates_a_write_to_every_member(_context: &E2eContext) -> Result<()> {
-    let cluster = Cluster::start()?;
+    let mut cluster = Cluster::start()?;
     let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
     cluster.put(leader, "/registry/cluster/replicated", "hello")?;
     for id in 1..=3 {
@@ -358,7 +395,7 @@ pub(super) async fn cluster_replicates_a_write_to_every_member(_context: &E2eCon
 }
 
 pub(super) async fn follower_forwards_writes_to_the_leader(_context: &E2eContext) -> Result<()> {
-    let cluster = Cluster::start()?;
+    let mut cluster = Cluster::start()?;
     let leader = cluster.wait_for_agreed_leader(Duration::from_secs(10))?;
     let follower = (1..=3).find(|id| *id != leader).context("no follower")?;
     cluster.put(follower, "/registry/cluster/forwarded", "through-follower")?;

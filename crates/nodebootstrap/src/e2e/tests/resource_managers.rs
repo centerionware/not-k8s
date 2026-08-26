@@ -1,8 +1,8 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, PostParams};
+use k8s_openapi::api::core::v1::{Node, Pod};
+use kube::api::{Api, ListParams, PostParams};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -97,6 +97,45 @@ fn wait_for_nodelet_server() -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+pub(super) async fn nodelet_heartbeat(context: &E2eContext) -> Result<Option<String>> {
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let node = nodes
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .context("the cluster has no Node object after restarting nodelet")?;
+    Ok(node
+        .status
+        .and_then(|status| status.conditions)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|condition| condition.type_ == "Ready")
+        .and_then(|condition| condition.last_heartbeat_time)
+        .map(|time| time.0.to_string()))
+}
+
+pub(super) async fn wait_for_fresh_nodelet_heartbeat(
+    context: &E2eContext,
+    previous: Option<String>,
+) -> Result<()> {
+    context
+        .wait_until(
+            "nodelet to publish a fresh Ready heartbeat after restart",
+            Duration::from_secs(120),
+            || {
+                let context = context.clone();
+                let previous = previous.clone();
+                async move {
+                    let heartbeat = nodelet_heartbeat(&context).await?;
+                    Ok(heartbeat.is_some() && heartbeat != previous)
+                }
+            },
+        )
+        .await
 }
 
 pub(super) struct NodeletEnvOverride {
@@ -283,7 +322,9 @@ pub(super) async fn cpu_manager_retroactively_shrinks_an_already_running_shared_
     if std::thread::available_parallelism().map_or(1, |count| count.get()) < 2 {
         return Err(skip_test("CPU Manager exclusivity needs at least two CPUs"));
     }
+    let previous_heartbeat = nodelet_heartbeat(context).await?;
     let _override = NodeletEnvOverride::install(&[("NODELET_CPU_MANAGER_POLICY", "static")])?;
+    wait_for_fresh_nodelet_heartbeat(context, previous_heartbeat).await?;
     create_pod(context, "cpu-manager-shared", json!({})).await?;
     let root = Path::new("/sys/fs/cgroup");
     let shared = find_cgroup(root, &container_id(context, "cpu-manager-shared").await?, 8)
