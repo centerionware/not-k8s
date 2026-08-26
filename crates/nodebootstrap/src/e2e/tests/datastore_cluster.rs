@@ -172,6 +172,8 @@ impl Cluster {
         let data_dir = self.root.join(format!("member-{id}/data"));
         fs::create_dir_all(&data_dir)?;
         let log = self.root.join(format!("member-{id}.log"));
+        let log_file = fs::File::create(&log)?;
+        let log_stderr = log_file.try_clone()?;
         let child = Command::new(&self.binary)
             .arg("nodestore")
             .env("NODESTORE_MEMBER_ID", id.to_string())
@@ -187,8 +189,8 @@ impl Cluster {
             .env("NODESTORE_PEER_CERT_FILE", &self.pki.peer_cert)
             .env("NODESTORE_PEER_KEY_FILE", &self.pki.peer_key)
             .env("NODESTORE_PEER_TRUSTED_CA_FILE", &self.pki.peer_ca)
-            .stdout(Stdio::null())
-            .stderr(fs::File::create(&log)?)
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_stderr))
             .spawn()
             .with_context(|| format!("starting nodestore member {id}"))?;
         Ok(Member {
