@@ -326,23 +326,56 @@ pub(super) async fn empty_dir_hugepages_is_backed_by_hugetlbfs(
         json!({
             "restartPolicy": "Never",
             "volumes": [{"name": "hugepool", "emptyDir": {"medium": "HugePages-2Mi", "sizeLimit": "4Mi"}}],
-            "containers": [{"name": "app", "image": "busybox:latest", "resources": {"limits": {"hugepages-2Mi": "4Mi", "memory": "67108864"}}, "command": ["sh", "-c", "stat -f -c %T /huge > /dev/termination-log"], "volumeMounts": [{"name": "hugepool", "mountPath": "/huge"}]}]
+            "containers": [{"name": "app", "image": "busybox:latest", "resources": {"limits": {"hugepages-2Mi": "4Mi", "memory": "67108864"}}, "command": ["sh", "-c", "sleep 3600"], "volumeMounts": [{"name": "hugepool", "mountPath": "/huge"}]}]
         }),
     )
     .await?;
     let result = async {
         context
-            .wait_until("HugePages emptyDir to terminate", Duration::from_secs(90), || {
-                let context = context.clone();
-                async move { Ok(terminated_message(&context, name).await?.is_some()) }
+            .wait_until("HugePages emptyDir Pod to run", Duration::from_secs(90), || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get(name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
             })
             .await?;
-        let filesystem = terminated_message(context, name)
+        let pod_uid = pods
+            .get(name)
             .await?
-            .unwrap_or_default();
+            .metadata
+            .uid
+            .context("HugePages emptyDir Pod has no UID")?;
+        let volume_path = std::path::PathBuf::from("/var/lib/nodelet/pods")
+            .join(pod_uid)
+            .join("volumes/hugepool");
+        context
+            .wait_until("HugePages emptyDir host volume", Duration::from_secs(30), || {
+                let volume_path = volume_path.clone();
+                async move { Ok(volume_path.is_dir()) }
+            })
+            .await?;
+        let stat = Command::new("stat")
+            .args(["-f", "-c", "%T"])
+            .arg(&volume_path)
+            .output()
+            .context("checking HugePages emptyDir filesystem")?;
+        anyhow::ensure!(
+            stat.status.success(),
+            "stat failed for HugePages emptyDir host volume {}: {}",
+            volume_path.display(),
+            String::from_utf8_lossy(&stat.stderr).trim()
+        );
+        let filesystem = String::from_utf8_lossy(&stat.stdout);
         anyhow::ensure!(
             filesystem.trim() == "hugetlbfs",
-            "HugePages emptyDir was backed by {}, not hugetlbfs",
+            "HugePages emptyDir host volume {} was backed by {}, not hugetlbfs",
+            volume_path.display(),
             filesystem.trim()
         );
         Ok(())

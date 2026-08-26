@@ -120,7 +120,6 @@ fn configure_containerd_registry(config: &str) -> String {
     }
     if in_registry_section && !saw_config_path {
         output.push(config_line.to_string());
-        saw_config_path = true;
     }
     if !saw_registry_section {
         output.push(String::new());
