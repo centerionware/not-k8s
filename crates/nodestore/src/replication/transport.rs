@@ -1,19 +1,21 @@
 //! Node-to-node transport: raft messages over our own gRPC service.
 //!
-//! # Lossy on purpose
+//! # Bounded delivery
 //!
 //! Every send here is best-effort. A message that cannot be delivered — peer
-//! down, connection refused, queue full — is dropped and logged, never
-//! retried and never buffered indefinitely.
+//! down, connection refused, queue full — is dropped and logged after a
+//! bounded number of short delivery attempts. The retry window matters during
+//! startup: raft can campaign as soon as its driver starts, while a peer's
+//! TLS/gRPC server is still being brought up. Dropping every pre-vote in that
+//! window can leave a new cluster without a quorum even though every member is
+//! healthy a moment later.
 //!
-//! That is not a shortcut, it is the interface raft is designed against.
-//! Raft assumes an unreliable network in which messages are lost, delayed,
-//! duplicated and reordered, and it recovers by *resending state*, not by
-//! resending messages: a leader that gets no response re-sends the append
-//! from where the follower actually is. A transport that queued messages
-//! forever would deliver a burst of stale appends to a peer that has since
-//! moved on, and would turn a slow peer into unbounded memory growth on the
-//! leader — memory being the thing an edge device has least of.
+//! This is still deliberately not an unbounded reliable queue. Raft assumes
+//! an unreliable network in which messages are lost, delayed, duplicated and
+//! reordered, and it recovers by *resending state*. A transport that queued
+//! messages forever would deliver a burst of stale appends to a peer that has
+//! since moved on, and would turn a slow peer into unbounded memory growth on
+//! the leader — memory being the thing an edge device has least of.
 //!
 //! # One task per peer
 //!
@@ -40,6 +42,13 @@ use tracing::{debug, info, warn};
 /// recognised as unreachable, while making the messages that do arrive
 /// staler. Raft's own retry is faster and more correct than our buffering.
 const PEER_QUEUE_DEPTH: usize = 64;
+
+/// Give a peer a short chance to finish starting before dropping the current
+/// raft message. This covers the normal bind/TLS/gRPC startup race without
+/// turning the transport into a second raft retry loop or holding messages
+/// indefinitely for a dead member.
+const PEER_DELIVERY_ATTEMPTS: usize = 8;
+const PEER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Live cluster state, published by the driver for anything that needs to
 /// know who the leader is without taking the raft loop's lock — the Status
@@ -250,22 +259,6 @@ async fn peer_task(
             _ = shutdown.recv() => return,
         };
 
-        if client.is_none() {
-            match connect_peer(&url, tls.as_ref()).await {
-                Ok(c) => {
-                    debug!(peer = id, url = %url, "peer connection established");
-                    client = Some(c);
-                }
-                Err(e) => {
-                    // Expected while a peer is down or still starting. Raft
-                    // retries on its own schedule, so this must not become a
-                    // retry loop of its own.
-                    debug!(peer = id, url = %url, error = %e, "peer unreachable; dropping message");
-                    continue;
-                }
-            }
-        }
-
         let payload = match protobuf::Message::write_to_bytes(&msg) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -276,13 +269,60 @@ async fn peer_task(
             }
         };
 
-        if let Some(c) = client.as_mut() {
-            if let Err(e) = c.send(RaftMessage { payload }).await {
-                debug!(peer = id, error = %e, "peer send failed; will reconnect");
-                // Force a reconnect: a channel that has failed once will keep
-                // failing, and raft's next heartbeat is the retry.
-                client = None;
+        let mut delivered = false;
+        for attempt in 1..=PEER_DELIVERY_ATTEMPTS {
+            if client.is_none() {
+                match connect_peer(&url, tls.as_ref()).await {
+                    Ok(c) => {
+                        debug!(peer = id, url = %url, attempt, "peer connection established");
+                        client = Some(c);
+                    }
+                    Err(e) => {
+                        debug!(peer = id, url = %url, attempt, error = %e, "peer unreachable");
+                        if attempt == PEER_DELIVERY_ATTEMPTS {
+                            break;
+                        }
+                        let keep_trying = tokio::select! {
+                            _ = tokio::time::sleep(PEER_RETRY_DELAY) => true,
+                            _ = shutdown.recv() => false,
+                        };
+                        if !keep_trying {
+                            return;
+                        }
+                        continue;
+                    }
+                }
             }
+
+            let Some(c) = client.as_mut() else {
+                continue;
+            };
+            match c.send(RaftMessage { payload: payload.clone() }).await {
+                Ok(_) => {
+                    delivered = true;
+                    break;
+                }
+                Err(e) => {
+                    debug!(peer = id, attempt, error = %e, "peer send failed; will reconnect");
+                    // Force a reconnect: a channel that has failed once will
+                    // keep failing, and this message still has a bounded
+                    // chance to reach the peer that is coming up.
+                    client = None;
+                    if attempt == PEER_DELIVERY_ATTEMPTS {
+                        break;
+                    }
+                    let keep_trying = tokio::select! {
+                        _ = tokio::time::sleep(PEER_RETRY_DELAY) => true,
+                        _ = shutdown.recv() => false,
+                    };
+                    if !keep_trying {
+                        return;
+                    }
+                }
+            }
+        }
+        if !delivered {
+            debug!(peer = id, "peer message delivery exhausted; dropping message");
         }
     }
 }
