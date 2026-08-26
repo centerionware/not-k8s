@@ -279,7 +279,9 @@ impl Cluster {
         // diagnostic RPC.
         if leaders.len() >= quorum {
             let leader = leaders[0];
-            return Ok(leaders.iter().all(|candidate| *candidate == leader).then_some(leader));
+            return Ok(
+                leaders.iter().all(|candidate| *candidate == leader).then_some(leader),
+            );
         }
 
         // Keep the all-members-unreachable error for startup diagnostics, but
