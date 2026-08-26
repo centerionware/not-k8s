@@ -266,6 +266,7 @@ fn enable_hugetlb_controller(config: &str) -> (String, bool) {
     let mut output = Vec::new();
     let mut in_cri_runtime = false;
     let mut found_setting = false;
+    let mut saw_cri_runtime = false;
     let mut changed = false;
 
     for line in config.lines() {
@@ -275,14 +276,32 @@ fn enable_hugetlb_controller(config: &str) -> (String, bool) {
                 output.push("  disable_hugetlb_controller = false".to_string());
                 changed = true;
             }
-            in_cri_runtime = matches!(
-                trimmed,
-                "[plugins.\"io.containerd.grpc.v1.cri\"]"
-                    | "[plugins.'io.containerd.grpc.v1.cri']"
-                    | "[plugins.\"io.containerd.cri.v1.runtime\"]"
-                    | "[plugins.'io.containerd.cri.v1.runtime']"
-            );
-            found_setting = false;
+
+            if let Some(root_header) = cri_runtime_root(trimmed) {
+                let is_root = trimmed == root_header;
+                if is_root {
+                    saw_cri_runtime = true;
+                    in_cri_runtime = true;
+                    found_setting = false;
+                } else {
+                    // Some Docker-managed configs only contain nested CRI
+                    // tables.  The parent table is then implicit, so add it
+                    // immediately before the first nested table to make the
+                    // setting an active value rather than relying on the
+                    // containerd default.
+                    if !saw_cri_runtime {
+                        output.push(root_header.to_string());
+                        output.push("  disable_hugetlb_controller = false".to_string());
+                        saw_cri_runtime = true;
+                        changed = true;
+                    }
+                    in_cri_runtime = false;
+                    found_setting = false;
+                }
+            } else {
+                in_cri_runtime = false;
+                found_setting = false;
+            }
         }
 
         if in_cri_runtime && !trimmed.starts_with('#') {
@@ -305,7 +324,44 @@ fn enable_hugetlb_controller(config: &str) -> (String, bool) {
         changed = true;
     }
 
+    if !saw_cri_runtime {
+        let root_header = if config.lines().any(|line| line.trim() == "version = 2") {
+            "[plugins.'io.containerd.cri.v1.runtime']"
+        } else {
+            "[plugins.\"io.containerd.grpc.v1.cri\"]"
+        };
+        output.push(root_header.to_string());
+        output.push("  disable_hugetlb_controller = false".to_string());
+        changed = true;
+    }
+
     (output.join("\n"), changed)
+}
+
+fn cri_runtime_root(header: &str) -> Option<&'static str> {
+    for (prefix, root) in [
+        (
+            "[plugins.\"io.containerd.grpc.v1.cri\"",
+            "[plugins.\"io.containerd.grpc.v1.cri\"]",
+        ),
+        (
+            "[plugins.'io.containerd.grpc.v1.cri'",
+            "[plugins.'io.containerd.grpc.v1.cri']",
+        ),
+        (
+            "[plugins.\"io.containerd.cri.v1.runtime\"",
+            "[plugins.\"io.containerd.cri.v1.runtime\"]",
+        ),
+        (
+            "[plugins.'io.containerd.cri.v1.runtime'",
+            "[plugins.'io.containerd.cri.v1.runtime']",
+        ),
+    ] {
+        if header == root || header.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('.')) {
+            return Some(root);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -335,6 +391,26 @@ mod containerd_config_tests {
         let (patched, changed) = enable_hugetlb_controller(config);
         assert!(changed);
         assert!(patched.contains("disable_hugetlb_controller = false"));
+    }
+
+    #[test]
+    fn creates_the_parent_for_an_implicit_v2_runtime_table() {
+        let config = "version = 2\n[plugins.'io.containerd.cri.v1.runtime'.containerd]\n  snapshotter = \"overlayfs\"\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains(
+            "[plugins.'io.containerd.cri.v1.runtime']\n  disable_hugetlb_controller = false\n[plugins.'io.containerd.cri.v1.runtime'.containerd]"
+        ));
+    }
+
+    #[test]
+    fn adds_a_runtime_table_when_the_config_has_only_implicit_defaults() {
+        let config = "version = 2\n[grpc]\naddress = \"/run/containerd/containerd.sock\"\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.ends_with(
+            "[plugins.'io.containerd.cri.v1.runtime']\n  disable_hugetlb_controller = false"
+        ));
     }
 }
 
