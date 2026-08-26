@@ -1,5 +1,6 @@
 use super::context::E2eContext;
-use anyhow::Result;
+use super::skip_test;
+use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod};
 use k8s_openapi::api::storage::v1::StorageClass;
 use kube::api::{Api, DeleteParams, PostParams};
@@ -109,28 +110,21 @@ pub(super) async fn pv_binder_requests_dynamic_provisioning_from_storage_class(
 }
 
 pub(super) async fn pod_mounts_a_persistent_volume_claim(context: &E2eContext) -> Result<()> {
-    let class = "mounted-static-e2e-class";
-    let pv_name = "mounted-static-e2e-pv";
-    let pvc_name = "mounted-static-e2e-pvc";
-    let pod_name = "mounted-static-e2e-pod";
-    let host_path = format!("/tmp/nodebootstrap-e2e-pvc-{}", std::process::id());
-    std::fs::create_dir_all(&host_path)?;
-    std::fs::write(format!("{host_path}/marker"), "persistent-volume-marker")?;
-    let pvs: Api<PersistentVolume> = Api::all(context.client.clone());
-    let pv: PersistentVolume = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolume",
-        "metadata": {"name": pv_name},
-        "spec": {"capacity": {"storage": "10Mi"}, "accessModes": ["ReadWriteOnce"], "storageClassName": class, "persistentVolumeReclaimPolicy": "Delete", "hostPath": {"path": host_path}}
-    }))?;
-    pvs.create(&PostParams::default(), &pv).await?;
+    let storage_class = std::env::var("TEST_CSI_STORAGE_CLASS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            skip_test("TEST_CSI_STORAGE_CLASS is not set; a CSI-backed StorageClass is required")
+        })?;
+    let pvc_name = "csi-pvc-check-claim";
+    let pod_name = "csi-pvc-check";
     let pvcs: Api<PersistentVolumeClaim> =
         Api::namespaced(context.client.clone(), &context.namespace);
     let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {"name": pvc_name},
-        "spec": {"accessModes": ["ReadWriteOnce"], "storageClassName": class, "resources": {"requests": {"storage": "10Mi"}}}
+        "spec": {"accessModes": ["ReadWriteOnce"], "storageClassName": storage_class, "resources": {"requests": {"storage": "64Mi"}}}
     }))?;
     pvcs.create(&PostParams::default(), &pvc).await?;
     let bind_result = context
@@ -149,8 +143,6 @@ pub(super) async fn pod_mounts_a_persistent_volume_claim(context: &E2eContext) -
         .await;
     if let Err(error) = bind_result {
         let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
-        let _ = pvs.delete(pv_name, &DeleteParams::default()).await;
-        let _ = std::fs::remove_dir_all(&host_path);
         return Err(error);
     }
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -161,34 +153,46 @@ pub(super) async fn pod_mounts_a_persistent_volume_claim(context: &E2eContext) -
         "spec": {
             "restartPolicy": "Never",
             "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}],
-            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "cat /data/marker > /dev/termination-log"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}]
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "echo hello-from-csi-pvc > /data/marker; sleep 3600"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}]
         }
     }))?;
     let wait_result = async {
         pods.create(&PostParams::default(), &pod).await?;
         context
-            .wait_until("persistent volume claim mount", Duration::from_secs(120), || {
+            .wait_until("persistent volume claim Pod Running", Duration::from_secs(120), || {
                 let pods = pods.clone();
                 async move {
                     Ok(pods
                         .get(pod_name)
                         .await?
                         .status
-                        .and_then(|status| status.container_statuses)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .find(|status| status.name == "app")
-                        .and_then(|status| status.state)
-                        .and_then(|state| state.terminated)
-                        .and_then(|terminated| terminated.message)
-                        .is_some_and(|message| message.trim() == "persistent-volume-marker"))
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        let uid = pods
+            .get(pod_name)
+            .await?
+            .metadata
+            .uid
+            .context("CSI PVC Pod has no UID")?;
+        let marker = std::path::PathBuf::from("/var/lib/nodelet/pods")
+            .join(uid)
+            .join("volumes/data/marker");
+        context
+            .wait_until("persistent volume claim marker", Duration::from_secs(30), || {
+                let marker = marker.clone();
+                async move {
+                    Ok(std::fs::read_to_string(&marker)
+                        .is_ok_and(|value| value.trim() == "hello-from-csi-pvc"))
                 }
             })
             .await
     }
     .await;
+    let _ = pods.delete(pod_name, &DeleteParams::default()).await;
     let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
-    let _ = pvs.delete(pv_name, &DeleteParams::default()).await;
-    let _ = std::fs::remove_dir_all(&host_path);
     wait_result
 }

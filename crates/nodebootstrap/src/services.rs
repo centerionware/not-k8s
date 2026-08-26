@@ -32,6 +32,7 @@
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+use crate::pkg::{PkgNames, command_exists, pkg_install};
 use crate::service_mgr::{self, SupervisedService};
 
 fn binary_path(cfg: &Config, name: &str) -> std::path::PathBuf {
@@ -204,6 +205,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
         tracing::info!("NODEBOOTSTRAP_PROXY=none -- skipping nodeproxy");
         return Ok(());
     }
+    prepare_nodeproxy_host(cfg);
     let bin = binary_path(cfg, "nodeproxy");
     anyhow::ensure!(bin.exists(), "no nodeproxy binary at {} -- run `nodebootstrap fetch` first", bin.display());
     let kubeconfig = if cfg.worker_bootstrap_kubeconfig.is_some() {
@@ -232,6 +234,49 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
         },
     )
     .context("installing nodeproxy as a supervised service")
+}
+
+/// Prepare the host datapath that makes pod-originated Service traffic reach
+/// nodeproxy's nftables `prerouting` chain.  The old shell bootstrap did this
+/// in its nft module; keeping it here makes the Rust bootstrap path equivalent
+/// and leaves `--proxy=none` / external-CNI deployments alone.
+fn prepare_nodeproxy_host(cfg: &Config) {
+    if !cfg.with_cri || cfg.cni_provider.is_none() {
+        return;
+    }
+
+    if !command_exists("nft") {
+        let names = PkgNames {
+            apt: "nftables",
+            dnf: "nftables",
+            pacman: "nftables",
+            apk: "nftables",
+            zypper: "nftables",
+            xbps: "nftables",
+        };
+        let _ = pkg_install("nftables", &names);
+    }
+
+    if command_exists("modprobe") {
+        let _ = std::process::Command::new("modprobe")
+            .arg("br_netfilter")
+            .status();
+    }
+    write_host_sysctl("/proc/sys/net/ipv4/ip_forward", "1");
+    let bridge_sysctl = "/proc/sys/net/bridge/bridge-nf-call-iptables";
+    if std::path::Path::new(bridge_sysctl).is_file() {
+        write_host_sysctl(bridge_sysctl, "1");
+    } else {
+        tracing::warn!(
+            "{bridge_sysctl} is unavailable; pod-originated Service traffic may not reach nodeproxy"
+        );
+    }
+}
+
+fn write_host_sysctl(path: &str, value: &str) {
+    if let Err(error) = std::fs::write(path, format!("{value}\n")) {
+        tracing::warn!(path, error = %error, "could not configure host sysctl");
+    }
 }
 
 /// Remove only this host's control-plane services. The caller removes the

@@ -345,6 +345,7 @@ pub(super) async fn fsgroup_change_policy_on_root_mismatch_skips_the_second_chow
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let pvcs: Api<PersistentVolumeClaim> =
         Api::namespaced(context.client.clone(), &context.namespace);
+    let attachments: Api<VolumeAttachment> = Api::all(context.client.clone());
     let claim: PersistentVolumeClaim = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -383,7 +384,7 @@ pub(super) async fn fsgroup_change_policy_on_root_mismatch_skips_the_second_chow
             "spec": {
                 "restartPolicy": "Never",
                 "securityContext": {"fsGroup": 4322, "fsGroupChangePolicy": "OnRootMismatch"},
-                "containers": [{"name": "app", "image": "busybox:latest", "command": ["stat", "-c", "%g", "/data"] , "volumeMounts": [{"name": "data", "mountPath": "/data"}]}],
+                "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "stat -c %g /data > /dev/termination-log"], "volumeMounts": [{"name": "data", "mountPath": "/data"}]}],
                 "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": claim_name}}]
             }
         }))
@@ -405,6 +406,11 @@ pub(super) async fn fsgroup_change_policy_on_root_mismatch_skips_the_second_chow
         let _ = pvcs.delete(claim_name, &DeleteParams::default()).await;
         return Err(error);
     }
+    let pv_name = pvcs
+        .get(claim_name)
+        .await?
+        .spec
+        .and_then(|spec| spec.volume_name);
     pods.delete(first_name, &DeleteParams::default()).await?;
     context
         .wait_until("first fsGroup policy Pod deletion", Duration::from_secs(240), || {
@@ -412,6 +418,25 @@ pub(super) async fn fsgroup_change_policy_on_root_mismatch_skips_the_second_chow
             async move { Ok(pods.get_opt(first_name).await?.is_none()) }
         })
         .await?;
+    if let Some(pv_name) = pv_name {
+        context
+            .wait_until("first fsGroup policy VolumeAttachment deletion", Duration::from_secs(240), || {
+                let attachments = attachments.clone();
+                let pv_name = pv_name.clone();
+                async move {
+                    Ok(!attachments
+                        .list(&ListParams::default())
+                        .await?
+                        .items
+                        .into_iter()
+                        .any(|attachment| {
+                            attachment.spec.source.persistent_volume_name.as_deref()
+                                == Some(pv_name.as_str())
+                        }))
+                }
+            })
+            .await?;
+    }
 
     let second: Pod = create_pod(second_name)?;
     pods.create(&PostParams::default(), &second).await?;

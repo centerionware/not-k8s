@@ -279,13 +279,17 @@ jobs:
           kubectl_cmd get pods -A -o wide
           echo "── pods not Running/Completed ──"
           kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
+          echo "── Service datapath prerequisites ──"
+          cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+          cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "bridge-nf-call-iptables unavailable"
+          sudo nft list table inet not_k8s_svc 2>&1 || true
 
           echo "── all installed service state and logs ──"
           mapfile -t services < <(
             {
               sudo systemctl list-units --type=service --all --no-legend --no-pager
               sudo systemctl list-unit-files --type=service --no-legend --no-pager
-            } | awk '{print $1}' | sed '/^$/d' | sort -u
+            } | awk '$1 ~ /^[[:alnum:]_@%:.-]+\.service$/ {print $1}' | sort -u
           )
           for unit in "${services[@]}"; do
             echo "── $unit state ──"

@@ -605,7 +605,7 @@ pub(super) async fn sysctls_are_applied_to_the_sandbox(context: &E2eContext) -> 
         json!({
             "restartPolicy": "Never",
             "securityContext": {"sysctls": [{"name": "net.ipv4.ip_unprivileged_port_start", "value": "1234"}]},
-            "containers": [{"name": "app", "image": "busybox:latest", "command": ["cat", "/proc/sys/net/ipv4/ip_unprivileged_port_start"]}]
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "cat /proc/sys/net/ipv4/ip_unprivileged_port_start > /dev/termination-log"]}]
         }),
     )
     .await?;

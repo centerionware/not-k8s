@@ -187,11 +187,13 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
         name,
         json!({
             "terminationGracePeriodSeconds": 15,
+            "volumes": [{"name": "shared", "emptyDir": {}}],
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
                 "command": ["sh", "-c", "trap 'while true; do sleep 1; done' TERM; while true; do sleep 1; done"],
-                "lifecycle": {"preStop": {"exec": {"command": ["sh", "-c", "echo prestop > /dev/termination-log"]}}}
+                "lifecycle": {"preStop": {"exec": {"command": ["sh", "-c", "echo prestop > /shared/prestop.txt"]}}},
+                "volumeMounts": [{"name": "shared", "mountPath": "/shared"}]
             }]
         }),
     )
@@ -210,19 +212,28 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
             }
         })
         .await?;
+    let pod_uid = pods
+        .get(name)
+        .await?
+        .metadata
+        .uid
+        .ok_or_else(|| anyhow::anyhow!("preStop Pod has no UID"))?;
+    let marker = PathBuf::from("/var/lib/nodelet/pods")
+        .join(pod_uid)
+        .join("volumes/shared/prestop.txt");
     add_deletion_finalizer(&pods, name).await?;
     pods.delete(name, &DeleteParams::default()).await?;
     let result = context
-        .wait_until("preStop termination message", Duration::from_secs(30), || {
-            let context = context.clone();
+        .wait_until("preStop marker", Duration::from_secs(30), || {
+            let marker = marker.clone();
             async move {
-                Ok(termination_message(&context, name)
-                    .await?
-                    .is_some_and(|message| message.trim() == "prestop"))
+                Ok(std::fs::read_to_string(&marker)
+                    .is_ok_and(|message| message.trim() == "prestop"))
             }
         })
         .await;
     release_deletion_finalizer(&pods, name).await?;
+    let _ = std::fs::remove_file(marker);
     result
 }
 

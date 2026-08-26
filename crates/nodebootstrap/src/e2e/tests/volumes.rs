@@ -365,26 +365,65 @@ pub(super) async fn image_volume_source_mounts_a_read_only_image(
         return Err(skip_test(error.to_string()));
     }
     let name = "image-volume-check";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     create_pod(
         context,
         name,
         json!({
             "restartPolicy": "Never",
-            "volumes": [{"name": "img", "image": {"reference": "busybox:latest", "pullPolicy": "IfNotPresent"}}],
-            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "test -x /img/bin/sh && (echo x > /img/should-fail-readonly 2>/dev/null && echo WROTE || echo BLOCKED) > /dev/termination-log"], "volumeMounts": [{"name": "img", "mountPath": "/img"}]}]
+            "volumes": [
+                {"name": "img", "image": {"reference": "busybox:latest", "pullPolicy": "IfNotPresent"}},
+                {"name": "shared", "emptyDir": {}}
+            ],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "ls -A /img > /shared/listing.txt 2>&1; (echo x > /img/should-fail-readonly 2>/shared/write.err && echo WROTE > /shared/write.result) || echo BLOCKED > /shared/write.result; sleep 3600"], "volumeMounts": [{"name": "img", "mountPath": "/img"}, {"name": "shared", "mountPath": "/shared"}]}]
         }),
     )
     .await?;
     context
-        .wait_until("image volume Pod to report its read-only mount", Duration::from_secs(120), || {
-            let context = context.clone();
+        .wait_until("image volume Pod Running", Duration::from_secs(120), || {
+            let pods = pods.clone();
             async move {
-                Ok(terminated_message(&context, name)
+                Ok(pods
+                    .get(name)
                     .await?
-                    .is_some_and(|message| message.trim() == "BLOCKED"))
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
             }
         })
-        .await
+        .await?;
+    let pod_uid = pods
+        .get(name)
+        .await?
+        .metadata
+        .uid
+        .context("image-volume Pod has no UID")?;
+    let shared = std::path::PathBuf::from("/var/lib/nodelet/pods")
+        .join(pod_uid)
+        .join("volumes/shared");
+    context
+        .wait_until("image volume listing", Duration::from_secs(30), || {
+            let path = shared.join("listing.txt");
+            async move { Ok(std::fs::read_to_string(path).is_ok_and(|value| !value.trim().is_empty())) }
+        })
+        .await?;
+    context
+        .wait_until("image volume read-only result", Duration::from_secs(30), || {
+            let path = shared.join("write.result");
+            async move { Ok(std::fs::read_to_string(path).is_ok_and(|value| !value.trim().is_empty())) }
+        })
+        .await?;
+    let listing = std::fs::read_to_string(shared.join("listing.txt")).unwrap_or_default();
+    let write_result = std::fs::read_to_string(shared.join("write.result")).unwrap_or_default();
+    anyhow::ensure!(!listing.trim().is_empty(), "image volume mount was empty");
+    anyhow::ensure!(
+        write_result.trim() == "BLOCKED",
+        "writing inside an image volume mount returned {:?}, expected BLOCKED",
+        write_result.trim()
+    );
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    Ok(())
 }
 
 pub(super) async fn configmap_volume_updates_live_without_pod_restart(

@@ -214,6 +214,13 @@ fn write_nodelet_gc_override(contents: Option<&str>) -> Result<()> {
             }
         }
     } else if let Some(contents) = contents {
+        anyhow::ensure!(
+            Command::new("sudo")
+                .args(["mkdir", "-p", "/etc/systemd/system/nodelet.service.d"])
+                .status()?
+                .success(),
+            "sudo mkdir failed creating nodelet override directory"
+        );
         let mut child = Command::new("sudo")
             .args(["tee", path])
             .stdin(Stdio::piped())
