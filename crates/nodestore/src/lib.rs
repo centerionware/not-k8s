@@ -121,6 +121,10 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
     // peer server binds — hence declared out here rather than inside the
     // branch that builds it.
     let mut peer_tls: Option<tls::Material> = None;
+    let mut peer_incoming: Option<(
+        std::net::SocketAddr,
+        tonic::transport::server::TcpIncoming,
+    )> = None;
 
     // Single member or a real cluster. The difference is confined to which
     // Consensus is installed and whether a peer server runs — everything
@@ -153,6 +157,19 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         .context("preparing raft peer TLS material")?;
         info!(ca = %peer_material.ca.display(), "raft peer link requires mutual TLS");
         peer_tls = Some(peer_material.clone());
+
+        // Bind before starting the raft driver. The driver can campaign as
+        // soon as its task is spawned; if the listener is only bound after
+        // that point, every member can drop its first pre-vote connection
+        // while the peer server is still coming up and never form a quorum.
+        let peer_addr: std::net::SocketAddr = cfg
+            .peer_listen
+            .parse()
+            .with_context(|| format!("NODESTORE_PEER_LISTEN={:?} is not a valid address", cfg.peer_listen))?;
+        let incoming = tonic::transport::server::TcpIncoming::bind(peer_addr)
+            .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
+        info!(%peer_addr, "raft peer listener bound before raft startup");
+        peer_incoming = Some((peer_addr, incoming));
 
         let transport =
             replication::transport::Transport::new(cfg.member_id, Some(peer_material));
@@ -239,18 +256,14 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
     let mut peer_failed_tx = Some(peer_failed_tx);
 
     if let Some(handle) = raft.clone() {
-        let peer_addr: std::net::SocketAddr = cfg
-            .peer_listen
-            .parse()
-            .with_context(|| format!("NODESTORE_PEER_LISTEN={:?} is not a valid address", cfg.peer_listen))?;
+        let (peer_addr, incoming) = peer_incoming
+            .take()
+            .context("clustered member has no pre-bound raft peer listener")?;
         let peer_service = replication::peer_service::PeerService::new(handle, Arc::clone(&node));
         let material = peer_tls
             .as_ref()
             .context("a clustered member has no peer TLS material; refusing to serve raft in the clear")?;
         let tls = tls::server_tls_config(material).context("building peer TLS config")?;
-        let incoming = tonic::transport::server::TcpIncoming::bind(peer_addr)
-            .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
-        info!(%peer_addr, "raft peer listener bound");
         let peer_server = tonic::transport::Server::builder()
             .tls_config(tls)
             .context("applying peer TLS config")?
