@@ -234,11 +234,25 @@ helm upgrade -i --create-namespace --namespace dra-example-driver \
 # CI hit this exactly. Poll for the pod to *exist* first, then wait for
 # it to become ready.
 wait_for_dra_pod_ready() {
-    for i in $(seq 1 30); do
-        [[ -n "$(kubectl get pods -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin -o name 2>/dev/null)" ]] && break
+    # After the token-refresh delete below, the old DaemonSet pod remains
+    # selectable while it is terminating. Waiting on that stale name can
+    # consume the whole timeout even though the replacement is healthy.
+    for i in $(seq 1 60); do
+        pod="$(kubectl get pods -n dra-example-driver \
+            -l app.kubernetes.io/component=kubeletplugin -o json 2>/dev/null \
+            | jq -r '.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name' \
+            | head -n 1 || true)"
+        if [[ -n "$pod" ]] \
+            && kubectl wait --for=condition=ready "pod/$pod" \
+                -n dra-example-driver --timeout=5s >/dev/null 2>&1; then
+            return 0
+        fi
         sleep 2
     done
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=kubeletplugin -n dra-example-driver --timeout=120s
+    kubectl get pods -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin -o wide || true
+    kubectl describe pods -n dra-example-driver -l app.kubernetes.io/component=kubeletplugin || true
+    echo "DRA kubeletplugin pod never became Ready" >&2
+    return 1
 }
 
 wait_for_nodelet_dra_registration() {
