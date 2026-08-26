@@ -499,6 +499,26 @@ impl CriRuntime {
         let prefix = format!("{sandbox_id}/");
         self.pull_backoff.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
     }
+
+    pub(crate) fn record_config_error(&self, sandbox_id: &str, container_name: &str, reason: &str) {
+        self.config_errors
+            .lock()
+            .unwrap()
+            .insert(restart_count_key(sandbox_id, container_name), reason.to_string());
+    }
+
+    pub(crate) fn config_error_reason(&self, sandbox_id: &str, container_name: &str) -> Option<String> {
+        self.config_errors.lock().unwrap().get(&restart_count_key(sandbox_id, container_name)).cloned()
+    }
+
+    pub(crate) fn clear_config_error_for(&self, sandbox_id: &str, container_name: &str) {
+        self.config_errors.lock().unwrap().remove(&restart_count_key(sandbox_id, container_name));
+    }
+
+    pub(crate) fn clear_config_errors(&self, sandbox_id: &str) {
+        let prefix = format!("{sandbox_id}/");
+        self.config_errors.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+    }
 }
 
 

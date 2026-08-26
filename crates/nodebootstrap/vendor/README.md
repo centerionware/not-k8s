@@ -41,24 +41,9 @@ tag, recording the new tag in this file, and re-checking the placeholder
 table and image-substitution line still match (both have changed across k3s
 releases before).
 
-## `run-flanneld.sh`
+## Flannel service setup
 
-Source: this repo's own `deploy/run-flanneld.sh`, copied verbatim as of
-2026-08-22 (not a third-party fetch like `coredns.yaml` above -- this file
-already existed in-tree). `cni.rs`'s `start_flanneld` writes this out to
-`Config::work_dir()` and points `service_mgr::install`'s `exec_cmd` at it,
-rather than reimplementing its logic in Rust: the net-conf.json write +
-default-interface detection have to re-run on *every* `flanneld` restart
-(a `Restart=always` unit only re-runs `ExecStart`), which needs a script the
-service manager re-execs, not one-shot Rust code that only ran once at
-`nodebootstrap` install time. See the file's own header comment for why
-(a real incident: `/etc/kube-flannel/net-conf.json` missing after a reboot,
-crash-looping `flanneld` with no recovery until a manual re-run) and for the
-ECMP default-route interface-detection story.
-
-This is a **temporary duplication**, not a permanent second copy: once
-`deploy/`'s shell libs are deleted (`docs/NODEBOOTSTRAP_PLAN.md`'s phasing
-section -- happens once Phase 1 fully cuts over), this vendored copy becomes
-the only one and `deploy/run-flanneld.sh` goes away. Until then, a change to
-one needs the same change in the other -- there is no automation enforcing
-that yet.
+The flannel service wrapper is no longer vendored. `cni.rs`'s Rust
+`flanneld` service applet rewrites `/etc/kube-flannel/net-conf.json`, waits for
+the node PodCIDR, selects the default interface, and then starts flanneld on
+every supervised process start.

@@ -62,10 +62,10 @@ refactor(nodelet)!: drop the in-process service proxy
 was broken, how you know, what you ruled out. A one-liner for a non-trivial
 change throws that away.
 
-Check before pushing, using the same script CI runs:
+Check before pushing with the same Conventional Commits shape CI enforces:
 
 ```bash
-git log -1 --format=%B | .github/scripts/check-commit-message.sh
+git log -1 --format=%s | grep -Eq '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([A-Za-z0-9._/-]+\))?!?: .{10,100}$'
 git config core.hooksPath .githooks     # or have git reject it at commit time
 ```
 

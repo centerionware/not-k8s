@@ -14,8 +14,9 @@ to bootstrap a cluster for it to run in.
 
 Decided 2026-08-22, replacing that entry:
 
-1. **One crate, `nodebootstrap`**, not two. It replaces
-   `bootstrap-source.sh`/`bootstrap-release.sh`/most of `deploy/lib/*.sh` —
+1. **One crate, `nodebootstrap`**, not two. It replaces the former
+   `bootstrap-source.sh`/`bootstrap-release.sh` and the non-performance
+   `deploy/lib/*.sh` tree —
    toolchain checks, containerd install, CNI/flannel install (skippable, so
    Cilium etc. can be used instead), per-component skip flags, build-from-
    source vs. fetch-a-release (tagged or latest), layout choice
@@ -75,10 +76,9 @@ crates/nodebootstrap/
                            #   release build would carry instead of the
                            #   placeholder 0.1.0 every crate inherits today
                            #   -- read-only against `version`; bumping it
-                           #   stays version-bump.sh's job at release time.
+                           #   stays the release workflow's job.
     components.rs          # per-component skip flags, mirrors
-                            #   deploy/lib/components.sh's table so the Rust
-                            #   and shell sides don't drift — see "Migration"
+                            #   the archived deploy component table
     pki.rs                # CA, serving cert, SA signing keypair, static
                            #   control-plane client certs (Group O's PKI
                            #   half). Per-node certs are NOT here -- that's
@@ -133,29 +133,46 @@ the `nodebootstrap` applet plus the `bootstrap` alias.  The normal install is:
 wget https://github.com/centerionware/not-k8s/releases/download/v0.7.0/notk8s-0.7.0-linux-aarch64-release
 chmod +x notk8s-0.7.0-linux-aarch64-release
 ln -s ./notk8s-0.7.0-linux-aarch64-release bootstrap
-./bootstrap --with-cri
+./bootstrap
 ```
 
 The default command runs the complete bootstrap flow.  CRI is enabled by
-default; `--without-cri` skips containerd and CNI and selects nodelet mock
+default; `--without-cri` is the only CRI-selection flag, skipping containerd and CNI and selecting nodelet mock
 runtime.  `--from-source` uses the same fetched toolchain fallbacks as the
 former source script and can rebuild the installed binaries.  `--update` (or
 `--release`) fetches release assets, and every installed service is restarted
 when its unit is refreshed.  The combined applet stages its own executable,
 so an already-installed release can rebuild or update itself.
 
+Common post-install commands are:
+
+```bash
+./bootstrap --e2e
+./bootstrap --e2e --only=node
+./bootstrap --e2e --shard=1/5       # CI: one of five deterministic shards
+KUBECONFIG=/path/to/cluster.kubeconfig ./bootstrap --e2e
+```
+
+`--e2e` is a read-only bootstrap applet mode. It does not re-run installation,
+does not require k3s-specific paths or flags, and uses the Kubernetes Rust
+client directly. It prefers `$KUBECONFIG` and otherwise discovers the admin
+kubeconfig emitted under `/etc/nodebootstrap`. The former shell cases are
+archived on `archive-shell-scripts-0.7.1`; their Rust replacements are added
+to this registry under issue #242.
+
 ## Testing strategy
 
-Same shape as `deploy/lib/test/cases/datastore.sh` (drives the real gRPC API
-against a throwaway `nodestore`) and `APISERVER_PLAN.md`'s "getting signal
-earlier" rig: a case file in `deploy/lib/test/cases/*.sh` that runs
-`nodebootstrap` end to end — generate PKI, mint kubeconfig, install RBAC,
-stand up `nodestore` plus the upstream
-`kube-apiserver` and this projects `nodescheduler`/`nodecontroller` services — then drives it with real
-`kubectl`: can a ServiceAccount token authenticate, does RBAC actually gate
-what it says it gates, does the `kubernetes` Service resolve, is discovery
-correct. This is real signal against a real apiserver, not a mock, and it
-runs on `main`'s own e2e gate — no `nodeapiserver` dependency.
+The bootstrap applet's `--e2e` mode is the long-term runner. It drives the
+Kubernetes API directly through the Rust client so the same checks work on
+any cluster bootstrapped by the applet, without k3s-only flags or shell
+wrappers. The initial checks cover apiserver resource serving, node readiness,
+and the apiserver's reachable `default/kubernetes` endpoint. The old shell
+suite is no longer part of the build or release gate; each missing feature
+assertion must be ported into this registry before it is considered restored.
+GitHub Actions runs five independent bootstrap clusters: CSI/DRA cases are
+balanced across shards 1-2, and all other cases are balanced across shards
+1-5. `--only` is applied after the stable shard assignment, so a filtered CI
+run tests the same shard as an unfiltered run.
 
 ## Phasing / merge protocol
 
@@ -181,9 +198,10 @@ Standard `CLAUDE.md` merge protocol applies, group by group, same as
    once `APISERVER_PLAN.md`'s final acceptance criteria are met, per the
    existing "no partial multi-phase work" standing rule.
 
-`deploy/bootstrap-source.sh`/`bootstrap-release.sh` and the shell libs they
-call are deleted once Phase 1 lands and CI/CD has cut over — not kept as a
-parallel fallback path.
+The non-performance shell installer, deployment, diagnostic, and e2e files
+were deleted after the CI/CD cutover. The exact pre-cutover tree is preserved
+on `archive-shell-scripts-0.7.1` for reference. Performance helpers remain
+until their planned 0.7.4 migration.
 
 ## Implementation status (updated as it lands)
 
@@ -199,7 +217,7 @@ comment for the specifics and what's queued next:
 | `manifests.rs` | ✅ real (CoreDNS only -- flannel corrected out of scope, see its doc comment) | n/a |
 | `toolchain.rs` | ✅ real, every tier (rust: package manager -> rustup; protoc: package manager -> official prebuilt -> from-source autotools build; C toolchain: package manager -> musl.cc static prebuilt -> from-source gcc+binutils build; Go: package manager -> official prebuilt -> from-source 3-stage bootstrap) | n/a |
 | `containerd.rs` | ✅ real, every tier (package manager -> official prebuilt -> from-source, needs `toolchain::ensure_go`; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | n/a |
-| `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` + a vendored `run-flanneld.sh` wrapper -- see `vendor/README.md`) | n/a |
+| `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` and the Rust `flanneld` service applet) | n/a |
 | `fetch.rs` | ✅ real for source/release/prebuilt selection, including the<br>standalone and combined CLI paths (version-stamp + `cargo build` per layout), `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming), and the prebuilt seam (`NOTK8S_COMBINED_PREBUILT` / per-component `NOTK8S_*_PREBUILT`, checked before `cfg.source` -- same precedence `nodelet-build.sh`'s `build_nodelet()` documents; added 2026-08-22 so `release.yml`'s e2e stage can stage one compiled artifact into 5 shards instead of recompiling per shard) | n/a |
 | `targets/upstream.rs` | ✅ real -- **installs only `kube-apiserver`** now (2026-08-22, user direction: `nodescheduler`/`nodecontroller` are the scheduler/controller-manager, not upstream's binaries -- see `services.rs`), binary fetch + full flag-set construction + `service_mgr.rs` + a best-effort `/readyz` wait. **`K8S_VERSION` bumped `v1.33.13` -> `v1.34.11`**: `nodescheduler` hardcodes `resource.k8s.io/v1`, GA only from 1.34. `--runtime-config=api/all=true` was tried as a hedge and **removed** after it broke `rbac/bootstrap-roles` (`rbac.rs`'s whole finding depends on that PostStartHook succeeding). **`wait_for_nodestore`**: a real startup race found live -- `service_mgr.rs`'s `After=nodestore.service` only guarantees the unit started, not that its gRPC/TLS listener is accepting connections yet, and `rbac/bootstrap-roles` doesn't retry its own initial etcd connection failure. A hard TCP-connect wait before installing kube-apiserver closes it | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
@@ -218,8 +236,6 @@ HTTP GET this crate could trivially do itself.
 
 **The service-supervision writer (`service_mgr.rs`) is done and wired into
 `containerd.rs`, `targets/upstream.rs`, and `cni.rs`.** All three of
-Phase 1's "start it as a service" gaps are closed. `cni.rs` gets there via
-a vendored `run-flanneld.sh` wrapper rather than a Rust reimplementation of
-its net-conf.json + ECMP-aware interface-detection logic — see
-`vendor/README.md`'s entry for why that stays a shell script `service_mgr.rs`
-points at, not Rust code this crate would have to keep running itself.
+Phase 1's "start it as a service" gaps are closed. `cni.rs`'s Rust
+`flanneld` service applet rewrites net-conf.json, waits for the node PodCIDR,
+and resolves the default interface on every supervised start.

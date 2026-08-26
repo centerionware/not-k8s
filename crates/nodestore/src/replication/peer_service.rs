@@ -13,6 +13,7 @@ use crate::replication::driver::RaftHandle;
 use raft::eraftpb::Message;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+use tracing::info;
 
 pub struct PeerService {
     handle: RaftHandle,
@@ -49,6 +50,15 @@ impl Peer for PeerService {
         _request: Request<StatusRequest>,
     ) -> std::result::Result<Response<StatusReply>, Status> {
         let leader_id = self.handle.leader_id().unwrap_or(0);
+        let term = self.handle.term();
+        let role = self.handle.state.role_name();
+        info!(
+            member = self.handle.member_id(),
+            role,
+            term,
+            leader_id,
+            "peer status request received"
+        );
         let (revision, members) = self
             .node
             .read(|s| Ok((s.revision()?, s.members()?)))
@@ -63,7 +73,7 @@ impl Peer for PeerService {
         Ok(Response::new(StatusReply {
             member_id: self.handle.member_id(),
             leader_id,
-            term: self.handle.term(),
+            term,
             applied_index: self.handle.applied_index(),
             revision,
             role: self.handle.state.role_name().to_string(),

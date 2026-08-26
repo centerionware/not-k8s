@@ -1,9 +1,12 @@
 //! Env-var configuration, matching the other components' style (`nodelet`'s
 //! `config.rs`, `nodeproxy`'s, etc.). The public binary also translates its
 //! installer flags into these variables, so a deployment can be driven either
-//! by `./bootstrap --with-cri` or by an already-supervised subcommand.
+//! by `./bootstrap` (CRI is the default) or by an already-supervised subcommand.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+const WITHOUT_FLANNEL_MARKER: &str = "without-flannel";
+const ADVERTISE_ADDRESS_MARKER: &str = "advertise-address";
 
 /// Where to fetch a component from, mirroring `bootstrap-release.sh`'s
 /// existing choice between compiling and downloading a published artifact.
@@ -12,6 +15,15 @@ pub enum Source {
     /// `cargo build`, same as `bootstrap-source.sh`.
     Compile,
     /// Fetch a GitHub Release asset — `Tag(None)` means "latest".
+    Release,
+}
+
+/// Cargo profile used by the source builder. Debug is intentionally the
+/// ordinary fast profile for e2e iteration; release carries the static size
+/// and optimization settings from the workspace's release profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildProfile {
+    Debug,
     Release,
 }
 
@@ -47,10 +59,37 @@ pub struct Config {
     pub skip_toolchain: bool,
     pub skip_containerd: bool,
     pub skip_control_plane: bool,
+    /// Join an already-running Kubernetes control plane instead of installing
+    /// this project's control-plane services on the host.
+    pub worker: bool,
+    /// Add this host as a new control-plane member of an existing nodestore
+    /// cluster. This is deliberately explicit: a control-plane host is not a
+    /// worker unless the operator requests the single-node default.
+    pub control_plane: bool,
+    /// Remove this host's control-plane member and services, retaining local
+    /// data for recovery rather than deleting it implicitly.
+    pub remove_control_plane: bool,
+    /// Existing nodestore client endpoint used for control-plane membership
+    /// changes. The worker path does not use this.
+    pub control_plane_join_endpoint: Option<String>,
+    /// New member's advertised nodestore peer URL.
+    pub control_plane_peer_url: Option<String>,
+    /// Member id to remove. Requiring it for removal avoids removing the
+    /// wrong member when a host has been reconfigured.
+    pub control_plane_member_id: Option<u64>,
+    /// Existing kubeconfig used by worker mode. It may be a full node/admin
+    /// kubeconfig, or the low-privilege bootstrap kubeconfig when
+    /// `worker_bootstrap_kubeconfig` is also set.
+    pub worker_kubeconfig: Option<std::path::PathBuf>,
+    /// Optional kubeconfig used for nodelet's standard CSR/TLS bootstrap.
+    pub worker_bootstrap_kubeconfig: Option<std::path::PathBuf>,
+    /// Do not install flannel, and remember that choice for later updates.
+    pub without_flannel: bool,
     /// `None` skips CNI setup entirely (bring-your-own — Cilium etc.).
     /// `Some("flannel")` is the only provider this crate installs itself.
     pub cni_provider: Option<String>,
     pub source: Source,
+    pub build_profile: BuildProfile,
     pub layout: Layout,
     /// Release tag to fetch when `source == Release`; `None` means latest.
     pub release_tag: Option<String>,
@@ -67,6 +106,10 @@ pub struct Config {
     /// `nodeproxy`) installs it as normal.
     pub skip_nodeproxy: bool,
     pub skip_nodelet: bool,
+    /// IP address passed to kube-apiserver's `--advertise-address`. When it
+    /// is set, it is persisted so a later update keeps advertising the same
+    /// address instead of rediscovering a different interface.
+    pub advertise_address: Option<String>,
 }
 
 impl Config {
@@ -85,6 +128,91 @@ impl Config {
         std::env::var("NODEBOOTSTRAP_KUBECONFIG_DIR")
             .unwrap_or_else(|_| "/etc/nodebootstrap".to_string())
             .into()
+    }
+
+    pub fn state_dir(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_STATE_DIR")
+            .unwrap_or_else(|_| "/var/lib/nodebootstrap".to_string())
+            .into()
+    }
+
+    pub fn without_flannel_marker(&self) -> std::path::PathBuf {
+        self.state_dir().join(WITHOUT_FLANNEL_MARKER)
+    }
+
+    pub fn advertise_address_marker(&self) -> std::path::PathBuf {
+        self.state_dir().join(ADVERTISE_ADDRESS_MARKER)
+    }
+
+    /// The kubeconfig every node-side service should use to reach the API.
+    /// Control-plane mode owns the generated admin config; worker mode must
+    /// use the operator-supplied config and never mint a replacement CA.
+    pub fn cluster_kubeconfig(&self) -> Result<std::path::PathBuf> {
+        if self.worker {
+            return self
+                .worker_kubeconfig
+                .clone()
+                .context("--worker requires --kubeconfig=PATH (or KUBECONFIG) for the existing control plane");
+        }
+        Ok(self.kubeconfig_dir().join("admin.kubeconfig"))
+    }
+
+    pub fn control_plane_join_endpoint(&self) -> Result<String> {
+        self.control_plane_join_endpoint.clone().context(
+            "control-plane mode requires --join=URL (or NODEBOOTSTRAP_JOIN_ENDPOINT) for an existing nodestore member",
+        )
+    }
+
+    pub fn control_plane_peer_url(&self) -> Result<String> {
+        self.control_plane_peer_url.clone().context(
+            "control-plane mode requires --peer-url=https://HOST:2380 (or NODEBOOTSTRAP_PEER_URL)",
+        )
+    }
+
+    pub fn worker_nodelet_kubeconfig(&self) -> std::path::PathBuf {
+        std::env::var("NODELET_KUBECONFIG")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .map(Into::into)
+            .unwrap_or_else(|| self.kubeconfig_dir().join("nodelet.kubeconfig"))
+    }
+
+    pub fn node_name(&self) -> String {
+        std::env::var("NODELET_NODE_NAME").unwrap_or_else(|_| {
+            std::process::Command::new("uname")
+                .arg("-n")
+                .output()
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Persist only the explicit operator choice. A plain `--cni=none` is
+    /// still a one-run override; `--without-flannel` is the update-safe mode.
+    pub fn persist_preferences(&self) -> Result<()> {
+        let marker = self.without_flannel_marker();
+        if self.without_flannel {
+            if let Some(parent) = marker.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating nodebootstrap state dir {}", parent.display()))?;
+            }
+            std::fs::write(&marker, b"external-cni\n")
+                .with_context(|| format!("saving flannel-disabled preference at {}", marker.display()))?;
+            tracing::info!(path = %marker.display(), "saved --without-flannel for future updates");
+        } else if std::env::var("NODEBOOTSTRAP_CNI").as_deref() == Ok("flannel") {
+            let _ = std::fs::remove_file(&marker);
+        }
+        if let Some(address) = &self.advertise_address {
+            let marker = self.advertise_address_marker();
+            if let Some(parent) = marker.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating nodebootstrap state dir {}", parent.display()))?;
+            }
+            std::fs::write(&marker, format!("{address}\n"))
+                .with_context(|| format!("saving apiserver advertise address at {}", marker.display()))?;
+            tracing::info!(address, path = %marker.display(), "saved apiserver advertise address for future updates");
+        }
+        Ok(())
     }
 
     /// Nodelet's kubelet-style HTTPS server writes its self-signed serving
@@ -191,9 +319,51 @@ impl Config {
 
     pub fn from_env() -> Result<Self> {
         let flag = |name: &str| std::env::var(name).is_ok_and(|v| v == "1" || v == "true");
-        let cni_provider = match std::env::var("NODEBOOTSTRAP_CNI").as_deref() {
+        let worker = flag("NODEBOOTSTRAP_WORKER");
+        let control_plane = flag("NODEBOOTSTRAP_CONTROL_PLANE");
+        let remove_control_plane = flag("NODEBOOTSTRAP_REMOVE_CONTROL_PLANE");
+        anyhow::ensure!(
+            [worker, control_plane, remove_control_plane].into_iter().filter(|set| *set).count() <= 1,
+            "--worker, --control-plane, and --remove-control-plane are mutually exclusive"
+        );
+        let worker_bootstrap_kubeconfig = std::env::var("NODEBOOTSTRAP_WORKER_BOOTSTRAP_KUBECONFIG")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from);
+        let worker_kubeconfig = std::env::var("NODEBOOTSTRAP_WORKER_KUBECONFIG")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .or_else(|| worker_bootstrap_kubeconfig.as_ref().map(|path| path.to_string_lossy().into_owned()))
+            .or_else(|| worker.then(|| std::env::var("KUBECONFIG").ok()).flatten())
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from);
+        let explicit_cni = std::env::var("NODEBOOTSTRAP_CNI");
+        let state_dir = std::env::var("NODEBOOTSTRAP_STATE_DIR")
+            .unwrap_or_else(|_| "/var/lib/nodebootstrap".to_string());
+        let advertise_address = std::env::var("NODEBOOTSTRAP_ADVERTISE_ADDRESS")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::fs::read_to_string(std::path::Path::new(&state_dir).join(ADVERTISE_ADDRESS_MARKER))
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            });
+        if let Some(address) = &advertise_address {
+            anyhow::ensure!(
+                address.parse::<std::net::IpAddr>().is_ok(),
+                "NODEBOOTSTRAP_ADVERTISE_ADDRESS must be an IP address, got '{address}'"
+            );
+        }
+        let marker_exists = std::path::Path::new(&state_dir)
+            .join(WITHOUT_FLANNEL_MARKER)
+            .is_file();
+        let without_flannel = !matches!(explicit_cni.as_deref(), Ok("flannel"))
+            && (flag("NODEBOOTSTRAP_WITHOUT_FLANNEL") || (explicit_cni.is_err() && marker_exists));
+        let cni_provider = match explicit_cni.as_deref() {
             Ok("none") => None,
             Ok(other) => Some(other.to_string()),
+            Err(_) if worker || control_plane || without_flannel => None,
             Err(_) => Some("flannel".to_string()),
         };
         let source = match std::env::var("NODEBOOTSTRAP_SOURCE").as_deref() {
@@ -207,13 +377,37 @@ impl Config {
             Ok("both") => Layout::Both,
             _ => Layout::Combined,
         };
+        let build_profile = match std::env::var("NOTK8S_BUILD_PROFILE").as_deref() {
+            Ok("debug") => BuildProfile::Debug,
+            Ok("release") | Err(_) => BuildProfile::Release,
+            Ok(other) => anyhow::bail!("NOTK8S_BUILD_PROFILE must be debug or release, got '{other}'"),
+        };
         Ok(Config {
             with_cri: !matches!(std::env::var("NODEBOOTSTRAP_WITH_CRI").as_deref(), Ok("0" | "false")),
             skip_toolchain: flag("NODEBOOTSTRAP_SKIP_TOOLCHAIN"),
             skip_containerd: flag("NODEBOOTSTRAP_SKIP_CONTAINERD"),
             skip_control_plane: flag("NODEBOOTSTRAP_SKIP_CONTROL_PLANE"),
+            worker,
+            control_plane,
+            remove_control_plane,
+            control_plane_join_endpoint: std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            control_plane_peer_url: std::env::var("NODEBOOTSTRAP_PEER_URL")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            control_plane_member_id: std::env::var("NODEBOOTSTRAP_MEMBER_ID")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .context("NODEBOOTSTRAP_MEMBER_ID must be an integer")?,
+            worker_kubeconfig,
+            worker_bootstrap_kubeconfig,
+            without_flannel,
             cni_provider,
             source,
+            build_profile,
             layout,
             release_tag: std::env::var("NODEBOOTSTRAP_RELEASE_TAG").ok(),
             target: Target::Upstream,
@@ -222,8 +416,9 @@ impl Config {
             skip_rbac: flag("NODEBOOTSTRAP_SKIP_RBAC"),
             skip_service_reconciler: flag("NODEBOOTSTRAP_SKIP_SERVICE_RECONCILER"),
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
-            skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none"),
-            skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET"),
+            skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none") || control_plane,
+            skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET") || control_plane,
+            advertise_address,
         })
     }
 }

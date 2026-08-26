@@ -24,6 +24,17 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+http = "1"
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }
+futures = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tonic-prost = { workspace = true }
+tower = { workspace = true }
+hyper-util = { workspace = true }
 rcgen = { version = "0.13", features = ["x509-parser"] }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 x509-parser = "0.16"
@@ -40,12 +51,17 @@ base64 = "0.22"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 rustls = { workspace = true }
 rustls-pemfile = "2"
+secrecy = "0.10"
 # GitHub Releases API responses (fetch.rs's Source::Release path) --
 # parsed as serde_json::Value, not a derived struct: this crate only reads
 # two fields (tag_name, assets[].{name,browser_download_url}) out of a
 # much larger response, and a Value walk is less code than a struct that
 # has to `#[serde(default)]` every field it doesn't use.
 serde_json = { workspace = true }
+serde_yaml = "0.9"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
 
 # Not yet used by any module -- added back as each real group lands:
 # serde/thiserror (once needed), chrono (cert validity windows in pki.rs).

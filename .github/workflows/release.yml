@@ -1,80 +1,66 @@
 name: Release pipeline
 
-# Manual (workflow_dispatch) only — was `on: push: branches: [main]` until
-# round 123, when two consecutive real pushes to main (8f1ee46, dfafc08)
-# silently never queued a run at all: no run, queued or otherwise, ever
-# appeared for either SHA (confirmed repeatedly via the GitHub API, well
-# after any plausible indexing lag, including a follow-up empty diagnostic
-# commit that *also* never triggered one). Never actually root-caused
-# (nothing on the repo/workflow-file/permissions side looked wrong), so
-# rather than depend on a push trigger that's demonstrated it can silently
-# drop events, releases are now started by hand: push/merge to main as
-# before, then trigger this workflow explicitly (`gh workflow run
-# release.yml` or the Actions tab's "Run workflow" button). Still needs
-# real sudo, upstream kube-apiserver, and containerd for the e2e stage, so this
-# stays independent of `pull_request` for the same reason as before: PRs
-# get CodeRabbit's automated review only (.coderabbit.yaml).
+# Manual only: this workflow builds and publishes the Rust binaries after a
+# real bootstrap-native e2e check. The standalone nodebootstrap binary is
+# built once for the debug/e2e gate, then its source builder produces both
+# debug and release artifacts for each target. The Rust e2e registry retains
+# the former five-way layout: CSI/DRA tests use shards 1-2, and ordinary
+# tests use all five shards.
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  RUST_BACKTRACE: 1
+
 jobs:
-  # ── Stage 1: debug build + unit tests ─────────────────────────────────
+  prepare-e2e-results:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository for results reset
+        uses: actions/checkout@v7
+
+      - name: Clear the e2e-results branch for this release run
+        env:
+          RESULTS_BRANCH: e2e-results
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan "$RESULTS_BRANCH"
+          git rm -rf . >/dev/null 2>&1 || true
+          cat > README.md <<EOF
+          # e2e results
+
+          - commit: $GITHUB_SHA
+          - workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - started (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          - release gate: true
+
+          Each shard writes its complete output to results-shard-N.txt.
+          EOF
+          git add README.md
+          git commit -m "e2e results: start release run ${GITHUB_SHA:0:12}"
+          git push --force origin "HEAD:$RESULTS_BRANCH"
+
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - name: cargo build (debug)
+      - name: Build the Rust bootstrapper for the unit-test stage
         run: |
-          set -e
-          cargo build --features cri -p nodelet
-          cargo build -p nodeproxy
-          # nodestore: no features either (deploy/lib/components.sh's row
-          # for it has an empty cargo-features field, same as nodeproxy).
-          cargo build -p nodestore
-          # nodescheduler: no features either — it is a pure apiserver
-          # client, so there is no cri/mock split to select.
-          cargo build -p nodescheduler
-          # nodecontroller: same reasoning as nodescheduler — a pure
-          # apiserver client, no cri/mock split.
-          cargo build -p nodecontroller
-          # The combined single-binary layout (crates/notk8s) links all of
-          # the above into one executable. The release E2E path below uses
-          # this combined artifact as its default deployment binary.
+          set -euo pipefail
           cargo build -p nodebootstrap
-          cargo build --features cri -p notk8s
-      # Upload the combined binary once and download it in each e2e shard.
-      # This keeps the release gate on the same single-binary path the
-      # release installer uses, rather than silently testing separate
-      # component executables. 1-day retention:
-      # only ever needed for the few minutes until every e2e shard has
-      # consumed it — see the cleanup-artifact job below, which deletes it
-      # outright the moment they all finish rather than waiting even that
-      # long.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: notk8s-debug-binary
-          path: target/debug/notk8s
-          retention-days: 1
-      - name: cargo test (both feature sets)
-        # Under sudo: some tests (nodeproxy's svc.rs nft_check() ones) open
-        # real netlink/nftables sockets to validate generated ruleset
-        # syntax, which needs CAP_NET_ADMIN — consistent with this project's whole
-        # premise (a kubelet replacement that manages real nftables/
-        # cgroups/mounts needs root for its actual job, so its test suite
-        # needing it too isn't a workaround). sudo -E preserves PATH/
-        # CARGO_HOME/RUSTUP_HOME (set via $GITHUB_ENV/$GITHUB_PATH by
-        # setup-toolchain) into the root shell. Confirmed for real: this
-        # test failed with "cache initialization failed: Operation not
-        # permitted" running unprivileged on a GitHub-hosted runner.
+      - name: Run all unit tests
         run: |
-          set -e
+          set -euo pipefail
           sudo -E env "PATH=$PATH" cargo test -p nodelet
           sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
           sudo -E env "PATH=$PATH" cargo test -p nodeproxy
@@ -84,51 +70,38 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodecontroller
           sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
           sudo -E env "PATH=$PATH" cargo test -p notk8s
+      - name: Stage the bootstrapper and combined runtime applet for e2e
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools musl-dev linux-libc-dev
+          stage="$GITHUB_WORKSPACE/e2e-source-stage"
+          rm -rf "$stage" e2e-bin
+          mkdir -p e2e-bin
+          NODEBOOTSTRAP_ARCH=x86_64 \
+          NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+          NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
+          NODEBOOTSTRAP_SOURCE=compile \
+          NOTK8S_BUILD_LAYOUT=combined \
+          NOTK8S_BUILD_PROFILE=release \
+            ./target/debug/nodebootstrap fetch
+          install -m0755 "$stage/bin/nodebootstrap" e2e-bin/nodebootstrap
+          install -m0755 "$stage/bin/notk8s" e2e-bin/notk8s
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
+          path: e2e-bin/
+          # GitHub's minimum is one day; cleanup-e2e-artifact removes this
+          # run-scoped artifact after the release e2e matrix consumes it.
+          retention-days: 1
 
-  # ── Stage 2: full e2e suite, real CSI + DRA reference drivers ─────────
-  # Round 124: sharded 5 ways (test-e2e.sh's --shard=N/M, harness.sh's
-  # _filter_shard()) — each shard is a fully independent runner/cluster
-  # running its own ~1/5 slice of the registered tests concurrently,
-  # turning one long serial run into 5 parallel ones. fail-fast: false so
-  # one shard's real failure doesn't cancel the other 4's still-useful
-  # results (matches build-release's existing per-arch matrix reasoning
-  # just below). 5, not more: GitHub-hosted runner concurrency is a real,
-  # shared account-wide limit, and CSI/DRA reference-driver setup is
-  # per-shard fixed overhead — more shards keeps shrinking each one's own
-  # test slice while that fixed cost stays constant, so returns taper off
-  # well before "one shard per test" would.
-  #
-  # needs_drivers: true only for shards 1-2 — MUST match harness.sh's own
-  # NUM_DRIVER_SHARDS constant exactly (not wired together automatically).
-  # register_test's csi_dra tag (harness.sh) is round-robined only across
-  # those first NUM_DRIVER_SHARDS shard indices instead of all 5, so
-  # shards 3-5 never draw a CSI/DRA-dependent test at all and can skip
-  # installing the reference drivers entirely — confirmed live this
-  # matters: plain round-robin of all ~151 tests across all 5 shards
-  # scattered even the small csi_dra set (12 tests) so thinly that every
-  # single shard drew at least one, making a naive "skip if this shard
-  # doesn't need it" check save nothing.
-  e2e:
+  plan-e2e:
     needs: build-and-test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: 1
-            needs_drivers: true
-          - shard: 2
-            needs_drivers: true
-          - shard: 3
-            needs_drivers: false
-          - shard: 4
-            needs_drivers: false
-          - shard: 5
-            needs_drivers: false
     runs-on: ubuntu-latest
-    # Keep the release gate aligned with the standalone e2e workflow.  The
-    # custom controller-manager path is slower under under
-    # the full CSI/DRA workload and can exceed forty minutes on a shard.
-    timeout-minutes: 60
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -136,133 +109,268 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: notk8s-debug-binary
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: dist-bin
 
-      - name: Build and deploy not-k8s (real containerd/CRI runtime)
-        # The combined binary invokes the complete Rust bootstrap flow directly.
-        # It stages its own executable, so this exercises the same self-contained
-        # path users get from the published `notk8s` asset.
+      - name: Plan only non-empty shards
+        id: plan
         run: |
-          chmod +x dist-bin/notk8s
-          sudo -E ./dist-bin/notk8s nodebootstrap --with-cri \
+          set -euo pipefail
+          chmod +x dist-bin/nodebootstrap
+          matrix='{"include":[]}'
+          for shard in 1 2 3 4 5; do
+            selected="$(./dist-bin/nodebootstrap --e2e-list "--shard=${shard}/5")"
+            if [[ -n "$selected" ]]; then
+              if (( shard <= 2 )); then
+                needs_drivers=true
+              else
+                needs_drivers=false
+              fi
+              matrix="$(jq -c --argjson shard "$shard" --argjson needs_drivers "$needs_drivers" \
+                '.include += [{shard: $shard, needs_drivers: $needs_drivers}]' <<<"$matrix")"
+            fi
+          done
+          echo "$matrix" | tee /tmp/release-e2e-matrix.json
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    needs: [build-and-test, prepare-e2e-results, plan-e2e]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan-e2e.outputs.matrix).include }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodebootstrap-e2e-source-${{ github.run_id }}
+          path: dist-bin
+      - name: Bootstrap a real cluster with the Rust applet
+        run: |
+          set -euo pipefail
+          chmod +x dist-bin/nodebootstrap dist-bin/notk8s
+          sudo -E env \
+            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
+            NOTK8S_BUILD_LAYOUT=combined \
+            ./dist-bin/nodebootstrap \
             --layout=combined \
             --proxy=nodeproxy \
             --datastore=nodestore \
             --scheduler=nodescheduler \
             --controller-manager=nodecontroller
+      - name: Make the admin kubeconfig readable
+        run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
 
-      - name: Make the kubeconfig readable
-        # Split out from "Install reference CSI + DRA drivers" (round
-        # 124) — that step is now conditional on matrix.needs_drivers,
-        # but EVERY shard's own test-run step still needs this
-        # regardless of whether it installs the reference drivers.
-        env:
-          KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-        run: sudo chmod 644 "$KUBECONFIG"
+      - name: Reserve huge pages for e2e tests
+        run: |
+          set -euo pipefail
+          reserved="$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)"
+          if [[ "$reserved" -eq 0 ]]; then
+            echo 64 | sudo tee /proc/sys/vm/nr_hugepages >/dev/null
+            reserved="$(cat /proc/sys/vm/nr_hugepages)"
+          fi
+          if [[ "$reserved" -eq 0 ]]; then
+            echo "failed to reserve huge pages for the release e2e suite" >&2
+            exit 1
+          fi
 
-      - name: Install misc e2e prerequisites (hugepages, grpcurl)
-        # Every shard, regardless of matrix.needs_drivers — these aren't
-        # CSI/DRA-gated at all (see e2e-misc-prereqs.sh's own header).
-        run: sudo -E bash deploy/lib/e2e-misc-prereqs.sh
-
-      - name: Install reference CSI + DRA drivers
+      - name: Install reference CSI and DRA drivers on shards 1 and 2
         if: matrix.needs_drivers
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         run: |
-          # A real containerd/nodelet on a healthy runner brings the
-          # reference drivers up in well under a minute (round 121's own
-          # live verification took well under that) — 3 minutes is a
-          # generous ceiling, not a target, so a real regression fails
-          # fast instead of silently eating the job's whole 40-minute
-          # budget the way the unbounded first run did.
-          sudo -E timeout 180 bash deploy/lib/e2e-full-setup.sh
+          set -euo pipefail
+          # The test cases are Rust now, but the real reference-driver
+          # deployment helper remains archived with the old harness. Fetch it
+          # only for the two driver shards; it is not part of the release tree.
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodebootstrap-e2e-full-setup.sh
+          chmod +x /tmp/nodebootstrap-e2e-full-setup.sh
+          sudo -E timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
 
-      - name: Run this shard's e2e tests (${{ matrix.shard }}/5)
+      - name: Run bootstrap-native e2e checks
+        id: e2e
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
-          TEST_CSI_STORAGE_CLASS: csi-hostpath-sc
-          TEST_CSI_ATTACH_STORAGE_CLASS: csi-hostpath-sc
-          TEST_CSI_INLINE_DRIVER: hostpath.csi.k8s.io
-          TEST_CSI_BLOCK_STORAGE_CLASS: csi-hostpath-block-sc
-          TEST_CSI_STORAGE_CLASS_WAIT: csi-hostpath-sc-wait
-          NOTK8S_E2E_DEBUG_ON_FAIL: "1"
-          NOTK8S_E2E_MAX_FAILURES: "3"
         run: |
-          # See e2e.yml's own comment on this same line for why —
-          # the earlier sudo -E build step leaves ~/.kube root-owned,
-          # which corrupted some tests' captured kubectl output.
-          sudo chown -R "$(id -u):$(id -g)" ~/.kube 2>/dev/null || sudo rm -rf ~/.kube
-          ./deploy/test-e2e.sh --shard=${{ matrix.shard }}/5
+          set +e
+          if [[ "${{ matrix.needs_drivers }}" == true ]]; then
+            export TEST_DRA_DEVICE_CLASS=gpu.example.com
+            export TEST_CSI_STORAGE_CLASS=csi-hostpath-sc
+            export TEST_CSI_ATTACH_STORAGE_CLASS=csi-hostpath-sc
+            export TEST_CSI_INLINE_DRIVER=hostpath.csi.k8s.io
+            export TEST_CSI_BLOCK_STORAGE_CLASS=csi-hostpath-block-sc
+            export TEST_CSI_STORAGE_CLASS_WAIT=csi-hostpath-sc-wait
+          fi
+          ./dist-bin/nodebootstrap --e2e --shard=${{ matrix.shard }}/5 2>&1 | tee /tmp/e2e-raw.txt
+          exit_code=${PIPESTATUS[0]}
+          sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Validate worker bootstrap without flannel or proxy
+        if: matrix.shard == 5 && steps.e2e.outputs.exit_code == '0'
+        run: |
+          set -euo pipefail
+          sudo -E env \
+            NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
+            NOTK8S_BUILD_LAYOUT=combined \
+            ./dist-bin/nodebootstrap \
+              --worker \
+              --kubeconfig=/etc/nodebootstrap/admin.kubeconfig \
+              --without-flannel \
+              --proxy=none \
+              --skip-nodelet
+      - name: Dump all service state and logs on failure
+        if: failure() || steps.e2e.outputs.exit_code != '0'
+        run: |
+          set +e
+          export KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
+          kubectl_cmd() {
+            local -a kubectl_args=(--kubeconfig "$KUBECONFIG" --request-timeout=30s "$@")
+            if [[ "$(id -u)" == 0 ]]; then
+              kubectl "${kubectl_args[@]}"
+            else
+              sudo kubectl "${kubectl_args[@]}"
+            fi
+          }
 
-      # Runs if any earlier step in this job failed (driver setup timing
-      # out, a test failing, anything) — node/taint status, disk space,
-      # and nodelet's own service status + logs weren't visible anywhere
-      # before this, and the CSI/DRA drivers' own upstream deploy tooling
-      # only dumps *their* objects on timeout, not what's actually
-      # upstream of them. See e2e-debug-dump.sh's own doc comment.
-      - name: Dump debug info (node/taints/disk/nodelet logs) on failure
-        if: failure()
-        run: bash deploy/lib/e2e-debug-dump.sh
+          echo "=========================================="
+          echo "all service state and logs on failure: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "=========================================="
+          echo "── disk space ──"
+          df -h /
 
-  # Round 124: the debug binary all 5 e2e shards downloaded above is done
-  # being useful the moment every shard has finished with it, pass or
-  # fail — `needs: e2e` alone would already skip this if e2e never ran,
-  # but a matrix job's default `needs` gate also skips downstream jobs
-  # the instant ANY shard fails, before the artifact would otherwise be
-  # cleaned up; `if: always()` overrides that specifically for this
-  # cleanup so it still runs. Not load-bearing (retention-days: 1 on the
-  # upload already bounds the worst case) — just no reason to let it sit
-  # around for its full day when this job can delete it in a few seconds.
-  cleanup-notk8s-artifact:
-    needs: e2e
+          echo "── node status ──"
+          kubectl_cmd get nodes -o wide
+          kubectl_cmd describe nodes
+          echo "── all pods (every namespace) ──"
+          kubectl_cmd get pods -A -o wide
+          echo "── pods not Running/Completed ──"
+          kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
+
+          echo "── all installed service state and logs ──"
+          mapfile -t services < <(
+            {
+              sudo systemctl list-units --type=service --all --no-legend --no-pager
+              sudo systemctl list-unit-files --type=service --no-legend --no-pager
+            } | awk '{print $1}' | sed '/^$/d' | sort -u
+          )
+          for unit in "${services[@]}"; do
+            echo "── $unit state ──"
+            sudo systemctl status "$unit" --no-pager -l || true
+            echo "── $unit logs (last 300 lines) ──"
+            sudo journalctl -u "$unit" --no-pager -n 300 || true
+          done
+
+          echo "── scheduler lease ──"
+          kubectl_cmd get lease kube-scheduler -n kube-system -o yaml | head -30
+          echo "── controller-manager lease ──"
+          kubectl_cmd get lease kube-controller-manager -n kube-system -o yaml | head -30
+          echo "── kube-apiserver request/readiness signals ──"
+          sudo journalctl -u kube-apiserver.service --no-pager -n 800 \
+            | grep -iE '429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed' || true
+          echo "── nodecontroller volume/attach signals ──"
+          sudo journalctl -u nodecontroller.service --no-pager -n 1200 \
+            | grep -iE 'attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat' || true
+
+          echo "── volumeattachments ──"
+          kubectl_cmd get volumeattachments.storage.k8s.io -o wide
+          echo "── csidrivers ──"
+          kubectl_cmd get csidrivers.storage.k8s.io -o yaml
+          echo "── csinodes ──"
+          kubectl_cmd get csinodes.storage.k8s.io -o yaml
+          echo "── recent events (last 100) ──"
+          kubectl_cmd get events -A --sort-by=.lastTimestamp | tail -100
+
+          echo "── controller RBAC and authorization ──"
+          kubectl_cmd get clusterrole system:controller:replicaset-controller -o yaml
+          kubectl_cmd get clusterrolebindings -o yaml \
+            | grep -B5 -A15 'name: replicaset-controller\|controller-sa-replicaset-controller' || true
+          kubectl_cmd auth can-i patch replicasets/status \
+            --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system
+          kubectl_cmd auth can-i update replicasets/status \
+            --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system
+          kubectl_cmd auth can-i patch endpointslices \
+            --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
+          kubectl_cmd auth can-i update endpointslices \
+            --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
+          kubectl_cmd get clusterrole system:controller:endpointslice-controller -o yaml
+          echo "=========================================="
+          echo "all service state and logs on failure: end"
+          echo "=========================================="
+
+      - name: Publish this shard's release e2e results
+        if: always()
+        env:
+          RESULTS_BRANCH: e2e-results
+          RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "shard: ${SHARD}/5"
+            echo "exit code: ${RUN_EXIT_CODE:-unknown}"
+            echo "release gate: true"
+            echo "----------------------------------------"
+            cat /tmp/e2e-results.txt 2>/dev/null || echo "(no results captured — the job failed before the Rust e2e runner started)"
+          } > /tmp/e2e-results-final.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git reset --hard HEAD
+          git fetch origin "$RESULTS_BRANCH"
+          git checkout -B "$RESULTS_BRANCH" "origin/$RESULTS_BRANCH"
+          cp /tmp/e2e-results-final.txt "results-shard-${SHARD}.txt"
+          git add "results-shard-${SHARD}.txt"
+          git commit -m "e2e results: release shard ${SHARD}/5 for ${GITHUB_SHA:0:12}"
+
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:$RESULTS_BRANCH"; then
+              pushed=true
+              break
+            fi
+            echo "results branch changed concurrently; rebasing (attempt $attempt)"
+            git fetch origin "$RESULTS_BRANCH"
+            git rebase "origin/$RESULTS_BRANCH"
+            sleep $((attempt * 5))
+          done
+          [[ "$pushed" == true ]]
+
+      - name: Fail the job if the e2e suite failed
+        if: steps.e2e.outputs.exit_code != '0'
+        run: exit 1
+
+  cleanup-e2e-artifact:
+    needs: [build-and-test, e2e]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # Round 124 (found live in CI): the default GITHUB_TOKEN permissions
-    # don't include actions:write, so the DELETE call below failed every
-    # single run with a 403 ("Resource not accessible by integration") --
-    # harmless (the artifact still expired on its own 1-day
-    # retention-days), but it made this job a permanent, confusing red X
-    # on an otherwise fully green pipeline. Granting it here is the real
-    # fix, but org/repo-level token policies can still override a
-    # workflow's own `permissions:` block and deny it anyway -- the
-    # script itself also treats a permission failure as a clean skip
-    # (not a job failure) so this can never turn an otherwise fully
-    # green release red again, with or without the grant actually taking
-    # effect.
     permissions:
       actions: write
     steps:
-      - env:
+      - name: Delete the run-scoped e2e source artifact
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          artifact_id="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-              --jq '.artifacts[] | select(.name=="notk8s-debug-binary") | .id')"
-          if [[ -z "$artifact_id" ]]; then
-            echo "no notk8s-debug-binary artifact found for this run — nothing to clean up"
-            exit 0
-          fi
-          if ! gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$artifact_id"; then
-            echo "couldn't delete artifact $artifact_id (likely a token-permission restriction beyond this workflow's own control) -- not fatal, it still expires on its own 1-day retention-days"
+          set -euo pipefail
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == ("nodebootstrap-e2e-source-" + env.GITHUB_RUN_ID)) | .id' \
+            | head -n1)"
+          if [[ -n "$artifact_id" ]]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
           fi
 
-  # ── Stage 3: debug + release builds, all 3 platforms, concurrently ────
   build-release:
     needs: e2e
     strategy:
       fail-fast: false
       matrix:
         include:
-          # musl, not gnu — these are the binaries actually published to
-          # users, so this is the matrix where a glibc dependency does real
-          # damage. A *-linux-gnu build links against the runner's glibc
-          # (2.39 on ubuntu-latest) and will not start on Debian 12 (2.36),
-          # Rocky 9 (2.34), openSUSE Leap 15.6 (2.38) or Alpine (no glibc),
-          # which is 4 of 5 distros this was measured against. musl targets
-          # set crt-static by default, so libc is linked in and nothing is
-          # required from the host. Enforced by "Verify static linking".
           - arch: x86_64
             target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
@@ -276,194 +384,96 @@ jobs:
             runner: ubuntu-latest
             cross: true
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-
-      # No longer armv7l-only: every arch targets musl now, and rusqlite's
-      # bundled SQLite plus rustls's ring both compile C/asm, so each needs a
-      # musl C compiler. Handing them the host's glibc gcc is precisely how a
-      # nominally static build reacquires a glibc dependency.
-      - name: Add musl target + C toolchain
+      - name: Add musl target and C toolchain
         run: |
-          set -e
+          set -euo pipefail
           rustup target add "${{ matrix.target }}"
-          TRIPLE="${{ matrix.target }}"
-          CARGO_VAR="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
-          CC_VAR="CC_$(echo "$TRIPLE" | tr '-' '_')"
-          if [[ "${{ matrix.cross }}" == "true" ]]; then
-            # armv7l needs a musl *cross* compiler, and Ubuntu ships none.
-            #
-            # musl.cc is the obvious source (deploy/lib/toolchain-c.sh already
-            # falls back to it) but it is frequently unreachable or extremely
-            # slow from Actions runners -- an uncapped fetch hung this job for
-            # 17 minutes before being cancelled. So: try it with a hard cap,
-            # then fall back to zig, which ships a complete musl cross
-            # toolchain for every target and installs from PyPI in seconds.
-            TC=armv7l-linux-musleabihf-cross
-            if timeout 240 curl -fsSL --max-time 240 --retry 2 \
-                 -o /tmp/$TC.tgz "https://musl.cc/$TC.tgz" 2>/dev/null; then
-              sudo tar -xzf /tmp/$TC.tgz -C /opt
-              CC_BIN=/opt/$TC/bin/armv7l-linux-musleabihf-gcc
-              echo "/opt/$TC/bin" >> "$GITHUB_PATH"
-              echo "armv7l C toolchain: musl.cc"
+          triple="${{ matrix.target }}"
+          cargo_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          cc_var="CC_$(echo "$triple" | tr '-' '_')"
+          if [[ "${{ matrix.cross }}" == true ]]; then
+            tc=armv7l-linux-musleabihf-cross
+            if timeout 240 curl -fsSL --max-time 240 --retry 2 -o "/tmp/$tc.tgz" "https://musl.cc/$tc.tgz" 2>/dev/null; then
+              sudo tar -xzf "/tmp/$tc.tgz" -C /opt
+              cc_bin=/opt/$tc/bin/armv7l-linux-musleabihf-gcc
+              echo "/opt/$tc/bin" >> "$GITHUB_PATH"
             else
-              echo "musl.cc unreachable or too slow — falling back to zig cc."
               python3 -m pip install --quiet --user ziglang
-              # A checked-in script rather than one written inline: it has to
-              # strip cc-rs's --target=<rust triple> before calling zig, and
-              # that logic wants to be readable and reviewable, not escaped
-              # into a printf. See the script's own header for why.
-              sudo install -m 0755 .github/scripts/zigcc-armv7.sh /usr/local/bin/zigcc-armv7
-              CC_BIN=/usr/local/bin/zigcc-armv7
-              # zig links its own musl startup files, and rustc's musl targets
-              # pass a self-contained crt1.o of their own -- so _start ends up
-              # defined twice and ld.lld rejects the link:
-              #
-              #   ld.lld: error: duplicate symbol: _start
-              #
-              # Turning off Rust's self-contained linking for this target
-              # leaves exactly one provider of crt1/crti/libc: zig.
-              # (Only on the zig path -- the musl.cc gcc above is a normal
-              # cross gcc and wants Rust's self-contained artifacts.)
-              RUSTFLAGS_VAR="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
-              echo "$RUSTFLAGS_VAR=-C link-self-contained=no" >> "$GITHUB_ENV"
-              echo "armv7l C toolchain: zig cc (link-self-contained=no)"
+              cat > /tmp/zigcc-armv7.py <<'PY'
+              import os
+              import sys
+              args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
+              os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "arm-linux-musleabihf", *args])
+              PY
+              chmod 0755 /tmp/zigcc-armv7.py
+              cc_bin=/tmp/zigcc-armv7.py
+              rustflags_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+              echo "$rustflags_var=-C link-self-contained=no" >> "$GITHUB_ENV"
             fi
           else
-
             sudo apt-get update -qq
             sudo apt-get install -y -qq musl-tools musl-dev
-            CC_BIN=musl-gcc
+            cc_bin=musl-gcc
           fi
-          {
-            echo "$CARGO_VAR=$CC_BIN"
-            echo "$CC_VAR=$CC_BIN"
-            # protoc itself runs on THIS (build) host to generate code, not
-            # on the target — no cross protoc needed, just make sure
-            # prost-build/tonic-build find the one setup-toolchain already
-            # installed regardless of target triple.
-            echo "PROTOC=$(command -v protoc)"
-          } >> "$GITHUB_ENV"
-
-      - name: Build (debug + release, both profiles)
-        # Use Cargo.toml's complete release profile for published artifacts:
-        # size optimization, full LTO, one codegen unit, stripping, and
-        # abort-on-panic. Debug builds remain ordinary debug builds for the
-        # e2e gate; only the release half pays the full optimization cost.
+          echo "$cargo_var=$cc_bin" >> "$GITHUB_ENV"
+          echo "$cc_var=$cc_bin" >> "$GITHUB_ENV"
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+      - name: Build the host bootstrap builder
+        run: cargo build -p nodebootstrap
+      - name: Build release artifacts through nodebootstrap
         run: |
-          set -e
-          # Always explicit: the host triple is *-linux-gnu even on the
-          # native runners, so omitting --target is exactly what would
-          # silently publish a dynamically linked glibc binary again.
-          TARGET_FLAG="--target ${{ matrix.target }}"
-          # shellcheck disable=SC2086
-          cargo build --features cri -p nodelet $TARGET_FLAG
-          # shellcheck disable=SC2086
-          cargo build --release --features cri -p nodelet $TARGET_FLAG
-          # nodeproxy: no features at all (see crates/nodeproxy/Cargo.toml
-          # — the split exists precisely so it shares none of nodelet's
-          # cri dependency tree).
-          # shellcheck disable=SC2086
-          cargo build -p nodeproxy $TARGET_FLAG
-          # shellcheck disable=SC2086
-          cargo build --release -p nodeproxy $TARGET_FLAG
-          # nodestore: no features either (deploy/lib/components.sh's row
-          # for it has an empty cargo-features field, same as nodeproxy).
-          # shellcheck disable=SC2086
-          cargo build -p nodestore $TARGET_FLAG
-          # shellcheck disable=SC2086
-          cargo build --release -p nodestore $TARGET_FLAG
-          # nodescheduler: no features either — it is a pure apiserver
-          # watch/reconcile loop like nodestore, no CRI dependency (matches
-          # build-and-test's own build of it above).
-          # shellcheck disable=SC2086
-          cargo build -p nodescheduler $TARGET_FLAG
-          # shellcheck disable=SC2086
-          cargo build --release -p nodescheduler $TARGET_FLAG
-          # nodecontroller: same reasoning as nodescheduler immediately
-          # above — round 124's #28 fix for nodescheduler missing from
-          # this exact stage is the reason this entry exists here at all,
-          # not just in build-and-test's earlier debug-only build.
-          # shellcheck disable=SC2086
-          cargo build -p nodecontroller $TARGET_FLAG
-          # shellcheck disable=SC2086
-          cargo build --release -p nodecontroller $TARGET_FLAG
-          # notk8s: the combined single-binary layout — every component in
-          # one executable, sharing one copy of the dependency tree they
-          # have in common instead of one copy each (~12MB vs ~17MB for the
-          # pair on aarch64). Published alongside separate binaries for
-          # explicit split-layout installs; the release default uses this
-          # asset.
-          # --features cri for the same reason nodelet gets it — the
-          # combined binary has to be able to do everything the separate
-          # ones can.
-          # shellcheck disable=SC2086
-          cargo build --features cri -p notk8s $TARGET_FLAG
-          # shellcheck disable=SC2086
-          cargo build -p nodebootstrap $TARGET_FLAG
-          cargo build --release -p nodebootstrap $TARGET_FLAG
-          cargo build --release --features cri -p notk8s $TARGET_FLAG
-
-      - name: Stage binaries for upload
-        run: |
-          set -e
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/nodebootstrap-stage" dist
           mkdir -p dist
-          # Unconditional: every arch builds with an explicit --target now,
-          # so cargo always writes under target/<triple>/.
-          SRC_DIR="target/${{ matrix.target }}"
-          # Binary names, table-driven off deploy/lib/components.sh's own
-          # component table rather than hardcoded here — a future component
-          # is then one row in that table, no workflow edit. Not sourcing
-          # components.sh itself: it calls die()/log(), which don't exist
-          # in this shell. `notk8s` (the combined layout, not a component
-          # in that table) is appended literally.
-          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(nodebootstrap notk8s)
-          for bin in "${BINS[@]}"; do
-            cp "$SRC_DIR/debug/$bin" "dist/$bin-linux-${{ matrix.arch }}-debug"
-            cp "$SRC_DIR/release/$bin" "dist/$bin-linux-${{ matrix.arch }}-release"
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          for profile in debug release; do
+            stage="$GITHUB_WORKSPACE/nodebootstrap-stage/$profile"
+            mkdir -p "$stage"
+            NODEBOOTSTRAP_ARCH="${{ matrix.arch }}" \
+            NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
+            NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
+            NODEBOOTSTRAP_SOURCE=compile \
+            NOTK8S_BUILD_LAYOUT=both \
+            NOTK8S_BUILD_PROFILE="$profile" \
+              ./target/debug/nodebootstrap fetch
+            for bin in "${bins[@]}"; do
+              cp "$stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
+            done
           done
-          # Worth eyeballing on every release: the combined binary should be
-          # close to nodelet's own size, not the sum of the two. If it isn't,
-          # the components have stopped sharing a dependency tree and the
-          # combined layout has stopped buying anything.
-          du -h dist/* | sort -h
-
-      # Asserted, not trusted — see build.yml's copy of this step for the
-      # reasoning. These are the artifacts users download, so a dynamic libc
-      # dependency sneaking back in here is the expensive kind of regression:
-      # it looks fine in CI and fails on the user's device at exec time.
-      - name: Verify static linking
+      - name: Stage and verify static binaries
         run: |
-          set -e
-          fail=0
-          for f in dist/*; do
-            [[ -f "$f" ]] || continue
-            interp="$(readelf -l "$f" 2>/dev/null | grep -c INTERP || true)"
-            needed="$(readelf -d "$f" 2>/dev/null | grep -c 'NEEDED' || true)"
-            if [[ "$interp" != "0" || "$needed" != "0" ]]; then
-              echo "NOT STATIC: $f (INTERP=$interp, NEEDED=$needed)"
-              fail=1
-            else
-              echo "static OK: $f"
+          set -euo pipefail
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          for bin in "${bins[@]}"; do
+            for profile in debug release; do
+              file="dist/$bin-linux-${{ matrix.arch }}-$profile"
+              [[ -f "$file" ]] || { echo "missing bootstrap-built artifact: $file"; exit 1; }
+            done
+          done
+          failed=0
+          for file in dist/*; do
+            interp="$(readelf -l "$file" 2>/dev/null | grep -c INTERP || true)"
+            needed="$(readelf -d "$file" 2>/dev/null | grep -c NEEDED || true)"
+            if [[ "$interp" != 0 || "$needed" != 0 ]]; then
+              echo "NOT STATIC: $file"
+              failed=1
             fi
           done
-          [[ "$fail" -eq 0 ]] || {
-            echo "Refusing to publish dynamically linked binaries."
-            exit 1
-          }
-
+          (( failed == 0 ))
       - uses: actions/upload-artifact@v4
         with:
-          name: nodelet-${{ matrix.arch }}
+          name: notk8s-${{ matrix.arch }}-${{ github.run_id }}
           path: dist/
-          retention-days: 5
+          # GitHub's minimum is one day; cleanup-release-artifacts removes
+          # these run-scoped assets after publication (normally within 15m).
+          retention-days: 1
 
-  # ── Stage 4: bump version, tag, publish the GitHub Release ────────────
   publish-release:
     needs: build-release
     runs-on: ubuntu-latest
@@ -472,151 +482,139 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: nodelet-*
+          pattern: notk8s-*-${{ github.run_id }}
           merge-multiple: true
-
-      - name: Determine this release's version
+      - name: Determine and record the next release version
         id: version
-        run: |
-          set -e
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          VERSION="$(bash deploy/lib/version-bump.sh "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git")"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Rename artifacts to include the version
-        run: |
-          set -e
-          # Computed before the `cd dist` below, while deploy/lib/
-          # components.sh is still at its normal repo-relative path. See
-          # the "Stage binaries for upload" step's own comment for why this
-          # isn't `source`d instead.
-          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(nodebootstrap notk8s)
-          cd dist
-          for bin in "${BINS[@]}"; do
-            for f in "$bin"-linux-*-debug "$bin"-linux-*-release; do
-              [[ -f "$f" ]] || continue
-              arch_profile="${f#$bin-linux-}"
-              mv "$f" "$bin-${{ steps.version.outputs.version }}-linux-${arch_profile}"
-            done
-          done
-          ls -la
-
-      - name: Generate changelog
-        run: bash deploy/lib/changelog.sh "v${{ steps.version.outputs.version }}" > changelog.md
-
-      - name: Append the asset guide
-        # A release carries the split runtime binaries, a standalone
-        # nodebootstrap installer, and the combined notk8s binary, which is a genuine "which one do I want?"
-        # question rather than a naming detail — document the combined
-        # default and the explicit split opt-in in the release body.
-        run: |
-          cat > asset-guide.md <<'GUIDE'
-
-          ---
-
-          ## Which binaries do I want?
-
-          Two layouts of the same components, both published here:
-
-          - **Separate binaries** (`nodelet-…`, `nodeproxy-…`) — one per
-            component. Install only what this node runs, upgrade one without
-            touching the other, mix with upstream components.
-          - **Combined binary** (`notk8s-…`) — every component in one
-            multi-call executable that dispatches on `argv[0]`, so a
-            `nodelet` symlink to it *is* nodelet. One copy of the dependency
-            tree they share, which is ~30% smaller than the separate pair on
-            aarch64. Same components, same processes, same services, same
-            environment variables.
-
-          The installer defaults to the combined binary. Add
-          `--layout=split` only when separate component executables are
-          explicitly required:
-
-          ```bash
-          curl -fsSL https://raw.githubusercontent.com/centerionware/not-k8s/install-scripts/install.sh \
-            | bash -s -- --with-cri
-          ```
-
-          `release` is the optimized build for real deployments; `debug` is
-          for diagnosing something with symbols intact.
-          GUIDE
-          # The heredoc above is indented for readability inside the YAML;
-          # strip that indentation back out so the Markdown renders as
-          # Markdown and not as one long code block. Done on the guide
-          # alone, never on changelog.md — changelog.sh's own output is
-          # commit text this has no business reformatting.
-          sed -i 's/^          //' asset-guide.md
-          cat asset-guide.md >> changelog.md
-
-      - name: Build deploy.tar.gz (what the standalone installer fetches)
-        run: tar czf dist/deploy.tar.gz deploy
-
-      - name: Tag and publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          TAG="v${{ steps.version.outputs.version }}"
-          git tag "$TAG"
-          git push origin "$TAG"
-          # Asset glob list, table-driven off deploy/lib/components.sh's own
-          # component table — see the "Stage binaries for upload" step's
-          # comment for why this greps the table instead of sourcing it.
-          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(nodebootstrap notk8s)
-          # nullglob so a component with no built artifact contributes
-          # nothing instead of a literal unexpanded pattern, which
-          # `gh release create` would then try to upload as a filename and
-          # fail on. Checked afterwards so that case is still loud.
-          shopt -s nullglob
-          ASSETS=()
-          for bin in "${BINS[@]}"; do
-            ASSETS+=("dist/$bin-"*)
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .content | tr -d '\n' | base64 --decode)"
+          IFS=. read -r major minor patch <<< "$current"
+          next="$major.$minor.$((patch + 1))"
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .sha)"
+          content="$(printf '%s\n' "$next" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/VERSION" \
+            -f message="chore(release): advance version to $next" \
+            -f content="$content" -f sha="$sha" -f branch=version >/dev/null
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+      - name: Rename release assets and generate notes
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          for bin in "${bins[@]}"; do
+            for file in dist/"$bin"-linux-*; do
+              [[ -f "$file" ]] || continue
+              suffix="${file#dist/$bin-linux-}"
+              mv "$file" "dist/$bin-$VERSION-linux-$suffix"
+            done
           done
-          shopt -u nullglob
-          [[ "${#ASSETS[@]}" -gt 0 ]] \
-            || { echo "no release artifacts staged in dist/ — the build-release stage produced nothing" >&2; exit 1; }
-          echo "publishing ${#ASSETS[@]} binaries:"
-          printf '  %s\n' "${ASSETS[@]}"
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file changelog.md \
-            "${ASSETS[@]}" dist/deploy.tar.gz
-
-      - name: Compile the standalone install scripts
+          previous="$(git tag --sort=-version:refname | head -n1 || true)"
+          {
+            echo "Release v$VERSION"
+            echo
+            if [[ -n "$previous" ]]; then
+              git log --format='- %s' "$previous..HEAD"
+            else
+              git log -10 --format='- %s'
+            fi
+          } > release-notes.md
+      - name: Tag and publish binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set -e
-          mkdir -p install-scripts-out
-          bash deploy/lib/compile-install-script.sh "${{ steps.version.outputs.version }}" install-scripts-out/install.sh
-          bash deploy/lib/compile-install-script.sh "${{ steps.version.outputs.version }}" "install-scripts-out/install-v${{ steps.version.outputs.version }}.sh" --pin
-
-      - name: Publish install scripts to the install-scripts branch
-        # install.sh always gets overwritten (it's "latest" by design —
-        # unpinned, resolves whatever release is newest whenever someone
-        # actually runs it). install-vX.Y.Z.sh is unique per version and
-        # never overwritten — older scripts stay put so a pinned install
-        # keeps working exactly as it did the day it was published, even
-        # after newer releases exist.
+          set -euo pipefail
+          tag="v$VERSION"
+          git tag "$tag"
+          git push origin "$tag"
+          mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
+          [[ "${#assets[@]}" -gt 0 ]]
+          gh release create "$tag" --title "$tag" --notes-file release-notes.md "${assets[@]}"
+      - name: Update README install command to the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set -e
-          BRANCH=install-scripts
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            git fetch origin "$BRANCH"
-            git checkout -B "$BRANCH" "origin/$BRANCH"
-          else
-            git checkout --orphan "$BRANCH"
-            git rm -rf . >/dev/null 2>&1 || true
+          set -euo pipefail
+          published_tag="$(gh release view "v$VERSION" --json tagName --jq .tagName)"
+          published_version="${published_tag#v}"
+          [[ "$published_version" == "$VERSION" ]]
+
+          old_version="$(sed -nE 's#^wget https://github.com/centerionware/not-k8s/releases/download/v([0-9]+(\.[0-9]+)+)/notk8s-[0-9]+(\.[0-9]+)+-linux-aarch64-release$#\1#p' README.md | head -n1)"
+          [[ -n "$old_version" ]]
+          if [[ "$old_version" == "$published_version" ]]; then
+            echo "README already points at release $published_version"
+            exit 0
           fi
-          cp install-scripts-out/install.sh install.sh
-          cp "install-scripts-out/install-v${{ steps.version.outputs.version }}.sh" "install-v${{ steps.version.outputs.version }}.sh"
-          git add install.sh "install-v${{ steps.version.outputs.version }}.sh"
-          git commit -m "install scripts for v${{ steps.version.outputs.version }}" --allow-empty
-          git push origin "$BRANCH"
+
+          OLD_VERSION="$old_version" NEW_VERSION="$published_version" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text()
+          old = os.environ["OLD_VERSION"]
+          new = os.environ["NEW_VERSION"]
+          pattern = re.compile(
+              rf"(wget https://github\.com/centerionware/not-k8s/releases/download/v)"
+              rf"{re.escape(old)}(/notk8s-){re.escape(old)}"
+              rf"(-linux-aarch64-release)"
+          )
+          updated, replacements = pattern.subn(
+              lambda match: f"{match.group(1)}{new}{match.group(2)}{new}{match.group(3)}",
+              text,
+              count=1,
+          )
+          if replacements != 1:
+              raise SystemExit(
+                  f"expected one README install command for release {old}, found {replacements}"
+              )
+          path.write_text(updated)
+          PY
+
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update README install version to $published_version"
+
+          branch="$GITHUB_REF_NAME"
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:$branch"; then
+              pushed=true
+              break
+            fi
+            echo "branch changed concurrently; rebasing (attempt $attempt)"
+            git fetch origin "$branch"
+            git rebase "origin/$branch"
+            sleep $((attempt * 5))
+          done
+          [[ "$pushed" == true ]]
+
+  cleanup-release-artifacts:
+    needs: [build-release, publish-release]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete run-scoped release build artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("notk8s-")) | .id' \
+            | while read -r artifact_id; do
+                [[ -z "$artifact_id" ]] || gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+              done

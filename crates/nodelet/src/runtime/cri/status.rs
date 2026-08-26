@@ -178,13 +178,18 @@ pub(crate) fn pod_usage_from_sandbox_stats(stats: &v1::PodSandboxStats) -> Optio
 
 
 pub(crate) fn sandbox_labels(id: &PodId) -> HashMap<String, String> {
-    HashMap::from([
+    let mut labels = HashMap::from([
         (POD_UID_LABEL.to_string(), id.uid.clone()),
         (POD_NAME_LABEL.to_string(), id.name.clone()),
         (POD_NS_LABEL.to_string(), id.namespace.clone()),
-    ])
+    ]);
+    if id.host_network {
+        labels.insert(HOST_NETWORK_LABEL.to_string(), "true".to_string());
+    }
+    labels
 }
 
+pub(crate) const HOST_NETWORK_LABEL: &str = "nodelet.dev/host-network";
 
 impl CriRuntime {
     pub(crate) async fn pod_ip(&self, sandbox_id: &str) -> Option<String> {
@@ -197,7 +202,21 @@ impl CriRuntime {
             .await
             .ok()?
             .into_inner();
-        let ip = resp.status?.network?.ip;
+        let status = resp.status?;
+        // CRI runtimes commonly report 127.0.0.1 (or no network entry at
+        // all) for a sandbox sharing the node network namespace. Kubernetes
+        // exposes the node's InternalIP as the Pod IP in that case, and the
+        // nodelet advertises that same value in Node.status. Keep this
+        // scoped to host-network sandboxes; a broad fallback would hide a
+        // genuinely broken CNI assignment for ordinary Pods.
+        if status
+            .labels
+            .get(HOST_NETWORK_LABEL)
+            .is_some_and(|value| value == "true")
+        {
+            return Some(crate::node::detect_internal_ip());
+        }
+        let ip = status.network?.ip;
         (!ip.is_empty()).then_some(ip)
     }
 

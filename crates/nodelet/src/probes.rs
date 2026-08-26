@@ -71,6 +71,31 @@ pub fn clear_pod_health(health: &HealthMap, ns: &str, name: &str) {
     health.lock().unwrap().remove(&pod_key(ns, name));
 }
 
+/// Seed probe health synchronously, before the supervisor task is spawned.
+///
+/// `PodController` writes the first Pod status immediately after spawning the
+/// supervisor. If the task has not been polled yet, the health map's default
+/// says that every container is ready, allowing an OrderedReady StatefulSet
+/// to create the next ordinal before its readiness probe has run once.
+pub fn initialize_health(health: &HealthMap, ns: &str, name: &str, containers: &[Container]) {
+    for container in containers {
+        if container.readiness_probe.is_none() && container.startup_probe.is_none() {
+            continue;
+        }
+        let cname = container.name.clone();
+        let has_readiness = container.readiness_probe.is_some();
+        let has_startup = container.startup_probe.is_some();
+        set_health(health, ns, name, &cname, |entry| {
+            if has_readiness || has_startup {
+                entry.ready = false;
+            }
+            if has_startup {
+                entry.started = false;
+            }
+        });
+    }
+}
+
 fn set_health(health: &HealthMap, ns: &str, name: &str, container: &str, f: impl FnOnce(&mut ContainerHealth)) {
     let mut map = health.lock().unwrap();
     let entry = map

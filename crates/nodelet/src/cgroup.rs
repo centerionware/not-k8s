@@ -41,6 +41,12 @@ pub fn cgroup_parent_for(qos: QosClass, pod_uid: &str) -> String {
 
 const CPU_PERIOD_US: u64 = 100_000;
 
+/// Controllers nodelet must delegate from the host cgroup before containerd
+/// can apply pod-level limits below `kubepods`. Hugepage limits use their own
+/// controller; leaving it out makes CRI accept the request while the
+/// container remains effectively unlimited.
+const DELEGATED_CONTROLLERS: &str = "+cpu +memory +hugetlb";
+
 /// cgroup v2 `cpu.max` file content: `"<quota> <period>"`, or the literal
 /// `"max"` (no limit) when `millicores` is `0` — same "unset/unlimited"
 /// convention `runtime/cri.rs::linux_resources` already uses for
@@ -69,7 +75,7 @@ pub fn memory_max_line(bytes: u64) -> String {
 /// exceed it, regardless of what any individual pod's own limits say.
 ///
 /// Best-effort and non-fatal by design: this needs root and a cgroup v2
-/// unified hierarchy with `cpu`/`memory` delegated from `cgroup_fs_root`'s
+/// unified hierarchy with `cpu`/`memory`/`hugetlb` delegated from `cgroup_fs_root`'s
 /// top level. A container without host cgroup access, a cgroup v1 host, or
 /// a non-root nodelet process should all still start up and run pods
 /// normally — just without this one additional guarantee, logged clearly
@@ -86,12 +92,12 @@ pub fn enforce_node_allocatable(cgroup_fs_root: &str, allocatable_cpu_millicores
         );
         return;
     }
-    // Delegate cpu/memory from the parent so kubepods (and its own
+    // Delegate cpu/memory/hugetlb from the parent so kubepods (and its own
     // children, once cgroup_parent_for()'s paths get populated by the
     // runtime) can actually set cpu.max/memory.max. A no-op, not an error,
     // if already delegated — ignored either way since this is inherently
     // best-effort.
-    let _ = std::fs::write(root.join("cgroup.subtree_control"), "+cpu +memory");
+    let _ = std::fs::write(root.join("cgroup.subtree_control"), DELEGATED_CONTROLLERS);
 
     if let Err(e) = std::fs::write(kubepods.join("cpu.max"), cpu_max_line(allocatable_cpu_millicores)) {
         warn!(error = ?e, "node allocatable enforcement: failed to write the kubepods cgroup's cpu.max");

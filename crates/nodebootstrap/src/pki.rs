@@ -36,13 +36,73 @@ pub fn run() -> Result<()> {
     run_with(&Config::from_env()?)
 }
 
+/// A joining control-plane member must use the existing cluster CA and
+/// ServiceAccount signing key. It may not silently mint a parallel cluster.
+pub fn require_existing(cfg: &Config) -> Result<()> {
+    let dir = cfg.pki_dir();
+    for name in [
+        "ca.crt",
+        "ca.key",
+        "apiserver.crt",
+        "apiserver.key",
+        "kube-apiserver.crt",
+        "kube-apiserver.key",
+        "sa.pub",
+        "sa.key",
+        "kube-controller-manager.crt",
+        "kube-controller-manager.key",
+        "kube-scheduler.crt",
+        "kube-scheduler.key",
+        "admin.crt",
+        "admin.key",
+    ] {
+        anyhow::ensure!(
+            dir.join(name).is_file(),
+            "control-plane join requires shared cluster PKI file {}",
+            dir.join(name).display()
+        );
+    }
+    Ok(())
+}
+
 pub fn run_with(cfg: &Config) -> Result<()> {
     if cfg.skip_pki {
         tracing::info!("skipping PKI generation (NODEBOOTSTRAP_SKIP_PKI)");
         return Ok(());
     }
     let dir = cfg.pki_dir();
-    let cluster = generate(&ClusterPkiSpec::default())?;
+    let required = [
+        "ca.crt",
+        "ca.key",
+        "apiserver.crt",
+        "apiserver.key",
+        "kube-apiserver.crt",
+        "kube-apiserver.key",
+        "sa.pub",
+        "sa.key",
+        "kube-controller-manager.crt",
+        "kube-controller-manager.key",
+        "kube-scheduler.crt",
+        "kube-scheduler.key",
+        "admin.crt",
+        "admin.key",
+    ];
+    let present = required.iter().filter(|name| dir.join(name).exists()).count();
+    if present == required.len() {
+        tracing::info!(dir = %dir.display(), "reusing existing cluster PKI");
+        return Ok(());
+    }
+    anyhow::ensure!(
+        present == 0,
+        "cluster PKI at {} is incomplete ({present}/{} files); refusing to replace it",
+        dir.display(),
+        required.len()
+    );
+    let mut spec = ClusterPkiSpec::default();
+    if let Some(address) = &cfg.advertise_address {
+        spec.extra_sans.push(address.clone());
+    }
+    let cluster = generate(&spec)?;
     cluster.write_to_dir(&dir)?;
     tracing::info!(dir = %dir.display(), "wrote cluster PKI");
     Ok(())
@@ -106,12 +166,19 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         "kubernetes.default.svc.cluster.local".to_string(),
         "localhost".to_string(),
     ];
-    serving_sans.extend(spec.extra_sans.iter().cloned());
+    let mut serving_ips = vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip];
+    for san in &spec.extra_sans {
+        if let Ok(ip) = san.parse() {
+            serving_ips.push(ip);
+        } else {
+            serving_sans.push(san.clone());
+        }
+    }
     let apiserver_serving = issue_serving_cert(
         &ca_cert,
         &ca_key,
         &serving_sans,
-        &[std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip],
+        &serving_ips,
     )
     .context("issuing apiserver serving cert")?;
     let kube_apiserver_client = issue_client_cert(&ca_cert, &ca_key, "system:kube-apiserver", &[])

@@ -1,24 +1,17 @@
-//! CNI setup — replaces `deploy/lib/cni.sh` + `deploy/run-flanneld.sh`.
+//! CNI setup — installs the CNI plugins and flannel without a shell wrapper.
 //!
 //! Ports the plugin-binary/config-file logic in full (`ensure_cni_base_
 //! plugins`, `ensure_flannel_binaries`, `write_flannel_cni_conf` --
 //! package manager -> official prebuilt -> from-source, matching
 //! `toolchain.rs`/`containerd.rs`'s same tiers), and starts `flanneld`
-//! itself via `service_mgr.rs`. The net-conf.json
-//! generation + default-interface detection that has to happen on *every*
-//! `flanneld` restart, not just at install time (a `Restart=always` unit
-//! only re-runs its `ExecStart`, never this crate -- see
-//! `vendor/run-flanneld.sh`'s own header comment for the real incident that
-//! taught this) stays a **vendored shell wrapper** (`vendor/run-
-//! flanneld.sh`, copied verbatim from `deploy/run-flanneld.sh`) that
-//! `service_mgr.rs` points `ExecStart`/`command_args` at, rather than
-//! reimplemented as Rust nodebootstrap itself would have to keep running
-//! persistently to redo. Only reachable once `targets::run_with` has
-//! started an apiserver `flanneld`'s kube-subnet-mgr mode can actually
-//! reach -- `run_all()`'s ordering (`cni` after `targets`) is what
-//! guarantees that.
+//! itself via `service_mgr.rs`. The net-conf.json generation, PodCIDR wait,
+//! and default-interface detection run on every supervised process start, so
+//! a missing config after reboot is repaired before flanneld is exec'd.
 
 use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::Node;
+use kube::api::Api;
+use kube::Client;
 
 use crate::config::Config;
 use crate::pkg::{fetch_url, pkg_install, PkgNames};
@@ -28,21 +21,14 @@ const CNI_BIN_DIR: &str = "/opt/cni/bin";
 const CNI_CONF_DIR: &str = "/etc/cni/net.d";
 const FLANNEL_SUBNET_ENV: &str = "/run/flannel/subnet.env";
 
-/// Copied verbatim from `deploy/run-flanneld.sh` -- see that file and this
-/// module's doc comment for why it stays a shell script rather than being
-/// reimplemented in Rust. Vendored under this crate (not `include_str!`'d
-/// from `deploy/` directly) so it survives `deploy/`'s shell libs being
-/// deleted once Phase 1 fully cuts over (`docs/NODEBOOTSTRAP_PLAN.md`'s
-/// phasing section).
-const RUN_FLANNELD_SH: &str = include_str!("../vendor/run-flanneld.sh");
-
 pub fn run() -> Result<()> {
     run_with(&Config::from_env()?)
 }
 
 pub fn run_with(cfg: &Config) -> Result<()> {
     let Some(provider) = &cfg.cni_provider else {
-        tracing::info!("skipping CNI setup (NODEBOOTSTRAP_CNI=none) -- bring-your-own");
+        disable_flannel(cfg);
+        tracing::info!("skipping CNI setup (external CNI) -- bring-your-own");
         return Ok(());
     };
     if provider != "flannel" {
@@ -58,35 +44,18 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     start_flanneld(cfg)
 }
 
+fn disable_flannel(cfg: &Config) {
+    service_mgr::remove(cfg, "flanneld");
+    tracing::info!("flannel service disabled; external CNI owns pod networking");
+}
+
 fn start_flanneld(cfg: &Config) -> Result<()> {
-    let wrapper = cfg.work_dir().join("run-flanneld.sh");
-    std::fs::create_dir_all(cfg.work_dir()).context("creating work dir")?;
-    std::fs::write(&wrapper, RUN_FLANNELD_SH).with_context(|| format!("writing {}", wrapper.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
-            .context("making run-flanneld.sh executable")?;
-    }
-
-    // Absolute path, not a bare command name -- systemd/OpenRC services get
-    // a fresh, minimal PATH that won't include wherever ensure_flannel_
-    // binaries put a fetched binary. Confirmed for real against exactly
-    // this binary by cni.sh's own comment.
-    let flanneld_bin = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("command -v flanneld")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .context("resolving flanneld's absolute path")?;
-
-    let wrapper_exec = wrapper.to_string_lossy().to_string();
-    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig").to_string_lossy().to_string();
-    let node_name = std::env::var("NODELET_NODE_NAME").unwrap_or_else(|_| {
-        std::process::Command::new("uname").arg("-n").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-    });
+    let flanneld_bin = resolve_executable("flanneld", cfg).context("resolving flanneld's absolute path")?;
+    let flanneld_bin_value = flanneld_bin.to_string_lossy().into_owned();
+    let bootstrap_bin = std::env::current_exe().context("resolving nodebootstrap executable for flanneld")?;
+    let command = service_command(&bootstrap_bin);
+    let kubeconfig = cfg.cluster_kubeconfig()?.to_string_lossy().to_string();
+    let node_name = cfg.node_name();
     let ip_family = cfg.ip_family();
     let ipv4_cidr = cfg.ipv4_cluster_cidr();
     let ipv6_cidr = cfg.ipv6_cluster_cidr();
@@ -96,19 +65,147 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
         &SupervisedService {
             name: "flanneld",
             description: "flanneld -- CNI overlay network daemon for not-k8s",
-            exec_cmd: &wrapper_exec,
+            exec_cmd: &command,
             after: Some("kube-apiserver.service"),
             env: &[
+                // flanneld uses NODE_NAME for host-mode kube-subnet-mgr. If it
+                // is absent, it assumes it is running in a Pod and requires
+                // POD_NAME/POD_NAMESPACE instead.
                 ("NODE_NAME", &node_name),
-                ("FLANNELD_BIN", &flanneld_bin),
+                ("NODEBOOTSTRAP_FLANNELD_BIN", &flanneld_bin_value),
+                ("NODEBOOTSTRAP_FLANNELD_NODE_NAME", &node_name),
                 ("KUBECONFIG", &kubeconfig),
-                ("IP_FAMILY", &ip_family),
-                ("IPV4_CLUSTER_CIDR", &ipv4_cidr),
-                ("IPV6_CLUSTER_CIDR", &ipv6_cidr),
+                ("NODEBOOTSTRAP_IP_FAMILY", &ip_family),
+                ("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", &ipv4_cidr),
+                ("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", &ipv6_cidr),
             ],
         },
     )
     .context("installing flanneld as a supervised service")
+}
+
+/// Service entrypoint. It repeats setup before every supervised flanneld
+/// process, so a missing `/etc/kube-flannel/net-conf.json` cannot leave the
+/// daemon in a permanent crash loop after reboot or filesystem recovery.
+pub fn run_flanneld() -> Result<()> {
+    let cfg = Config::from_env()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building the flanneld runtime")?;
+    runtime.block_on(run_flanneld_async(&cfg))
+}
+
+async fn run_flanneld_async(cfg: &Config) -> Result<()> {
+    let kubeconfig = std::env::var("KUBECONFIG").context("KUBECONFIG must be set for flanneld")?;
+    let node_name = std::env::var("NODEBOOTSTRAP_FLANNELD_NODE_NAME")
+        .or_else(|_| std::env::var("NODELET_NODE_NAME"))
+        .unwrap_or_else(|_| hostname());
+    let client = Client::try_default().await.context("loading the Kubernetes client for flanneld")?;
+    let nodes: Api<Node> = Api::all(client);
+    let mut pod_cidr = None;
+    for _ in 0..30 {
+        if let Ok(node) = nodes.get(&node_name).await {
+            if let Some(value) = node
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.pod_cidr.as_deref())
+                .filter(|value| !value.is_empty())
+            {
+                pod_cidr = Some(value.to_owned());
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    anyhow::ensure!(
+        pod_cidr.is_some(),
+        "timed out waiting for PodCIDR: PATH={} NODE_NAME={node_name}; check apiserver access and nodecontroller",
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    write_flannel_net_conf(
+        std::path::Path::new("/etc/kube-flannel/net-conf.json"),
+        &cfg.ip_family(),
+        &cfg.ipv4_cluster_cidr(),
+        &cfg.ipv6_cluster_cidr(),
+    )?;
+    let flanneld = std::env::var_os("NODEBOOTSTRAP_FLANNELD_BIN")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| resolve_executable("flanneld", cfg))
+        .context("resolving flanneld binary")?;
+    let mut command = std::process::Command::new(flanneld);
+    command.args([
+        "--kube-subnet-mgr",
+        "--ip-masq",
+        &format!("--kubeconfig-file={kubeconfig}"),
+        "--net-config-path=/etc/kube-flannel/net-conf.json",
+    ]);
+    if let Some(iface) = std::env::var_os("FLANNEL_IFACE") {
+        command.arg(format!("--iface={}", iface.to_string_lossy()));
+    } else if let Some(iface) = default_interface() {
+        command.arg(format!("--iface={iface}"));
+    }
+    let status = command.status().context("starting flanneld")?;
+    anyhow::ensure!(status.success(), "flanneld exited with {status}");
+    Ok(())
+}
+
+fn hostname() -> String {
+    std::process::Command::new("uname")
+        .arg("-n")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn resolve_executable(name: &str, cfg: &Config) -> Option<std::path::PathBuf> {
+    let candidate = cfg.toolchain_dir().join("bin").join(name);
+    if is_executable(&candidate) {
+        return Some(candidate);
+    }
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .map(std::path::PathBuf::from)
+        .map(|dir| dir.join(name))
+        .find(|path| is_executable(path))
+}
+
+fn service_command(binary: &std::path::Path) -> String {
+    let quoted = format!("'{}'", binary.to_string_lossy().replace('\'', "'\\''"));
+    if binary.file_name().is_some_and(|name| name == "notk8s") {
+        format!("{quoted} bootstrap flanneld")
+    } else {
+        format!("{quoted} flanneld")
+    }
+}
+
+fn default_interface() -> Option<String> {
+    ["-4", "-6"].into_iter().find_map(|family| {
+        let output = std::process::Command::new("ip")
+            .args([family, "route", "show", "default"])
+            .output()
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let fields: Vec<_> = stdout.split_whitespace().collect();
+        fields.windows(2).find(|pair| pair[0] == "dev").map(|pair| pair[1].to_string())
+    })
+}
+
+fn write_flannel_net_conf(path: &std::path::Path, ip_family: &str, ipv4_cluster_cidr: &str, ipv6_cluster_cidr: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let v4 = matches!(ip_family, "ipv4" | "dual");
+    let v6 = matches!(ip_family, "ipv6" | "dual");
+    let config = format!(
+        "{{\n  \"Network\": \"{}\",\n  \"EnableIPv4\": {v4},\n  \"EnableIPv6\": {v6},\n  \"IPv6Network\": \"{}\",\n  \"Backend\": {{ \"Type\": \"vxlan\" }}\n}}\n",
+        if v4 { ipv4_cluster_cidr } else { "0.0.0.0/0" },
+        if v6 { ipv6_cluster_cidr } else { "::/0" },
+    );
+    std::fs::write(path, config).with_context(|| format!("writing {}", path.display()))
 }
 
 /// `service_mgr::install()` only proves that flanneld's supervisor started;
@@ -264,10 +361,20 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
 
     let arch = cfg.arch();
     let goarch = cni_go_arch(&arch);
-    if !crate::pkg::command_exists("flanneld") {
+    let dest = toolchain_bin.join("flanneld");
+
+    // Prefer the host distribution's flannel package. This is the normal
+    // install path; the official release and source build below are only
+    // fallbacks for distributions that do not package flannel.
+    if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
+        let names =
+            PkgNames { apt: "flannel", dnf: "flannel", pacman: "flannel", apk: "flannel", zypper: "flannel", xbps: "flannel" };
+        let _ = pkg_install("flannel", &names)?;
+    }
+
+    if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
         if let Some(goarch) = goarch {
             const VERSION: &str = "0.25.6";
-            let dest = toolchain_bin.join("flanneld");
             tracing::info!(arch = goarch, "fetching official flannel release");
             if fetch_url(
                 &format!("https://github.com/flannel-io/flannel/releases/download/v{VERSION}/flanneld-{goarch}"),
@@ -279,10 +386,13 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
             }
         }
     }
-    if !crate::pkg::command_exists("flanneld") {
+    if resolve_executable("flanneld", cfg).is_none() && !is_executable(&dest) {
+        anyhow::ensure!(source_flannel_build_enabled(),
+            "no packaged or official flanneld binary is available; refusing an implicit source build (set NODEBOOTSTRAP_BUILD_FLANNEL_FROM_SOURCE=1 to opt in)"
+        );
         build_flanneld_from_source(cfg, &toolchain_bin)?;
     }
-    anyhow::ensure!(crate::pkg::command_exists("flanneld"), "could not obtain a flanneld binary for arch '{arch}'");
+    anyhow::ensure!(resolve_executable("flanneld", cfg).is_some() || is_executable(&dest), "could not obtain a flanneld binary for arch '{arch}'");
 
     let cni_flannel = std::path::Path::new(CNI_BIN_DIR).join("flannel");
     if !is_executable(&cni_flannel) {
@@ -295,10 +405,17 @@ fn ensure_flannel_binaries(cfg: &Config) -> Result<()> {
         }
     }
     if !is_executable(&cni_flannel) {
+        anyhow::ensure!(source_flannel_build_enabled(),
+            "no packaged or official flannel CNI plugin is available; refusing an implicit source build (set NODEBOOTSTRAP_BUILD_FLANNEL_FROM_SOURCE=1 to opt in)"
+        );
         build_flannel_cni_plugin_from_source(cfg, goarch, &cni_flannel)?;
     }
     anyhow::ensure!(is_executable(&cni_flannel), "could not obtain the flannel CNI plugin binary for arch '{arch}'");
     Ok(())
+}
+
+fn source_flannel_build_enabled() -> bool {
+    std::env::var("NODEBOOTSTRAP_BUILD_FLANNEL_FROM_SOURCE").is_ok_and(|value| value == "1" || value == "true")
 }
 
 /// Deepest fallback: clone `flannel-io/flannel` and build its flanneld entry

@@ -19,6 +19,10 @@ pub(crate) enum ResolvedVolume {
     /// which injects it via CRI's `ContainerConfig.devices` instead of
     /// `Mount`.
     BlockDevice(PathBuf),
+    /// The volume failed validation/materialization. Keeping it in the map
+    /// lets the Pod reconcile report CreateContainerConfigError instead of
+    /// starting a container without a requested mount.
+    Invalid(String),
 }
 
 /// Which of `pod`'s declared PVC-backed (or generic-ephemeral, which
@@ -381,6 +385,7 @@ pub(crate) fn build_mounts(
                 // purely defensive: silently dropped, same treatment
                 // every other unresolvable mount already gets.
                 ResolvedVolume::BlockDevice(_) => None,
+                ResolvedVolume::Invalid(_) => None,
             }
         })
         .collect()
@@ -403,7 +408,7 @@ pub(crate) fn build_devices(volume_devices: &[k8s_openapi::api::core::v1::Volume
             ResolvedVolume::BlockDevice(host_path) => {
                 Some(v1::Device { container_path: vd.device_path.clone(), host_path: host_path.to_string_lossy().into_owned(), permissions: "rwm".to_string() })
             }
-            ResolvedVolume::HostPath(_) | ResolvedVolume::Image { .. } => None,
+            ResolvedVolume::HostPath(_) | ResolvedVolume::Image { .. } | ResolvedVolume::Invalid(_) => None,
         })
         .collect()
 }
@@ -763,7 +768,7 @@ pub(crate) fn chown_gid(path: &std::path::Path, gid: u32) -> std::io::Result<()>
 /// Set both the owning uid and gid of `path` (no `(uid_t)-1` "leave
 /// unchanged" trick here — both are always set to the same value, since
 /// every call site below chowns to a userns range's single base id).
-fn chown_uid_gid(path: &std::path::Path, id: u32) -> std::io::Result<()> {
+pub(crate) fn chown_uid_gid(path: &std::path::Path, id: u32) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -878,5 +883,3 @@ pub(crate) fn apply_fs_group(dir: &std::path::Path, gid: u32) -> std::io::Result
     }
     Ok(())
 }
-
-

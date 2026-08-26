@@ -104,7 +104,7 @@ jobs:
             # kube-proxy on the other side and a measure.sh that sums
             # multiple PIDs. Neither exists today; don't read these
             # numbers as covering service routing on either side.
-            install_args: --with-cri --proxy=none
+            skip_nodelet: false
           - agent: kubelet
             agent_pattern: /usr/local/bin/kubelet
             # Round 124 (found live from a user's own review of the run):
@@ -114,7 +114,7 @@ jobs:
             # nodelet never built, installed, or started, so
             # upstream-kubelet.sh is the only node agent this runner ever
             # runs.
-            install_args: --with-cri --skip-nodelet
+            skip_nodelet: true
     runs-on: ubuntu-latest
     # 30s settle + up to a 600s (10m) sample_seconds window + bootstrap
     # overhead (~2-3m) comfortably fits inside 30m; widen this if
@@ -126,10 +126,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Bootstrap the shared stack via the real standalone installer (stripped k3s control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Build the Rust bootstrap applet
+        run: cargo build --features cri -p notk8s
+
+      - name: Bootstrap the shared stack with Rust (stripped control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
+        env:
+          SKIP_NODELET: ${{ matrix.skip_nodelet }}
         run: |
-          set -e
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/install-scripts/install.sh | sudo bash -s -- ${{ matrix.install_args }}
+          set -euo pipefail
+          args=(bootstrap --proxy=none)
+          [[ "$SKIP_NODELET" == true ]] && args+=(--skip-nodelet)
+          sudo -E ./target/debug/notk8s "${args[@]}"
 
       - name: Start a real upstream kubelet (same control plane, same containerd — nodelet was never installed on this runner)
         if: matrix.agent == 'kubelet'

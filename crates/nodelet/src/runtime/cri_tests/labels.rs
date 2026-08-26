@@ -35,6 +35,15 @@ fn sandbox_labels_has_exactly_three_entries() {
 }
 
 #[test]
+fn host_network_sandbox_labels_identify_the_node_network_namespace() {
+    let mut pod_id = id("ns", "n", "u");
+    pod_id.host_network = true;
+    let labels = sandbox_labels(&pod_id);
+    assert_eq!(labels.get(HOST_NETWORK_LABEL), Some(&"true".to_string()));
+    assert_eq!(labels.len(), 4);
+}
+
+#[test]
 fn container_labels_include_everything_sandbox_labels_has() {
     let pod_id = id("ns", "n", "u");
     let sandbox = sandbox_labels(&pod_id);

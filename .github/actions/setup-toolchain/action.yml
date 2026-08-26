@@ -1,40 +1,18 @@
 name: Setup Rust + protoc toolchain
-description: Installs the Rust toolchain and protoc via this repo's own deploy/lib bootstrap scripts, same as a real device install would, and puts cargo on PATH for later steps.
+description: Installs the CI Rust toolchain and protobuf compiler without the removed shell installer tree.
 
 runs:
   using: composite
   steps:
-    - name: Install Rust toolchain + protoc
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install protoc
       shell: bash
       run: |
-        set -e
-        export FORCE_SOURCE_BUILD=0 WITH_CRI=1
-        export WORK_DIR="$GITHUB_WORKSPACE/.bootstrap"
-        export TOOLCHAIN_DIR="$WORK_DIR/toolchain"
-        export SRC_DIR="$WORK_DIR/src"
-        export LOG_DIR="$WORK_DIR/logs"
-        export REPO_ROOT="$GITHUB_WORKSPACE"
-        mkdir -p "$LOG_DIR"
-        source deploy/lib/common.sh
-        source deploy/lib/toolchain-c.sh
-        source deploy/lib/toolchain-rust.sh
-        source deploy/lib/toolchain-protoc.sh
-        detect_platform
-        ensure_rust
-        ensure_protoc
-        # ensure_rust() only installs into $TOOLCHAIN_DIR when no
-        # already-satisfactory cargo was found on PATH (cargo_is_new_enough())
-        # — a GitHub-hosted runner's own preinstalled Rust toolchain (its
-        # RUSTUP_HOME/CARGO_HOME under $HOME/.rustup, $HOME/.cargo) is exactly
-        # that case. Pointing later steps' RUSTUP_HOME/CARGO_HOME at
-        # $TOOLCHAIN_DIR unconditionally would silently break that
-        # perfectly-good toolchain by redirecting rustup's `cargo` proxy at an
-        # empty directory with no default configured — confirmed for real,
-        # round 123's first live CI run failed exactly this way. Only
-        # override when $TOOLCHAIN_DIR/cargo/bin/cargo actually exists (i.e.
-        # ensure_rust() really did install its own copy there).
-        if [[ -x "$TOOLCHAIN_DIR/cargo/bin/cargo" ]]; then
-            echo "$TOOLCHAIN_DIR/cargo/bin" >> "$GITHUB_PATH"
-            echo "RUSTUP_HOME=$TOOLCHAIN_DIR/rustup" >> "$GITHUB_ENV"
-            echo "CARGO_HOME=$TOOLCHAIN_DIR/cargo" >> "$GITHUB_ENV"
+        set -euo pipefail
+        if ! command -v protoc >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq protobuf-compiler
         fi
+        protoc --version

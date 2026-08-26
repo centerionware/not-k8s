@@ -293,6 +293,15 @@ pub fn pod_action_types(old: &Pod, new: &Pod) -> ActionType {
     action
 }
 
+/// Whether a Pod just became part of the assigned-pod cache. This is a
+/// transition rather than a field diff: `spec.nodeName` is deliberately not
+/// an `UPDATE_POD_*` action because an unassigned Pod and an assigned Pod are
+/// routed to different scheduler data structures.
+pub fn pod_became_assigned(old: &Pod, new: &Pod) -> bool {
+    old.spec.as_ref().and_then(|spec| spec.node_name.as_deref()).is_none()
+        && new.spec.as_ref().and_then(|spec| spec.node_name.as_deref()).is_some()
+}
+
 /// Whether any container's requests got smaller.
 fn pod_requests_decreased(old: &Pod, new: &Pod) -> bool {
     let old_r = crate::cache::pod::pod_requests(old);

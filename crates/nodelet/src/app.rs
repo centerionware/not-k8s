@@ -66,11 +66,32 @@ pub async fn run() -> Result<()> {
     // Pick the runtime. Mock needs nothing; CRI needs the `cri` feature + containerd
     // (and the kube Client, to resolve ConfigMap/Secret volumes — CRI itself has
     // no concept of those, only host-path bind mounts).
+    info!("initializing pod runtime");
     let runtime: Arc<dyn PodRuntime> = build_runtime(&cfg, client.clone()).await?;
+    info!("pod runtime initialized");
 
     // Register the node and seed status + lease before we start reconciling pods.
-    let images = runtime.node_images().await.unwrap_or_default();
-    let runtime_handlers = runtime.runtime_handlers().await.unwrap_or_default();
+    let images = match tokio::time::timeout(Duration::from_secs(15), runtime.node_images()).await {
+        Ok(result) => result.unwrap_or_else(|e| {
+            warn!(error = ?e, "CRI image inventory failed during node startup; continuing with an empty image list");
+            Vec::new()
+        }),
+        Err(_) => {
+            warn!("CRI image inventory timed out during node startup; continuing with an empty image list");
+            Vec::new()
+        }
+    };
+    let runtime_handlers = match tokio::time::timeout(Duration::from_secs(15), runtime.runtime_handlers()).await {
+        Ok(result) => result.unwrap_or_else(|e| {
+            warn!(error = ?e, "CRI runtime-handler query failed during node startup; continuing with no runtime handlers");
+            Vec::new()
+        }),
+        Err(_) => {
+            warn!("CRI runtime-handler query timed out during node startup; continuing with no runtime handlers");
+            Vec::new()
+        }
+    };
+    info!(image_count = images.len(), runtime_handler_count = runtime_handlers.len(), "registering node");
     node::register(
         &client,
         &cfg,
@@ -182,6 +203,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                     .memory_manager_static
                     .then(|| nodelet::memory_manager::MemoryManager::new(nodelet::topology::read_numa_memory(std::path::Path::new("/sys/devices/system/node"))));
                 let userns = nodelet::userns::UsernsAllocator::new(cfg.userns_base_uid, cfg.userns_length, cfg.userns_max_pods);
+                info!(endpoint = %cfg.cri_endpoint, "connecting to CRI endpoint");
                 let rt = runtime::cri::CriRuntime::connect(
                     &cfg.cri_endpoint,
                     client,
@@ -209,6 +231,7 @@ async fn build_runtime(cfg: &Config, #[allow(unused_variables)] client: kube::Cl
                 )
                 .await
                 .context("connecting to CRI endpoint")?;
+                info!(endpoint = %cfg.cri_endpoint, "connected to CRI endpoint");
                 Ok(Arc::new(rt))
             }
             #[cfg(not(feature = "cri"))]
@@ -285,17 +308,30 @@ async fn evict_pod(client: &kube::Client, runtime: &Arc<dyn PodRuntime>, pod: &k
     use kube::api::{Api, Patch, PatchParams};
     let (Some(ns), Some(name)) = (pod.metadata.namespace.as_deref(), pod.metadata.name.as_deref()) else { return };
 
-    if let Err(e) = runtime.remove_pod(pod).await {
-        warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to stop containers");
-    }
-
     let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), ns);
     let status_patch = serde_json::json!({
         "status": { "phase": "Failed", "reason": status_reason, "message": message }
     });
-    match pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await {
-        Ok(_) => info!(pod = %format!("{ns}/{name}"), status_reason, "evicted pod (containers stopped; object left for cleanup, matching real kubelet)"),
-        Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to patch pod status"),
+    // Mark the Pod terminal before stopping its sandbox. The stop operation
+    // emits runtime/watch events, and a stale event already queued in the
+    // controller can otherwise recreate the containers in the gap between
+    // remove_pod() and this status patch. That race was observed live with
+    // activeDeadlineSeconds: the stale reconcile created a new sandbox,
+    // changed podIPs, and the Pod never stayed Failed.
+    let status_patched = match pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to patch pod status");
+            false
+        }
+    };
+
+    if let Err(e) = runtime.remove_pod(pod).await {
+        warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to stop containers");
+    }
+
+    if status_patched {
+        info!(pod = %format!("{ns}/{name}"), status_reason, "evicted pod (containers stopped; object left for cleanup, matching real kubelet)");
     }
 }
 

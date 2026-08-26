@@ -8,7 +8,9 @@
 pub mod config;
 pub mod containerd;
 pub mod cni;
+pub mod cluster;
 pub mod components;
+pub mod e2e;
 pub mod fetch;
 pub mod kubeconfig;
 pub mod manifests;
@@ -26,9 +28,10 @@ use anyhow::{bail, Context, Result};
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
 /// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
-/// and nodecontroller -> nodescheduler -> CNI readiness -> apiserver network
-/// endpoint refresh -> the remaining
-/// replacement services.
+/// -> nodecontroller long enough for node-CIDR allocation -> nodescheduler
+/// -> CNI seed Pod and readiness -> apiserver network endpoint refresh ->
+/// nodecontroller and nodescheduler restart -> the remaining replacement
+/// services.
 /// This is what
 /// `bootstrap-source.sh`/`bootstrap-release.sh` do today as one script;
 /// here it's one function calling each module's `run_with()` in turn so any
@@ -44,16 +47,45 @@ use anyhow::{bail, Context, Result};
 /// apply against). `cni` runs after the apiserver is up because flanneld's
 /// kube-subnet-manager mode needs a live kubeconfig. Nodelet then generates
 /// its serving certificate; `targets::enable_nodelet_proxy` may restart the
-/// apiserver to trust that CA. The replacement scheduler/controller are
-/// deliberately installed only after that first planned restart and after
-/// the RBAC authorizer barrier. The scheduler must be running before the
-/// later network endpoint refresh: otherwise CoreDNS stays Pending and no
-/// CNI bridge is created for that refresh to discover. `nodecontroller` is
-/// the deliberate exception to the CNI barrier: its node-ipam controller
-/// allocates the PodCIDR that flanneld needs before it can lease this node a
-/// subnet.
+/// apiserver to trust that CA. The replacement controller is deliberately
+/// started after the RBAC authorizer barrier, before CNI readiness, because
+/// its node-ipam controller allocates the PodCIDR that flanneld needs before
+/// it can lease this node a subnet. Once that subnet exists, the final
+/// apiserver network-endpoint refresh is performed and nodecontroller is
+/// restarted so neither it nor the scheduler keeps watches from the
+/// pre-refresh apiserver instance. The scheduler is started before the CNI
+/// barrier so a disposable seed Pod can be scheduled and nodelet can create
+/// cni0 for the endpoint refresh to discover, then restarted after that
+/// refresh.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
+    if cfg.remove_control_plane {
+        cluster::remove_existing(&cfg)?;
+        services::remove_control_plane(&cfg);
+        return Ok(());
+    }
+    cfg.persist_preferences()?;
+
+    // A worker never creates a CA, kubeconfig, datastore, apiserver, or
+    // controller. It consumes the operator-supplied kubeconfig and installs
+    // only the node-side services. The optional flannel path is explicit;
+    // the normal worker path leaves CNI entirely to the existing cluster.
+    if cfg.worker {
+        if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
+            toolchain::run_with(&cfg)?;
+        }
+        if cfg.with_cri && !cfg.skip_containerd {
+            containerd::run_with(&cfg)?;
+        }
+        fetch::run_with(&cfg)?;
+        if cfg.with_cri || cfg.cni_provider.is_none() {
+            cni::run_with(&cfg)?;
+        }
+        services::ensure_nodelet(&cfg)?;
+        services::ensure_nodeproxy(&cfg)?;
+        return Ok(());
+    }
+
     if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
         toolchain::run_with(&cfg)?;
     }
@@ -61,17 +93,26 @@ pub fn run_all() -> Result<()> {
         containerd::run_with(&cfg)?;
     }
     fetch::run_with(&cfg)?;
-    pki::run_with(&cfg)?;
+    if cfg.control_plane {
+        // A joining apiserver must share the existing cluster CA and
+        // ServiceAccount signing key. It may not create a parallel cluster.
+        pki::require_existing(&cfg)?;
+        cluster::join_existing(&cfg)?;
+    } else {
+        pki::run_with(&cfg)?;
+    }
     kubeconfig::run_with(&cfg)?;
 
     if !cfg.skip_control_plane {
         services::ensure_nodestore(&cfg)?;
         targets::run_with(&cfg)?;
-        if cfg.with_cri {
+        if cfg.with_cri || cfg.cni_provider.is_none() {
             cni::run_with(&cfg)?;
         }
-        service_reconciler::run_with(&cfg)?;
-        manifests::run_with(&cfg)?;
+        if !cfg.control_plane {
+            service_reconciler::run_with(&cfg)?;
+            manifests::run_with(&cfg)?;
+        }
     }
 
     if !cfg.skip_nodelet {
@@ -79,15 +120,32 @@ pub fn run_all() -> Result<()> {
         if !cfg.skip_control_plane && cfg.with_cri {
             targets::enable_nodelet_proxy(&cfg)?;
         }
+    } else if cfg.control_plane {
+        services::remove_nodelet(&cfg);
     }
     if !cfg.skip_control_plane {
+        // RBAC must be present before nodecontroller starts. With flannel,
+        // nodecontroller then needs to run briefly so node-ipam allocates the
+        // PodCIDR that flanneld needs before it can write subnet.env.
         rbac::run_with(&cfg)?;
-        services::ensure_nodecontroller(&cfg)?;
-        services::ensure_nodescheduler(&cfg)?;
-        if !cfg.skip_nodelet && cfg.with_cri {
+        if !cfg.skip_nodelet
+            && cfg.with_cri
+            && cfg.cni_provider.as_deref() == Some("flannel")
+        {
+            services::ensure_nodecontroller(&cfg)?;
+            services::ensure_nodescheduler(&cfg)?;
             cni::wait_for_flannel_subnet(&cfg)?;
+
+            // This is the final kube-apiserver restart: the first instance
+            // starts before cni0 exists and advertises loopback, while pods
+            // need the bridge address to reach the apiserver Service. The
+            // controller that allocated the subnet is restarted below after
+            // this refresh, so neither replacement controller begins its
+            // normal watch lifecycle against the old apiserver instance.
             targets::refresh_network_advertise_address(&cfg)?;
         }
+        services::ensure_nodecontroller(&cfg)?;
+        services::ensure_nodescheduler(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())
@@ -109,6 +167,7 @@ pub fn run_embedded(args: &[String]) -> Result<()> {
         matches!(arg.as_str(), "--from-source" | "--force-source-build" | "--release")
             || arg.starts_with("--source=")
             || arg.starts_with("--tag=")
+            || arg.starts_with("--profile=")
             || arg == "--update"
             || arg == "--layout=split"
             || arg == "--layout=both"
@@ -151,6 +210,23 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
         print_help();
         return Ok(());
     }
+    if command.e2e_list {
+        anyhow::ensure!(command.subcommand.is_none(), "--e2e-list cannot be combined with a subcommand");
+        return e2e::list(command.only.as_deref(), command.shard.as_deref());
+    }
+    if command.e2e_needs_drivers {
+        anyhow::ensure!(
+            command.subcommand.is_none(),
+            "--e2e-needs-drivers cannot be combined with a subcommand"
+        );
+        return e2e::needs_drivers(command.only.as_deref(), command.shard.as_deref());
+    }
+    if command.e2e {
+        anyhow::ensure!(command.subcommand.is_none(), "--e2e cannot be combined with a subcommand");
+        return e2e::run(command.only.as_deref(), command.shard.as_deref());
+    }
+    anyhow::ensure!(command.only.is_none(), "--only is only valid with --e2e");
+    anyhow::ensure!(command.shard.is_none(), "--shard is only valid with --e2e");
     apply_root_reexec(args, embedded)?;
     dispatch(command.subcommand.as_deref())
 }
@@ -167,6 +243,11 @@ fn install_tls_provider() -> Result<()> {
 #[derive(Default)]
 struct ParsedArgs {
     subcommand: Option<String>,
+    e2e: bool,
+    e2e_list: bool,
+    e2e_needs_drivers: bool,
+    only: Option<String>,
+    shard: Option<String>,
     help: bool,
 }
 
@@ -177,9 +258,100 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             parsed.help = true;
             continue;
         }
-        if arg == "--with-cri" {
-            std::env::set_var("NODEBOOTSTRAP_WITH_CRI", "1");
-            std::env::set_var("NODELET_RUNTIME", "cri");
+        if arg == "--e2e" {
+            parsed.e2e = true;
+            continue;
+        }
+        if arg == "--e2e-list" {
+            parsed.e2e = true;
+            parsed.e2e_list = true;
+            continue;
+        }
+        if arg == "--e2e-needs-drivers" {
+            parsed.e2e = true;
+            parsed.e2e_needs_drivers = true;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--only=") {
+            anyhow::ensure!(!value.is_empty(), "--only requires a test name or substring");
+            parsed.only = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--shard=") {
+            anyhow::ensure!(!value.is_empty(), "--shard requires N/5");
+            parsed.shard = Some(value.to_string());
+            continue;
+        }
+        if arg == "--worker" {
+            std::env::set_var("NODEBOOTSTRAP_WORKER", "1");
+            continue;
+        }
+        if arg == "--control-plane" {
+            std::env::set_var("NODEBOOTSTRAP_CONTROL_PLANE", "1");
+            continue;
+        }
+        if arg == "--remove-control-plane" {
+            std::env::set_var("NODEBOOTSTRAP_REMOVE_CONTROL_PLANE", "1");
+            continue;
+        }
+        if arg == "--without-flannel" {
+            std::env::set_var("NODEBOOTSTRAP_WITHOUT_FLANNEL", "1");
+            std::env::set_var("NODEBOOTSTRAP_CNI", "none");
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--kubeconfig=") {
+            anyhow::ensure!(!value.is_empty(), "--kubeconfig requires a path");
+            std::env::set_var("NODEBOOTSTRAP_WORKER_KUBECONFIG", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--bootstrap-kubeconfig=") {
+            anyhow::ensure!(!value.is_empty(), "--bootstrap-kubeconfig requires a path");
+            std::env::set_var("NODEBOOTSTRAP_WORKER_BOOTSTRAP_KUBECONFIG", value);
+            std::env::set_var("NODEBOOTSTRAP_WORKER_KUBECONFIG", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join=") {
+            anyhow::ensure!(!value.is_empty(), "--join requires an existing nodestore endpoint");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_ENDPOINT", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--peer-url=") {
+            anyhow::ensure!(!value.is_empty(), "--peer-url requires the new node's https peer URL");
+            std::env::set_var("NODEBOOTSTRAP_PEER_URL", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--advertise-address=") {
+            anyhow::ensure!(!value.is_empty(), "--advertise-address requires an IP address");
+            value
+                .parse::<std::net::IpAddr>()
+                .context("--advertise-address must be an IP address")?;
+            std::env::set_var("NODEBOOTSTRAP_ADVERTISE_ADDRESS", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join-ca=") {
+            anyhow::ensure!(!value.is_empty(), "--join-ca requires a CA bundle path");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_CA_FILE", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join-cert=") {
+            anyhow::ensure!(!value.is_empty(), "--join-cert requires a client certificate path");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_CERT_FILE", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--join-key=") {
+            anyhow::ensure!(!value.is_empty(), "--join-key requires a client key path");
+            std::env::set_var("NODEBOOTSTRAP_JOIN_KEY_FILE", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--member-id=") {
+            anyhow::ensure!(!value.is_empty(), "--member-id requires an integer");
+            value.parse::<u64>().context("--member-id must be an integer")?;
+            std::env::set_var("NODEBOOTSTRAP_MEMBER_ID", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--node-name=") {
+            anyhow::ensure!(!value.is_empty(), "--node-name requires a Kubernetes node name");
+            std::env::set_var("NODELET_NODE_NAME", value);
             continue;
         }
         if arg == "--without-cri" {
@@ -209,6 +381,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
         if let Some(value) = arg.strip_prefix("--layout=") {
             anyhow::ensure!(matches!(value, "split" | "combined" | "both"), "--layout must be split, combined, or both");
             std::env::set_var("NOTK8S_BUILD_LAYOUT", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--profile=") {
+            anyhow::ensure!(matches!(value, "debug" | "release"), "--profile must be debug or release");
+            std::env::set_var("NOTK8S_BUILD_PROFILE", value);
             continue;
         }
         if let Some(value) = arg.strip_prefix("--cni=") {
@@ -308,7 +485,13 @@ fn dispatch(subcommand: Option<&str>) -> Result<()> {
         Some("toolchain") => toolchain::run_with(&cfg),
         Some("containerd") => containerd::run_with(&cfg),
         Some("cni") => cni::run_with(&cfg),
-        Some("fetch") => fetch::run_with(&cfg),
+        Some("flanneld") => cni::run_flanneld(),
+        Some("fetch") => {
+            if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
+                toolchain::run_with(&cfg)?;
+            }
+            fetch::run_with(&cfg)
+        }
         Some("pki") => pki::run_with(&cfg),
         Some("kubeconfig") => kubeconfig::run_with(&cfg),
         Some("targets") => targets::run_with(&cfg),
@@ -331,23 +514,60 @@ fn print_help() {
     println!();
     println!("Usage: bootstrap [options] [subcommand]");
     println!();
-    println!("The default command installs/updates nodestore, upstream kube-apiserver,");
-    println!("nodescheduler, nodecontroller, nodelet, nodeproxy, containerd, CNI, PKI,");
-    println!("RBAC, kubeconfigs, and CoreDNS. Existing services are restarted.");
+    println!("With no role flag, the command installs/updates a single-node cluster");
+    println!("including nodestore, upstream kube-apiserver, nodecontroller,");
+    println!("nodescheduler, nodelet, nodeproxy, containerd, CNI, PKI, and CoreDNS.");
+    println!("Existing services are restarted.");
     println!();
     println!("Options:");
-    println!("  --with-cri             use the real containerd/CRI runtime (default)");
     println!("  --without-cri          skip containerd/CNI and use nodelet's mock runtime");
     println!("  --from-source          build components from this checkout");
     println!("  --release [--tag=TAG]  fetch published component binaries");
     println!("  --layout=combined|split|both");
+    println!("  --profile=debug|release  select the source-build Cargo profile");
     println!("  --proxy=none           omit nodeproxy service");
-    println!("  --cni=none             use an externally-managed CNI");
-    println!("  --skip-control-plane   only stage services against an existing cluster");
+    println!("  --without-flannel      skip flannel and remember external CNI for updates");
+    println!("  --cni=none             use an externally-managed CNI for this run");
+    println!("  --worker               install nodelet+nodeproxy against --kubeconfig only");
+    println!("  --kubeconfig=PATH      existing control-plane kubeconfig for --worker");
+    println!("  --bootstrap-kubeconfig=PATH  TLS bootstrap kubeconfig for --worker");
+    println!("  --control-plane        join nodestore and install control-plane services only");
+    println!("  --join=URL             existing nodestore endpoint for control-plane membership");
+    println!("  --peer-url=URL         this node's advertised nodestore peer URL");
+    println!("  --advertise-address=IP kube-apiserver address advertised to the cluster");
+    println!("  --join-ca=PATH         CA for nodestore membership RPCs");
+    println!("  --join-cert=PATH       client certificate for membership RPCs");
+    println!("  --join-key=PATH        client key for membership RPCs");
+    println!("  --remove-control-plane remove this member and its local control-plane services");
+    println!("  --member-id=N          member id to remove with --remove-control-plane");
+    println!("  --node-name=NAME       Kubernetes node name (defaults to hostname)");
+    println!("  --e2e                  run bootstrap-native end-to-end checks");
+    println!("  --e2e-list             list selected e2e checks without contacting a cluster");
+    println!("  --e2e-needs-drivers    print whether selected e2e checks need CSI/DRA setup");
+    println!("  --only=TEST[,TEST...]  select e2e tests by name substring");
+    println!("  --shard=N/5            run one of the five CI e2e shards");
+    println!("  --skip-control-plane   legacy: stage services against an existing cluster");
     println!("  --skip-nodelet         do not install nodelet");
     println!("  -h, --help             show this help");
     println!();
-    println!("Subcommands: all, toolchain, containerd, cni, fetch, pki, kubeconfig,");
+    println!("Subcommands: all, toolchain, containerd, cni, flanneld, fetch, pki, kubeconfig,");
     println!("targets, rbac, service-reconciler, manifests, services, nodestore,");
     println!("nodelet, nodeproxy, nodescheduler, nodecontroller");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args;
+
+    #[test]
+    fn cri_is_selected_by_default_without_a_positive_flag() {
+        let parsed = parse_args(&[]).expect("default arguments should parse");
+        assert!(!parsed.e2e);
+        assert!(parsed.only.is_none());
+    }
+
+    #[test]
+    fn with_cri_is_not_a_nodebootstrap_flag() {
+        assert!(parse_args(&["--with-cri".to_string()]).is_err());
+    }
 }

@@ -50,6 +50,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::{debug, info, warn};
 
+const STARTUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Generated CRI v1 types and gRPC clients (from proto/cri.proto).
 pub mod v1 {
     tonic::include_proto!("runtime.v1");
@@ -358,6 +360,11 @@ pub struct CriRuntime {
     /// (`ImagePullBackOff`). See `container_state.rs`'s
     /// `pull_backoff_ready()`/`record_pull_backoff()`.
     pull_backoff: Mutex<HashMap<String, (u64, u64, u32)>>,
+    /// Configuration errors for containers that cannot be created at all.
+    /// These need to be retained separately from CRI container state so
+    /// build_status() can expose a waiting reason even though
+    /// CreateContainer was never issued.
+    config_errors: Mutex<HashMap<String, String>>,
     /// `"sandbox_id/container_name" -> the previous container instance's
     /// terminated details`, captured right before that instance is
     /// removed to make way for a fresh one (round 75; found in round
@@ -509,22 +516,34 @@ impl CriRuntime {
         image_credential_provider_config: String,
         image_credential_provider_bin_dir: String,
     ) -> Result<Self> {
+        info!(endpoint, "opening CRI socket");
         let channel = connect_uds(endpoint).await?;
         let rt = RuntimeServiceClient::new(channel.clone());
         let img = ImageServiceClient::new(channel.clone());
+        info!(endpoint, "CRI socket connected; checking runtime version");
 
         // This runtime's own name (round 57), for the `<runtimeName>://<id>`
         // prefix real kubelet always puts on container IDs in status.
         // Best-effort: a failure here shouldn't block startup over what's
         // ultimately a cosmetic formatting detail.
         let mut version_client = rt.clone();
-        let runtime_name = match version_client.version(VersionRequest { version: String::new() }).await {
-            Ok(resp) => resp.into_inner().runtime_name,
-            Err(e) => {
+        let runtime_name = match tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            version_client.version(VersionRequest { version: String::new() }),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp.into_inner().runtime_name,
+            Ok(Err(e)) => {
                 warn!(error = ?e, "CRI Version call failed; container IDs in status will use a generic runtime name");
                 "unknown".to_string()
             }
+            Err(_) => {
+                warn!(timeout_secs = STARTUP_RPC_TIMEOUT.as_secs(), "CRI Version call timed out; container IDs in status will use a generic runtime name");
+                "unknown".to_string()
+            }
         };
+        info!(runtime_name = %runtime_name, "CRI runtime version check finished");
 
         // Which handlers advertise recursiveReadOnlyMounts support (round
         // 97), from the same Status RPC `runtime_handlers()` makes on
@@ -534,18 +553,28 @@ impl CriRuntime {
         // creation. Best-effort: empty (every handler treated as
         // unsupported) if this call fails.
         let mut status_client = rt.clone();
-        let recursive_read_only_handlers = match status_client.status(StatusRequest { verbose: false }).await {
-            Ok(resp) => resp
+        let recursive_read_only_handlers = match tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            status_client.status(StatusRequest { verbose: false }),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp
                 .into_inner()
                 .runtime_handlers
                 .into_iter()
                 .map(|h| (h.name, h.features.map(|f| f.recursive_read_only_mounts).unwrap_or(false)))
                 .collect(),
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(error = ?e, "CRI Status call failed; volumeMounts[].recursiveReadOnly: IfPossible will fall back to non-recursive for every handler");
                 HashMap::new()
             }
+            Err(_) => {
+                warn!(timeout_secs = STARTUP_RPC_TIMEOUT.as_secs(), "CRI Status call timed out; volumeMounts[].recursiveReadOnly: IfPossible will fall back to non-recursive for every handler");
+                HashMap::new()
+            }
         };
+        info!(runtime_handler_count = recursive_read_only_handlers.len(), "CRI startup checks finished");
 
         // Spawn the event subscriber (event-driven status, no polling).
         let (tx, rx) = unbounded_channel();
@@ -623,6 +652,7 @@ impl CriRuntime {
             restart_counts: Mutex::new(HashMap::new()),
             restart_backoff: Mutex::new(HashMap::new()),
             pull_backoff: Mutex::new(HashMap::new()),
+            config_errors: Mutex::new(HashMap::new()),
             last_terminated: Mutex::new(HashMap::new()),
             csi,
             device_plugins,

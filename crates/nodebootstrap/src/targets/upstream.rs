@@ -21,6 +21,11 @@
 //! those two identities.
 
 use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::{Pod, ServiceAccount};
+use kube::api::{Api, DeleteParams, PostParams};
+use kube::config::Kubeconfig;
+use kube::Client;
+use serde_json::json;
 
 use crate::config::Config;
 use crate::service_mgr::{self, SupervisedService};
@@ -88,19 +93,17 @@ pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
 }
 
 /// The first apiserver start happens before CNI has created `cni0`, so
-/// `target_spec()` has to fall back to loopback. That address is valid for
-/// nodebootstrap's own kubeconfigs but invalid as the `default/kubernetes`
-/// Service endpoint: the apiserver rejects loopback Endpoints, and pods then
-/// cannot reach the ClusterIP used by CSI/DRA sidecars. Once nodelet has
-/// started the bootstrap pods and flannel has written its subnet, `cni0`
-/// exists and its address is the bridge gateway for every pod on this node.
-/// Reinstall the unit once with that address so the apiserver's own
-/// bootstrap-controller publishes a usable endpoint.
+/// An explicit address is left untouched. Otherwise, once nodelet has started
+/// the bootstrap pod and flannel has written its subnet, `cni0` exists and its
+/// address is the bridge gateway for every pod on this node. Reinstall the
+/// unit once with that address so the apiserver's own bootstrap-controller
+/// publishes a usable endpoint.
 pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
-    if !cfg.with_cri || cfg.skip_nodelet || cfg.cni_provider.as_deref() != Some("flannel") {
+    if cfg.advertise_address.is_some() || !cfg.with_cri || cfg.skip_nodelet || cfg.cni_provider.as_deref() != Some("flannel") {
         return Ok(());
     }
 
+    ensure_cni_seed_pod(cfg)?;
     let advertise_address = wait_for_cni_address()?;
     let bin_dir = cfg.toolchain_dir().join("bin");
     let bin = bin_dir.join("kube-apiserver");
@@ -115,16 +118,129 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
     crate::service_reconciler::reset_and_wait_for_reachable_endpoint(
         &cfg.kubeconfig_dir().join("admin.kubeconfig"),
     )?;
+    remove_cni_seed_pod(cfg);
     tracing::info!(address = %advertise_address, "kube-apiserver now advertises the reachable CNI gateway");
     Ok(())
+}
+
+/// Create one real, disposable Pod before waiting for `cni0`. The replacement
+/// scheduler and nodelet are both event-driven: applying CoreDNS is not a
+/// sufficient barrier because its Deployment/ReplicaSet may not have
+/// produced a Pod yet. A directly-created seed preserves the old shell
+/// bootstrap's smoke Pod behavior while keeping the bootstrap path in Rust.
+/// The Pod gets its own explicitly-created ServiceAccount and does not mount a
+/// token, so this does not depend on a serviceaccount controller that
+/// nodecontroller intentionally does not replace yet.
+fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
+    let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let kubeconfig = Kubeconfig::read_from(&kubeconfig_path)
+        .with_context(|| format!("reading {} for the CNI seed Pod", kubeconfig_path.display()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building the CNI seed Pod runtime")?;
+
+    runtime.block_on(async move {
+        let client = Client::try_from(kubeconfig).context("building the CNI seed Pod Kubernetes client")?;
+        let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+        let service_accounts: Api<ServiceAccount> = Api::namespaced(client, "kube-system");
+        const NAME: &str = "nodebootstrap-cni-seed";
+
+        if pods.get_opt(NAME).await?.is_some() {
+            tracing::info!(pod = NAME, "reusing existing CNI seed Pod");
+            return Ok::<_, anyhow::Error>(());
+        }
+
+        if service_accounts.get_opt(NAME).await?.is_none() {
+            let service_account: ServiceAccount = serde_json::from_value(json!({
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {"name": NAME, "namespace": "kube-system"}
+            }))
+            .context("rendering the CNI seed ServiceAccount")?;
+            service_accounts
+                .create(&PostParams::default(), &service_account)
+                .await
+                .context("creating the CNI seed ServiceAccount")?;
+        }
+
+        let pod: Pod = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": NAME,
+                "namespace": "kube-system",
+                "labels": {"app.kubernetes.io/name": "nodebootstrap-cni-seed"}
+            },
+            "spec": {
+                "serviceAccountName": NAME,
+                "automountServiceAccountToken": false,
+                "restartPolicy": "Never",
+                "containers": [{
+                    "name": "seed",
+                    "image": "busybox:latest",
+                    "command": ["sleep", "600"]
+                }]
+            }
+        }))
+        .context("rendering the CNI seed Pod")?;
+        pods.create(&PostParams::default(), &pod)
+            .await
+            .context("creating the CNI seed Pod")?;
+        tracing::info!(pod = NAME, "created CNI seed Pod to trigger the node CNI");
+        Ok::<_, anyhow::Error>(())
+    })
+}
+
+/// A failed bootstrap intentionally leaves the seed Pod behind for the
+/// failure dump. On the successful path, remove it after the apiserver has
+/// switched to the reachable CNI gateway; the bridge remains managed by
+/// flannel and no bootstrap workload is left in the cluster.
+fn remove_cni_seed_pod(cfg: &Config) {
+    let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let kubeconfig = match Kubeconfig::read_from(&kubeconfig_path) {
+        Ok(kubeconfig) => kubeconfig,
+        Err(error) => {
+            tracing::warn!(?error, "could not read kubeconfig to remove the CNI seed Pod");
+            return;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::warn!(?error, "could not build a runtime to remove the CNI seed Pod");
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        let client = match Client::try_from(kubeconfig) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(?error, "could not build a client to remove the CNI seed Pod");
+                return;
+            }
+        };
+        let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+        let service_accounts: Api<ServiceAccount> = Api::namespaced(client, "kube-system");
+        if let Err(error) = pods.delete("nodebootstrap-cni-seed", &DeleteParams::default()).await {
+            tracing::warn!(?error, "could not remove the CNI seed Pod");
+        } else {
+            tracing::info!(pod = "nodebootstrap-cni-seed", "removed CNI seed Pod");
+        }
+        if let Err(error) = service_accounts
+            .delete("nodebootstrap-cni-seed", &DeleteParams::default())
+            .await
+        {
+            tracing::warn!(?error, "could not remove the CNI seed ServiceAccount");
+        }
+    });
 }
 
 fn target_spec(cfg: &Config) -> TargetSpec {
     TargetSpec {
         pki_dir: cfg.pki_dir(),
-        etcd_pki_dir: nodestore_client_pki_dir(),
         etcd_servers: nodestore_etcd_servers(),
-        advertise_address: detect_advertise_address(),
+        advertise_address: cfg.advertise_address.clone().unwrap_or_else(detect_advertise_address),
         service_cidr: "10.43.0.0/16".to_string(),
         service_account_issuer: "https://kubernetes.default.svc.cluster.local".to_string(),
     }
@@ -228,7 +344,7 @@ fn wait_for_readyz(spec: &TargetSpec) {
 /// Builds a `ureq::Agent` whose TLS trust root is exactly `ca_pem_path` --
 /// nothing else, not the system CA store -- since the only thing this
 /// agent ever talks to is our own freshly-minted apiserver on loopback.
-fn trusting_agent(ca_pem_path: &std::path::Path) -> Result<ureq::Agent> {
+pub(crate) fn trusting_agent(ca_pem_path: &std::path::Path) -> Result<ureq::Agent> {
     let ca_pem = std::fs::read(ca_pem_path).with_context(|| format!("reading {}", ca_pem_path.display()))?;
     let mut root_store = rustls::RootCertStore::empty();
     for cert in rustls_pemfile::certs(&mut ca_pem.as_slice()) {
@@ -276,18 +392,36 @@ fn nodestore_client_pki_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(data_dir).join("pki/client")
 }
 
+fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let configured = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
+    (
+        configured("NODEBOOTSTRAP_JOIN_CA_FILE")
+            .or_else(|| configured("NODESTORE_CLIENT_CA_FILE"))
+            .or_else(|| configured("NODESTORE_TRUSTED_CA_FILE"))
+            .unwrap_or_else(|| nodestore_client_pki_dir().join("ca.crt")),
+        configured("NODEBOOTSTRAP_JOIN_CERT_FILE")
+            .or_else(|| configured("NODESTORE_CLIENT_CERT_FILE"))
+            .unwrap_or_else(|| nodestore_client_pki_dir().join("client.crt")),
+        configured("NODEBOOTSTRAP_JOIN_KEY_FILE")
+            .or_else(|| configured("NODESTORE_CLIENT_KEY_FILE"))
+            .unwrap_or_else(|| nodestore_client_pki_dir().join("client.key")),
+    )
+}
+
 fn nodestore_etcd_servers() -> String {
     std::env::var("NODEBOOTSTRAP_ETCD_SERVERS").unwrap_or_else(|_| "https://127.0.0.1:2379".to_string())
 }
 
-/// Same reasoning as `upstream-kube-apiserver.sh`'s `detect_advertise_address`:
-/// the CNI bridge's gateway address is what's reachable from inside a pod's
-/// network namespace, which loopback and the auto-detected external
-/// address both are not (see that script's comment for the two ways this
-/// was confirmed live). Falls back to loopback when no `cni0` exists yet
-/// (e.g. `--cni=none`).
+/// The explicit `--advertise-address`/`NODEBOOTSTRAP_ADVERTISE_ADDRESS` wins
+/// in `target_spec()`. For automatic single-node bootstrap, prefer the CNI
+/// bridge, then a non-loopback host address for the short pre-CNI window, and
+/// only use loopback when the host has no global IPv4 address at all. The
+/// later CNI handoff replaces the temporary host address with the bridge
+/// gateway, which is the address reachable from pod network namespaces.
 fn detect_advertise_address() -> String {
-    detect_cni_address().unwrap_or_else(|| "127.0.0.1".to_string())
+    detect_cni_address()
+        .or_else(detect_host_address)
+        .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 fn detect_cni_address() -> Option<String> {
@@ -302,6 +436,25 @@ fn detect_cni_address() -> Option<String> {
                 .nth(3)
                 .and_then(|cidr| cidr.split('/').next())
                 .map(str::to_string)
+        })
+}
+
+fn detect_host_address() -> Option<String> {
+    std::process::Command::new("ip")
+        .args(["-4", "-o", "addr", "show", "scope", "global"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                let _index = fields.next()?;
+                let interface = fields.next()?;
+                if interface == "cni0" || fields.next()? != "inet" {
+                    return None;
+                }
+                fields.next()?.split('/').next().map(str::to_string)
+            })
         })
 }
 
@@ -320,7 +473,6 @@ fn wait_for_cni_address() -> Result<String> {
 
 struct TargetSpec {
     pki_dir: std::path::PathBuf,
-    etcd_pki_dir: std::path::PathBuf,
     etcd_servers: String,
     advertise_address: String,
     service_cidr: String,
@@ -329,12 +481,12 @@ struct TargetSpec {
 
 fn apiserver_args(spec: &TargetSpec, nodelet_ca: Option<&std::path::Path>) -> Vec<String> {
     let pki = |name: &str| spec.pki_dir.join(name).display().to_string();
-    let etcd = |name: &str| spec.etcd_pki_dir.join(name).display().to_string();
+    let (etcd_ca, etcd_cert, etcd_key) = nodestore_client_pki_paths();
     let mut args = vec![
         format!("--etcd-servers={}", spec.etcd_servers),
-        format!("--etcd-cafile={}", etcd("ca.crt")),
-        format!("--etcd-certfile={}", etcd("client.crt")),
-        format!("--etcd-keyfile={}", etcd("client.key")),
+        format!("--etcd-cafile={}", etcd_ca.display()),
+        format!("--etcd-certfile={}", etcd_cert.display()),
+        format!("--etcd-keyfile={}", etcd_key.display()),
         "--secure-port=6443".to_string(),
         "--bind-address=0.0.0.0".to_string(),
         format!("--advertise-address={}", spec.advertise_address),
@@ -357,8 +509,8 @@ fn apiserver_args(spec: &TargetSpec, nodelet_ca: Option<&std::path::Path>) -> Ve
         // The reference DRA driver's admission policy relies on the node
         // name enrichment carried by projected ServiceAccount tokens. Device
         // plugin health is reported through PodStatus.allocatedResourcesStatus,
-        // which is alpha and off by default in the v1.33 apiserver.
-        "--feature-gates=ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true".to_string(),
+        // which are alpha and off by default in the v1.33 apiserver.
+        "--feature-gates=ContainerStopSignals=true,ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true".to_string(),
         "--v=1".to_string(),
     ];
     if let Some(path) = nodelet_ca {
@@ -374,7 +526,6 @@ mod tests {
     fn test_spec() -> TargetSpec {
         TargetSpec {
             pki_dir: "/var/lib/nodebootstrap/pki".into(),
-            etcd_pki_dir: "/var/lib/nodestore/pki/client".into(),
             etcd_servers: "https://127.0.0.1:2379".to_string(),
             advertise_address: "10.42.0.1".to_string(),
             service_cidr: "10.43.0.0/16".to_string(),
@@ -397,6 +548,6 @@ mod tests {
         assert!(args.iter().any(|a| a == "--kubelet-client-key=/var/lib/nodebootstrap/pki/kube-apiserver.key"));
         assert!(args.iter().any(|a| a == "--kubelet-certificate-authority=/var/lib/nodelet/pki/server-ca.pem"));
         assert!(args.iter().any(|a| a == "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP"));
-        assert!(args.iter().any(|a| a == "--feature-gates=ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true"));
+        assert!(args.iter().any(|a| a == "--feature-gates=ContainerStopSignals=true,ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true"));
     }
 }

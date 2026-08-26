@@ -1,0 +1,295 @@
+use super::context::E2eContext;
+use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::{Node, Pod};
+use kube::api::{Api, DeleteParams, ListParams, PostParams};
+use serde_json::json;
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+
+async fn first_node(context: &E2eContext) -> Result<Node> {
+    Api::<Node>::all(context.client.clone())
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .context("the cluster has no Node object")
+}
+
+async fn pod_running(context: &E2eContext, name: &str) -> Result<bool> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.phase)
+        .as_deref()
+        == Some("Running"))
+}
+
+async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    Ok(pods
+        .get(name)
+        .await?
+        .status
+        .and_then(|status| status.container_statuses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|status| status.name == "app")
+        .and_then(|status| status.state)
+        .and_then(|state| state.terminated)
+        .and_then(|terminated| terminated.message))
+}
+
+pub(super) async fn host_network_pod_uses_the_node_network_namespace(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "host-network-pod";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "hostNetwork": true,
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod)
+        .await
+        .with_context(|| format!("creating Pod {name}"))?;
+    context
+        .wait_until("hostNetwork Pod Running", Duration::from_secs(90), || {
+            pod_running(context, name)
+        })
+        .await?;
+
+    let pod = pods.get(name).await?;
+    let spec = pod.spec.context("hostNetwork Pod has no spec")?;
+    anyhow::ensure!(spec.host_network == Some(true), "hostNetwork was not preserved");
+    let node = first_node(context).await?;
+    let node_ip = node
+        .status
+        .and_then(|status| status.addresses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|address| address.type_ == "InternalIP")
+        .map(|address| address.address)
+        .context("the Node has no InternalIP")?;
+    anyhow::ensure!(
+        pod.status
+            .and_then(|status| status.pod_ip)
+            .as_deref()
+            == Some(node_ip.as_str()),
+        "hostNetwork Pod IP did not match the node InternalIP"
+    );
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    Ok(())
+}
+
+pub(super) async fn host_port_reaches_the_container_on_the_node_ip(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "host-port-pod";
+    let host_port = 18080;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", "printf 'host-port-marker\\n' > /tmp/response; while true; do nc -l -p 8080 < /tmp/response; done"],
+                "ports": [{"containerPort": 8080, "hostPort": host_port}]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod)
+        .await
+        .with_context(|| format!("creating Pod {name}"))?;
+    context
+        .wait_until("hostPort Pod Running", Duration::from_secs(90), || {
+            pod_running(context, name)
+        })
+        .await?;
+
+    let node = first_node(context).await?;
+    let node_ip = node
+        .status
+        .and_then(|status| status.addresses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|address| address.type_ == "InternalIP")
+        .map(|address| address.address)
+        .context("the Node has no InternalIP")?;
+    let address = format!("{node_ip}:{host_port}");
+    context
+        .wait_until("hostPort to accept a connection", Duration::from_secs(60), || {
+            let address = address.clone();
+            async move {
+                let Ok(Ok(mut stream)) = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    TcpStream::connect(&address),
+                )
+                .await
+                else {
+                    return Ok(false);
+                };
+                let mut response = Vec::new();
+                response.clear();
+                stream.read_to_end(&mut response).await?;
+                Ok(response
+                    .windows(b"host-port-marker".len())
+                    .any(|window| window == b"host-port-marker"))
+            }
+        })
+        .await?;
+    let _ = pods.delete(name, &DeleteParams::default()).await;
+    Ok(())
+}
+
+pub(super) async fn host_network_pod_needs_no_explicit_port_mapping(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "host-network-port";
+    let port = 18081;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "hostNetwork": true,
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", format!("printf 'HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\nhost-network-marker\\n' > /tmp/response; while true; do nc -l -p {port} < /tmp/response; done")],
+                "ports": [{"containerPort": port}]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("hostNetwork port Pod Running", Duration::from_secs(90), || {
+            pod_running(context, name)
+        })
+        .await?;
+    let node_ip = first_node(context)
+        .await?
+        .status
+        .and_then(|status| status.addresses)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|address| address.type_ == "InternalIP")
+        .map(|address| address.address)
+        .context("the Node has no InternalIP")?;
+    let address = format!("{node_ip}:{port}");
+    context
+        .wait_until("hostNetwork port to accept a connection", Duration::from_secs(60), || {
+            let address = address.clone();
+            async move {
+                let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(&address)).await
+                else {
+                    return Ok(false);
+                };
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).await?;
+                Ok(response
+                    .windows(b"host-network-marker".len())
+                    .any(|window| window == b"host-network-marker"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn custom_dns_config_reaches_resolv_conf(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "custom-dns-config";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "dnsPolicy": "None",
+            "dnsConfig": {"nameservers": ["1.1.1.1"]},
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "grep -q '^nameserver 1.1.1.1$' /etc/resolv.conf && echo configured > /dev/termination-log"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("custom DNS configuration", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "configured"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn spec_hostname_overrides_the_container_hostname(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "hostname-override";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "hostname": "custom-hostname",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "hostname > /dev/termination-log"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("spec.hostname override", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "custom-hostname"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn set_hostname_as_fqdn_reports_the_full_fqdn(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "hostname-fqdn";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "hostname": "fqdn-host",
+            "subdomain": "fqdn-subdomain",
+            "setHostnameAsFQDN": true,
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "case \"$(hostname)\" in fqdn-host.fqdn-subdomain.*.svc*) echo fqdn > /dev/termination-log;; esac"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("setHostnameAsFQDN hostname", Duration::from_secs(90), || {
+            let context = context.clone();
+            async move {
+                Ok(termination_message(&context, name)
+                    .await?
+                    .is_some_and(|message| message.trim() == "fqdn"))
+            }
+        })
+        .await
+}

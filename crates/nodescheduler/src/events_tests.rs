@@ -213,6 +213,24 @@ fn a_pure_status_churn_update_produces_nothing() {
     assert_eq!(pod_action_types(&old, &new), ActionType::NONE);
 }
 
+#[test]
+fn an_unassigned_pod_becoming_bound_is_an_assigned_pod_addition() {
+    let old = Pod {
+        spec: Some(PodSpec::default()),
+        ..Default::default()
+    };
+    let new = Pod {
+        spec: Some(PodSpec {
+            node_name: Some("worker-1".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert!(pod_became_assigned(&old, &new));
+    assert!(!pod_became_assigned(&new, &old));
+}
+
 // ── Scale-down detection ────────────────────────────────────────────────
 
 fn pod_requesting_cpu(cpu: &str) -> Pod {

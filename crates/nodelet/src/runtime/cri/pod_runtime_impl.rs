@@ -69,6 +69,7 @@ impl PodRuntime for CriRuntime {
                 self.clear_restart_counts(&stale_id);
                 self.clear_restart_backoff(&stale_id);
                 self.clear_pull_backoff(&stale_id);
+                self.clear_config_errors(&stale_id);
                 self.clear_last_terminated(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
@@ -221,6 +222,30 @@ impl PodRuntime for CriRuntime {
 
         if let Some(spec) = pod.spec.as_ref() {
             for c in &spec.containers {
+                let invalid_volume = c
+                    .volume_mounts
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .find_map(|mount| match volumes.get(&mount.name) {
+                        Some(ResolvedVolume::Invalid(error)) => Some(error.clone()),
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        c.volume_devices
+                            .as_deref()
+                            .unwrap_or_default()
+                            .iter()
+                            .find_map(|device| match volumes.get(&device.name) {
+                                Some(ResolvedVolume::Invalid(error)) => Some(error.clone()),
+                                _ => None,
+                            })
+                    });
+                if let Some(error) = invalid_volume {
+                    warn!(pod = %format!("{}/{}", id.namespace, id.name), container = %c.name, error = %error, "container configuration is invalid");
+                    self.record_config_error(&sandbox_id, &c.name, "CreateContainerConfigError");
+                    continue;
+                }
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
                 self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices, &runtime_handler_for_containers, privileged)
                     .await?;
@@ -262,6 +287,13 @@ impl PodRuntime for CriRuntime {
                         waiting_reason_override: Some(reason.to_string()),
                         ..Default::default()
                     });
+                } else if let Some(reason) = self.config_error_reason(&sandbox_id, &c.name) {
+                    status.containers.push(crate::runtime::ContainerRuntimeStatus {
+                        name: c.name.clone(),
+                        image: c.image.clone().unwrap_or_default(),
+                        waiting_reason_override: Some(reason),
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -297,6 +329,7 @@ impl PodRuntime for CriRuntime {
             self.clear_restart_counts(&sandbox_id);
             self.clear_restart_backoff(&sandbox_id);
             self.clear_pull_backoff(&sandbox_id);
+            self.clear_config_errors(&sandbox_id);
             self.clear_last_terminated(&sandbox_id);
             self.release_sandbox_devices(&sandbox_id).await;
         }
@@ -512,13 +545,13 @@ impl PodRuntime for CriRuntime {
         Ok(resp.url)
     }
 
-    async fn port_forward_url(&self, namespace: &str, name: &str) -> Result<String> {
+    async fn port_forward_url(&self, namespace: &str, name: &str, ports: &[i32]) -> Result<String> {
         let Some((sandbox_id, _)) = self.find_sandbox(namespace, name).await? else {
             anyhow::bail!("pod {namespace}/{name} not found")
         };
         let mut rt = self.rt.clone();
         let resp = rt
-            .port_forward(PortForwardRequest { pod_sandbox_id: sandbox_id, port: Vec::new() })
+            .port_forward(PortForwardRequest { pod_sandbox_id: sandbox_id, port: ports.to_vec() })
             .await
             .context("PortForward")?
             .into_inner();

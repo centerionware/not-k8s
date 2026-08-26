@@ -8,6 +8,74 @@ the suite.
 
 Binary under test: rebuilt from `e1b3940` ("Round 102") on 2026-08-04.
 
+## Rust bootstrapper migration gates: runs 32809878935 and 32811051979
+
+This table combines the failures observed while running the Rust e2e runner
+against a cluster installed by `nodebootstrap` on 2026-08-25. Run
+`32809878935` was cancelled before shards 1 and 5 finished, so those rows are
+observations up to cancellation rather than complete shard totals. It had 32
+observed test failures: shard 1 had 7, shard 2 had 7, shard 3 had 5, shard 4
+had 7, and shard 5 had 6. The subsequent source-build run `32811051979`
+failed before e2e on all five shards with the same bootstrap toolchain error;
+it produced no additional test results.
+
+The historical shell suite passed these feature areas, but that is not marked
+as completion here. The last column receives `✅` only after the named Rust
+test passes against a cluster configured by the bootstrapper. A blank means
+that the failure still needs to be fixed or re-run successfully.
+
+| Shard(s) | Rust test or test group | Observed result | Classification | Bootstrapper/test-environment control needed | Prior shell baseline | Completed under Rust bootstrapper |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1-5 (run 32811051979) | Source-built combined runtime bootstrap | Every shard failed before the e2e runner: `can't find crate for core`; `x86_64-unknown-linux-musl` was not installed. Each shard also emitted rustup warnings about Rust already being installed and `$HOME` differing under `sudo` | Confirmed bootstrap toolchain setup defect; no Rust e2e result exists for this run | Install and verify the musl target in nodebootstrap's managed rustup toolchain before `cargo build`; keep `HOME`, `CARGO_HOME`, and `RUSTUP_HOME` consistent instead of relying on a root/sudo rustup context | N/A | |
+| 1 | `test_static_pod_creates_a_mirror_pod` | Mirror Pod was NotFound | Runtime or test-fixture behavior; no missing prerequisite reported | Ensure the bootstrapper exposes the static-Pod path and restarts/reloads nodelet after the test override | Passed | |
+| 1 | `test_datastore_creates_a_key_only_if_absent` | Compare-and-put returned `succeeded: false` for a missing key | Datastore behavior/translation | Verify revision-zero compare semantics through the Rust gRPC path | Passed | |
+| 1 | `test_a_real_apiserver_starts_and_serves_against_nodestore` | Throwaway apiserver client could not connect | Throwaway test-environment/setup behavior | Reserve an isolated apiserver port and wait for the local apiserver/nodestore pair before querying it | Passed | |
+| 1, 2, 3 | `test_device_plugin_advertises_capacity_and_allocates_into_a_container`; `test_device_plugin_health_transition_updates_allocated_resources_status`; `test_device_plugin_preferred_allocation_and_prestart` | Fake device capacity never appeared in Node status | Nodelet device-plugin integration; the tests start their own fake plugin, so this is not a missing CI driver | Confirm plugin socket registration, ListAndWatch delivery, and Node status publication before creating the Pod | Passed | |
+| 1 | `test_csi_ephemeral_inline_volume_is_mounted` | Inline-volume Pod never reached Running | CSI inline-volume runtime/test path; reference CSI driver was installed | Keep the host-path CSI driver installed and expose `TEST_CSI_INLINE_DRIVER`; then diagnose nodelet inline CSI staging | Passed | |
+| 1, 2 | `test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection`; `test_scheduler_schedules_a_pod_an_http_extender_approves` | `sudo tee` could not write the scheduler override because its parent directory did not exist | Confirmed test setup defect | Create `/etc/systemd/system/nodescheduler.service.d` before writing the override, then daemon-reload and restart the scheduler | Passed | |
+| 1 | `test_pod_exceeding_its_active_deadline_is_terminated` | Deadline termination was not observed before timeout | Runtime behavior or status-observation race | Keep the Pod visible long enough to observe `DeadlineExceeded`, or make the test match the bootstrapper's eviction lifecycle | Passed | |
+| 2 | `test_scheduler_wakes_a_pending_pod_on_a_real_event` | Scheduler blocker never became bound | Scheduler/runtime behavior | Ensure nodescheduler is active, has a valid lease, and receives the event/watch update after the resource change | Passed | |
+| 2 | `test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown` | First fsGroup-policy Pod never reached the expected state | Volume/runtime behavior | Ensure CSI host-path readiness and volume ownership prerequisites are complete before this test starts | Passed | |
+| 2 | `test_client_certificate_authentication_works` | Connection refused on nodelet port 10250 | Bootstrap service configuration mismatch | Enable nodelet's CRI HTTPS server, set `NODELET_CLIENT_CA_FILE`, publish the serving endpoint, and restart nodelet after the test override | Passed | |
+| 2 | `test_sysctls_are_applied_to_the_sandbox` | Pod sysctl value never appeared | Runtime behavior or host sysctl policy mismatch | Configure permitted sysctls on the runner and make nodelet report rejected sysctls instead of leaving the Pod waiting indefinitely | Passed | |
+| 2 | `test_clusterip_is_reachable_from_inside_a_pod` | ClusterIP access timed out | CNI/nodeproxy/runtime integration | Verify the bootstrapper's flannel/CNI mode, nodeproxy service, nftables capabilities, and Pod-to-Service routing before the test | Passed | |
+| 3 | `test_tls_bootstrap_issues_a_real_client_certificate` | Nodelet never submitted a TLS bootstrap CSR | TLS-bootstrap fixture or nodelet bootstrap behavior | Provide a bootstrap kubeconfig with CSR create/watch permissions and verify nodelet consumes it in a clean service environment | Passed | |
+| 3 | `test_upgrade_straight_to_a_multi_member_cluster_is_refused` | Fixture failed preparing client API TLS material before checking the refusal | Confirmed test-fixture configuration defect | Generate and pass the datastore CA, client certificate, and client key to the throwaway multi-member fixture | Passed | |
+| 3 | `test_unreferenced_image_is_not_removed_below_the_watermark` | Containerd did not retain the pulled image | Image-store/runtime behavior | Configure the CRI image namespace and wait for the pull to be visible through the same containerd endpoint used by nodelet | Passed | |
+| 3 | `test_image_volume_source_mounts_a_read_only_image` | Image-volume Pod never reported its read-only mount | Image-volume runtime behavior or image availability | Pre-pull/retain the source image and verify the CRI image-volume mount path is enabled in the bootstrapper | Passed | |
+| 4 | `test_limited_swap_gives_burstable_pods_proportional_swap` | API rejected the Pod because `spec.containers` was missing | Confirmed test fixture defect | Add the intended container to the Pod manifest before testing LimitedSwap | Passed | |
+| 4 | `test_datastore_refuses_a_read_below_the_compaction_point` | Revision parsing failed with `invalid digit found in string` | Confirmed datastore e2e translation defect | Pass numeric revisions as JSON numbers or unquoted strings consistently through the tonic helper | Passed | |
+| 4 | `test_image_gc_removes_unreferenced_images_above_the_watermark` | Containerd did not retain the pulled image | Image-store/runtime behavior | Make image retention and GC thresholds deterministic in the bootstrapper's containerd configuration | Passed | |
+| 4 | `test_host_network_pod_uses_the_node_network_namespace` | Pod IP did not match Node InternalIP | Host-network/runtime or node-address environment mismatch | Make node address detection and host-network namespace use agree with the bootstrapper's selected interface | Passed | |
+| 4 | `test_set_hostname_as_fqdn_reports_the_full_fqdn` | FQDN was not observed before timeout | Runtime behavior or hostname setup | Set a stable node hostname/domain in the bootstrap environment and verify the runtime writes the expected hostname | Passed | |
+| 4 | `test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull` | Containerd had no CRI registry section | Confirmed bootstrap environment configuration gap | Bootstrap a writable CRI registry config with credential-provider plugin settings before running the test | Passed | |
+| 4 | `test_kubectl_attach_streams_the_containers_stdout` | Later stream line never arrived | Streaming runtime or Rust assertion behavior | Ensure nodelet server/attach proxy is enabled and flushes multiple stream frames through the bootstrapper's endpoint | Passed | |
+| 5 | `test_datastore_enforces_compare_and_swap` | Revision parsing failed with `invalid digit found in string` | Confirmed datastore e2e translation defect | Preserve numeric revision types when converting tonic responses into transaction requests | Passed | |
+| 5 | `test_image_pull_policy_never_fails_when_image_is_absent` | `ErrImageNeverPull` was never observed | Runtime/status behavior | Ensure the image is absent from the configured containerd namespace and wait for the terminal image-pull status | Passed | |
+| 5 | `test_host_aliases_still_work_under_host_users_false` | Pod never exposed the expected host aliases | Runtime user-namespace/hosts-file behavior | Verify hostUsers namespace setup and `/etc/hosts` materialization under the bootstrapper's CRI configuration | Passed | |
+| 5 | `test_host_path_directory_type_rejects_a_nonexistent_path` | Missing Directory hostPath rejection was never observed | Runtime/status behavior | Ensure the path is absent on the node and surface the mount validation failure in Pod status | Passed | |
+| 5 | `test_run_as_user_is_applied` | Expected termination message never appeared | Runtime/security-context behavior | Verify CRI user/group mapping and termination-log collection in the bootstrapper's containerd setup | Passed | |
+| 5 | `test_host_users_volume_ownership_translation_is_correct` | Ownership translation was never observed | Runtime user-namespace/volume behavior | Configure subordinate-ID/user-namespace support and verify the hostPath ownership mapping used by nodelet | Passed | |
+
+### Positive controls from the same cancelled run
+
+These are not failed rows and are the setup pieces already demonstrated to
+work under the Rust bootstrapper:
+
+| Control | Evidence | Completed |
+| --- | --- | --- |
+| Reference CSI driver installation | Generic ephemeral, dynamic CSI registration, `volumesInUse`, attachment, raw-block, and WaitForFirstConsumer tests passed | ✅ |
+| Reference DRA driver installation | DRA claim allocation/reservation test passed | ✅ |
+| Worker bootstrap without flannel or proxy | Shards 3 and 4 completed the worker validation successfully; shard 2 reached validation before cancellation | ✅ |
+| Per-shard result publication | The retrying publisher preserved separate shard result files despite concurrent branch updates | ✅ |
+
+The cancelled run still used a prebuilt `target/debug/notk8s`; it did not
+exercise source compilation. The subsequent source-build run
+`32811051979` attempted the intended path, but all five shards failed before
+cluster bootstrap for the same missing-musl-target problem documented above.
+It therefore contributes no additional test pass/fail results; the source
+bootstrap gate remains incomplete until that toolchain setup is fixed.
+
 ## Confirmed bugs
 
 ### 1. Pod objects never actually get removed from the apiserver on delete

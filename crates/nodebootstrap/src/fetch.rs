@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 
 use crate::components::COMPONENTS;
-use crate::config::{Config, Layout, Source};
+use crate::config::{BuildProfile, Config, Layout, Source};
 use crate::toolchain;
 
 /// This repo's own GitHub coordinates -- used to fetch `VERSION` off the
@@ -111,14 +111,30 @@ fn try_prebuilt(cfg: &Config) -> Result<bool> {
 
 fn install_prebuilt(src: &str, dest: &std::path::Path) -> Result<()> {
     anyhow::ensure!(std::path::Path::new(src).is_file(), "prebuilt binary path doesn't exist or isn't a file: {src}");
-    std::fs::copy(src, dest).with_context(|| format!("staging prebuilt {src} to {}", dest.display()))?;
+    install_binary(std::path::Path::new(src), dest)
+        .with_context(|| format!("staging prebuilt {src} to {}", dest.display()))?;
+    tracing::info!(src, dest = %dest.display(), "staged prebuilt binary");
+    Ok(())
+}
+
+/// Replace an installed executable without truncating the file currently used
+/// by a running service. Linux rejects opening an active executable for
+/// replacement with `ETXTBSY`; a same-directory temporary copy followed by
+/// rename gives the service the old inode until its next restart and makes the
+/// new inode available atomically.
+fn install_binary(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let name = dest.file_name().and_then(|name| name.to_str()).unwrap_or("binary");
+    let temporary = dest.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temporary);
+    std::fs::copy(src, &temporary).with_context(|| format!("copying {} to {}", src.display(), temporary.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("making {} executable", dest.display()))?;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", temporary.display()))?;
     }
-    tracing::info!(src, dest = %dest.display(), "staged prebuilt binary");
+    std::fs::rename(&temporary, dest)
+        .with_context(|| format!("installing {} as {}", temporary.display(), dest.display()))?;
     Ok(())
 }
 
@@ -129,7 +145,13 @@ fn build_from_source(cfg: &Config) -> Result<()> {
     let dest_dir = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&dest_dir).context("creating toolchain bin dir")?;
     let target = toolchain::rust_target(&cfg.arch()).with_context(|| format!("no supported static musl Rust target for arch '{}'", cfg.arch()))?;
-    let target_release = repo_root.join("target").join(target).join("release");
+    let target_profile = repo_root
+        .join("target")
+        .join(target)
+        .join(match cfg.build_profile {
+            BuildProfile::Debug => "debug",
+            BuildProfile::Release => "release",
+        });
 
     // Stages every built binary into Config::toolchain_dir()/bin -- the one
     // canonical location `services.rs`'s installers look for a component
@@ -137,15 +159,9 @@ fn build_from_source(cfg: &Config) -> Result<()> {
     // download_release() below. Mirrors bootstrap-source.sh's own
     // "copy to bin/, don't leave it in target/" step.
     let stage = |bin: &str| -> Result<()> {
-        let src = target_release.join(bin);
+        let src = target_profile.join(bin);
         let dest = dest_dir.join(bin);
-        std::fs::copy(&src, &dest).with_context(|| format!("staging {} to {}", src.display(), dest.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
-                .with_context(|| format!("making {} executable", dest.display()))?;
-        }
+        install_binary(&src, &dest).with_context(|| format!("staging {} to {}", src.display(), dest.display()))?;
         Ok(())
     };
 
@@ -184,9 +200,9 @@ fn build_from_source(cfg: &Config) -> Result<()> {
 /// elsewhere in this crate, because this repo's own release matrix already
 /// uses that vocabulary (`release.yml`'s own `matrix.arch`).
 ///
-/// Always fetches the `release` profile, never `debug` -- same as
-/// `bootstrap-release.sh`'s `download_release_binary`, which this replaces;
-/// a real device install has no use for an unoptimized, unstripped binary.
+/// Builds the selected Cargo profile. Release is the default for a real
+/// device install; CI can select debug with `NOTK8S_BUILD_PROFILE=debug` for
+/// a faster e2e bootstrap, then invoke this command again for release assets.
 fn download_release(cfg: &Config) -> Result<()> {
     let tag = resolve_release_tag(cfg.release_tag.as_deref())?;
     let version = tag.strip_prefix('v').unwrap_or(&tag);
@@ -292,16 +308,23 @@ fn cargo_build(cfg: &Config, repo_root: &std::path::Path, extra_args: &[&str]) -
     let package = extra_args.iter().position(|arg| *arg == "-p").and_then(|index| extra_args.get(index + 1)).copied();
     tracing::info!(args = ?extra_args, with_cri = cfg.with_cri, "cargo build");
     let mut command = std::process::Command::new("cargo");
-    command.arg("build").arg("--release").arg("--target").arg(toolchain::rust_target(&cfg.arch()).context("no supported static musl Rust target")?).args(extra_args);
-    // This is the on-device source-build path. Keep its guarantees explicit
-    // at the command boundary even if the workspace release profile changes:
-    // the installer itself must be a small, fast, stripped static musl
-    // binary, just like the runtime binaries it builds and stages.
-    command.env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s");
-    command.env("CARGO_PROFILE_RELEASE_LTO", "fat");
-    command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
-    command.env("CARGO_PROFILE_RELEASE_STRIP", "symbols");
-    command.env("CARGO_PROFILE_RELEASE_PANIC", "abort");
+    command.arg("build");
+    if cfg.build_profile == BuildProfile::Release {
+        command.arg("--release");
+        // This is the on-device source-build path. Keep its guarantees
+        // explicit at the command boundary even if the workspace release
+        // profile changes: deployed binaries stay small, fast, and static.
+        command.env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s");
+        command.env("CARGO_PROFILE_RELEASE_LTO", "fat");
+        command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1");
+        command.env("CARGO_PROFILE_RELEASE_STRIP", "symbols");
+        command.env("CARGO_PROFILE_RELEASE_PANIC", "abort");
+    }
+    command.arg("--target").arg(toolchain::rust_target(&cfg.arch()).context("no supported static musl Rust target")?).args(extra_args);
+    if cfg.toolchain_dir().join("cargo/bin/cargo").is_file() {
+        command.env("RUSTUP_HOME", cfg.toolchain_dir().join("rustup"));
+        command.env("CARGO_HOME", cfg.toolchain_dir().join("cargo"));
+    }
     if cfg.with_cri && matches!(package, Some("nodelet" | "notk8s")) {
         command.args(["--features", "cri"]);
     }
@@ -309,7 +332,7 @@ fn cargo_build(cfg: &Config, repo_root: &std::path::Path, extra_args: &[&str]) -
     // small device. The surrounding runtime builds may use the documented
     // thin-LTO fallback there, but the binary that will be invoked on every
     // future bootstrap is worth the one full optimized build.
-    if low_memory_host() && package != Some("nodebootstrap") {
+    if cfg.build_profile == BuildProfile::Release && low_memory_host() && package != Some("nodebootstrap") {
         command.env("CARGO_BUILD_JOBS", "1");
         command.env("CARGO_PROFILE_RELEASE_LTO", "thin");
         command.env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16");

@@ -24,12 +24,9 @@ name: Flamegraph — nodelet, multi-pod workload lifecycle
 #
 # The debug binary (not the LTO/stripped release one) is used deliberately:
 # a flame graph is only useful with real function names and unmerged frames.
-# bootstrap-release.sh only ever fetches the release profile, so this
-# downloads the debug release asset directly and hands it to
-# bootstrap-source.sh via NOTK8S_NODELET_PREBUILT (the same prebuilt seam
-# CLAUDE.md documents for this exact "already-published binary, no local
-# toolchain" case) rather than teaching bootstrap-release.sh a new flag for
-# a one-off profiling need.
+# The debug release asset is handed to the Rust bootstrap applet via
+# NOTK8S_NODELET_PREBUILT (the same prebuilt seam used by normal deployments),
+# so the profile keeps symbols without a second installer path.
 #
 # A follow-up, broader version of this workflow (every component, not just
 # nodelet) is real future work, not done here — see the flamegraphs branch's
@@ -96,10 +93,16 @@ jobs:
           chmod +x /tmp/nodelet-debug
           file /tmp/nodelet-debug
 
-      - name: Bootstrap the stack with the debug nodelet binary (stripped k3s control plane + containerd + CNI, no proxy)
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Build the Rust bootstrap applet
+        run: cargo build --features cri -p notk8s
+
+      - name: Bootstrap the stack with the debug nodelet binary (stripped control plane + containerd + CNI, no proxy)
         run: |
-          set -e
-          sudo -E NOTK8S_NODELET_PREBUILT=/tmp/nodelet-debug ./deploy/bootstrap-source.sh --with-cri --proxy=none
+          set -euo pipefail
+          sudo -E env NOTK8S_NODELET_PREBUILT=/tmp/nodelet-debug \
+            ./target/debug/notk8s bootstrap --proxy=none
 
       - name: Settle before profiling
         run: sleep 15

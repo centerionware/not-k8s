@@ -5,7 +5,7 @@ name: Build + unit tests (artifacts)
 # workflow — the fast path for development on a host that can't build this
 # project itself (a memory-constrained phone VM, where a full
 # `cargo build --release --features cri` has OOM-killed the whole box, not
-# just rustc — see deploy/lib/nodelet-build.sh's own header).
+# just rustc — the bootstrap applet owns device-side toolchain setup.
 #
 # Difference from the other three workflows:
 #   - release.yml  — the real gate: build+test, full e2e, cross builds,
@@ -18,20 +18,20 @@ name: Build + unit tests (artifacts)
 #
 # Artifacts land on the run's own page (Actions -> this run -> Artifacts)
 # and via `gh run download <run-id>`, so a device can fetch a binary built
-# here and point deploy/bootstrap-source.sh at it:
+# here and point the combined binary at the bootstrap applet:
 #
 #   gh run download <run-id> -n notk8s-x86_64-debug -D /tmp/bins
 #   chmod +x /tmp/bins/nodelet /tmp/bins/nodeproxy
 #   sudo NOTK8S_NODELET_PREBUILT=/tmp/bins/nodelet \
 #        NOTK8S_NODEPROXY_PREBUILT=/tmp/bins/nodeproxy \
-#        ./deploy/bootstrap-source.sh --with-cri
+#        ./notk8s bootstrap
 #
 # The same artifact also carries the combined single-binary layout when the
 # `layout` input includes it (`notk8s` — every component in one executable,
 # dispatching on argv[0]). Deploy that one instead with:
 #
 #   sudo NOTK8S_COMBINED_PREBUILT=/tmp/bins/notk8s \
-#        ./deploy/bootstrap-source.sh --with-cri --layout=combined
+#        ./notk8s bootstrap --layout=combined
 #
 # (Those two env vars are nodelet-build.sh's existing prebuilt seam — the
 # same one release.yml's e2e shards use — so no toolchain is installed on
@@ -231,12 +231,17 @@ jobs:
             else
               echo "musl.cc unreachable or too slow — falling back to zig cc."
               python3 -m pip install --quiet --user ziglang
-              # A checked-in script rather than one written inline: it has to
-              # strip cc-rs's --target=<rust triple> before calling zig, and
-              # that logic wants to be readable and reviewable, not escaped
-              # into a printf. See the script's own header for why.
-              sudo install -m 0755 .github/scripts/zigcc-armv7.sh /usr/local/bin/zigcc-armv7
-              CC_BIN=/usr/local/bin/zigcc-armv7
+              # Keep the wrapper ephemeral: the repository no longer carries
+              # a shell helper for this one CI-only fallback. cc-rs passes a
+              # Rust target spelling that zig does not understand directly.
+              cat > /tmp/zigcc-armv7.py <<'PY'
+              import os
+              import sys
+              args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
+              os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "arm-linux-musleabihf", *args])
+              PY
+              chmod 0755 /tmp/zigcc-armv7.py
+              CC_BIN=/tmp/zigcc-armv7.py
               # zig links its own musl startup files, and rustc's musl targets
               # pass a self-contained crt1.o of their own -- so _start ends up
               # defined twice and ld.lld rejects the link:
@@ -300,8 +305,7 @@ jobs:
               else
                 echo "crates/nodeproxy not present on this ref — building nodelet only."
               fi
-              # nodestore: no features either (deploy/lib/components.sh's
-              # row for it has an empty cargo-features field). Same guard
+            # nodestore: no features either. Same guard
               # style as nodeproxy above, for the same reason: a ref that
               # predates this crate should still build the rest.
               if [[ -d crates/nodestore ]]; then
@@ -359,14 +363,10 @@ jobs:
           # cargo always puts the output under target/<triple>/, never
           # target/<profile>/ directly.
           SRC_DIR="target/${{ matrix.target }}"
-          # Binary names, table-driven off deploy/lib/components.sh's own
-          # component table rather than hardcoded here — a future component
-          # is then one row in that table, no workflow edit. Not sourcing
-          # components.sh itself: it calls die()/log(), which don't exist
-          # in this shell. `notk8s` (the combined layout, not a component
-          # in that table) is appended literally.
-          mapfile -t BINS < <(sed -n 's/^[[:space:]]*"\([a-zA-Z0-9_-]*\)|.*/\1/p' deploy/lib/components.sh)
-          BINS+=(nodebootstrap notk8s)
+          # Keep this list in sync with the Rust component registry and the
+          # combined applet table. The old deploy/components.sh source of
+          # truth was removed with the shell installer tree.
+          BINS=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
             for bin in "${BINS[@]}"; do

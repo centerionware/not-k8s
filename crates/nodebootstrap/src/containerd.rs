@@ -239,6 +239,18 @@ fn ensure_config() -> Result<bool> {
         config = config.replace(r#"snapshotter = "overlayfs""#, r#"snapshotter = "native""#);
     }
 
+    // The CRI plugin must be allowed to apply OCI hugetlb limits. Some
+    // distro/containerd configs disable this even though the host exposes
+    // the controller, which silently leaves every container at the kernel's
+    // unlimited hugetlb value. `containerd config default` may emit the
+    // default only as a comment, so patch the actual CRI runtime table and
+    // insert the setting when it is absent.
+    let (patched, hugetlb_changed) = enable_hugetlb_controller(&config);
+    if hugetlb_changed {
+        tracing::info!("enabling containerd CRI hugetlb limits");
+        config = patched;
+    }
+
     // CDI device injection, off by default -- see this module's doc
     // comment and container-runtime.sh's own for why not-k8s's DRA support
     // needs this on.
@@ -247,7 +259,159 @@ fn ensure_config() -> Result<bool> {
     }
 
     std::fs::write(CONFIG_PATH, config).context("writing patched config.toml")?;
-    Ok(wrote_fresh)
+    Ok(wrote_fresh || hugetlb_changed)
+}
+
+fn enable_hugetlb_controller(config: &str) -> (String, bool) {
+    let mut output = Vec::new();
+    let mut in_cri_runtime = false;
+    let mut found_setting = false;
+    let mut saw_cri_runtime = false;
+    let mut changed = false;
+
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_cri_runtime && !found_setting {
+                output.push("  disable_hugetlb_controller = false".to_string());
+                changed = true;
+            }
+
+            if let Some(root_header) = cri_runtime_root(trimmed) {
+                let is_root = trimmed == root_header;
+                if is_root {
+                    saw_cri_runtime = true;
+                    in_cri_runtime = true;
+                    found_setting = false;
+                } else {
+                    // Some Docker-managed configs only contain nested CRI
+                    // tables.  The parent table is then implicit, so add it
+                    // immediately before the first nested table to make the
+                    // setting an active value rather than relying on the
+                    // containerd default.
+                    if !saw_cri_runtime {
+                        output.push(root_header.to_string());
+                        output.push("  disable_hugetlb_controller = false".to_string());
+                        saw_cri_runtime = true;
+                        changed = true;
+                    }
+                    in_cri_runtime = false;
+                    found_setting = false;
+                }
+            } else {
+                in_cri_runtime = false;
+                found_setting = false;
+            }
+        }
+
+        if in_cri_runtime && !trimmed.starts_with('#') {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key.trim() == "disable_hugetlb_controller" {
+                    found_setting = true;
+                    if value.trim_start().starts_with("true") {
+                        output.push(format!("{} = false", key.trim()));
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        output.push(line.to_string());
+    }
+
+    if in_cri_runtime && !found_setting {
+        output.push("  disable_hugetlb_controller = false".to_string());
+        changed = true;
+    }
+
+    if !saw_cri_runtime {
+        let root_header = if config.lines().any(|line| line.trim() == "version = 2") {
+            "[plugins.'io.containerd.cri.v1.runtime']"
+        } else {
+            "[plugins.\"io.containerd.grpc.v1.cri\"]"
+        };
+        output.push(root_header.to_string());
+        output.push("  disable_hugetlb_controller = false".to_string());
+        changed = true;
+    }
+
+    (output.join("\n"), changed)
+}
+
+fn cri_runtime_root(header: &str) -> Option<&'static str> {
+    for (prefix, root) in [
+        (
+            "[plugins.\"io.containerd.grpc.v1.cri\"",
+            "[plugins.\"io.containerd.grpc.v1.cri\"]",
+        ),
+        (
+            "[plugins.'io.containerd.grpc.v1.cri'",
+            "[plugins.'io.containerd.grpc.v1.cri']",
+        ),
+        (
+            "[plugins.\"io.containerd.cri.v1.runtime\"",
+            "[plugins.\"io.containerd.cri.v1.runtime\"]",
+        ),
+        (
+            "[plugins.'io.containerd.cri.v1.runtime'",
+            "[plugins.'io.containerd.cri.v1.runtime']",
+        ),
+    ] {
+        if header == root || header.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('.')) {
+            return Some(root);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod containerd_config_tests {
+    use super::enable_hugetlb_controller;
+
+    #[test]
+    fn enables_an_existing_v1_setting() {
+        let config = "[plugins.\"io.containerd.grpc.v1.cri\"]\n  disable_hugetlb_controller = true\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains("disable_hugetlb_controller = false"));
+    }
+
+    #[test]
+    fn inserts_a_missing_v1_setting_without_touching_comments() {
+        let config = "[plugins.\"io.containerd.grpc.v1.cri\"]\n  # disable_hugetlb_controller = true\n[grpc]\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains("  # disable_hugetlb_controller = true"));
+        assert!(patched.contains("  disable_hugetlb_controller = false\n[grpc]"));
+    }
+
+    #[test]
+    fn supports_the_containerd_v2_runtime_section() {
+        let config = "[plugins.'io.containerd.cri.v1.runtime']\n  disable_hugetlb_controller = true\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains("disable_hugetlb_controller = false"));
+    }
+
+    #[test]
+    fn creates_the_parent_for_an_implicit_v2_runtime_table() {
+        let config = "version = 2\n[plugins.'io.containerd.cri.v1.runtime'.containerd]\n  snapshotter = \"overlayfs\"\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.contains(
+            "[plugins.'io.containerd.cri.v1.runtime']\n  disable_hugetlb_controller = false\n[plugins.'io.containerd.cri.v1.runtime'.containerd]"
+        ));
+    }
+
+    #[test]
+    fn adds_a_runtime_table_when_the_config_has_only_implicit_defaults() {
+        let config = "version = 2\n[grpc]\naddress = \"/run/containerd/containerd.sock\"\n";
+        let (patched, changed) = enable_hugetlb_controller(config);
+        assert!(changed);
+        assert!(patched.ends_with(
+            "[plugins.'io.containerd.cri.v1.runtime']\n  disable_hugetlb_controller = false"
+        ));
+    }
 }
 
 /// The "Known CI gotcha" fix from `CLAUDE.md`: strip `"cri"` out of

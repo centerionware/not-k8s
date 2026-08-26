@@ -140,10 +140,16 @@ pub fn fetch_url(url: &str, dest: &std::path::Path) -> Result<()> {
         match ureq::get(url).call() {
             Ok(response) => {
                 let mut reader = response.into_reader();
+                let name = dest.file_name().and_then(|name| name.to_str()).unwrap_or("download");
+                let temporary = dest.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
+                let _ = std::fs::remove_file(&temporary);
                 let mut file =
-                    std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+                    std::fs::File::create(&temporary).with_context(|| format!("creating {}", temporary.display()))?;
                 std::io::copy(&mut reader, &mut file)
-                    .with_context(|| format!("writing response body to {}", dest.display()))?;
+                    .with_context(|| format!("writing response body to {}", temporary.display()))?;
+                drop(file);
+                std::fs::rename(&temporary, dest)
+                    .with_context(|| format!("installing {} as {}", temporary.display(), dest.display()))?;
                 return Ok(());
             }
             Err(e) if attempt < MAX_ATTEMPTS => {
