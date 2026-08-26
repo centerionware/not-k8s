@@ -160,16 +160,16 @@ impl ApiServerHarness {
             // connection at ERROR even though this loop is designed to retry;
             // the raw listener probe keeps startup failures quiet without
             // replacing kube-rs for the actual API readiness check below.
-            if tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.is_ok()
-                && let Ok(list) = namespaces.list(&ListParams::default()).await
-            {
-                let names: std::collections::HashSet<_> = list
-                    .items
-                    .into_iter()
-                    .filter_map(|namespace| namespace.metadata.name)
-                    .collect();
-                if names.contains("default") && names.contains("kube-system") {
-                    return Ok(());
+            if tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.is_ok() {
+                if let Ok(list) = namespaces.list(&ListParams::default()).await {
+                    let names: std::collections::HashSet<_> = list
+                        .items
+                        .into_iter()
+                        .filter_map(|namespace| namespace.metadata.name)
+                        .collect();
+                    if names.contains("default") && names.contains("kube-system") {
+                        return Ok(());
+                    }
                 }
             }
             if self
