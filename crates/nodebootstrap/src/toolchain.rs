@@ -316,11 +316,30 @@ pub fn ensure_c_toolchain(cfg: &Config) -> Result<()> {
 fn find_musl_cc(cfg: &Config) -> Option<String> {
     let arch = cfg.arch();
     let triple = musl_cc_triple(&arch)?;
-    let mut candidates = vec![
+    let target = rust_target(&arch)?;
+    let target_key = target.replace('-', "_");
+    let target_upper = target_key.to_ascii_uppercase();
+    let mut candidates = Vec::new();
+    // A caller may already have selected a cross compiler for this exact
+    // target (the release cross-build jobs supply either a musl.cc compiler
+    // or a Zig wrapper this way). Honor that selection before looking for
+    // generic `musl-gcc` names: on a foreign-architecture runner, the latter
+    // can be a valid musl compiler for the host but unusable for the requested
+    // target.
+    for variable in [
+        "MUSL_C_COMPILER".to_string(),
+        format!("CC_{target_key}"),
+        format!("CARGO_TARGET_{target_upper}_LINKER"),
+    ] {
+        if let Ok(compiler) = std::env::var(variable) {
+            candidates.push(compiler);
+        }
+    }
+    candidates.extend([
         cfg.toolchain_dir().join(format!("{triple}-cross/bin/{triple}-gcc")).to_string_lossy().into_owned(),
         cfg.toolchain_dir().join("bin/gcc").to_string_lossy().into_owned(),
         cfg.toolchain_dir().join("bin/cc").to_string_lossy().into_owned(),
-    ];
+    ]);
     let names = ["musl-gcc".to_string(), format!("{triple}-gcc"), "gcc".to_string(), "cc".to_string()];
     for name in names {
         if let Some(path) = which(&name) {
@@ -339,10 +358,60 @@ fn find_musl_cc(cfg: &Config) -> Option<String> {
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
             .unwrap_or_default();
-        let basename_is_musl_wrapper = path.file_name().is_some_and(|name| name.to_string_lossy() == "musl-gcc");
-        let resolved_is_musl = std::fs::canonicalize(path).ok().is_some_and(|resolved| resolved.to_string_lossy().contains("musl"));
-        machine.contains("musl") || basename_is_musl_wrapper || resolved_is_musl
+        let resolved = std::fs::canonicalize(path).ok();
+        let resolved_is_musl = resolved.as_ref().is_some_and(|resolved| resolved.to_string_lossy().contains("musl"));
+        let target_matches_machine = compiler_machine_matches_arch(&machine, &arch);
+        let target_matches_path = machine.trim().is_empty()
+            && resolved
+                .as_ref()
+                .is_some_and(|resolved| compiler_path_matches_arch(resolved, &arch));
+        (machine.contains("musl") || resolved_is_musl) && (target_matches_machine || target_matches_path)
     })
+}
+
+fn compiler_machine_matches_arch(machine: &str, arch: &str) -> bool {
+    let machine = machine.trim();
+    match arch {
+        "x86_64" => machine.starts_with("x86_64"),
+        "aarch64" => machine.starts_with("aarch64"),
+        "armv7l" => machine.starts_with("armv7") || machine.starts_with("arm-"),
+        "armv6l" => machine.starts_with("armv6") || machine.starts_with("arm-"),
+        "i686" => machine.starts_with("i686"),
+        "riscv64" => machine.starts_with("riscv64"),
+        "ppc64le" => machine.starts_with("powerpc64le"),
+        "s390x" => machine.starts_with("s390x"),
+        _ => false,
+    }
+}
+
+fn compiler_path_matches_arch(path: &std::path::Path, arch: &str) -> bool {
+    let path = path.to_string_lossy();
+    match arch {
+        "x86_64" => path.contains("x86_64"),
+        "aarch64" => path.contains("aarch64"),
+        "armv7l" => path.contains("armv7"),
+        "armv6l" => path.contains("armv6") || path.contains("arm-linux"),
+        "i686" => path.contains("i686"),
+        "riscv64" => path.contains("riscv64"),
+        "ppc64le" => path.contains("powerpc64le"),
+        "s390x" => path.contains("s390x"),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compiler_machine_matches_arch;
+
+    #[test]
+    fn musl_compiler_architecture_must_match_requested_target() {
+        assert!(compiler_machine_matches_arch("x86_64-linux-musl", "x86_64"));
+        assert!(compiler_machine_matches_arch("aarch64-linux-musl", "aarch64"));
+        assert!(compiler_machine_matches_arch("armv7l-linux-musleabihf", "armv7l"));
+        assert!(compiler_machine_matches_arch("arm-linux-musleabihf", "armv7l"));
+        assert!(!compiler_machine_matches_arch("x86_64-linux-musl", "aarch64"));
+        assert!(!compiler_machine_matches_arch("x86_64-linux-musl", "armv7l"));
+    }
 }
 
 fn which(bin: &str) -> Option<String> {

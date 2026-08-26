@@ -391,8 +391,8 @@ jobs:
             cross: false
           - arch: aarch64
             target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-            cross: false
+            runner: ubuntu-latest
+            cross: true
           - arch: armv7l
             target: armv7-unknown-linux-musleabihf
             runner: ubuntu-latest
@@ -412,21 +412,36 @@ jobs:
           cargo_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_LINKER"
           cc_var="CC_$(echo "$triple" | tr '-' '_')"
           if [[ "${{ matrix.cross }}" == true ]]; then
-            tc=armv7l-linux-musleabihf-cross
+            case "${{ matrix.arch }}" in
+              aarch64)
+                tc=aarch64-linux-musl-cross
+                cc_name=aarch64-linux-musl-gcc
+                zig_target=aarch64-linux-musl
+                ;;
+              armv7l)
+                tc=armv7l-linux-musleabihf-cross
+                cc_name=armv7l-linux-musleabihf-gcc
+                zig_target=arm-linux-musleabihf
+                ;;
+              *)
+                echo "unsupported cross-build architecture: ${{ matrix.arch }}"
+                exit 1
+                ;;
+            esac
             if timeout 240 curl -fsSL --max-time 240 --retry 2 -o "/tmp/$tc.tgz" "https://musl.cc/$tc.tgz" 2>/dev/null; then
               sudo tar -xzf "/tmp/$tc.tgz" -C /opt
-              cc_bin=/opt/$tc/bin/armv7l-linux-musleabihf-gcc
+              cc_bin=/opt/$tc/bin/$cc_name
               echo "/opt/$tc/bin" >> "$GITHUB_PATH"
             else
               python3 -m pip install --quiet --user ziglang
-              cat > /tmp/zigcc-armv7.py <<'PY'
+              cat > /tmp/zigcc-musl.py <<PY
           import os
           import sys
           args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
-          os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "arm-linux-musleabihf", *args])
+          os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "$zig_target", *args])
           PY
-              chmod 0755 /tmp/zigcc-armv7.py
-              cc_bin=/tmp/zigcc-armv7.py
+              chmod 0755 /tmp/zigcc-musl.py
+              cc_bin=/tmp/zigcc-musl.py
               rustflags_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
               echo "$rustflags_var=-C link-self-contained=no" >> "$GITHUB_ENV"
             fi
@@ -437,6 +452,7 @@ jobs:
           fi
           echo "$cargo_var=$cc_bin" >> "$GITHUB_ENV"
           echo "$cc_var=$cc_bin" >> "$GITHUB_ENV"
+          echo "MUSL_C_COMPILER=$cc_bin" >> "$GITHUB_ENV"
           echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
       - name: Build the host bootstrap builder
         run: cargo build -p nodebootstrap
