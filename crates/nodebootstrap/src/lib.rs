@@ -463,12 +463,31 @@ fn apply_root_reexec(args: &[String], embedded: bool) -> Result<()> {
     anyhow::ensure!(crate::pkg::command_exists("sudo"), "root is required to install the control plane and services, but sudo was not found; re-run as root");
     tracing::info!("restarting nodebootstrap through sudo for the system-wide install");
     let mut command = std::process::Command::new("sudo");
-    command.arg("-E").arg(executable);
+    // `sudo -E` is subject to the host's sudoers environment policy. In
+    // particular, CI cross-builds can lose the target-specific linker and C
+    // compiler variables here, causing the root re-exec to rediscover a
+    // host-only musl-gcc (or fetch musl.cc again) instead of using the
+    // compiler selected by the caller. Pass the build-related variables as
+    // explicit `env` assignments as well as asking sudo to preserve the
+    // ordinary bootstrap environment.
+    command.arg("-E").arg("/usr/bin/env");
+    for (key, value) in std::env::vars().filter(|(key, _)| reexec_env_key(key)) {
+        command.arg(format!("{key}={value}"));
+    }
+    command.arg(executable);
     if embedded {
         command.arg("nodebootstrap");
     }
     let status = command.args(args).status().context("re-executing nodebootstrap through sudo")?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn reexec_env_key(key: &str) -> bool {
+    matches!(key, "HOME" | "PATH" | "PROTOC" | "RUSTFLAGS" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN")
+        || key == "CARGO_HOME"
+        || key.starts_with("CARGO_")
+        || key.starts_with("CC_")
+        || key.starts_with("MUSL_")
 }
 
 fn is_root() -> bool {
@@ -557,7 +576,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_args;
+    use super::{parse_args, reexec_env_key};
 
     #[test]
     fn cri_is_selected_by_default_without_a_positive_flag() {
@@ -569,5 +588,14 @@ mod tests {
     #[test]
     fn with_cri_is_not_a_nodebootstrap_flag() {
         assert!(parse_args(&["--with-cri".to_string()]).is_err());
+    }
+
+    #[test]
+    fn root_reexec_preserves_target_build_environment() {
+        assert!(reexec_env_key("MUSL_C_COMPILER"));
+        assert!(reexec_env_key("CC_aarch64_unknown_linux_musl"));
+        assert!(reexec_env_key("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"));
+        assert!(reexec_env_key("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS"));
+        assert!(!reexec_env_key("GITHUB_TOKEN"));
     }
 }

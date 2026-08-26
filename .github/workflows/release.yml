@@ -437,6 +437,9 @@ jobs:
               cat > /tmp/zigcc-musl.py <<PY
           import os
           import sys
+          if sys.argv[1:] == ["-dumpmachine"]:
+              print("$zig_target")
+              raise SystemExit(0)
           args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
           os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "$zig_target", *args])
           PY
