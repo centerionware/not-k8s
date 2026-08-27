@@ -389,7 +389,7 @@ mod tests {
             .expect("read apiserver SAN extension")
             .expect("apiserver cert should have a SAN extension");
         assert!(san_ext.value.general_names.iter().any(|name| {
-            matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if name == "kubernetes.default.svc.cluster.example")
+            matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == "kubernetes.default.svc.cluster.example")
         }));
     }
 }
