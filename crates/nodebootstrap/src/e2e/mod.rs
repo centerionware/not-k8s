@@ -1442,6 +1442,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
             | "test_the_node_still_reconciles_pods_after_an_apiserver_restart"
             | "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers"
+            | "test_cert_manager_crds_are_usable_without_nodecontroller_restart"
     )
 }
 
