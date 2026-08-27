@@ -548,29 +548,21 @@ jobs:
           path: dist
           pattern: notk8s-*-${{ github.run_id }}
           merge-multiple: true
-      - name: Determine and record the next release version
+      - name: Read the version this run publishes
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # VERSION on the `version` branch tracks the *next* release -- it's
+          # only advanced after a release actually publishes (see the "Advance
+          # VERSION" step below), not before. build-release's `nodebootstrap
+          # fetch` already stamped the binaries in dist/ by fetching this same
+          # unmodified file, so reading it again here (rather than bumping
+          # first, the way this step used to) is what keeps the published
+          # tag/filenames matching what's actually baked into the binaries.
           current="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .content | tr -d '\n' | base64 --decode)"
-          # Supports both a normal MAJOR.MINOR.PATCH version and a fourth,
-          # hand-added point-release component (MAJOR.MINOR.PATCH.POINT, e.g.
-          # 0.7.2.1) for a hotfix that shouldn't consume the next PATCH --
-          # whichever component is last gets incremented, so a 4-part
-          # current version keeps advancing its 4th component instead of
-          # jumping back to a 3-part next version.
-          IFS=. read -ra parts <<< "$current"
-          last=$(( ${#parts[@]} - 1 ))
-          parts[last]=$(( parts[last] + 1 ))
-          next="$(IFS=.; echo "${parts[*]}")"
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .sha)"
-          content="$(printf '%s\n' "$next" | base64 -w0)"
-          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/VERSION" \
-            -f message="chore(release): advance version to $next" \
-            -f content="$content" -f sha="$sha" -f branch=version >/dev/null
-          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "version=$current" >> "$GITHUB_OUTPUT"
       - name: Rename release assets and generate notes
         id: assets
         env:
@@ -607,6 +599,29 @@ jobs:
           mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
           [[ "${#assets[@]}" -gt 0 ]]
           gh release create "$tag" --title "$tag" --notes-file release-notes.md "${assets[@]}"
+      - name: Advance VERSION for the next release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Only runs once v$VERSION is actually published above -- the
+          # `version` branch always names the *next* release, never this one
+          # in progress. Supports both a normal MAJOR.MINOR.PATCH version and
+          # a fourth, hand-added point-release component
+          # (MAJOR.MINOR.PATCH.POINT, e.g. 0.7.2.1) for a hotfix that
+          # shouldn't consume the next PATCH -- whichever component is last
+          # gets incremented, so a 4-part current version keeps advancing its
+          # 4th component instead of jumping back to a 3-part next version.
+          IFS=. read -ra parts <<< "$VERSION"
+          last=$(( ${#parts[@]} - 1 ))
+          parts[last]=$(( parts[last] + 1 ))
+          next="$(IFS=.; echo "${parts[*]}")"
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .sha)"
+          content="$(printf '%s\n' "$next" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/VERSION" \
+            -f message="chore(release): advance version to $next" \
+            -f content="$content" -f sha="$sha" -f branch=version >/dev/null
       - name: Update README install command to the published release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
