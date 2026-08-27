@@ -555,8 +555,16 @@ jobs:
         run: |
           set -euo pipefail
           current="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .content | tr -d '\n' | base64 --decode)"
-          IFS=. read -r major minor patch <<< "$current"
-          next="$major.$minor.$((patch + 1))"
+          # Supports both a normal MAJOR.MINOR.PATCH version and a fourth,
+          # hand-added point-release component (MAJOR.MINOR.PATCH.POINT, e.g.
+          # 0.7.2.1) for a hotfix that shouldn't consume the next PATCH --
+          # whichever component is last gets incremented, so a 4-part
+          # current version keeps advancing its 4th component instead of
+          # jumping back to a 3-part next version.
+          IFS=. read -ra parts <<< "$current"
+          last=$(( ${#parts[@]} - 1 ))
+          parts[last]=$(( parts[last] + 1 ))
+          next="$(IFS=.; echo "${parts[*]}")"
           sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .sha)"
           content="$(printf '%s\n' "$next" | base64 -w0)"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/VERSION" \
