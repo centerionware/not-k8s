@@ -1,0 +1,56 @@
+# Live manifest for the hostpath-demo sample, as applied to the test cluster
+# in the incident described in README.md §2. Deployment-wrapped in place of
+# the original bare Pod; volume/tolerations/container spec are otherwise
+# unchanged. Verified serving via `curl http://127.0.0.1:8080/` against the
+# real mounted hostPath content after applying.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hostpath-demo
+  labels:
+    app: hostpath-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hostpath-demo
+  template:
+    metadata:
+      labels:
+        app: hostpath-demo
+    spec:
+      # This node reports DiskPressure (device storage is nearly full), which would
+      # otherwise get this pod evicted almost immediately. Tolerate it so the pod
+      # stays scheduled for this reboot-survival test.
+      #
+      # Note: these tolerations only affect *scheduling* and the separate
+      # taint-based NoExecute eviction path — kubelet's own resource-pressure
+      # eviction manager evicts BestEffort pods under real DiskPressure
+      # regardless of toleration (this is real upstream kubelet behavior,
+      # which nodelet matches). Wrapping this in a Deployment means a pod
+      # evicted that way gets recreated automatically instead of being left
+      # as a dead standalone Pod object.
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoExecute
+      restartPolicy: Always
+      containers:
+        - name: web
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+              hostPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: www
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+      volumes:
+        - name: www
+          hostPath:
+            path: /home/droid/something-useful/k8s-demo/www
+            type: Directory

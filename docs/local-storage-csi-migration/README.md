@@ -70,13 +70,40 @@ Root cause, in order:
 `manifest.yaml` was changed from a bare `Pod` to a `Deployment` (1 replica)
 wrapping the identical pod spec — same tolerations, same `nginx:alpine`
 container, same `hostPath` volume for now (see §3 for replacing that part).
-The old dead `Pod` object was deleted and the `Deployment` applied in its
-place:
+The full manifest as applied is [`hostpath-demo-deployment.yaml`](./hostpath-demo-deployment.yaml)
+in this directory. The old dead `Pod` object was deleted and the
+`Deployment` applied in its place:
 
 ```bash
 kubectl delete pod hostpath-demo
-kubectl apply -f manifest.yaml
+kubectl apply -f hostpath-demo-deployment.yaml
 ```
+
+Verified live afterward, not just applied and assumed correct:
+
+```
+$ kubectl get deploy,rs,pod -n default -l app=hostpath-demo -o wide
+NAME                            READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/hostpath-demo   1/1     1            1           5m14s
+
+NAME                                             DESIRED   CURRENT   READY   AGE
+replicaset.apps/hostpath-demo-f5964e2b19e4d762   1         1         1       5m13s
+
+NAME                                       READY   STATUS    RESTARTS   AGE
+pod/hostpath-demo-f5964e2b19e4d762-nml8m   1/1     Running   0          5m13s
+
+$ curl -s http://127.0.0.1:8080/
+<!doctype html>
+<html><head><title>k8s survives reboot</title></head>
+<body style="font-family:sans-serif">
+<h1>Hello from hostPath volume</h1>
+...
+```
+
+The pod picked up the tolerations, the `hostPath` mount, and the `hostPort`
+binding correctly, and is actually serving the real file content from
+`/home/droid/something-useful/k8s-demo/www/index.html` — confirming the
+Pod→Deployment translation, not just that the object got created.
 
 This does **not** stop the underlying eviction from happening again if disk
 usage crosses the 10%-available line — the toleration limitation from §1
