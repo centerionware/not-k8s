@@ -297,7 +297,7 @@ fn is_role_flag(arg: &str) -> bool {
 }
 
 fn merge_installation_flags(previous: &[String], current: &[String]) -> Vec<String> {
-    let mut merged = Vec::new();
+    let mut merged: Vec<String> = Vec::new();
     for arg in previous.iter().filter(|arg| is_persisted_installation_flag(arg)) {
         if is_role_flag(arg) {
             merged.retain(|old| !is_role_flag(old));
