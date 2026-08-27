@@ -41,6 +41,10 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     ensure_cni_base_plugins(cfg)?;
     ensure_flannel_binaries(cfg)?;
     write_flannel_cni_conf(std::path::Path::new(CNI_CONF_DIR))?;
+    if let Some(parent) = cfg.cni_marker().parent() {
+        std::fs::create_dir_all(parent).context("creating CNI ownership marker directory")?;
+    }
+    std::fs::write(cfg.cni_marker(), b"flannel\n").context("recording flannel ownership")?;
     start_flanneld(cfg)
 }
 

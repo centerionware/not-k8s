@@ -2,12 +2,9 @@
 //! `containerd.rs`, and `cni.rs` -- replaces the corresponding parts of
 //! `deploy/lib/common.sh` (`detect_pkg_mgr`/`pkg_install`/`fetch`).
 //!
-//! **Scope cut, deliberate:** ports the primary path (detect a package
-//! manager, `install`). Does **not** yet port `common.sh`'s apt
-//! alternate-mirror retry-on-timeout logic (`_apt_run`/
-//! `_apt_alternate_sources`) or the `pkg_installs.log` uninstall-tracking
-//! file `deploy/lib/uninstall.sh` reads -- both are real and both are next,
-//! not dropped.
+//! The package manager log is deliberately ownership-scoped: uninstall only
+//! removes packages this bootstrapper successfully asked the manager to
+//! install, rather than guessing at every package with a familiar name.
 //!
 //! `fetch_url` is a real Rust HTTP client (`ureq`, rustls-backed), not a
 //! `curl`/`wget` subprocess -- unlike `rbac.rs`/`manifests.rs` shelling out
@@ -17,7 +14,7 @@
 
 use anyhow::{Context, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PkgMgr {
     Apt,
     Dnf,
@@ -43,6 +40,30 @@ impl PkgMgr {
             ("xbps-install", PkgMgr::Xbps),
         ];
         candidates.into_iter().find(|(bin, _)| command_exists(bin)).map(|(_, mgr)| mgr)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Apt => "apt",
+            Self::Dnf => "dnf",
+            Self::Yum => "yum",
+            Self::Pacman => "pacman",
+            Self::Apk => "apk",
+            Self::Zypper => "zypper",
+            Self::Xbps => "xbps",
+        }
+    }
+
+    fn remove_command(self) -> (&'static str, [&'static str; 3]) {
+        match self {
+            Self::Apt => ("apt-get", ["remove", "-y", "-qq"]),
+            Self::Dnf => ("dnf", ["remove", "-y", "-q"]),
+            Self::Yum => ("yum", ["remove", "-y", "-q"]),
+            Self::Pacman => ("pacman", ["-R", "--noconfirm", ""]),
+            Self::Apk => ("apk", ["del", "--no-cache", ""]),
+            Self::Zypper => ("zypper", ["--non-interactive", "remove", ""]),
+            Self::Xbps => ("xbps-remove", ["-R", "", ""]),
+        }
     }
 }
 
@@ -93,7 +114,99 @@ pub fn pkg_install(display_name: &str, pkgs: &PkgNames) -> Result<bool> {
         .args(&args)
         .status()
         .with_context(|| format!("running {program} to install '{display_name}'"))?;
+    if status.success() {
+        record_package_install(mgr, selected_packages(mgr, pkgs))
+            .with_context(|| format!("recording packages installed for '{display_name}'"))?;
+    }
     Ok(status.success())
+}
+
+fn selected_packages<'a>(mgr: PkgMgr, pkgs: &'a PkgNames<'a>) -> &'a str {
+    match mgr {
+        PkgMgr::Apt => pkgs.apt,
+        PkgMgr::Dnf | PkgMgr::Yum => pkgs.dnf,
+        PkgMgr::Pacman => pkgs.pacman,
+        PkgMgr::Apk => pkgs.apk,
+        PkgMgr::Zypper => pkgs.zypper,
+        PkgMgr::Xbps => pkgs.xbps,
+    }
+}
+
+fn package_log_path() -> std::path::PathBuf {
+    let state_dir = std::env::var("NODEBOOTSTRAP_STATE_DIR")
+        .unwrap_or_else(|_| "/var/lib/nodebootstrap".to_string());
+    std::path::PathBuf::from(state_dir).join("pkg_installs.log")
+}
+
+fn record_package_install(mgr: PkgMgr, packages: &str) -> Result<()> {
+    let path = package_log_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating package tracking directory {}", parent.display()))?;
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening package tracking log {}", path.display()))?;
+    writeln!(file, "{}|{}", mgr.name(), packages.trim())
+        .with_context(|| format!("writing package tracking log {}", path.display()))?;
+    Ok(())
+}
+
+/// Remove only packages recorded by successful package-install calls. A
+/// failure is retained in the log so a later uninstall can retry it.
+pub fn remove_tracked_packages() -> Result<()> {
+    let path = package_log_path();
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("reading package tracking log {}", path.display())),
+    };
+    let mut removed = std::collections::HashSet::new();
+    let mut failures = Vec::new();
+    for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+        let Some((manager, packages)) = line.split_once('|') else {
+            tracing::warn!(line, "ignoring malformed package tracking entry");
+            continue;
+        };
+        let Some(mgr) = (match manager {
+            "apt" => Some(PkgMgr::Apt),
+            "dnf" => Some(PkgMgr::Dnf),
+            "yum" => Some(PkgMgr::Yum),
+            "pacman" => Some(PkgMgr::Pacman),
+            "apk" => Some(PkgMgr::Apk),
+            "zypper" => Some(PkgMgr::Zypper),
+            "xbps" => Some(PkgMgr::Xbps),
+            _ => None,
+        }) else {
+            tracing::warn!(manager, "ignoring unknown package manager in tracking log");
+            continue;
+        };
+        let (program, command_args) = mgr.remove_command();
+        for package in packages.split_whitespace() {
+            if !removed.insert((mgr, package.to_string())) {
+                continue;
+            }
+            let mut command = sudo_command(program);
+            command.args(command_args.iter().copied().filter(|arg| !arg.is_empty()));
+            command.arg(package);
+            match command.status() {
+                Ok(status) if status.success() => {
+                    tracing::info!(package, pkg_mgr = ?mgr, "removed bootstrap-installed package");
+                }
+                Ok(status) => failures.push(format!("{program} {package} exited with {status}")),
+                Err(error) => failures.push(format!("running {program} for {package}: {error}")),
+            }
+        }
+    }
+    if failures.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    } else {
+        anyhow::bail!("some tracked packages could not be removed: {}", failures.join("; "))
+    }
 }
 
 fn split_pkgs(cmd: &str, flag_a: &str, flag_b: &str, pkgs: &str) -> Vec<String> {

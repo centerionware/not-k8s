@@ -158,7 +158,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
     let node_name = cfg.node_name();
-    let cluster_dns = cfg.cluster_dns_ip();
+    let cluster_dns = cfg.cluster_dns_ips().join(",");
     let cluster_domain = cfg.cluster_domain();
     let binary = bin.to_string_lossy().to_string();
     let mut env = vec![

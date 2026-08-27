@@ -223,3 +223,4 @@ spec:
     port: 9153
     protocol: TCP
   ipFamilyPolicy: %{CLUSTER_DNS_IPFAMILYPOLICY}%
+  ipFamilies: %{CLUSTER_DNS_IPFAMILIES}%

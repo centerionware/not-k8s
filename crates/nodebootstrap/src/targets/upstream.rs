@@ -55,7 +55,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(&bin_dir).context("creating toolchain bin dir")?;
     fetch_binary("kube-apiserver", arch, &bin_dir)?;
 
-    let spec = target_spec(cfg);
+    let spec = target_spec(cfg)?;
     wait_for_nodestore(&spec.etcd_servers)?;
     install_apiserver(cfg, &spec, &bin_dir, None)?;
 
@@ -78,7 +78,7 @@ pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
             let bin_dir = cfg.toolchain_dir().join("bin");
             let bin = bin_dir.join("kube-apiserver");
             anyhow::ensure!(bin.exists(), "no kube-apiserver binary at {}", bin.display());
-            let spec = target_spec(cfg);
+            let spec = target_spec(cfg)?;
             install_apiserver(cfg, &spec, &bin_dir, Some(&cert_path))?;
             wait_for_readyz(&spec);
             tracing::info!(path = %cert_path.display(), "kube-apiserver now trusts nodelet's kubelet-style server CA");
@@ -111,7 +111,7 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
     let cert_path = cfg.nodelet_server_ca_path();
     anyhow::ensure!(cert_path.is_file(), "nodelet server CA is missing at {}", cert_path.display());
 
-    let mut spec = target_spec(cfg);
+    let mut spec = target_spec(cfg)?;
     spec.advertise_address = advertise_address.clone();
     install_apiserver(cfg, &spec, &bin_dir, Some(&cert_path))?;
     wait_for_readyz(&spec);
@@ -236,14 +236,18 @@ fn remove_cni_seed_pod(cfg: &Config) {
     });
 }
 
-fn target_spec(cfg: &Config) -> TargetSpec {
-    TargetSpec {
+fn target_spec(cfg: &Config) -> Result<TargetSpec> {
+    let service_cidr = cfg
+        .service_cidr6()
+        .map(|cidr6| format!("{},{}", cfg.service_cidr(), cidr6))
+        .unwrap_or_else(|| cfg.service_cidr());
+    Ok(TargetSpec {
         pki_dir: cfg.pki_dir(),
         etcd_servers: nodestore_etcd_servers(),
         advertise_address: cfg.advertise_address.clone().unwrap_or_else(detect_advertise_address),
-        service_cidr: "10.43.0.0/16".to_string(),
+        service_cidr,
         service_account_issuer: format!("https://kubernetes.default.svc.{}", cfg.cluster_domain()),
-    }
+    })
 }
 
 fn install_apiserver(
@@ -549,5 +553,13 @@ mod tests {
         assert!(args.iter().any(|a| a == "--kubelet-certificate-authority=/var/lib/nodelet/pki/server-ca.pem"));
         assert!(args.iter().any(|a| a == "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP"));
         assert!(args.iter().any(|a| a == "--feature-gates=ContainerStopSignals=true,ResourceHealthStatus=true,ServiceAccountTokenPodNodeInfo=true"));
+    }
+
+    #[test]
+    fn apiserver_args_accept_dual_stack_service_cidrs() {
+        let mut spec = test_spec();
+        spec.service_cidr = "10.99.0.0/16,fd00:99::/112".to_string();
+        let args = apiserver_args(&spec, None);
+        assert!(args.iter().any(|a| a == "--service-cluster-ip-range=10.99.0.0/16,fd00:99::/112"));
     }
 }

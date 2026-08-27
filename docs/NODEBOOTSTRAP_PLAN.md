@@ -215,7 +215,7 @@ comment for the specifics and what's queued next:
 | `pki.rs` | ✅ real (CA + static client certs, `rcgen`) | n/a -- no fallback tier, this is new code |
 | `kubeconfig.rs` | ✅ real | n/a |
 | `rbac.rs` | ✅ real -- thin verify, **plus two real supplemental RBAC grants** found live: (1) `system:kube-scheduler`'s built-in bootstrap role doesn't cover DRA (`resource.k8s.io` `deviceclasses`/`resourceclaims`/`resourceslices`), which `nodescheduler` watches unconditionally; (2) `nodecontroller` ran every controller as the single `system:kube-controller-manager` identity instead of real upstream's per-controller service-account impersonation -- **fixed in `nodecontroller` itself** (not bridged here): it now impersonates the real upstream `system:serviceaccount:kube-system:<controller-name>` per controller, so this module grants only the narrow `impersonate` verb needed for that, not `cluster-admin`. See `docs/E2E_FINDINGS.md` finding 22 and both findings in `rbac.rs`'s doc comment | n/a |
-| `manifests.rs` | ✅ real (healthy CoreDNS Deployment + Service, configurable domain, and explicit `--disable-dns`; flannel corrected out of scope, see its doc comment) | n/a |
+| `manifests.rs` | ✅ real (healthy CoreDNS Deployment + Service, configurable domain and IPv4/IPv6 service IPs, and explicit `--disable-dns`; flannel corrected out of scope, see its doc comment) | n/a |
 | `toolchain.rs` | ✅ real, every tier (rust: package manager -> rustup; protoc: package manager -> official prebuilt -> from-source autotools build; C toolchain: package manager -> musl.cc static prebuilt -> from-source gcc+binutils build; Go: package manager -> official prebuilt -> from-source 3-stage bootstrap) | n/a |
 | `containerd.rs` | ✅ real, every tier (package manager -> official prebuilt -> from-source, needs `toolchain::ensure_go`; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | n/a |
 | `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` and the Rust `flanneld` service applet) | n/a |
@@ -229,10 +229,15 @@ comment for the specifics and what's queued next:
 Bootstrap installation choices are recorded one flag per line in
 `/etc/nodebootstrap/flags` (or `NODEBOOTSTRAP_FLAGS_FILE`) and replayed on
 later invocations, including upgrades. One-shot inspection/e2e controls and
-control-plane removal are deliberately not persisted. `--disable-dns` skips
-CoreDNS and its nodelet DNS configuration; `--cluster-domain=NAME` wires the
-same domain into CoreDNS, nodelet Pod DNS/search configuration, the apiserver
-service-account issuer, and the apiserver serving certificate.
+control-plane removal and `--uninstall` are deliberately not persisted.
+`--disable-dns` skips CoreDNS and its nodelet DNS configuration;
+`--cluster-domain=NAME` wires the same domain into CoreDNS, nodelet Pod
+DNS/search configuration, the apiserver service-account issuer, and the
+apiserver serving certificate. `--cidr=CIDR` selects the IPv4 service range;
+`--cidr6=CIDR` adds an optional IPv6 service range and updates the apiserver,
+CoreDNS, and apiserver serving certificate consistently. `--uninstall`
+removes nodebootstrap-managed host services, files, state, and tracked
+packages.
 
 **HTTP fetch is a real Rust client, not `curl`/`wget` subprocesses**
 (decided 2026-08-22, user direction): `pkg::fetch_url` (every binary/

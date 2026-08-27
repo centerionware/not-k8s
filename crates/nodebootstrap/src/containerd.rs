@@ -28,10 +28,17 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     ensure_cgroups_mounted();
+    let binaries_present = crate::pkg::command_exists("containerd") && crate::pkg::command_exists("runc");
     ensure_binaries(cfg)?;
     let wrote_fresh_config = ensure_config()?;
     let removed_disabled_cri = strip_disabled_cri()?;
     ensure_running(cfg, wrote_fresh_config || removed_disabled_cri)?;
+    if !binaries_present || wrote_fresh_config {
+        if let Some(parent) = cfg.containerd_marker().parent() {
+            std::fs::create_dir_all(parent).context("creating containerd ownership marker directory")?;
+        }
+        std::fs::write(cfg.containerd_marker(), b"containerd\n").context("recording containerd ownership")?;
+    }
     Ok(())
 }
 
