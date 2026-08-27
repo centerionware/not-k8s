@@ -306,7 +306,9 @@ pub(super) async fn cluster_dns_resolves_service_names(context: &E2eContext) -> 
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", format!("nslookup kubernetes.default.svc.{domain} > /dev/termination-log 2>&1")]
+                "command": ["sh", "-c", format!(
+                    "for attempt in $(seq 1 60); do nslookup kubernetes.default.svc.{domain} > /dev/termination-log 2>&1 && exit 0; sleep 2; done; exit 1"
+                )]
             }]
         }
     }))?;
