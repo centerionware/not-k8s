@@ -254,6 +254,7 @@ jobs:
           args=()
           for arg in "\$@"; do
               case "\$arg" in
+                  --target=*) ;;
                   -Wl,--fix-cortex-*) ;;
                   *) args+=("\$arg") ;;
               esac
