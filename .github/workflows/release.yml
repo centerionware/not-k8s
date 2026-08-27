@@ -455,6 +455,9 @@ jobs:
           args=()
           for arg in "\$@"; do
               case "\$arg" in
+                  # cc-rs passes Rust's full target triple, while Zig gets
+                  # the normalized target from the wrapper invocation below.
+                  --target=*) ;;
                   # Rust adds this GNU ld workaround for ARM targets. Zig's
                   # lld does not accept it and does not need it.
                   -Wl,--fix-cortex-*) ;;
