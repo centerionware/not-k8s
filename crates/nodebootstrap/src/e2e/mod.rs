@@ -25,6 +25,8 @@ mod build_layout;
 mod context;
 #[path = "tests/cgroup.rs"]
 mod cgroup;
+#[path = "tests/cert_manager.rs"]
+mod cert_manager;
 #[path = "tests/component_rbac.rs"]
 mod component_rbac;
 #[path = "tests/config_file.rs"]
@@ -364,6 +366,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_namespace_controller_deletes_contents_before_finalizing",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cert_manager_crds_are_usable_without_nodecontroller_restart",
         group: TestGroup::General,
     },
     TestCase {
@@ -1609,6 +1615,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_namespace_controller_deletes_contents_before_finalizing" => {
             namespace::namespace_controller_deletes_contents_before_finalizing(context).await
+        }
+        "test_cert_manager_crds_are_usable_without_nodecontroller_restart" => {
+            cert_manager::cert_manager_crds_are_usable_without_nodecontroller_restart(context).await
         }
         "test_resourcequota_used_pods_tracks_actual_pod_count" => {
             resource_quota::resourcequota_used_pods_tracks_actual_pod_count(context).await

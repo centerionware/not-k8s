@@ -1,7 +1,7 @@
 //! garbage-collector-controller (Group D): owner-reference cascade
 //! deletion, generic across every namespaced, watchable, deletable
-//! resource kind the apiserver serves — discovered at startup, not a
-//! hardcoded list of the kinds this crate happens to already know about.
+//! resource kind the apiserver serves — discovered from the live API surface,
+//! not a hardcoded list of the kinds this crate happens to already know about.
 //! The deferral this file closes: `docs/CONTROLLER_MANAGER.md`'s Group D
 //! section explains why this waited for Group E to exist first (nothing
 //! produced a real owner chain — Deployment→ReplicaSet→Pod — worth
@@ -31,11 +31,10 @@
 //!
 //! # Scope of this slice
 //!
-//! **Discovery runs once at startup, not periodically.** A CRD installed
-//! after nodecontroller starts is invisible to this controller until it's
-//! restarted — upstream re-discovers on a live, invalidatable RESTMapper;
-//! that's real complexity this slice doesn't take on. Named, not silently
-//! dropped.
+//! **Discovery is refreshed by a shared CRD informer.** A CRD installed after
+//! nodecontroller starts causes the current generation of dynamic watches to
+//! be replaced with a generation built from fresh discovery, matching the
+//! important live behavior of upstream's invalidatable RESTMapper.
 //!
 //! **Namespaced resources only.** An owner reference is same-namespace by
 //! the API's own rule (`OwnerReference` carries no namespace field, so
@@ -62,8 +61,9 @@
 //! delete an Event). Every other namespaced, watchable, deletable kind —
 //! built-in or CRD — is covered generically.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::stream::{select_all, BoxStream, StreamExt};
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{Api, DeleteParams, DynamicObject, Preconditions, PropagationPolicy};
 use kube::core::PartialObjectMeta;
 use kube::discovery::{verbs, Discovery, Scope};
@@ -373,12 +373,17 @@ mod tests {
     }
 }
 
-pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("running API discovery for garbage-collector-controller")?;
+enum GenerationExit {
+    CrdChanged,
+    StreamsEnded,
+}
 
+async fn run_generation(
+    client: &Client,
+    discovery: Discovery,
+    crd_stream: &mut BoxStream<'static, watcher::Result<Event<CustomResourceDefinition>>>,
+    crds: &mut HashMap<String, CustomResourceDefinition>,
+) -> Result<GenerationExit> {
     let mut resources = HashMap::new();
     let mut streams: Vec<BoxStream<'static, (String, watcher::Result<Event<DynamicObject>>)>> =
         Vec::new();
@@ -397,7 +402,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             // budget on duplicate Pod/PVC/Deployment/etc. streams and can
             // reject CSI's own initial watches with Retry-After.
             let stream = if let Some(stream) =
-                crate::watch::watch_dynamic_resource(&client, &ar.api_version, &ar.kind)
+                crate::watch::watch_dynamic_resource(client, &ar.api_version, &ar.kind)
             {
                 stream
             } else {
@@ -406,7 +411,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 // own comment for why, and issue #40 for the profiling data
                 // that found the full-body path expensive).
                 let api: Api<PartialObjectMeta<DynamicObject>> =
-                    Api::all_with(client.clone(), &ar);
+                    Api::all_with((*client).clone(), &ar);
                 // Discovery can yield dozens of resource kinds. Admit one
                 // ordinary LIST+WATCH at a time below; keeping the initial
                 // LIST short avoids holding a long-running watch-list request
@@ -424,7 +429,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
     if resources.is_empty() {
         tracing::warn!("garbage-collector-controller found no watchable/deletable namespaced resource kinds via discovery — nothing to do");
-        return Ok(());
+        return Ok(GenerationExit::StreamsEnded);
     }
     tracing::info!(
         kind_count = resources.len(),
@@ -461,6 +466,40 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
     loop {
         tokio::select! {
+            crd_event = crd_stream.next() => {
+                match crd_event {
+                    Some(Ok(Event::Init)) => crds.clear(),
+                    Some(Ok(Event::InitApply(crd))) => {
+                        crds.insert(crd.name_any(), crd);
+                    }
+                    Some(Ok(Event::Apply(crd))) => {
+                        let name = crd.name_any();
+                        let changed = crds
+                            .get(&name)
+                            .is_none_or(|previous| previous.spec != crd.spec);
+                        crds.insert(name, crd);
+                        if changed {
+                            tracing::info!(
+                                "garbage-collector-controller refreshing resource watches after a CRD change"
+                            );
+                            return Ok(GenerationExit::CrdChanged);
+                        }
+                    }
+                    Some(Ok(Event::Delete(crd))) => {
+                        if crds.remove(&crd.name_any()).is_some() {
+                            tracing::info!(
+                                "garbage-collector-controller refreshing resource watches after a CRD removal"
+                            );
+                            return Ok(GenerationExit::CrdChanged);
+                        }
+                    }
+                    Some(Ok(Event::InitDone)) => {}
+                    Some(Err(error)) => {
+                        tracing::warn!(error = ?error, "CRD watch error in garbage-collector-controller")
+                    }
+                    None => return Ok(GenerationExit::StreamsEnded),
+                }
+            }
             event = combined.next() => {
                 let Some((kind_key, ev)) = event else {
                     if let Some(stream) = pending_streams.next() {
@@ -472,17 +511,17 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Ok(Event::Apply(obj)) => {
                         let staged = state.pending_init.contains(&kind_key);
-                        state.handle_apply(&client, &kind_key, obj, staged).await;
+                        state.handle_apply(client, &kind_key, obj, staged).await;
                     }
                     Ok(Event::InitApply(obj)) => {
-                        state.handle_apply(&client, &kind_key, obj, true).await;
+                        state.handle_apply(client, &kind_key, obj, true).await;
                     }
                     Ok(Event::Delete(obj)) => {
-                        state.handle_delete(&client, obj).await;
+                        state.handle_delete(client, obj).await;
                     }
                     Ok(Event::Init) => state.begin_relist(&kind_key),
                     Ok(Event::InitDone) => {
-                        state.finish_relist(&client, &kind_key).await;
+                        state.finish_relist(client, &kind_key).await;
                     }
                     Err(e) => {
                         tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller")
@@ -496,5 +535,18 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(GenerationExit::StreamsEnded)
+}
+
+pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
+    let mut crd_stream = crate::watch::watch_custom_resource_definitions(&client);
+    let mut crds = HashMap::new();
+
+    loop {
+        let discovery = crate::watch::discover_api(&client, "garbage-collector-controller").await;
+        match run_generation(&client, discovery, &mut crd_stream, &mut crds).await? {
+            GenerationExit::CrdChanged => {}
+            GenerationExit::StreamsEnded => return Ok(()),
+        }
+    }
 }

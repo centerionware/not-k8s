@@ -17,6 +17,7 @@
 
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
@@ -31,6 +32,7 @@ use kube::{Api, Client, Resource, ResourceExt};
 use kube::api::{DynamicObject, TypeMeta};
 use kube::core::{GroupVersionKind, PartialObjectMeta};
 use kube::discovery::ApiResource;
+use kube::discovery::Discovery;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -361,6 +363,17 @@ pub fn watch_node_leases(_client: &Client) -> BoxStream<'static, watcher::Result
 
 shared_watch!(watch_namespaces, SHARED_NAMESPACES, Namespace);
 
+/// Every controller that caches API discovery subscribes to this one
+/// informer. A CRD changes the set of API resources served by the apiserver;
+/// keeping that signal shared avoids one independent CRD watch per consumer
+/// while still letting namespace cleanup and garbage collection refresh their
+/// own discovery cache when a CRD is installed or removed.
+shared_watch!(
+    watch_custom_resource_definitions,
+    SHARED_CUSTOM_RESOURCE_DEFINITIONS,
+    CustomResourceDefinition
+);
+
 shared_watch!(watch_service_accounts, SHARED_SERVICE_ACCOUNTS, ServiceAccount);
 
 shared_watch!(watch_config_maps, SHARED_CONFIG_MAPS, ConfigMap);
@@ -456,6 +469,29 @@ shared_watch!(watch_volume_attachments, SHARED_VOLUME_ATTACHMENTS, VolumeAttachm
 shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSigningRequest);
 
 shared_watch!(watch_pod_disruption_budgets, SHARED_PDBS, PodDisruptionBudget);
+
+/// Run API discovery, retrying when the apiserver is temporarily unavailable
+/// or is still publishing a newly-created CRD. Kubernetes updates a CRD and
+/// its served group/version in separate steps, so a refresh triggered by the
+/// CRD informer must tolerate that short propagation window.
+pub async fn discover_api(client: &Client, controller: &'static str) -> Discovery {
+    let mut delay = std::time::Duration::from_secs(1);
+    loop {
+        match Discovery::new((*client).clone()).run().await {
+            Ok(discovery) => return discovery,
+            Err(error) => {
+                tracing::warn!(
+                    controller,
+                    error = ?error,
+                    retry_in = ?delay,
+                    "nodecontroller API discovery failed; retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2).min(WATCH_MAX_BACKOFF);
+            }
+        }
+    }
+}
 
 pub fn watch_resource_claim_templates(
     _client: &Client,
