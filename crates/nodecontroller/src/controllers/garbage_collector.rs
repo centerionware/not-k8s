@@ -378,6 +378,52 @@ enum GenerationExit {
     StreamsEnded,
 }
 
+const CRD_REFRESH_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn update_crd_cache(
+    crds: &mut HashMap<String, CustomResourceDefinition>,
+    event: Event<CustomResourceDefinition>,
+) -> bool {
+    match event {
+        Event::Init => {
+            crds.clear();
+            false
+        }
+        Event::InitApply(crd) => {
+            crds.insert(crd.name_any(), crd);
+            false
+        }
+        Event::Apply(crd) => {
+            let name = crd.name_any();
+            let changed = crds
+                .get(&name)
+                .is_none_or(|previous| previous.spec != crd.spec);
+            crds.insert(name, crd);
+            changed
+        }
+        Event::Delete(crd) => crds.remove(&crd.name_any()).is_some(),
+        Event::InitDone => false,
+    }
+}
+
+async fn coalesce_crd_changes(
+    crd_stream: &mut BoxStream<'static, watcher::Result<Event<CustomResourceDefinition>>>,
+    crds: &mut HashMap<String, CustomResourceDefinition>,
+) -> GenerationExit {
+    loop {
+        match tokio::time::timeout(CRD_REFRESH_QUIET_PERIOD, crd_stream.next()).await {
+            Err(_) => return GenerationExit::CrdChanged,
+            Ok(Some(Ok(event))) => {
+                update_crd_cache(crds, event);
+            }
+            Ok(Some(Err(error))) => {
+                tracing::warn!(error = ?error, "CRD watch error while coalescing garbage-collector refresh")
+            }
+            Ok(None) => return GenerationExit::StreamsEnded,
+        }
+    }
+}
+
 async fn run_generation(
     client: &Client,
     discovery: Discovery,
@@ -468,32 +514,14 @@ async fn run_generation(
         tokio::select! {
             crd_event = crd_stream.next() => {
                 match crd_event {
-                    Some(Ok(Event::Init)) => crds.clear(),
-                    Some(Ok(Event::InitApply(crd))) => {
-                        crds.insert(crd.name_any(), crd);
-                    }
-                    Some(Ok(Event::Apply(crd))) => {
-                        let name = crd.name_any();
-                        let changed = crds
-                            .get(&name)
-                            .is_none_or(|previous| previous.spec != crd.spec);
-                        crds.insert(name, crd);
-                        if changed {
+                    Some(Ok(event)) => {
+                        if update_crd_cache(&mut *crds, event) {
                             tracing::info!(
                                 "garbage-collector-controller refreshing resource watches after a CRD change"
                             );
-                            return Ok(GenerationExit::CrdChanged);
+                            return Ok(coalesce_crd_changes(crd_stream, crds).await);
                         }
                     }
-                    Some(Ok(Event::Delete(crd))) => {
-                        if crds.remove(&crd.name_any()).is_some() {
-                            tracing::info!(
-                                "garbage-collector-controller refreshing resource watches after a CRD removal"
-                            );
-                            return Ok(GenerationExit::CrdChanged);
-                        }
-                    }
-                    Some(Ok(Event::InitDone)) => {}
                     Some(Err(error)) => {
                         tracing::warn!(error = ?error, "CRD watch error in garbage-collector-controller")
                     }

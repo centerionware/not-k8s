@@ -299,15 +299,14 @@ fan-out) — the plan's suggested first PR.
   event loop that tracks live UIDs and a reverse owner→children index
   purely from watch events — recursion (grandchild cleanup) falls out of
   the event loop itself (a cascade-deleted child's own Delete event
-  re-enters the same loop), no explicit recursive graph walk. Real
-  simplifications, named in that file's own module doc: (1) discovery is
+  re-enters the same loop), no explicit recursive graph walk. Discovery is
   refreshed by a shared CustomResourceDefinition informer when the served API
-  surface changes; (2)
-  namespaced resources only — matches upstream's actual scope, since
+  surface changes. Real simplifications, named in that file's own module doc:
+  (1) namespaced resources only — matches upstream's actual scope, since
   `OwnerReference` carries no namespace field and cross-namespace ownership
-  isn't representable at all; (3) background propagation only —
+  isn't representable at all; (2) background propagation only —
   `Foreground`/`Orphan` `propagationPolicy` requests are not honored, every
-  delete cascades immediately regardless of what the caller asked for; (4)
+  delete cascades immediately regardless of what the caller asked for; (3)
   `coordination.k8s.io` (Lease) and `events.k8s.io`/`Event` are excluded
   from discovery — high-churn, GC-irrelevant kinds.
 - `resourcequota-controller` (`crates/nodecontroller/src/controllers/resource_quota.rs`,

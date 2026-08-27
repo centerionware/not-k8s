@@ -69,6 +69,18 @@ fn discover_cleanup_resources(discovery: &Discovery) -> Vec<CleanupResource> {
         .collect()
 }
 
+fn spawn_discovery_refresh(
+    client: &Client,
+    sender: &tokio::sync::mpsc::Sender<Discovery>,
+) {
+    let client = client.clone();
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
+        let _ = sender.send(discovery).await;
+    });
+}
+
 /// Delete everything visible in `namespace` for every discovered namespaced
 /// resource. Returns true when another pass is needed, either because an
 /// object still exists or because one of the list/delete calls failed.
@@ -186,6 +198,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let queue: crate::workqueue::KeyedWorkQueue<String> = Default::default();
     let mut stream = crate::watch::watch_namespaces(&client);
     let mut crd_stream = crate::watch::watch_custom_resource_definitions(&client);
+    let (refresh_sender, mut refresh_receiver) = tokio::sync::mpsc::channel(1);
+    let mut refresh_in_flight = false;
+    let mut refresh_pending = false;
     let mut retry = tokio::time::interval_at(
         tokio::time::Instant::now() + RETRY_PERIOD,
         RETRY_PERIOD,
@@ -219,33 +234,47 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         .is_none_or(|previous| previous.spec != crd.spec);
                     crds.insert(name, crd);
                     if changed {
-                        let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
-                        resources = discover_cleanup_resources(&discovery);
-                        tracing::info!(
-                            kind_count = resources.len(),
-                            "namespace-controller refreshed namespaced resource kinds after a CRD change"
-                        );
-                        for namespace in namespaces.values() {
-                            if is_terminating(namespace) {
-                                queue.enqueue(namespace.name_any());
-                            }
+                        if refresh_in_flight {
+                            refresh_pending = true;
+                        } else {
+                            refresh_in_flight = true;
+                            spawn_discovery_refresh(&client, &refresh_sender);
                         }
                     }
                 }
                 Some(Ok(Event::Delete(crd))) => {
                     if crds.remove(&crd.name_any()).is_some() {
-                        let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
-                        resources = discover_cleanup_resources(&discovery);
-                        tracing::info!(
-                            kind_count = resources.len(),
-                            "namespace-controller refreshed namespaced resource kinds after a CRD removal"
-                        );
+                        if refresh_in_flight {
+                            refresh_pending = true;
+                        } else {
+                            refresh_in_flight = true;
+                            spawn_discovery_refresh(&client, &refresh_sender);
+                        }
                     }
                 }
                 Some(Ok(Event::InitDone)) => {}
                 Some(Err(error)) => tracing::warn!(error = ?error, "CRD watch error in namespace-controller"),
                 None => return Ok(()),
             },
+            discovery = refresh_receiver.recv() => {
+                let Some(discovery) = discovery else { return Ok(()) };
+                refresh_in_flight = false;
+                resources = discover_cleanup_resources(&discovery);
+                tracing::info!(
+                    kind_count = resources.len(),
+                    "namespace-controller refreshed namespaced resource kinds after a CRD change"
+                );
+                for namespace in namespaces.values() {
+                    if is_terminating(namespace) {
+                        queue.enqueue(namespace.name_any());
+                    }
+                }
+                if refresh_pending {
+                    refresh_pending = false;
+                    refresh_in_flight = true;
+                    spawn_discovery_refresh(&client, &refresh_sender);
+                }
+            }
             name = queue.pop() => {
                 if let Some(namespace) = namespaces.get(&name) {
                     reconcile_namespace(&client, namespace, &resources).await;

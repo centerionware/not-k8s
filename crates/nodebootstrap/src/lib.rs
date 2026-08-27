@@ -207,9 +207,8 @@ pub fn run_embedded_from_argv(argv: &[String]) -> Option<Result<()>> {
 fn run_cli(args: &[String], embedded: bool) -> Result<()> {
     install_tls_provider()?;
     let persisted = load_persisted_flags()?;
-    let mut effective_args = persisted.clone();
-    effective_args.extend(args.iter().cloned());
-    let command = parse_args(&effective_args)?;
+    let effective = effective_args(&persisted, args);
+    let command = parse_args(&effective)?;
     if command.help {
         print_help();
         return Ok(());
@@ -293,13 +292,29 @@ fn installation_flag_key(arg: &str) -> Option<&str> {
     Some(arg.split('=').next().unwrap_or(arg))
 }
 
+fn is_role_flag(arg: &str) -> bool {
+    matches!(arg, "--worker" | "--control-plane" | "--remove-control-plane")
+}
+
 fn merge_installation_flags(previous: &[String], current: &[String]) -> Vec<String> {
-    let mut merged: Vec<String> = previous
-        .iter()
-        .filter(|arg| is_persisted_installation_flag(arg))
-        .cloned()
-        .collect();
-    for arg in current.iter().filter(|arg| is_persisted_installation_flag(arg)) {
+    let mut merged = Vec::new();
+    for arg in previous.iter().filter(|arg| is_persisted_installation_flag(arg)) {
+        if is_role_flag(arg) {
+            merged.retain(|old| !is_role_flag(old));
+        }
+        merged.push(arg.clone());
+    }
+    for arg in current {
+        if is_role_flag(arg) {
+            merged.retain(|old| !is_role_flag(old));
+            if arg != "--remove-control-plane" {
+                merged.push(arg.clone());
+            }
+            continue;
+        }
+        if !is_persisted_installation_flag(arg) {
+            continue;
+        }
         let Some(key) = installation_flag_key(arg) else { continue };
         // A source selector without an explicit tag means "latest" or
         // "compile"; do not leave a previous --tag behind to override it.
@@ -311,6 +326,17 @@ fn merge_installation_flags(previous: &[String], current: &[String]) -> Vec<Stri
         merged.push(arg.clone());
     }
     merged
+}
+
+fn effective_args(previous: &[String], current: &[String]) -> Vec<String> {
+    let mut effective = merge_installation_flags(previous, current);
+    effective.extend(
+        current
+            .iter()
+            .filter(|arg| !is_persisted_installation_flag(arg))
+            .cloned(),
+    );
+    effective
 }
 
 fn persist_installation_flags(flags: &[String]) -> Result<()> {
@@ -703,7 +729,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_persisted_installation_flag, merge_installation_flags, parse_args, reexec_env_key};
+    use super::{effective_args, is_persisted_installation_flag, merge_installation_flags, parse_args, reexec_env_key};
 
     #[test]
     fn cri_is_selected_by_default_without_a_positive_flag() {
@@ -743,6 +769,20 @@ mod tests {
             merge_installation_flags(&previous, &current),
             vec!["--disable-dns", "--cluster-domain=new.example"]
         );
+    }
+
+    #[test]
+    fn current_role_replaces_saved_role_before_parse_args() {
+        let effective = effective_args(&["--worker".to_string()], &["--control-plane".to_string()]);
+        assert_eq!(effective, vec!["--control-plane"]);
+        assert!(parse_args(&effective).is_ok());
+    }
+
+    #[test]
+    fn removing_a_role_removes_it_before_parse_args() {
+        let effective = effective_args(&["--control-plane".to_string()], &["--remove-control-plane".to_string()]);
+        assert_eq!(effective, vec!["--remove-control-plane"]);
+        assert!(parse_args(&effective).is_ok());
     }
 
     #[test]

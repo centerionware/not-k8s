@@ -98,8 +98,8 @@ pub(super) async fn bootstrap_persists_installation_flags(_context: &E2eContext)
         ));
     }
     anyhow::ensure!(
-        flags.lines().any(|flag| flag.starts_with("--layout=")),
-        "persisted bootstrap flags did not retain the installation layout: {flags}"
+        flags.lines().any(|flag| flag.starts_with("--cluster-domain=")),
+        "persisted bootstrap flags did not retain the explicitly supplied cluster domain: {flags}"
     );
     anyhow::ensure!(
         !flags.lines().any(|flag| flag == "--e2e" || flag.starts_with("--only=") || flag.starts_with("--shard=")),

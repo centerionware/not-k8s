@@ -94,6 +94,18 @@ fn ready_condition(value: &Value) -> bool {
         })
 }
 
+fn crd_is_established(
+    crd: &k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition,
+) -> bool {
+    crd.status.as_ref().is_some_and(|status| {
+        status.conditions.as_ref().is_some_and(|conditions| {
+            conditions.iter().any(|condition| {
+                condition.type_ == "Established" && condition.status == "True"
+            })
+        })
+    })
+}
+
 async fn certificate_secret_is_complete(secrets: &Api<Secret>, name: &str) -> Result<bool> {
     let Some(secret) = secrets.get_opt(name).await? else {
         return Ok(false);
@@ -178,7 +190,7 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
                         Ok(crd_api
                             .get_opt("clusterissuers.cert-manager.io")
                             .await?
-                            .is_some_and(|crd| crd.status.is_some()))
+                            .is_some_and(|crd| crd_is_established(&crd)))
                     }
                 },
             )
@@ -194,8 +206,25 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
             "metadata": {"name": issuer_name},
             "spec": {"selfSigned": {}}
         }))?;
-        issuers
-            .create(&PostParams::default(), &issuer)
+        context
+            .wait_until(
+                "ClusterIssuer creation after its CRD became established",
+                Duration::from_secs(30),
+                || {
+                    let issuers = issuers.clone();
+                    let issuer = issuer.clone();
+                    async move {
+                        match issuers.create(&PostParams::default(), &issuer).await {
+                            Ok(_) => Ok(true),
+                            Err(kube::Error::Api(error)) if error.code == 409 => Ok(true),
+                            Err(error) => {
+                                tracing::debug!(error = ?error, "ClusterIssuer create is not ready; retrying");
+                                Ok(false)
+                            }
+                        }
+                    }
+                },
+            )
             .await
             .context("creating a ClusterIssuer immediately after its CRD became established")?;
 
