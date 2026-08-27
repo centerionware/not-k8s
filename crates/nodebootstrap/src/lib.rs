@@ -23,6 +23,7 @@ pub mod service_reconciler;
 pub mod services;
 pub mod targets;
 pub mod toolchain;
+pub mod uninstall;
 
 use anyhow::{bail, Context, Result};
 
@@ -60,6 +61,10 @@ use anyhow::{bail, Context, Result};
 /// refresh.
 pub fn run_all() -> Result<()> {
     let cfg = config::Config::from_env()?;
+    if cfg.uninstall {
+        uninstall::run(&cfg)?;
+        return Ok(());
+    }
     if cfg.remove_control_plane {
         cluster::remove_existing(&cfg)?;
         services::remove_control_plane(&cfg);
@@ -231,7 +236,10 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
     }
     anyhow::ensure!(command.only.is_none(), "--only is only valid with --e2e");
     anyhow::ensure!(command.shard.is_none(), "--shard is only valid with --e2e");
-    apply_root_reexec(args, embedded)?;
+    // Re-exec the complete effective installation command. This includes
+    // saved flags, which otherwise exist only in this process after parsing
+    // and would be lost when sudo starts the root process.
+    apply_root_reexec(&effective, embedded)?;
     persist_installation_flags(&merge_installation_flags(&persisted, args))?;
     dispatch(command.subcommand.as_deref())
 }
@@ -269,6 +277,7 @@ fn is_persisted_installation_flag(arg: &str) -> bool {
         && arg != "--e2e-list"
         && arg != "--e2e-needs-drivers"
         && arg != "--remove-control-plane"
+        && arg != "--uninstall"
         && arg != "--update"
         && !arg.starts_with("--only=")
         && !arg.starts_with("--shard=")
@@ -446,9 +455,25 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NODEBOOTSTRAP_DISABLE_DNS", "1");
             continue;
         }
+        if arg == "--uninstall" {
+            std::env::set_var("NODEBOOTSTRAP_UNINSTALL", "1");
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--cluster-domain=") {
             anyhow::ensure!(!value.is_empty(), "--cluster-domain requires a DNS domain");
             std::env::set_var("NODEBOOTSTRAP_CLUSTER_DOMAIN", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--cidr=") {
+            anyhow::ensure!(!value.is_empty(), "--cidr requires an IPv4 service network CIDR");
+            crate::config::validate_service_cidr(value)?;
+            std::env::set_var("NODEBOOTSTRAP_SERVICE_CIDR", value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--cidr6=") {
+            anyhow::ensure!(!value.is_empty(), "--cidr6 requires an IPv6 service network CIDR");
+            crate::config::validate_service_cidr6(value)?;
+            std::env::set_var("NODEBOOTSTRAP_SERVICE_CIDR6", value);
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kubeconfig=") {
@@ -701,6 +726,9 @@ fn print_help() {
     println!("  --cni=none             use an externally-managed CNI for this run");
     println!("  --disable-dns          do not install or configure CoreDNS");
     println!("  --cluster-domain=NAME  use NAME instead of cluster.local");
+    println!("  --cidr=IP/PREFIX       service network (default 10.43.0.0/16)");
+    println!("  --cidr6=IP/PREFIX      optional IPv6 service network");
+    println!("  --uninstall            stop and remove nodebootstrap-managed installation");
     println!("  --worker               install nodelet+nodeproxy against --kubeconfig only");
     println!("  --kubeconfig=PATH      existing control-plane kubeconfig for --worker");
     println!("  --bootstrap-kubeconfig=PATH  TLS bootstrap kubeconfig for --worker");
@@ -749,6 +777,8 @@ mod tests {
         assert!(parse_args(&[
             "--disable-dns".to_string(),
             "--cluster-domain=cluster.example".to_string(),
+            "--cidr=10.99.0.0/16".to_string(),
+            "--cidr6=fd00:99::/112".to_string(),
         ])
         .is_ok());
     }
@@ -756,19 +786,28 @@ mod tests {
     #[test]
     fn persisted_flags_exclude_one_shot_controls_and_removal() {
         assert!(is_persisted_installation_flag("--cluster-domain=cluster.example"));
+        assert!(is_persisted_installation_flag("--cidr6=fd00:99::/112"));
         assert!(!is_persisted_installation_flag("--e2e"));
         assert!(!is_persisted_installation_flag("--only=dns"));
         assert!(!is_persisted_installation_flag("--remove-control-plane"));
+        assert!(!is_persisted_installation_flag("--uninstall"));
         assert!(!is_persisted_installation_flag("--update"));
     }
 
     #[test]
     fn current_installation_flags_override_saved_choices() {
-        let previous = vec!["--disable-dns".to_string(), "--cluster-domain=old.example".to_string()];
-        let current = vec!["--cluster-domain=new.example".to_string()];
+        let previous = vec![
+            "--disable-dns".to_string(),
+            "--cluster-domain=old.example".to_string(),
+            "--cidr6=fd00:old::/112".to_string(),
+        ];
+        let current = vec![
+            "--cluster-domain=new.example".to_string(),
+            "--cidr6=fd00:new::/112".to_string(),
+        ];
         assert_eq!(
             merge_installation_flags(&previous, &current),
-            vec!["--disable-dns", "--cluster-domain=new.example"]
+            vec!["--disable-dns", "--cluster-domain=new.example", "--cidr6=fd00:new::/112"]
         );
     }
 

@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 
 const WITHOUT_FLANNEL_MARKER: &str = "without-flannel";
 const ADVERTISE_ADDRESS_MARKER: &str = "advertise-address";
+pub(crate) const DEFAULT_SERVICE_CIDR: &str = "10.43.0.0/16";
 
 /// Where to fetch a component from, mirroring `bootstrap-release.sh`'s
 /// existing choice between compiling and downloading a published artifact.
@@ -101,6 +102,8 @@ pub struct Config {
     pub skip_manifests: bool,
     /// Do not install or configure the in-cluster CoreDNS service.
     pub disable_dns: bool,
+    /// Remove nodebootstrap-managed services, files, and tracked packages.
+    pub uninstall: bool,
     /// Mirrors `bootstrap-source.sh`'s `--proxy=none` -- skip installing
     /// `nodeproxy` entirely (bring-your-own Service/ClusterIP routing, or
     /// isolating a nodelet/apiserver/datastore bug from nftables churn).
@@ -253,11 +256,71 @@ impl Config {
     /// `.10` is the conventional k8s/k3s "tenth address in the service
     /// CIDR" slot for cluster DNS.
     pub fn cluster_dns_ip(&self) -> String {
-        std::env::var("NODEBOOTSTRAP_CLUSTER_DNS_IP").unwrap_or_else(|_| "10.43.0.10".to_string())
+        std::env::var("NODEBOOTSTRAP_CLUSTER_DNS_IP")
+            .unwrap_or_else(|_| service_cidr_address(&self.service_cidr(), 10).to_string())
+    }
+
+    /// The IPv6 CoreDNS ServiceIP, when an IPv6 service CIDR was explicitly
+    /// configured with `--cidr6`. IPv4 remains the primary ClusterIP so an
+    /// IPv4-only installation is unchanged.
+    pub fn cluster_dns_ip6(&self) -> Option<String> {
+        self.service_cidr6()
+            .map(|cidr| service_cidr_address6(&cidr, 10).to_string())
+    }
+
+    pub fn cluster_dns_ips(&self) -> Vec<String> {
+        let mut ips = vec![self.cluster_dns_ip()];
+        if let Some(ip) = self.cluster_dns_ip6() {
+            ips.push(ip);
+        }
+        ips
     }
 
     pub fn cluster_domain(&self) -> String {
         std::env::var("NODEBOOTSTRAP_CLUSTER_DOMAIN").unwrap_or_else(|_| "cluster.local".to_string())
+    }
+
+    /// The service CIDR passed to kube-apiserver. `--cidr` changes this from
+    /// the historical `10.43.0.0/16` default.
+    pub fn service_cidr(&self) -> String {
+        std::env::var("NODEBOOTSTRAP_SERVICE_CIDR").unwrap_or_else(|_| DEFAULT_SERVICE_CIDR.to_string())
+    }
+
+    /// Optional IPv6 service network. It is intentionally opt-in: the
+    /// historical default is IPv4-only, while setting `--cidr6` asks the
+    /// apiserver for a dual-stack service range alongside `--cidr`.
+    pub fn service_cidr6(&self) -> Option<String> {
+        std::env::var("NODEBOOTSTRAP_SERVICE_CIDR6")
+            .ok()
+            .filter(|value| !value.is_empty())
+    }
+
+    /// The first service address in the configured service CIDR. This is the
+    /// apiserver ServiceIP and is included in its serving certificate.
+    pub fn service_ip(&self) -> Result<std::net::IpAddr> {
+        Ok(service_cidr_address(&self.service_cidr(), 1).into())
+    }
+
+    pub fn service_ip6(&self) -> Result<Option<std::net::IpAddr>> {
+        Ok(self
+            .service_cidr6()
+            .map(|cidr| service_cidr_address6(&cidr, 1).into()))
+    }
+
+    pub fn service_ips(&self) -> Result<Vec<std::net::IpAddr>> {
+        let mut ips = vec![self.service_ip()?];
+        if let Some(ip) = self.service_ip6()? {
+            ips.push(ip);
+        }
+        Ok(ips)
+    }
+
+    pub fn cni_marker(&self) -> std::path::PathBuf {
+        self.state_dir().join("cni-installed")
+    }
+
+    pub fn containerd_marker(&self) -> std::path::PathBuf {
+        self.state_dir().join("containerd-installed")
     }
 
     /// `ipv4` | `ipv6` | `dual` -- passed straight through to `flanneld`
@@ -348,6 +411,15 @@ impl Config {
             .filter(|path| !path.is_empty())
             .map(std::path::PathBuf::from);
         let explicit_cni = std::env::var("NODEBOOTSTRAP_CNI");
+        let service_cidr = std::env::var("NODEBOOTSTRAP_SERVICE_CIDR")
+            .unwrap_or_else(|_| DEFAULT_SERVICE_CIDR.to_string());
+        validate_service_cidr(&service_cidr)?;
+        if let Some(service_cidr6) = std::env::var("NODEBOOTSTRAP_SERVICE_CIDR6")
+            .ok()
+            .filter(|value| !value.is_empty())
+        {
+            validate_service_cidr6(&service_cidr6)?;
+        }
         let state_dir = std::env::var("NODEBOOTSTRAP_STATE_DIR")
             .unwrap_or_else(|_| "/var/lib/nodebootstrap".to_string());
         let advertise_address = std::env::var("NODEBOOTSTRAP_ADVERTISE_ADDRESS")
@@ -427,10 +499,87 @@ impl Config {
             skip_service_reconciler: flag("NODEBOOTSTRAP_SKIP_SERVICE_RECONCILER"),
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
             disable_dns: flag("NODEBOOTSTRAP_DISABLE_DNS"),
+            uninstall: flag("NODEBOOTSTRAP_UNINSTALL"),
             skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none") || control_plane,
             skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET") || control_plane,
             advertise_address,
         })
+    }
+}
+
+pub(crate) fn validate_service_cidr(value: &str) -> Result<()> {
+    let (address, prefix) = value
+        .split_once('/')
+        .context("service CIDR must be an IPv4 network such as 10.43.0.0/16")?;
+    let address = address
+        .parse::<std::net::Ipv4Addr>()
+        .with_context(|| format!("service CIDR has an invalid IPv4 address: {value}"))?;
+    let prefix = prefix
+        .parse::<u8>()
+        .with_context(|| format!("service CIDR has an invalid prefix length: {value}"))?;
+    anyhow::ensure!(prefix <= 28, "service CIDR must have at least 11 usable addresses for the apiserver and CoreDNS: {value}");
+    let address = u32::from(address);
+    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    anyhow::ensure!(address & mask == address, "service CIDR must use a network address: {value}");
+    Ok(())
+}
+
+pub(crate) fn validate_service_cidr6(value: &str) -> Result<()> {
+    let (address, prefix) = value
+        .split_once('/')
+        .context("IPv6 service CIDR must be a network such as fd00:43::/112")?;
+    let address = address
+        .parse::<std::net::Ipv6Addr>()
+        .with_context(|| format!("IPv6 service CIDR has an invalid address: {value}"))?;
+    let prefix = prefix
+        .parse::<u8>()
+        .with_context(|| format!("IPv6 service CIDR has an invalid prefix length: {value}"))?;
+    anyhow::ensure!(prefix <= 124, "IPv6 service CIDR must have at least 11 addresses for the apiserver and CoreDNS: {value}");
+    let address = u128::from(address);
+    let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix) };
+    anyhow::ensure!(address & mask == address, "IPv6 service CIDR must use a network address: {value}");
+    Ok(())
+}
+
+fn service_cidr_address(value: &str, offset: u32) -> std::net::Ipv4Addr {
+    let (address, prefix) = value.split_once('/').expect("validated service CIDR");
+    let address: std::net::Ipv4Addr = address.parse().expect("validated service CIDR address");
+    let prefix: u8 = prefix.parse().expect("validated service CIDR prefix");
+    let base = u32::from(address);
+    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    std::net::Ipv4Addr::from(base | (offset & !mask))
+}
+
+fn service_cidr_address6(value: &str, offset: u32) -> std::net::Ipv6Addr {
+    let (address, prefix) = value.split_once('/').expect("validated IPv6 service CIDR");
+    let address: std::net::Ipv6Addr = address.parse().expect("validated IPv6 service CIDR address");
+    let prefix: u8 = prefix.parse().expect("validated IPv6 service CIDR prefix");
+    let base = u128::from(address);
+    let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix) };
+    std::net::Ipv6Addr::from(base | (u128::from(offset) & !mask))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{service_cidr_address, service_cidr_address6, validate_service_cidr, validate_service_cidr6};
+
+    #[test]
+    fn validates_service_cidrs_and_derives_reserved_addresses() {
+        validate_service_cidr("10.99.0.0/16").expect("valid service CIDR");
+        assert_eq!(service_cidr_address("10.99.0.0/16", 1).to_string(), "10.99.0.1");
+        assert_eq!(service_cidr_address("10.99.0.0/16", 10).to_string(), "10.99.0.10");
+        validate_service_cidr6("fd00:99::/112").expect("valid IPv6 service CIDR");
+        assert_eq!(service_cidr_address6("fd00:99::/112", 1).to_string(), "fd00:99::1");
+        assert_eq!(service_cidr_address6("fd00:99::/112", 10).to_string(), "fd00:99::a");
+    }
+
+    #[test]
+    fn rejects_cidrs_that_cannot_hold_the_reserved_addresses() {
+        assert!(validate_service_cidr("10.99.0.1/16").is_err());
+        assert!(validate_service_cidr("10.99.0.0/29").is_err());
+        assert!(validate_service_cidr("fd00::/64").is_err());
+        assert!(validate_service_cidr6("fd00:99::1/112").is_err());
+        assert!(validate_service_cidr6("fd00:99::/125").is_err());
     }
 }
 

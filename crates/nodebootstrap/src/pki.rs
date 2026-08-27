@@ -89,7 +89,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     ];
     let present = required.iter().filter(|name| dir.join(name).exists()).count();
     if present == required.len() {
-        ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain())?;
+        ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain(), &cfg.service_ips()?)?;
         tracing::info!(dir = %dir.display(), "reusing existing cluster PKI");
         return Ok(());
     }
@@ -101,6 +101,8 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     );
     let mut spec = ClusterPkiSpec::default();
     spec.cluster_domain = cfg.cluster_domain();
+    spec.service_ip = cfg.service_ip()?;
+    spec.extra_sans.extend(cfg.service_ips()?.into_iter().skip(1).map(|ip| ip.to_string()));
     if let Some(address) = &cfg.advertise_address {
         spec.extra_sans.push(address.clone());
     }
@@ -110,7 +112,11 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-fn ensure_existing_pki_matches_domain(dir: &std::path::Path, cluster_domain: &str) -> Result<()> {
+fn ensure_existing_pki_matches_domain(
+    dir: &std::path::Path,
+    cluster_domain: &str,
+    service_ips: &[std::net::IpAddr],
+) -> Result<()> {
     let serving_cert = std::fs::read(dir.join("apiserver.crt"))
         .with_context(|| format!("reading existing apiserver certificate from {}", dir.display()))?;
     let pem = pem::parse(serving_cert).context("parsing existing apiserver certificate PEM")?;
@@ -121,13 +127,23 @@ fn ensure_existing_pki_matches_domain(dir: &std::path::Path, cluster_domain: &st
         .subject_alternative_name()
         .context("reading existing apiserver certificate SANs")?
         .is_some_and(|san| {
-            san.value.general_names.iter().any(|name| {
+            let domain_matches = san.value.general_names.iter().any(|name| {
                 matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == expected.as_str())
-            })
+            });
+            let service_ip_matches = service_ips.iter().all(|service_ip| {
+                let expected_ip = match service_ip {
+                    std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
+                    std::net::IpAddr::V6(ip) => ip.octets().to_vec(),
+                };
+                san.value.general_names.iter().any(|name| {
+                    matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == expected_ip.as_slice())
+                })
+            });
+            domain_matches && service_ip_matches
         });
     anyhow::ensure!(
         matches,
-        "existing cluster PKI at {} was generated for a different cluster domain; refusing to reuse it",
+        "existing cluster PKI at {} was generated for a different cluster domain or service CIDR; refusing to reuse it",
         dir.display()
     );
     Ok(())
@@ -427,11 +443,15 @@ mod tests {
         let pki = generate(&ClusterPkiSpec::default()).expect("generate cluster PKI");
         pki.write_to_dir(&dir).expect("write cluster PKI");
 
-        ensure_existing_pki_matches_domain(&dir, "cluster.local")
+        ensure_existing_pki_matches_domain(&dir, "cluster.local", &["10.43.0.1".parse().unwrap()])
             .expect("the original cluster domain should remain valid");
-        let error = ensure_existing_pki_matches_domain(&dir, "cluster.example")
+        let error = ensure_existing_pki_matches_domain(&dir, "cluster.example", &["10.43.0.1".parse().unwrap()])
             .expect_err("a changed cluster domain must not reuse the existing serving certificate");
         assert!(error.to_string().contains("different cluster domain"));
+
+        let error = ensure_existing_pki_matches_domain(&dir, "cluster.local", &["10.99.0.1".parse().unwrap()])
+            .expect_err("a changed service CIDR must not reuse the existing serving certificate");
+        assert!(error.to_string().contains("service CIDR"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

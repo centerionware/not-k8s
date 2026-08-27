@@ -27,6 +27,16 @@ on:
         required: false
         default: cluster.local
         type: string
+      cidr:
+        description: 'Optional IPv4 service CIDR passed to the bootstrapper'
+        required: false
+        default: ''
+        type: string
+      cidr6:
+        description: 'Optional IPv6 service CIDR passed to the bootstrapper'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -173,6 +183,8 @@ jobs:
           PROXY: ${{ inputs.proxy }}
           NETWORK: ${{ inputs.network }}
           CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
+          CIDR: ${{ inputs.cidr }}
+          CIDR6: ${{ inputs.cidr6 }}
         run: |
           set -euo pipefail
           args=(bootstrap \
@@ -182,6 +194,8 @@ jobs:
             --scheduler=nodescheduler \
             --controller-manager=nodecontroller)
           args+=("--cluster-domain=$CLUSTER_DOMAIN")
+          [[ -z "$CIDR" ]] || args+=("--cidr=$CIDR")
+          [[ -z "$CIDR6" ]] || args+=("--cidr6=$CIDR6")
           if [[ "$NETWORK" == external ]]; then
             args+=(--without-flannel --proxy=none)
           fi
@@ -235,6 +249,8 @@ jobs:
         env:
           KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
           ONLY: ${{ inputs.only }}
+          NODEBOOTSTRAP_SERVICE_CIDR: ${{ inputs.cidr || '10.43.0.0/16' }}
+          NODEBOOTSTRAP_SERVICE_CIDR6: ${{ inputs.cidr6 }}
         run: |
           set +e
           if [[ "${{ matrix.needs_drivers }}" == true ]]; then

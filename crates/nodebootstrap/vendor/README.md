@@ -32,8 +32,9 @@ in by `manifests.rs::render_coredns()`):
 |---|---|
 | `%{CLUSTER_DOMAIN}%` | `Config::cluster_domain()` (default `cluster.local`, configurable with `--cluster-domain=NAME`) |
 | `%{CLUSTER_DNS}%` | the cluster DNS ClusterIP (`Config`'s DNS IP, default `10.43.0.10`) |
-| `%{CLUSTER_DNS_LIST}%` | `[<CLUSTER_DNS>]` (YAML list syntax) |
-| `%{CLUSTER_DNS_IPFAMILYPOLICY}%` | `SingleStack` (dual-stack not yet supported by this crate) |
+| `%{CLUSTER_DNS_LIST}%` | the configured IPv4/IPv6 DNS ClusterIPs (YAML list syntax) |
+| `%{CLUSTER_DNS_IPFAMILYPOLICY}%` | `SingleStack` or `PreferDualStack`, based on `--cidr6` |
+| `%{CLUSTER_DNS_IPFAMILIES}%` | the configured address families, `[IPv4]` or `[IPv4, IPv6]` |
 | `%{SYSTEM_DEFAULT_REGISTRY}%rancher/mirrored-coredns-coredns:1.14.6` | the whole image reference is substituted wholesale with `registry.k8s.io/coredns/coredns:v1.14.6` -- once k3s (and its Rancher-mirrored images) is gone, there is no reason to keep pulling through Rancher's mirror instead of the canonical upstream image. |
 
 Refresh by re-running the `gh api` command above against a newer `k3s-io/k3s`

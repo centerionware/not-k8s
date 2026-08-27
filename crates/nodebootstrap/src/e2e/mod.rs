@@ -185,6 +185,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_configured_service_cidrs_are_used",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_coredns_is_a_healthy_deployment",
         group: TestGroup::General,
     },
@@ -1492,6 +1496,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_bootstrap_persists_installation_flags" => bootstrap::bootstrap_persists_installation_flags(context).await,
         "test_nodelet_service_has_cluster_dns_configured" => {
             bootstrap::nodelet_service_has_cluster_dns_configured(context).await
+        }
+        "test_configured_service_cidrs_are_used" => {
+            bootstrap::configured_service_cidrs_are_used(context).await
         }
         "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_graceful_node_shutdown_manual_note" => {

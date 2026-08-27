@@ -5,7 +5,7 @@ use http::Request;
 use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::ServiceAccount;
+use k8s_openapi::api::core::v1::{Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
@@ -128,9 +128,37 @@ pub(super) async fn nodelet_service_has_cluster_dns_configured(_context: &E2eCon
             environment.contains(&format!("NODELET_CLUSTER_DNS={}", cfg.cluster_dns_ip())),
             "nodelet.service has no configured cluster DNS server: {environment}"
         );
+        if let Some(cluster_dns_ip6) = cfg.cluster_dns_ip6() {
+            anyhow::ensure!(
+                environment.contains(&format!(",{cluster_dns_ip6}")),
+                "nodelet.service has no configured IPv6 cluster DNS server: {environment}"
+            );
+        }
         anyhow::ensure!(
             environment.contains(&format!("NODELET_CLUSTER_DOMAIN={}", cfg.cluster_domain())),
             "nodelet.service has no configured cluster domain: {environment}"
+        );
+    }
+    Ok(())
+}
+
+pub(super) async fn configured_service_cidrs_are_used(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if cfg.disable_dns {
+        return Err(skip_test("CoreDNS was intentionally disabled by --disable-dns"));
+    }
+    let services: Api<Service> = Api::namespaced(context.client.clone(), "kube-system");
+    let service = services.get("kube-dns").await.context("getting the CoreDNS Service")?;
+    let service = serde_json::to_value(service)?;
+    let actual = service
+        .pointer("/spec/clusterIPs")
+        .and_then(serde_json::Value::as_array)
+        .context("CoreDNS Service has no spec.clusterIPs")?;
+    let actual: Vec<&str> = actual.iter().filter_map(serde_json::Value::as_str).collect();
+    for expected in cfg.cluster_dns_ips() {
+        anyhow::ensure!(
+            actual.contains(&expected.as_str()),
+            "CoreDNS Service is missing configured DNS ClusterIP {expected}: {actual:?}"
         );
     }
     Ok(())

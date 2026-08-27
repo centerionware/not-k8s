@@ -31,7 +31,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         tracing::info!("skipping manifest apply (NODEBOOTSTRAP_SKIP_MANIFESTS)");
         return Ok(());
     }
-    let manifest = render_coredns(&cfg.cluster_dns_ip(), &cfg.cluster_domain());
+    let manifest = render_coredns_with_ips(&cfg.cluster_dns_ips(), &cfg.cluster_domain());
     apply(&cfg.kubeconfig_dir().join("admin.kubeconfig"), &manifest)
 }
 
@@ -40,11 +40,24 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 /// the image reference is substituted wholesale rather than just its
 /// registry prefix.
 pub fn render_coredns(cluster_dns_ip: &str, cluster_domain: &str) -> String {
+    render_coredns_with_ips(&[cluster_dns_ip.to_string()], cluster_domain)
+}
+
+pub fn render_coredns_with_ips(cluster_dns_ips: &[String], cluster_domain: &str) -> String {
+    let cluster_dns_ip = cluster_dns_ips.first().map(String::as_str).unwrap_or_default();
+    let dns_list = format!("[{}]", cluster_dns_ips.join(", "));
+    let ip_families = cluster_dns_ips
+        .iter()
+        .map(|ip| if ip.parse::<std::net::Ipv6Addr>().is_ok() { "IPv6" } else { "IPv4" })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ip_family_policy = if cluster_dns_ips.len() > 1 { "PreferDualStack" } else { "SingleStack" };
     COREDNS_TEMPLATE
         .replace("%{CLUSTER_DOMAIN}%", cluster_domain)
         .replace("%{CLUSTER_DNS}%", cluster_dns_ip)
-        .replace("%{CLUSTER_DNS_LIST}%", &format!("[{cluster_dns_ip}]"))
-        .replace("%{CLUSTER_DNS_IPFAMILYPOLICY}%", "SingleStack")
+        .replace("%{CLUSTER_DNS_LIST}%", &dns_list)
+        .replace("%{CLUSTER_DNS_IPFAMILYPOLICY}%", ip_family_policy)
+        .replace("%{CLUSTER_DNS_IPFAMILIES}%", &format!("[{ip_families}]"))
         .replace(
             "%{SYSTEM_DEFAULT_REGISTRY}%rancher/mirrored-coredns-coredns:1.14.6",
             "registry.k8s.io/coredns/coredns:v1.14.6",
@@ -75,6 +88,8 @@ mod tests {
         assert!(rendered.contains("registry.k8s.io/coredns/coredns:v1.14.6"));
         assert!(rendered.contains("clusterIP: 10.43.0.10"));
         assert!(rendered.contains("clusterIPs: [10.43.0.10]"));
+        assert!(rendered.contains("ipFamilyPolicy: SingleStack"));
+        assert!(rendered.contains("ipFamilies: [IPv4]"));
         assert!(rendered.contains("kubernetes cluster.local in-addr.arpa ip6.arpa"));
     }
 
@@ -82,5 +97,17 @@ mod tests {
     fn render_coredns_uses_the_selected_cluster_domain() {
         let rendered = render_coredns("10.43.0.10", "cluster.example");
         assert!(rendered.contains("kubernetes cluster.example in-addr.arpa ip6.arpa"));
+    }
+
+    #[test]
+    fn render_coredns_supports_dual_stack_service_ips() {
+        let rendered = render_coredns_with_ips(
+            &["10.99.0.10".to_string(), "fd00:99::a".to_string()],
+            "cluster.local",
+        );
+        assert!(rendered.contains("clusterIP: 10.99.0.10"));
+        assert!(rendered.contains("clusterIPs: [10.99.0.10, fd00:99::a]"));
+        assert!(rendered.contains("ipFamilyPolicy: PreferDualStack"));
+        assert!(rendered.contains("ipFamilies: [IPv4, IPv6]"));
     }
 }
