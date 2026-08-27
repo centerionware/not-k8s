@@ -48,7 +48,7 @@ pub async fn apply_yaml(client: &Client, manifest: &str, field_manager: &str) ->
         let resource = ApiResource::from_gvk(&gvk);
         let name = object.name_any();
         let api: Api<DynamicObject> = match object.namespace() {
-            Some(namespace) => Api::namespaced_with(client.clone(), namespace, &resource),
+            Some(namespace) => Api::namespaced_with(client.clone(), &namespace, &resource),
             None => Api::all_with(client.clone(), &resource),
         };
         api.patch(
