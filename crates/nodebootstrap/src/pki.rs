@@ -89,6 +89,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     ];
     let present = required.iter().filter(|name| dir.join(name).exists()).count();
     if present == required.len() {
+        ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain())?;
         tracing::info!(dir = %dir.display(), "reusing existing cluster PKI");
         return Ok(());
     }
@@ -99,12 +100,36 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         required.len()
     );
     let mut spec = ClusterPkiSpec::default();
+    spec.cluster_domain = cfg.cluster_domain();
     if let Some(address) = &cfg.advertise_address {
         spec.extra_sans.push(address.clone());
     }
     let cluster = generate(&spec)?;
     cluster.write_to_dir(&dir)?;
     tracing::info!(dir = %dir.display(), "wrote cluster PKI");
+    Ok(())
+}
+
+fn ensure_existing_pki_matches_domain(dir: &std::path::Path, cluster_domain: &str) -> Result<()> {
+    let serving_cert = std::fs::read(dir.join("apiserver.crt"))
+        .with_context(|| format!("reading existing apiserver certificate from {}", dir.display()))?;
+    let pem = pem::parse(serving_cert).context("parsing existing apiserver certificate PEM")?;
+    let (_, certificate) = x509_parser::parse_x509_certificate(pem.contents())
+        .context("parsing existing apiserver certificate DER")?;
+    let expected = format!("kubernetes.default.svc.{cluster_domain}");
+    let matches = certificate
+        .subject_alternative_name()
+        .context("reading existing apiserver certificate SANs")?
+        .is_some_and(|san| {
+            san.value.general_names.iter().any(|name| {
+                matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == expected.as_str())
+            })
+        });
+    anyhow::ensure!(
+        matches,
+        "existing cluster PKI at {} was generated for a different cluster domain; refusing to reuse it",
+        dir.display()
+    );
     Ok(())
 }
 
@@ -140,6 +165,7 @@ pub struct ClusterPki {
 /// of its own -- that's `targets/upstream.rs`'s job to pass in).
 pub struct ClusterPkiSpec {
     pub service_ip: std::net::IpAddr,
+    pub cluster_domain: String,
     pub extra_sans: Vec<String>,
 }
 
@@ -151,6 +177,7 @@ impl Default for ClusterPkiSpec {
             // first usable address) -- the apiserver's own ClusterIP inside
             // the cluster it serves.
             service_ip: "10.43.0.1".parse().expect("static IP literal"),
+            cluster_domain: "cluster.local".to_string(),
             extra_sans: Vec::new(),
         }
     }
@@ -163,7 +190,7 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         "kubernetes".to_string(),
         "kubernetes.default".to_string(),
         "kubernetes.default.svc".to_string(),
-        "kubernetes.default.svc.cluster.local".to_string(),
+        format!("kubernetes.default.svc.{}", spec.cluster_domain),
         "localhost".to_string(),
     ];
     let mut serving_ips = vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip];
@@ -372,5 +399,40 @@ mod tests {
             .and_then(|a| a.as_str().ok())
             .expect("cert has an O");
         assert_eq!(org, "system:masters");
+    }
+
+    #[test]
+    fn apiserver_serving_certificate_includes_the_selected_cluster_domain() {
+        let mut spec = ClusterPkiSpec::default();
+        spec.cluster_domain = "cluster.example".to_string();
+        let pki = generate(&spec).expect("generate cluster PKI");
+        let der = pem::parse(&pki.apiserver_serving.cert_pem).expect("parse apiserver cert PEM");
+        let (_, cert) = x509_parser::parse_x509_certificate(der.contents()).expect("parse apiserver cert DER");
+        let san_ext = cert
+            .subject_alternative_name()
+            .expect("read apiserver SAN extension")
+            .expect("apiserver cert should have a SAN extension");
+        assert!(san_ext.value.general_names.iter().any(|name| {
+            matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == "kubernetes.default.svc.cluster.example")
+        }));
+    }
+
+    #[test]
+    fn existing_pki_is_rejected_when_cluster_domain_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "nodebootstrap-pki-domain-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pki = generate(&ClusterPkiSpec::default()).expect("generate cluster PKI");
+        pki.write_to_dir(&dir).expect("write cluster PKI");
+
+        ensure_existing_pki_matches_domain(&dir, "cluster.local")
+            .expect("the original cluster domain should remain valid");
+        let error = ensure_existing_pki_matches_domain(&dir, "cluster.example")
+            .expect_err("a changed cluster domain must not reuse the existing serving certificate");
+        assert!(error.to_string().contains("different cluster domain"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

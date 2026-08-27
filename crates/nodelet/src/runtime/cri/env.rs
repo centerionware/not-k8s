@@ -404,19 +404,38 @@ pub(crate) fn env_name_component(name: &str) -> String {
 /// default namespace. The latter makes the cluster's `kubernetes` Service
 /// discoverable from system namespaces such as `kube-system`.
 pub(crate) fn service_env_vars(services: &[Service], pod_namespace: &str) -> BTreeMap<String, Vec<u8>> {
+    service_env_vars_for_pod(services, pod_namespace, true)
+}
+
+/// Build service-link variables for one Pod. `enableServiceLinks: false`
+/// suppresses the Pod namespace's legacy service variables, while retaining
+/// the default namespace's `kubernetes` Service so in-cluster clients still
+/// receive `KUBERNETES_SERVICE_HOST` and `KUBERNETES_SERVICE_PORT`.
+pub(crate) fn service_env_vars_for_pod(
+    services: &[Service],
+    pod_namespace: &str,
+    enable_service_links: bool,
+) -> BTreeMap<String, Vec<u8>> {
     let mut values = BTreeMap::new();
 
-    // Add default-namespace Services first so a same-named Service in the
-    // Pod's own namespace takes precedence below.
+    // Add the default namespace's Services first so a same-named Service in
+    // the Pod's own namespace takes precedence below. With service links
+    // disabled, retain the existing cross-namespace default-Service links,
+    // but keep only the Kubernetes Service for Pods in the default namespace.
     for service in services.iter().filter(|s| {
-        s.metadata.namespace.as_deref().unwrap_or("default") == "default" && pod_namespace != "default"
+        s.metadata.namespace.as_deref().unwrap_or("default") == "default"
+            && ((enable_service_links && pod_namespace != "default")
+                || (!enable_service_links
+                    && (pod_namespace != "default" || s.metadata.name.as_deref() == Some("kubernetes"))))
     }) {
         add_service_env_vars(&mut values, service);
     }
-    for service in services.iter().filter(|s| {
-        s.metadata.namespace.as_deref().unwrap_or("default") == pod_namespace
-    }) {
-        add_service_env_vars(&mut values, service);
+    if enable_service_links {
+        for service in services.iter().filter(|s| {
+            s.metadata.namespace.as_deref().unwrap_or("default") == pod_namespace
+        }) {
+            add_service_env_vars(&mut values, service);
+        }
     }
 
     values
@@ -531,12 +550,12 @@ pub(crate) fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
 
 
 impl CriRuntime {
-    pub(crate) async fn resolve_service_env(&self, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    pub(crate) async fn resolve_service_env(&self, namespace: &str, enable_service_links: bool) -> Result<BTreeMap<String, Vec<u8>>> {
         {
             let cache = self.service_cache.read().unwrap();
             if cache.ready {
                 let services: Vec<Service> = cache.services.values().cloned().collect();
-                return Ok(service_env_vars(&services, namespace));
+                return Ok(service_env_vars_for_pod(&services, namespace, enable_service_links));
             }
         }
 
@@ -545,7 +564,7 @@ impl CriRuntime {
         // arrives, every later reconcile uses the cache above.
         let api: Api<Service> = Api::all(self.client.clone());
         let services = api.list(&ListParams::default()).await.context("listing Services")?;
-        Ok(service_env_vars(&services.items, namespace))
+        Ok(service_env_vars_for_pod(&services.items, namespace, enable_service_links))
     }
 
     pub(crate) async fn resolve_env_from(&self, source: &EnvFromSource, namespace: &str) -> Result<BTreeMap<String, Vec<u8>>> {

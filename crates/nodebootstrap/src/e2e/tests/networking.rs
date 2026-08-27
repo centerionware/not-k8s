@@ -1,6 +1,6 @@
 use super::context::E2eContext;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use serde_json::json;
 use std::time::Duration;
@@ -231,6 +231,103 @@ pub(super) async fn custom_dns_config_reaches_resolv_conf(
                 Ok(termination_message(&context, name)
                     .await?
                     .is_some_and(|message| message.trim() == "configured"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn enable_service_links_false_preserves_kubernetes_env(
+    context: &E2eContext,
+) -> Result<()> {
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    let service: Service = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "service-links"},
+        "spec": {
+            "ports": [{"name": "http", "port": 8080, "protocol": "TCP"}]
+        }
+    }))?;
+    services.create(&PostParams::default(), &service).await?;
+
+    let name = "service-links-disabled";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "enableServiceLinks": false,
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "env": [{"name": "EXPLICIT_MARKER", "value": "preserved"}],
+                "command": ["sh", "-c", "test -n \"$KUBERNETES_SERVICE_HOST\" && test -n \"$KUBERNETES_SERVICE_PORT\" && test \"$EXPLICIT_MARKER\" = preserved && test -z \"${SERVICE_LINKS_SERVICE_HOST:-}\" && echo service-links-ok > /dev/termination-log"]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("enableServiceLinks=false environment behavior", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.container_statuses)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|status| status.name == "app")
+                    .and_then(|status| status.state)
+                    .and_then(|state| state.terminated)
+                    .and_then(|terminated| terminated.message)
+                    .is_some_and(|message| message.trim() == "service-links-ok"))
+            }
+        })
+        .await
+}
+
+pub(super) async fn cluster_dns_resolves_service_names(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if cfg.disable_dns {
+        return Err(super::skip_test("cluster DNS was intentionally disabled by --disable-dns"));
+    }
+    let domain = cfg.cluster_domain();
+    let name = "cluster-dns-resolution";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", format!(
+                    "for attempt in $(seq 1 60); do nslookup kubernetes.default.svc.{domain} > /dev/termination-log 2>&1 && exit 0; sleep 2; done; exit 1"
+                )]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+    context
+        .wait_until("cluster DNS to resolve the Kubernetes Service", Duration::from_secs(120), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get(name)
+                    .await?
+                    .status
+                    .and_then(|status| status.container_statuses)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|status| status.name == "app")
+                    .and_then(|status| status.state)
+                    .and_then(|state| state.terminated)
+                    .is_some_and(|terminated| terminated.exit_code == 0))
             }
         })
         .await

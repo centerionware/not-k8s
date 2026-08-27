@@ -25,6 +25,8 @@ mod build_layout;
 mod context;
 #[path = "tests/cgroup.rs"]
 mod cgroup;
+#[path = "tests/cert_manager.rs"]
+mod cert_manager;
 #[path = "tests/component_rbac.rs"]
 mod component_rbac;
 #[path = "tests/config_file.rs"]
@@ -172,6 +174,18 @@ struct TestCase {
 const TESTS: &[TestCase] = &[
     TestCase {
         name: "external_cni_mode_disables_flannel",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_bootstrap_persists_installation_flags",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodelet_service_has_cluster_dns_configured",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_coredns_is_a_healthy_deployment",
         group: TestGroup::General,
     },
     TestCase {
@@ -352,6 +366,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_namespace_controller_deletes_contents_before_finalizing",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cert_manager_crds_are_usable_without_nodecontroller_restart",
         group: TestGroup::General,
     },
     TestCase {
@@ -620,6 +638,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_custom_dns_config_reaches_resolv_conf",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_enable_service_links_false_preserves_kubernetes_env",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cluster_dns_resolves_service_names",
         group: TestGroup::General,
     },
     TestCase {
@@ -1416,6 +1442,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
             | "test_the_node_still_reconciles_pods_after_an_apiserver_restart"
             | "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers"
+            | "test_cert_manager_crds_are_usable_without_nodecontroller_restart"
     )
 }
 
@@ -1462,6 +1489,11 @@ fn test_names() -> Vec<&'static str> {
 async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
     match name {
         "external_cni_mode_disables_flannel" => bootstrap::external_cni_mode_disables_flannel(context).await,
+        "test_bootstrap_persists_installation_flags" => bootstrap::bootstrap_persists_installation_flags(context).await,
+        "test_nodelet_service_has_cluster_dns_configured" => {
+            bootstrap::nodelet_service_has_cluster_dns_configured(context).await
+        }
+        "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_graceful_node_shutdown_manual_note" => {
             bootstrap::graceful_node_shutdown_manual_note(context).await
         }
@@ -1584,6 +1616,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_namespace_controller_deletes_contents_before_finalizing" => {
             namespace::namespace_controller_deletes_contents_before_finalizing(context).await
+        }
+        "test_cert_manager_crds_are_usable_without_nodecontroller_restart" => {
+            cert_manager::cert_manager_crds_are_usable_without_nodecontroller_restart(context).await
         }
         "test_resourcequota_used_pods_tracks_actual_pod_count" => {
             resource_quota::resourcequota_used_pods_tracks_actual_pod_count(context).await
@@ -1786,6 +1821,10 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_custom_dns_config_reaches_resolv_conf" => {
             networking::custom_dns_config_reaches_resolv_conf(context).await
         }
+        "test_enable_service_links_false_preserves_kubernetes_env" => {
+            networking::enable_service_links_false_preserves_kubernetes_env(context).await
+        }
+        "test_cluster_dns_resolves_service_names" => networking::cluster_dns_resolves_service_names(context).await,
         "test_spec_hostname_overrides_the_container_hostname" => {
             networking::spec_hostname_overrides_the_container_hostname(context).await
         }

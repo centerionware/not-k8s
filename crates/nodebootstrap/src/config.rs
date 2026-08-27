@@ -99,6 +99,8 @@ pub struct Config {
     pub skip_rbac: bool,
     pub skip_service_reconciler: bool,
     pub skip_manifests: bool,
+    /// Do not install or configure the in-cluster CoreDNS service.
+    pub disable_dns: bool,
     /// Mirrors `bootstrap-source.sh`'s `--proxy=none` -- skip installing
     /// `nodeproxy` entirely (bring-your-own Service/ClusterIP routing, or
     /// isolating a nodelet/apiserver/datastore bug from nftables churn).
@@ -128,6 +130,14 @@ impl Config {
         std::env::var("NODEBOOTSTRAP_KUBECONFIG_DIR")
             .unwrap_or_else(|_| "/etc/nodebootstrap".to_string())
             .into()
+    }
+
+    /// Installation flags are kept beside the generated kubeconfigs so an
+    /// update can reproduce the original topology and feature choices.
+    pub fn flags_path(&self) -> std::path::PathBuf {
+        std::env::var("NODEBOOTSTRAP_FLAGS_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| self.kubeconfig_dir().join("flags"))
     }
 
     pub fn state_dir(&self) -> std::path::PathBuf {
@@ -416,6 +426,7 @@ impl Config {
             skip_rbac: flag("NODEBOOTSTRAP_SKIP_RBAC"),
             skip_service_reconciler: flag("NODEBOOTSTRAP_SKIP_SERVICE_RECONCILER"),
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
+            disable_dns: flag("NODEBOOTSTRAP_DISABLE_DNS"),
             skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none") || control_plane,
             skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET") || control_plane,
             advertise_address,

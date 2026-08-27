@@ -6,12 +6,11 @@
 //! job is to delete every namespaced object first, then finalize the
 //! Namespace through the dedicated `/finalize` subresource.
 //!
-//! The resource list is discovered at startup rather than hard-coded. That
-//! includes namespaced CRD instances, which is the important correctness
-//! property here: deleting a Namespace must not leave an object of a newly
-//! installed kind behind. Discovery is intentionally not refreshed while
-//! the process is running, matching the garbage collector's documented
-//! discovery scope.
+//! The resource list is discovered rather than hard-coded. That includes
+//! namespaced CRD instances, which is the important correctness property
+//! here: deleting a Namespace must not leave an object of a newly installed
+//! kind behind. A shared CRD informer refreshes the list when an installed
+//! CRD changes, so installing a CRD never requires restarting nodecontroller.
 //!
 //! Cleanup is retried only for Namespaces that are already terminating. This
 //! is an honest, low-frequency timer: objects with their own finalizers can
@@ -20,6 +19,7 @@
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{Api, DeleteParams, DynamicObject, ListParams, PostParams};
 use kube::discovery::{verbs, ApiCapabilities, ApiResource, Discovery, Scope};
 use kube::runtime::watcher::Event;
@@ -67,6 +67,18 @@ fn discover_cleanup_resources(discovery: &Discovery) -> Vec<CleanupResource> {
         .filter(|(resource, capabilities)| is_cleanup_resource(resource, capabilities))
         .map(|(api_resource, _)| CleanupResource { api_resource })
         .collect()
+}
+
+fn spawn_discovery_refresh(
+    client: &Client,
+    sender: &tokio::sync::mpsc::Sender<Discovery>,
+) {
+    let client = client.clone();
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
+        let _ = sender.send(discovery).await;
+    });
 }
 
 /// Delete everything visible in `namespace` for every discovered namespaced
@@ -174,19 +186,21 @@ async fn reconcile_namespace(
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("running API discovery for namespace-controller")?;
-    let resources = discover_cleanup_resources(&discovery);
+    let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
+    let mut resources = discover_cleanup_resources(&discovery);
     tracing::info!(
         kind_count = resources.len(),
         "namespace-controller discovered namespaced resource kinds"
     );
 
     let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+    let mut crds: HashMap<String, CustomResourceDefinition> = HashMap::new();
     let queue: crate::workqueue::KeyedWorkQueue<String> = Default::default();
     let mut stream = crate::watch::watch_namespaces(&client);
+    let mut crd_stream = crate::watch::watch_custom_resource_definitions(&client);
+    let (refresh_sender, mut refresh_receiver) = tokio::sync::mpsc::channel(1);
+    let mut refresh_in_flight = false;
+    let mut refresh_pending = false;
     let mut retry = tokio::time::interval_at(
         tokio::time::Instant::now() + RETRY_PERIOD,
         RETRY_PERIOD,
@@ -208,6 +222,59 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 Some(Err(error)) => tracing::warn!(error = ?error, "namespace watch error in namespace-controller"),
                 None => return Ok(()),
             },
+            ev = crd_stream.next() => match ev {
+                Some(Ok(Event::Init)) => crds.clear(),
+                Some(Ok(Event::InitApply(crd))) => {
+                    crds.insert(crd.name_any(), crd);
+                }
+                Some(Ok(Event::Apply(crd))) => {
+                    let name = crd.name_any();
+                    let changed = crds
+                        .get(&name)
+                        .is_none_or(|previous| previous.spec != crd.spec);
+                    crds.insert(name, crd);
+                    if changed {
+                        if refresh_in_flight {
+                            refresh_pending = true;
+                        } else {
+                            refresh_in_flight = true;
+                            spawn_discovery_refresh(&client, &refresh_sender);
+                        }
+                    }
+                }
+                Some(Ok(Event::Delete(crd))) => {
+                    if crds.remove(&crd.name_any()).is_some() {
+                        if refresh_in_flight {
+                            refresh_pending = true;
+                        } else {
+                            refresh_in_flight = true;
+                            spawn_discovery_refresh(&client, &refresh_sender);
+                        }
+                    }
+                }
+                Some(Ok(Event::InitDone)) => {}
+                Some(Err(error)) => tracing::warn!(error = ?error, "CRD watch error in namespace-controller"),
+                None => return Ok(()),
+            },
+            discovery = refresh_receiver.recv() => {
+                let Some(discovery) = discovery else { return Ok(()) };
+                refresh_in_flight = false;
+                resources = discover_cleanup_resources(&discovery);
+                tracing::info!(
+                    kind_count = resources.len(),
+                    "namespace-controller refreshed namespaced resource kinds after a CRD change"
+                );
+                for namespace in namespaces.values() {
+                    if is_terminating(namespace) {
+                        queue.enqueue(namespace.name_any());
+                    }
+                }
+                if refresh_pending {
+                    refresh_pending = false;
+                    refresh_in_flight = true;
+                    spawn_discovery_refresh(&client, &refresh_sender);
+                }
+            }
             name = queue.pop() => {
                 if let Some(namespace) = namespaces.get(&name) {
                     reconcile_namespace(&client, namespace, &resources).await;

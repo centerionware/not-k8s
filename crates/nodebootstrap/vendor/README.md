@@ -30,7 +30,7 @@ in by `manifests.rs::render_coredns()`):
 
 | Placeholder | Filled with |
 |---|---|
-| `%{CLUSTER_DOMAIN}%` | `cluster.local` (this project's fixed default — nothing in `nodebootstrap` makes this configurable yet) |
+| `%{CLUSTER_DOMAIN}%` | `Config::cluster_domain()` (default `cluster.local`, configurable with `--cluster-domain=NAME`) |
 | `%{CLUSTER_DNS}%` | the cluster DNS ClusterIP (`Config`'s DNS IP, default `10.43.0.10`) |
 | `%{CLUSTER_DNS_LIST}%` | `[<CLUSTER_DNS>]` (YAML list syntax) |
 | `%{CLUSTER_DNS_IPFAMILYPOLICY}%` | `SingleStack` (dual-stack not yet supported by this crate) |

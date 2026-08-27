@@ -242,7 +242,7 @@ fn target_spec(cfg: &Config) -> TargetSpec {
         etcd_servers: nodestore_etcd_servers(),
         advertise_address: cfg.advertise_address.clone().unwrap_or_else(detect_advertise_address),
         service_cidr: "10.43.0.0/16".to_string(),
-        service_account_issuer: "https://kubernetes.default.svc.cluster.local".to_string(),
+        service_account_issuer: format!("https://kubernetes.default.svc.{}", cfg.cluster_domain()),
     }
 }
 

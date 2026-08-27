@@ -259,8 +259,9 @@ fan-out) — the plan's suggested first PR.
   `spec.finalizers` handoff is the same one upstream uses; discovery includes
   CRD-backed namespaced resources, and a low-frequency retry remains active
   only while a Namespace is `Terminating` so object finalizers can make
-  progress. Discovery is refreshed only on process restart, matching the
-  garbage collector's documented discovery scope.
+  progress. A shared CustomResourceDefinition informer refreshes discovery
+  when CRDs are installed or removed, so newly-installed namespaced CRD
+  objects are included without restarting nodecontroller.
 - `root-ca-cert-publisher-controller`
   (`crates/nodecontroller/src/controllers/root_ca_publisher.rs`,
   **implemented, pulled forward like `serviceaccount-controller` was**):
@@ -298,15 +299,14 @@ fan-out) — the plan's suggested first PR.
   event loop that tracks live UIDs and a reverse owner→children index
   purely from watch events — recursion (grandchild cleanup) falls out of
   the event loop itself (a cascade-deleted child's own Delete event
-  re-enters the same loop), no explicit recursive graph walk. Real
-  simplifications, named in that file's own module doc: (1) discovery runs
-  once at startup, not on a live/invalidatable RESTMapper — a CRD installed
-  after nodecontroller starts is invisible to it until restarted; (2)
-  namespaced resources only — matches upstream's actual scope, since
+  re-enters the same loop), no explicit recursive graph walk. Discovery is
+  refreshed by a shared CustomResourceDefinition informer when the served API
+  surface changes. Real simplifications, named in that file's own module doc:
+  (1) namespaced resources only — matches upstream's actual scope, since
   `OwnerReference` carries no namespace field and cross-namespace ownership
-  isn't representable at all; (3) background propagation only —
+  isn't representable at all; (2) background propagation only —
   `Foreground`/`Orphan` `propagationPolicy` requests are not honored, every
-  delete cascades immediately regardless of what the caller asked for; (4)
+  delete cascades immediately regardless of what the caller asked for; (3)
   `coordination.k8s.io` (Lease) and `events.k8s.io`/`Event` are excluded
   from discovery — high-churn, GC-irrelevant kinds.
 - `resourcequota-controller` (`crates/nodecontroller/src/controllers/resource_quota.rs`,
