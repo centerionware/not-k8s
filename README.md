@@ -23,7 +23,7 @@ both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/l
 It's going to be something like
 
 ```
-wget https://github.com/centerionware/not-k8s/releases/download/v0.7.0/notk8s-0.7.0-linux-aarch64-release
+wget https://github.com/centerionware/not-k8s/releases/download/v0.7.2/notk8s-0.7.2-linux-aarch64-release
 chmod +x notk8s-0.7.2-linux-aarch64-release
 ln -s ./notk8s-0.7.2-linux-aarch64-release bootstrap
 ./bootstrap
