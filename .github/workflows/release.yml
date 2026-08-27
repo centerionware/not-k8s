@@ -531,6 +531,11 @@ jobs:
           retention-days: 1
 
   publish-release:
+    # `build-release` can intentionally run after the e2e dependency was
+    # skipped by the manual skip_e2e gate. An explicit always() is required
+    # here so that GitHub does not propagate that skipped ancestor into this
+    # publication job; the matrix result remains the release gate.
+    if: ${{ always() && needs.build-release.result == 'success' }}
     needs: build-release
     runs-on: ubuntu-latest
     timeout-minutes: 15
