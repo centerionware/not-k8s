@@ -185,8 +185,17 @@ jobs:
           if [[ "$NETWORK" == external ]]; then
             args+=(--without-flannel --proxy=none)
           fi
+          # The bootstrapper must use its kube client directly. Put a
+          # failing kubectl shim first on PATH so any install-time regression
+          # fails this real bootstrap instead of silently reintroducing the
+          # executable dependency. E2e cases that use kubectl run later in
+          # separate steps/processes with the normal runner PATH.
+          no_kubectl="$RUNNER_TEMP/no-kubectl"
+          mkdir -p "$no_kubectl"
+          printf '#!/bin/sh\necho "unexpected install-time kubectl invocation" >&2\nexit 127\n' > "$no_kubectl/kubectl"
+          chmod +x "$no_kubectl/kubectl"
           chmod +x dist-bin/nodebootstrap dist-bin/notk8s
-          sudo -E env \
+          PATH="$no_kubectl:$PATH" sudo -E env PATH="$no_kubectl:$PATH" \
             NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
             NOTK8S_BUILD_LAYOUT=combined \
             ./dist-bin/nodebootstrap "${args[@]:1}"

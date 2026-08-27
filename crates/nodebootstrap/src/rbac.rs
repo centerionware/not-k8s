@@ -123,6 +123,9 @@
 //! opens; they do not broaden either component's write permissions.
 
 use anyhow::{Context, Result};
+use k8s_openapi::api::authorization::v1::{ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec};
+use k8s_openapi::api::rbac::v1::ClusterRole;
+use kube::api::{Api, PostParams};
 
 use crate::config::Config;
 
@@ -516,89 +519,78 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     verify_supplemental_grants(&kubeconfig)
 }
 
-/// `kubectl apply -f -`, same subprocess-call posture `manifests.rs` uses
-/// and explains.
+/// Apply supplemental RBAC through the kube client.
 fn apply_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
-    use std::io::Write;
-    let mut child = std::process::Command::new("kubectl")
-        .args(["--kubeconfig", &kubeconfig.to_string_lossy(), "apply", "-f", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("spawning kubectl apply")?;
-    child
-        .stdin
-        .take()
-        .expect("stdin was piped")
-        .write_all(supplemental_grants().as_bytes())
-        .context("writing the supplemental RBAC grants to kubectl's stdin")?;
-    let status = child.wait().context("waiting for kubectl apply")?;
-    anyhow::ensure!(status.success(), "kubectl apply -f - (supplemental RBAC grants) exited {status}");
-    Ok(())
+    let manifest = supplemental_grants();
+    crate::kube_api::block_on(kubeconfig, move |client| async move {
+        let applied = crate::kube_api::apply_yaml(&client, &manifest, "nodebootstrap").await?;
+        tracing::info!(applied, "applied supplemental RBAC through the Kubernetes API");
+        Ok(())
+    })
 }
 
 fn verify_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
-    for (identity, group, resource) in base_read_checks() {
-        let resource = if group.is_empty() {
-            resource.to_string()
-        } else {
-            format!("{resource}.{group}")
-        };
-        let mut authorized = false;
-        for _ in 0..50 {
-            let output = std::process::Command::new("kubectl")
-                .args([
-                    "--kubeconfig",
-                    &kubeconfig.to_string_lossy(),
-                    "auth",
-                    "can-i",
-                    "watch",
-                    &resource,
-                    "--as",
-                    identity,
-                ])
-                .output()
-                .with_context(|| format!("checking RBAC for {identity} on {resource}"))?;
-            if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "yes" {
-                authorized = true;
-                break;
+    crate::kube_api::block_on(kubeconfig, |client| async move {
+        let reviews: Api<SubjectAccessReview> = Api::all(client);
+        for (identity, group, resource) in base_read_checks() {
+            let display_resource = if group.is_empty() {
+                resource.to_string()
+            } else {
+                format!("{resource}.{group}")
+            };
+            let mut authorized = false;
+            for _ in 0..50 {
+                let review = reviews
+                    .create(
+                        &PostParams::default(),
+                        &SubjectAccessReview {
+                            spec: SubjectAccessReviewSpec {
+                                user: Some(identity.to_string()),
+                                resource_attributes: Some(ResourceAttributes {
+                                    group: Some(group.to_string()),
+                                    resource: Some(resource.to_string()),
+                                    verb: Some("watch".to_string()),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .with_context(|| format!("checking RBAC for {identity} on {display_resource}"))?;
+                if review.status.as_ref().is_some_and(|status| status.allowed) {
+                    authorized = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        anyhow::ensure!(
-            authorized,
-            "RBAC authorizer never accepted watch permission for {identity} on {resource}"
-        );
-    }
-    tracing::info!("supplemental control-plane watch permissions accepted by the apiserver");
-    Ok(())
-}
-
-/// Shells out to `kubectl get clusterrole <name>` for each sentinel role
-/// using the admin kubeconfig `kubeconfig.rs` wrote. A `kube` crate client
-/// would be more idiomatic than shelling out, but every other install-time
-/// check in this crate (`toolchain.rs`, `containerd.rs`) is already a
-/// subprocess call, and pulling in the `kube`/`k8s-openapi`/tokio stack
-/// into a one-shot CLI whose other checks are all synchronous subprocess
-/// calls is not worth the async runtime it would drag in for one caller.
-fn verify_bootstrap_rbac(kubeconfig: &std::path::Path) -> Result<()> {
-    for role in SENTINEL_CLUSTER_ROLES {
-        let status = std::process::Command::new("kubectl")
-            .args(["--kubeconfig", &kubeconfig.to_string_lossy(), "get", "clusterrole", role])
-            .output()
-            .with_context(|| format!("running kubectl to check for ClusterRole {role}"))?;
-        if !status.status.success() {
-            anyhow::bail!(
-                "bootstrap ClusterRole '{role}' is missing after the apiserver started -- either \
-                 --authorization-mode didn't include RBAC, or the apiserver never reached ready. \
-                 kubectl stderr: {}",
-                String::from_utf8_lossy(&status.stderr)
+            anyhow::ensure!(
+                authorized,
+                "RBAC authorizer never accepted watch permission for {identity} on {display_resource}"
             );
         }
-    }
-    tracing::info!(
-        checked = SENTINEL_CLUSTER_ROLES.len(),
-        "bootstrap RBAC policy present (kube-apiserver's own PostStartHook, not vendored here -- \
-         see this module's doc comment)"
-    );
-    Ok(())
+        tracing::info!("supplemental control-plane watch permissions accepted by the apiserver");
+        Ok(())
+    })
+}
+
+/// Check each sentinel role using the admin kubeconfig `kubeconfig.rs` wrote.
+fn verify_bootstrap_rbac(kubeconfig: &std::path::Path) -> Result<()> {
+    crate::kube_api::block_on(kubeconfig, |client| async move {
+        let roles: Api<ClusterRole> = Api::all(client);
+        for role in SENTINEL_CLUSTER_ROLES {
+            anyhow::ensure!(
+                roles.get_opt(role).await?.is_some(),
+                "bootstrap ClusterRole '{role}' is missing after the apiserver started -- either \
+                 --authorization-mode didn't include RBAC, or the apiserver never reached ready"
+            );
+        }
+        tracing::info!(
+            checked = SENTINEL_CLUSTER_ROLES.len(),
+            "bootstrap RBAC policy present (kube-apiserver's own PostStartHook, not vendored here -- \
+             see this module's doc comment)"
+        );
+        Ok(())
+    })
 }

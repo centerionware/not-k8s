@@ -26,6 +26,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 kube = { workspace = true }
 k8s-openapi = { workspace = true }
+serde = { workspace = true }
 http = "1"
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["net"] }
@@ -64,7 +65,7 @@ serde_yaml = "0.9"
 tonic-prost-build = "0.14"
 
 # Not yet used by any module -- added back as each real group lands:
-# serde/thiserror (once needed), chrono (cert validity windows in pki.rs).
+# thiserror (once needed), chrono (cert validity windows in pki.rs).
 # kubeconfig.rs deliberately hand-templates its YAML rather than pulling in
 # serde_yaml -- the kubeconfig schema is small and fixed, and templating
 # avoids a struct that has to track upstream's own clientcmd/api types.

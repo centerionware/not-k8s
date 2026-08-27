@@ -14,7 +14,9 @@
 //! therefore the same shape as `rbac.rs`: a thin verify-it-happened check,
 //! not a reconciler this crate runs itself.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use k8s_openapi::api::core::v1::{Endpoints, Service};
+use kube::api::{Api, DeleteParams};
 
 use crate::config::Config;
 
@@ -33,26 +35,22 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     verify_kubernetes_service(&kubeconfig)
 }
 
-/// `kubectl get service kubernetes -n default` -- same subprocess-call
-/// posture `rbac.rs`/`manifests.rs` already use and explain.
+/// Verify the apiserver's own bootstrap-controller created the Service.
 fn verify_kubernetes_service(kubeconfig: &std::path::Path) -> Result<()> {
-    let output = std::process::Command::new("kubectl")
-        .args(["--kubeconfig", &kubeconfig.to_string_lossy(), "get", "service", "kubernetes", "-n", "default"])
-        .output()
-        .context("running kubectl to check for the kubernetes Service")?;
-    if !output.status.success() {
-        anyhow::bail!(
+    crate::kube_api::block_on(kubeconfig, |client| async move {
+        let services: Api<Service> = Api::namespaced(client, "default");
+        anyhow::ensure!(
+            services.get_opt("kubernetes").await?.is_some(),
             "the 'kubernetes' Service in the default namespace is missing -- the apiserver's own \
              bootstrap-controller PostStartHook should have created it on startup; check the \
-             apiserver's own logs. kubectl stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
+             apiserver's own logs"
         );
-    }
-    tracing::info!(
-        "kubernetes Service present (kube-apiserver's own bootstrap-controller, not reconciled \
-         by nodebootstrap -- see this module's doc comment)"
-    );
-    Ok(())
+        tracing::info!(
+            "kubernetes Service present (kube-apiserver's own bootstrap-controller, not reconciled \
+             by nodebootstrap -- see this module's doc comment)"
+        );
+        Ok(())
+    })
 }
 
 /// The first apiserver starts before CNI exists and may publish its loopback
@@ -62,52 +60,44 @@ fn verify_kubernetes_service(kubeconfig: &std::path::Path) -> Result<()> {
 /// the restarted controller can recreate one valid endpoint instead of
 /// rejecting the object forever because it still contains 127.0.0.1.
 pub fn reset_and_wait_for_reachable_endpoint(kubeconfig: &std::path::Path) -> Result<()> {
-    let output = std::process::Command::new("kubectl")
-        .args([
-            "--kubeconfig",
-            &kubeconfig.to_string_lossy(),
-            "delete",
-            "endpoints",
-            "kubernetes",
-            "-n",
-            "default",
-            "--ignore-not-found=true",
-        ])
-        .output()
-        .context("deleting the stale kubernetes Endpoints object")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "failed to clear the stale 'kubernetes' Endpoints object: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    for _ in 0..30 {
-        let output = std::process::Command::new("kubectl")
-            .args([
-                "--kubeconfig",
-                &kubeconfig.to_string_lossy(),
-                "get",
-                "endpoints",
-                "kubernetes",
-                "-n",
-                "default",
-                "-o",
-                "jsonpath={.subsets[*].addresses[*].ip}",
-            ])
-            .output()
-            .context("checking the recreated kubernetes Endpoints object")?;
-        let addresses = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() && has_only_reachable_addresses(&addresses) {
-            tracing::info!(addresses = %addresses.trim(), "kubernetes Service endpoint is reachable from pods");
-            return Ok(());
+    crate::kube_api::block_on(kubeconfig, |client| async move {
+        let endpoints: Api<Endpoints> = Api::namespaced(client, "default");
+        match endpoints
+            .delete("kubernetes", &DeleteParams::default())
+            .await
+        {
+            Ok(_) => {}
+            Err(kube::Error::Api(error)) if error.code == 404 => {}
+            Err(error) => return Err(error).context("deleting the stale kubernetes Endpoints object"),
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
 
-    anyhow::bail!(
-        "the apiserver did not recreate a reachable 'kubernetes' Endpoints object within 30s; check the kube-apiserver bootstrap-controller logs"
-    )
+        for _ in 0..30 {
+            if let Some(endpoints) = endpoints.get_opt("kubernetes").await? {
+                let addresses = endpoint_addresses(&endpoints);
+                if has_only_reachable_addresses(&addresses) {
+                    tracing::info!(addresses = %addresses.trim(), "kubernetes Service endpoint is reachable from pods");
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+
+        bail!(
+            "the apiserver did not recreate a reachable 'kubernetes' Endpoints object within 30s; check the kube-apiserver bootstrap-controller logs"
+        )
+    })
+}
+
+fn endpoint_addresses(endpoints: &Endpoints) -> String {
+    endpoints
+        .subsets
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .flat_map(|subset| subset.addresses.as_ref().into_iter().flatten())
+        .map(|address| address.ip.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn has_only_reachable_addresses(addresses: &str) -> bool {

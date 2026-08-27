@@ -10,10 +10,9 @@
 //! not dropped.
 //!
 //! `fetch_url` is a real Rust HTTP client (`ureq`, rustls-backed), not a
-//! `curl`/`wget` subprocess -- unlike `rbac.rs`/`manifests.rs` shelling out
-//! to `kubectl` (a deliberate choice explained in those modules: `kubectl`
-//! *is* the client, not a stand-in for one this crate could write itself),
-//! a plain HTTPS GET is exactly what a Rust HTTP client is for.
+//! `curl`/`wget` subprocess. Install-time Kubernetes operations likewise use
+//! the kube client directly; `kubectl` remains an operator-facing/e2e tool,
+//! not a runtime dependency of this bootstrapper.
 
 use anyhow::{Context, Result};
 
