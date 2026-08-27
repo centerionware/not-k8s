@@ -175,10 +175,25 @@ fn resolve_executable(name: &str, cfg: &Config) -> Option<std::path::PathBuf> {
 
 fn service_command(binary: &std::path::Path) -> String {
     let quoted = format!("'{}'", binary.to_string_lossy().replace('\'', "'\\''"));
-    if binary.file_name().is_some_and(|name| name == "notk8s") {
-        format!("{quoted} bootstrap flanneld")
-    } else {
+    // `binary` is `std::env::current_exe()`, which resolves through any
+    // symlink to the real underlying file name -- so a combined binary
+    // launched via a symlink named `bootstrap` (the README's documented
+    // flow: `ln -s ./notk8s-<ver>-<arch>-release bootstrap`) still shows up
+    // here under its release-asset filename, not `bootstrap`. Only a binary
+    // whose *own* name is one of nodebootstrap's self-dispatch names
+    // (`nodebootstrap` for the split layout, `bootstrap` for an unresolved
+    // combined symlink some other caller passes in directly) understands
+    // `flanneld` as its first argument on its own; every other name --
+    // `notk8s`, or an arbitrary renamed/versioned combined binary -- needs
+    // the explicit `bootstrap` subcommand first. Getting this backwards
+    // means systemd relaunches the binary with a bare component name
+    // (`flanneld`) it doesn't recognize, and flanneld never starts.
+    let self_dispatches =
+        binary.file_name().and_then(|name| name.to_str()).is_some_and(|name| matches!(name, "nodebootstrap" | "bootstrap"));
+    if self_dispatches {
         format!("{quoted} flanneld")
+    } else {
+        format!("{quoted} bootstrap flanneld")
     }
 }
 
@@ -593,5 +608,38 @@ mod tests {
         write_flannel_cni_conf(&dir).expect("write conf");
         assert_eq!(std::fs::read_to_string(dir.join("10-flannel.conflist")).unwrap(), "{}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Regression coverage for the real incident this fixes: the README's
+    // documented install flow downloads a versioned combined-binary release
+    // asset (e.g. `notk8s-0.7.2-linux-aarch64-release`) and symlinks it to
+    // `bootstrap`. `std::env::current_exe()` resolves through that symlink,
+    // so the ExecStart command built here saw the release-asset filename,
+    // not `notk8s` or `bootstrap` -- and took the wrong branch, launching
+    // flanneld with a bare `flanneld` argument the combined binary's argv[0]
+    // dispatch doesn't recognize as a component name. flanneld then crash-
+    // looped forever and never wrote /run/flannel/subnet.env.
+    #[test]
+    fn service_command_adds_bootstrap_subcommand_for_a_renamed_combined_binary() {
+        let path = std::path::Path::new("/home/droid/not-k8s/enkates/notk8s-0.7.2-linux-aarch64-release");
+        assert_eq!(service_command(path), "'/home/droid/not-k8s/enkates/notk8s-0.7.2-linux-aarch64-release' bootstrap flanneld");
+    }
+
+    #[test]
+    fn service_command_adds_bootstrap_subcommand_for_the_default_combined_binary_name() {
+        let path = std::path::Path::new("/usr/local/bin/notk8s");
+        assert_eq!(service_command(path), "'/usr/local/bin/notk8s' bootstrap flanneld");
+    }
+
+    #[test]
+    fn service_command_calls_flanneld_directly_for_the_standalone_nodebootstrap_binary() {
+        let path = std::path::Path::new("/usr/local/bin/nodebootstrap");
+        assert_eq!(service_command(path), "'/usr/local/bin/nodebootstrap' flanneld");
+    }
+
+    #[test]
+    fn service_command_calls_flanneld_directly_when_invoked_as_bootstrap() {
+        let path = std::path::Path::new("/usr/local/bin/bootstrap");
+        assert_eq!(service_command(path), "'/usr/local/bin/bootstrap' flanneld");
     }
 }
