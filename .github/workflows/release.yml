@@ -433,19 +433,38 @@ jobs:
               cc_bin=/opt/$tc/bin/$cc_name
               echo "/opt/$tc/bin" >> "$GITHUB_PATH"
             else
-              python3 -m pip install --quiet --user ziglang
-              cat > /tmp/zigcc-musl.py <<PY
-          #!/usr/bin/env python3
-          import os
-          import sys
-          if sys.argv[1:] == ["-dumpmachine"]:
-              print("$zig_target")
-              raise SystemExit(0)
-          args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
-          os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "$zig_target", *args])
-          PY
-              chmod 0755 /tmp/zigcc-musl.py
-              cc_bin=/tmp/zigcc-musl.py
+              echo "musl.cc unavailable; using the pinned native Zig fallback"
+              zig_version=0.16.0
+              zig_dir="/tmp/zig-x86_64-linux-$zig_version"
+              zig_archive="/tmp/zig-x86_64-linux-$zig_version.tar.xz"
+              zig_sha256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+              curl -fsSL --max-time 120 --retry 2 \
+                -o "$zig_archive" \
+                "https://ziglang.org/download/$zig_version/zig-x86_64-linux-$zig_version.tar.xz"
+              echo "$zig_sha256  $zig_archive" | sha256sum --check --status
+              tar -xJf "$zig_archive" -C /tmp
+              zig_bin="$zig_dir/zig"
+              test -x "$zig_bin"
+              cat > /tmp/zigcc-musl.sh <<SH
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "\${1:-}" == "-dumpmachine" && "\$#" == 1 ]]; then
+              echo "$zig_target"
+              exit 0
+          fi
+          args=()
+          for arg in "\$@"; do
+              case "\$arg" in
+                  # Rust adds this GNU ld workaround for ARM targets. Zig's
+                  # lld does not accept it and does not need it.
+                  -Wl,--fix-cortex-*) ;;
+                  *) args+=("\$arg") ;;
+              esac
+          done
+          exec "$zig_bin" cc -target "$zig_target" "\${args[@]}"
+          SH
+              chmod 0755 /tmp/zigcc-musl.sh
+              cc_bin=/tmp/zigcc-musl.sh
               rustflags_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
               echo "$rustflags_var=-C link-self-contained=no" >> "$GITHUB_ENV"
             fi

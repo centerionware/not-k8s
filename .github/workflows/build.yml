@@ -219,8 +219,8 @@ jobs:
             # falls back to it) but it is frequently unreachable or extremely
             # slow from Actions runners -- an uncapped fetch hung this job for
             # 17 minutes before being cancelled. So: try it with a hard cap,
-            # then fall back to zig, which ships a complete musl cross
-            # toolchain for every target and installs from PyPI in seconds.
+            # then fall back to a pinned native Zig binary, which ships a
+            # complete musl cross toolchain for every target.
             TC=armv7l-linux-musleabihf-cross
             if timeout 240 curl -fsSL --max-time 240 --retry 2 \
                  -o /tmp/$TC.tgz "https://musl.cc/$TC.tgz" 2>/dev/null; then
@@ -229,19 +229,39 @@ jobs:
               echo "/opt/$TC/bin" >> "$GITHUB_PATH"
               echo "armv7l C toolchain: musl.cc"
             else
-              echo "musl.cc unreachable or too slow — falling back to zig cc."
-              python3 -m pip install --quiet --user ziglang
-              # Keep the wrapper ephemeral: the repository no longer carries
-              # a shell helper for this one CI-only fallback. cc-rs passes a
-              # Rust target spelling that zig does not understand directly.
-              cat > /tmp/zigcc-armv7.py <<'PY'
-              import os
-              import sys
-              args = [arg for arg in sys.argv[1:] if not arg.startswith("--target=")]
-              os.execvp("python3", ["python3", "-m", "ziglang", "cc", "-target", "arm-linux-musleabihf", *args])
-              PY
-              chmod 0755 /tmp/zigcc-armv7.py
-              CC_BIN=/tmp/zigcc-armv7.py
+              echo "musl.cc unreachable or too slow — falling back to native zig cc."
+              ZIG_VERSION=0.16.0
+              ZIG_DIR="/tmp/zig-x86_64-linux-$ZIG_VERSION"
+              ZIG_ARCHIVE="/tmp/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+              ZIG_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+              curl -fsSL --max-time 120 --retry 2 \
+                -o "$ZIG_ARCHIVE" \
+                "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+              echo "$ZIG_SHA256  $ZIG_ARCHIVE" | sha256sum --check --status
+              tar -xJf "$ZIG_ARCHIVE" -C /tmp
+              ZIG_BIN="$ZIG_DIR/zig"
+              test -x "$ZIG_BIN"
+              # Keep the wrapper ephemeral: the repository does not need a
+              # shell helper for this one CI-only fallback. Rust passes a GNU
+              # linker workaround that Zig's lld does not accept.
+              cat > /tmp/zigcc-armv7.sh <<SH
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "\${1:-}" == "-dumpmachine" && "\$#" == 1 ]]; then
+              echo "arm-linux-musleabihf"
+              exit 0
+          fi
+          args=()
+          for arg in "\$@"; do
+              case "\$arg" in
+                  -Wl,--fix-cortex-*) ;;
+                  *) args+=("\$arg") ;;
+              esac
+          done
+          exec "$ZIG_BIN" cc -target arm-linux-musleabihf "\${args[@]}"
+          SH
+              chmod 0755 /tmp/zigcc-armv7.sh
+              CC_BIN=/tmp/zigcc-armv7.sh
               # zig links its own musl startup files, and rustc's musl targets
               # pass a self-contained crt1.o of their own -- so _start ends up
               # defined twice and ld.lld rejects the link:
