@@ -23,6 +23,10 @@ pub fn run() -> Result<()> {
 }
 
 pub fn run_with(cfg: &Config) -> Result<()> {
+    if cfg.disable_dns {
+        tracing::info!("NODEBOOTSTRAP_DISABLE_DNS=1 -- skipping CoreDNS manifest");
+        return Ok(());
+    }
     if cfg.skip_manifests {
         tracing::info!("skipping manifest apply (NODEBOOTSTRAP_SKIP_MANIFESTS)");
         return Ok(());
@@ -83,5 +87,11 @@ mod tests {
         assert!(rendered.contains("clusterIP: 10.43.0.10"));
         assert!(rendered.contains("clusterIPs: [10.43.0.10]"));
         assert!(rendered.contains("kubernetes cluster.local in-addr.arpa ip6.arpa"));
+    }
+
+    #[test]
+    fn render_coredns_uses_the_selected_cluster_domain() {
+        let rendered = render_coredns("10.43.0.10", "cluster.example");
+        assert!(rendered.contains("kubernetes cluster.example in-addr.arpa ip6.arpa"));
     }
 }

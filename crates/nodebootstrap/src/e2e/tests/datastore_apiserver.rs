@@ -89,6 +89,7 @@ impl ApiServerHarness {
         fs::create_dir_all(&root)?;
         let pki = crate::pki::generate(&crate::pki::ClusterPkiSpec {
             service_ip: "127.0.0.1".parse()?,
+            cluster_domain: "cluster.local".to_string(),
             extra_sans: Vec::new(),
         })
         .context("generating throwaway apiserver PKI")?;

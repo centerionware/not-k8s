@@ -163,7 +163,8 @@ pub fn run_args(args: &[String]) -> Result<()> {
 /// contains every runtime applet, so the default path stages the executable
 /// itself instead of requiring a checkout or downloading a second copy.
 pub fn run_embedded(args: &[String]) -> Result<()> {
-    let explicit_source = args.iter().any(|arg| {
+    let persisted = load_persisted_flags()?;
+    let explicit_source = persisted.iter().chain(args.iter()).any(|arg| {
         matches!(arg.as_str(), "--from-source" | "--force-source-build" | "--release")
             || arg.starts_with("--source=")
             || arg.starts_with("--tag=")
@@ -205,7 +206,10 @@ pub fn run_embedded_from_argv(argv: &[String]) -> Option<Result<()>> {
 
 fn run_cli(args: &[String], embedded: bool) -> Result<()> {
     install_tls_provider()?;
-    let command = parse_args(args)?;
+    let persisted = load_persisted_flags()?;
+    let mut effective_args = persisted.clone();
+    effective_args.extend(args.iter().cloned());
+    let command = parse_args(&effective_args)?;
     if command.help {
         print_help();
         return Ok(());
@@ -228,7 +232,119 @@ fn run_cli(args: &[String], embedded: bool) -> Result<()> {
     anyhow::ensure!(command.only.is_none(), "--only is only valid with --e2e");
     anyhow::ensure!(command.shard.is_none(), "--shard is only valid with --e2e");
     apply_root_reexec(args, embedded)?;
+    persist_installation_flags(&merge_installation_flags(&persisted, args))?;
     dispatch(command.subcommand.as_deref())
+}
+
+fn flags_path() -> std::path::PathBuf {
+    std::env::var("NODEBOOTSTRAP_FLAGS_FILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("NODEBOOTSTRAP_KUBECONFIG_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/etc/nodebootstrap"))
+                .join("flags")
+        })
+}
+
+fn load_persisted_flags() -> Result<Vec<String>> {
+    let path = flags_path();
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error).with_context(|| format!("reading persisted bootstrap flags from {}", path.display())),
+    }
+}
+
+/// Keep command-line installation choices, but never replay one-shot
+/// inspection/test controls or the destructive control-plane removal action.
+fn is_persisted_installation_flag(arg: &str) -> bool {
+    arg.starts_with("--")
+        && arg != "--help"
+        && arg != "--e2e"
+        && arg != "--e2e-list"
+        && arg != "--e2e-needs-drivers"
+        && arg != "--remove-control-plane"
+        && arg != "--update"
+        && !arg.starts_with("--only=")
+        && !arg.starts_with("--shard=")
+}
+
+fn installation_flag_key(arg: &str) -> Option<&str> {
+    if !is_persisted_installation_flag(arg) {
+        return None;
+    }
+    if matches!(arg, "--from-source" | "--force-source-build" | "--release") || arg.starts_with("--source=") {
+        return Some("--source");
+    }
+    if arg.starts_with("--tag=") {
+        return Some("--tag");
+    }
+    if arg == "--without-flannel" || arg.starts_with("--cni=") {
+        return Some("--cni");
+    }
+    if arg == "--without-cri" {
+        return Some("--cri");
+    }
+    Some(arg.split('=').next().unwrap_or(arg))
+}
+
+fn merge_installation_flags(previous: &[String], current: &[String]) -> Vec<String> {
+    let mut merged: Vec<String> = previous
+        .iter()
+        .filter(|arg| is_persisted_installation_flag(arg))
+        .cloned()
+        .collect();
+    for arg in current.iter().filter(|arg| is_persisted_installation_flag(arg)) {
+        let Some(key) = installation_flag_key(arg) else { continue };
+        // A source selector without an explicit tag means "latest" or
+        // "compile"; do not leave a previous --tag behind to override it.
+        if key == "--source" {
+            merged.retain(|old| installation_flag_key(old) != Some("--source") && installation_flag_key(old) != Some("--tag"));
+        } else {
+            merged.retain(|old| installation_flag_key(old) != Some(key));
+        }
+        merged.push(arg.clone());
+    }
+    merged
+}
+
+fn persist_installation_flags(flags: &[String]) -> Result<()> {
+    let path = flags_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating bootstrap flag directory {}", parent.display()))?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("opening persisted bootstrap flags {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The file contains installation arguments, not credentials. Keep it
+        // readable so an unprivileged `--e2e`/diagnostic invocation can reuse
+        // the installed cluster domain and feature choices before any sudo
+        // re-exec is needed.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+    }
+    use std::io::Write;
+    for flag in flags {
+        writeln!(file, "{flag}")?;
+    }
+    file.sync_all()
+        .with_context(|| format!("flushing persisted bootstrap flags {}", path.display()))?;
+    Ok(())
 }
 
 fn install_tls_provider() -> Result<()> {
@@ -297,6 +413,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
         if arg == "--without-flannel" {
             std::env::set_var("NODEBOOTSTRAP_WITHOUT_FLANNEL", "1");
             std::env::set_var("NODEBOOTSTRAP_CNI", "none");
+            continue;
+        }
+        if arg == "--disable-dns" {
+            std::env::set_var("NODEBOOTSTRAP_DISABLE_DNS", "1");
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--cluster-domain=") {
+            anyhow::ensure!(!value.is_empty(), "--cluster-domain requires a DNS domain");
+            std::env::set_var("NODEBOOTSTRAP_CLUSTER_DOMAIN", value);
             continue;
         }
         if let Some(value) = arg.strip_prefix("--kubeconfig=") {
@@ -547,6 +672,8 @@ fn print_help() {
     println!("  --proxy=none           omit nodeproxy service");
     println!("  --without-flannel      skip flannel and remember external CNI for updates");
     println!("  --cni=none             use an externally-managed CNI for this run");
+    println!("  --disable-dns          do not install or configure CoreDNS");
+    println!("  --cluster-domain=NAME  use NAME instead of cluster.local");
     println!("  --worker               install nodelet+nodeproxy against --kubeconfig only");
     println!("  --kubeconfig=PATH      existing control-plane kubeconfig for --worker");
     println!("  --bootstrap-kubeconfig=PATH  TLS bootstrap kubeconfig for --worker");
@@ -576,7 +703,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args, reexec_env_key};
+    use super::{is_persisted_installation_flag, merge_installation_flags, parse_args, reexec_env_key};
 
     #[test]
     fn cri_is_selected_by_default_without_a_positive_flag() {
@@ -588,6 +715,34 @@ mod tests {
     #[test]
     fn with_cri_is_not_a_nodebootstrap_flag() {
         assert!(parse_args(&["--with-cri".to_string()]).is_err());
+    }
+
+    #[test]
+    fn dns_flags_are_accepted() {
+        assert!(parse_args(&[
+            "--disable-dns".to_string(),
+            "--cluster-domain=cluster.example".to_string(),
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn persisted_flags_exclude_one_shot_controls_and_removal() {
+        assert!(is_persisted_installation_flag("--cluster-domain=cluster.example"));
+        assert!(!is_persisted_installation_flag("--e2e"));
+        assert!(!is_persisted_installation_flag("--only=dns"));
+        assert!(!is_persisted_installation_flag("--remove-control-plane"));
+        assert!(!is_persisted_installation_flag("--update"));
+    }
+
+    #[test]
+    fn current_installation_flags_override_saved_choices() {
+        let previous = vec!["--disable-dns".to_string(), "--cluster-domain=old.example".to_string()];
+        let current = vec!["--cluster-domain=new.example".to_string()];
+        assert_eq!(
+            merge_installation_flags(&previous, &current),
+            vec!["--disable-dns", "--cluster-domain=new.example"]
+        );
     }
 
     #[test]

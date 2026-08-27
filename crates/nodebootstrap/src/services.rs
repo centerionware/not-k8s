@@ -158,6 +158,8 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
     let node_name = cfg.node_name();
+    let cluster_dns = cfg.cluster_dns_ip();
+    let cluster_domain = cfg.cluster_domain();
     let binary = bin.to_string_lossy().to_string();
     let mut env = vec![
         ("KUBECONFIG", kubeconfig.as_str()),
@@ -167,6 +169,10 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
         ("NOTK8S_COMPONENT", "nodelet"),
         ("NOTK8S_COMPONENT_BINARY", binary.as_str()),
     ];
+    if !cfg.disable_dns {
+        env.push(("NODELET_CLUSTER_DNS", cluster_dns.as_str()));
+        env.push(("NODELET_CLUSTER_DOMAIN", cluster_domain.as_str()));
+    }
     if let Some(client_ca_file) = client_ca_file.as_deref() {
         env.push(("NODELET_CLIENT_CA_FILE", client_ca_file));
     }

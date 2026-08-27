@@ -43,6 +43,18 @@ fn injects_services_from_the_pods_own_namespace() {
 }
 
 #[test]
+fn disabled_service_links_keep_kubernetes_service_but_omit_pod_namespace_services() {
+    let services = vec![
+        service("default", "kubernetes", "10.43.0.1", 443, Some("https")),
+        service("test", "local-api", "10.43.0.20", 8080, None),
+    ];
+    let env = service_env_vars_for_pod(&services, "test", false);
+    assert_eq!(env.get("KUBERNETES_SERVICE_HOST"), Some(&b"10.43.0.1".to_vec()));
+    assert_eq!(env.get("KUBERNETES_SERVICE_PORT"), Some(&b"443".to_vec()));
+    assert!(!env.keys().any(|key| key.starts_with("LOCAL_API_")));
+}
+
+#[test]
 fn skips_external_name_and_headless_services() {
     let mut external = service("default", "external", "10.43.0.20", 80, None);
     external.spec.as_mut().unwrap().type_ = Some("ExternalName".to_string());

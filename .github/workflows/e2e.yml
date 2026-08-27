@@ -22,6 +22,11 @@ on:
         default: flannel
         type: choice
         options: [flannel, external]
+      cluster_domain:
+        description: 'Cluster DNS domain passed to the bootstrapper'
+        required: false
+        default: cluster.local
+        type: string
 
 permissions:
   contents: write
@@ -167,6 +172,7 @@ jobs:
         env:
           PROXY: ${{ inputs.proxy }}
           NETWORK: ${{ inputs.network }}
+          CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
         run: |
           set -euo pipefail
           args=(bootstrap \
@@ -175,6 +181,7 @@ jobs:
             --datastore=nodestore \
             --scheduler=nodescheduler \
             --controller-manager=nodecontroller)
+          args+=("--cluster-domain=$CLUSTER_DOMAIN")
           if [[ "$NETWORK" == external ]]; then
             args+=(--without-flannel --proxy=none)
           fi

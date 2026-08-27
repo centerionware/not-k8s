@@ -99,6 +99,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         required.len()
     );
     let mut spec = ClusterPkiSpec::default();
+    spec.cluster_domain = cfg.cluster_domain();
     if let Some(address) = &cfg.advertise_address {
         spec.extra_sans.push(address.clone());
     }
@@ -140,6 +141,7 @@ pub struct ClusterPki {
 /// of its own -- that's `targets/upstream.rs`'s job to pass in).
 pub struct ClusterPkiSpec {
     pub service_ip: std::net::IpAddr,
+    pub cluster_domain: String,
     pub extra_sans: Vec<String>,
 }
 
@@ -151,6 +153,7 @@ impl Default for ClusterPkiSpec {
             // first usable address) -- the apiserver's own ClusterIP inside
             // the cluster it serves.
             service_ip: "10.43.0.1".parse().expect("static IP literal"),
+            cluster_domain: "cluster.local".to_string(),
             extra_sans: Vec::new(),
         }
     }
@@ -163,7 +166,7 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         "kubernetes".to_string(),
         "kubernetes.default".to_string(),
         "kubernetes.default.svc".to_string(),
-        "kubernetes.default.svc.cluster.local".to_string(),
+        format!("kubernetes.default.svc.{}", spec.cluster_domain),
         "localhost".to_string(),
     ];
     let mut serving_ips = vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), spec.service_ip];
@@ -372,5 +375,21 @@ mod tests {
             .and_then(|a| a.as_str().ok())
             .expect("cert has an O");
         assert_eq!(org, "system:masters");
+    }
+
+    #[test]
+    fn apiserver_serving_certificate_includes_the_selected_cluster_domain() {
+        let mut spec = ClusterPkiSpec::default();
+        spec.cluster_domain = "cluster.example".to_string();
+        let pki = generate(&spec).expect("generate cluster PKI");
+        let der = pem::parse(&pki.apiserver_serving.cert_pem).expect("parse apiserver cert PEM");
+        let (_, cert) = x509_parser::parse_x509_certificate(der.contents()).expect("parse apiserver cert DER");
+        let san_ext = cert
+            .subject_alternative_name()
+            .expect("read apiserver SAN extension")
+            .expect("apiserver cert should have a SAN extension");
+        assert!(san_ext.value.general_names.iter().any(|name| {
+            matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if name == "kubernetes.default.svc.cluster.example")
+        }));
     }
 }

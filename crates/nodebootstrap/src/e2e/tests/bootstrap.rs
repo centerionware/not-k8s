@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use http::Request;
 use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::ServiceAccount;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
@@ -12,8 +13,25 @@ use secrecy::SecretString;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
+    let uid = Command::new("id").arg("-u").output().context("checking the e2e runner's uid")?;
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+    let mut command = if uid == "0" {
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg(program).args(args);
+        command
+    };
+    command
+        .output()
+        .with_context(|| format!("running {program}"))
+}
 
 /// This check is selected by the external-CNI workflow mode. A normal
 /// single-node run intentionally skips it because flannel is expected there.
@@ -61,6 +79,112 @@ pub(super) async fn external_cni_mode_disables_flannel(context: &E2eContext) -> 
         anyhow::bail!("nodeproxy is active after --proxy=none");
     }
     Ok(())
+}
+
+pub(super) async fn bootstrap_persists_installation_flags(_context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    let path = cfg.flags_path();
+    let output = run_privileged_output("cat", &[&path.to_string_lossy()])?;
+    if !output.status.success() {
+        return Err(skip_test(format!(
+            "persisted bootstrap flags are not readable at {}",
+            path.display()
+        )));
+    }
+    let flags = String::from_utf8_lossy(&output.stdout);
+    if flags.trim().is_empty() {
+        return Err(skip_test(
+            "this cluster was installed without command-line flags; persistence has no flag choice to verify",
+        ));
+    }
+    anyhow::ensure!(
+        flags.lines().any(|flag| flag.starts_with("--layout=")),
+        "persisted bootstrap flags did not retain the installation layout: {flags}"
+    );
+    anyhow::ensure!(
+        !flags.lines().any(|flag| flag == "--e2e" || flag.starts_with("--only=") || flag.starts_with("--shard=")),
+        "one-shot e2e controls were persisted as installation flags: {flags}"
+    );
+    Ok(())
+}
+
+pub(super) async fn nodelet_service_has_cluster_dns_configured(_context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    let output = run_privileged_output(
+        "systemctl",
+        &["show", "nodelet.service", "--property=Environment", "--value"],
+    )?;
+    if !output.status.success() {
+        return Err(skip_test("nodelet.service environment requires systemd"));
+    }
+    let environment = String::from_utf8_lossy(&output.stdout);
+    if cfg.disable_dns {
+        anyhow::ensure!(
+            !environment.contains("NODELET_CLUSTER_DNS=") && !environment.contains("NODELET_CLUSTER_DOMAIN="),
+            "nodelet retained DNS configuration despite --disable-dns: {environment}"
+        );
+    } else {
+        anyhow::ensure!(
+            environment.contains(&format!("NODELET_CLUSTER_DNS={}", cfg.cluster_dns_ip())),
+            "nodelet.service has no configured cluster DNS server: {environment}"
+        );
+        anyhow::ensure!(
+            environment.contains(&format!("NODELET_CLUSTER_DOMAIN={}", cfg.cluster_domain())),
+            "nodelet.service has no configured cluster domain: {environment}"
+        );
+    }
+    Ok(())
+}
+
+pub(super) async fn coredns_is_a_healthy_deployment(context: &E2eContext) -> Result<()> {
+    if crate::config::Config::from_env()?.disable_dns {
+        return Err(skip_test("CoreDNS was intentionally disabled by --disable-dns"));
+    }
+    let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), "kube-system");
+    let deployment = deployments
+        .get("coredns")
+        .await
+        .context("getting the CoreDNS Deployment")?;
+    let pod_spec = deployment
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref())
+        .context("CoreDNS Deployment has no Pod template")?;
+    let container = pod_spec
+        .containers
+        .iter()
+        .find(|container| container.name == "coredns")
+        .context("CoreDNS Deployment has no coredns container")?;
+    let container = serde_json::to_value(container)?;
+    for (probe_name, path, port) in [("livenessProbe", "/health", 8080), ("readinessProbe", "/ready", 8181)] {
+        let http_get = container
+            .get(probe_name)
+            .and_then(|probe| probe.get("httpGet"))
+            .context("CoreDNS probe is not an HTTP probe")?;
+        anyhow::ensure!(
+            http_get.get("path").and_then(serde_json::Value::as_str) == Some(path),
+            "CoreDNS {probe_name} does not use {path}: {http_get}"
+        );
+        let actual_port = http_get
+            .get("port")
+            .and_then(serde_json::Value::as_i64)
+            .or_else(|| http_get.get("port").and_then(serde_json::Value::as_str).and_then(|port| port.parse().ok()));
+        anyhow::ensure!(actual_port == Some(port), "CoreDNS {probe_name} does not use port {port}: {http_get}");
+    }
+    context
+        .wait_until("CoreDNS Deployment to have an available replica", Duration::from_secs(90), || {
+            let deployments = deployments.clone();
+            async move {
+                Ok(deployments
+                    .get("coredns")
+                    .await?
+                    .status
+                    .and_then(|status| status.available_replicas)
+                    .unwrap_or_default()
+                    >= 1)
+            }
+        })
+        .await
 }
 
 pub(super) async fn graceful_node_shutdown_manual_note(_context: &E2eContext) -> Result<()> {

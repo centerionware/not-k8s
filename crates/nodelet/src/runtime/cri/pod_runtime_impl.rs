@@ -154,13 +154,11 @@ impl PodRuntime for CriRuntime {
                 initialized: false,
             });
         }
-        let service_env = if pod.spec.as_ref().and_then(|s| s.enable_service_links) == Some(false) {
-            BTreeMap::new()
-        } else {
-            self.resolve_service_env(&id.namespace)
-                .await
-                .context("resolving Service environment")?
-        };
+        let enable_service_links = pod.spec.as_ref().and_then(|s| s.enable_service_links).unwrap_or(true);
+        let service_env = self
+            .resolve_service_env(&id.namespace, enable_service_links)
+            .await
+            .context("resolving Service environment")?;
         // Dynamic Resource Allocation (round 63): resolved/prepared once
         // up front, same as volumes/service_env above — a pod with no
         // resourceClaims costs nothing (see resolve_pod_claim_devices()).

@@ -175,6 +175,18 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_bootstrap_persists_installation_flags",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodelet_service_has_cluster_dns_configured",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_coredns_is_a_healthy_deployment",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_graceful_node_shutdown_manual_note",
         group: TestGroup::General,
     },
@@ -620,6 +632,14 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_custom_dns_config_reaches_resolv_conf",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_enable_service_links_false_preserves_kubernetes_env",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_cluster_dns_resolves_service_names",
         group: TestGroup::General,
     },
     TestCase {
@@ -1462,6 +1482,11 @@ fn test_names() -> Vec<&'static str> {
 async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
     match name {
         "external_cni_mode_disables_flannel" => bootstrap::external_cni_mode_disables_flannel(context).await,
+        "test_bootstrap_persists_installation_flags" => bootstrap::bootstrap_persists_installation_flags(context).await,
+        "test_nodelet_service_has_cluster_dns_configured" => {
+            bootstrap::nodelet_service_has_cluster_dns_configured(context).await
+        }
+        "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_graceful_node_shutdown_manual_note" => {
             bootstrap::graceful_node_shutdown_manual_note(context).await
         }
@@ -1786,6 +1811,10 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_custom_dns_config_reaches_resolv_conf" => {
             networking::custom_dns_config_reaches_resolv_conf(context).await
         }
+        "test_enable_service_links_false_preserves_kubernetes_env" => {
+            networking::enable_service_links_false_preserves_kubernetes_env(context).await
+        }
+        "test_cluster_dns_resolves_service_names" => networking::cluster_dns_resolves_service_names(context).await,
         "test_spec_hostname_overrides_the_container_hostname" => {
             networking::spec_hostname_overrides_the_container_hostname(context).await
         }

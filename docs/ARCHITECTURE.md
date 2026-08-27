@@ -482,7 +482,7 @@ trait PodRuntime {
 | `NODELET_IMAGE_GC_MIN_AGE_SECS` | `120` | An unreferenced image must have been unreferenced for at least this long before it's eligible for removal |
 | `NODELET_IMAGE_CREDENTIAL_PROVIDER_CONFIG` | (none) | Path to a `CredentialProviderConfig` YAML file; empty disables image credential providers entirely (cri runtime only) |
 | `NODELET_IMAGE_CREDENTIAL_PROVIDER_BIN_DIR` | (none) | Directory containing the credential-provider binaries named by the config's `providers[].name` |
-| `NODELET_CLUSTER_DNS` | (none) | Comma-separated cluster DNS server IPs for `dnsPolicy: ClusterFirst` pods |
+| `NODELET_CLUSTER_DNS` | (none; bootstrap sets `10.43.0.10` by default) | Comma-separated cluster DNS server IPs for `dnsPolicy: ClusterFirst` pods |
 | `NODELET_CLUSTER_DOMAIN` | `cluster.local` | Base domain for a ClusterFirst pod's DNS search list |
 | `NODELET_EVICTION_CHECK_SECS` | `10` | How often node-pressure eviction re-checks MemoryPressure/DiskPressure/PIDPressure and evicts one eligible pod if any is active |
 | `NODELET_PID_PRESSURE_PERCENT` | `10` | `PIDPressure` fires when available PIDs (`pid_max` minus running processes) drop below this percent |
