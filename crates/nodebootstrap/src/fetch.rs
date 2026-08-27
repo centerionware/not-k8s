@@ -385,9 +385,12 @@ fn find_repo_root() -> Result<std::path::PathBuf> {
 /// workspace `Cargo.toml`'s `[workspace.package] version` field, so a
 /// from-source build reports the same version a release binary would carry
 /// instead of the placeholder every crate inherits from that field today.
-/// Read-only against the `version` branch -- bumping it stays
-/// `version-bump.sh`'s job, run only by `release.yml`'s `publish-release`
-/// stage.
+/// Accepts a plain MAJOR.MINOR.PATCH triple or a 4th, hand-added
+/// point-release component (MAJOR.MINOR.PATCH.POINT, e.g. `0.7.2.1`) --
+/// matching `release.yml`'s version-bump step, which increments whichever
+/// component is last regardless of how many there are. Read-only against
+/// the `version` branch -- bumping it stays `version-bump.sh`'s job, run
+/// only by `release.yml`'s `publish-release` stage.
 fn stamp_version_from_release_branch(repo_root: &std::path::Path) -> Result<()> {
     let url = format!("https://raw.githubusercontent.com/{REPO}/version/VERSION");
     let dest = std::env::temp_dir().join("nodebootstrap-VERSION");
@@ -395,8 +398,8 @@ fn stamp_version_from_release_branch(repo_root: &std::path::Path) -> Result<()> 
     let version = std::fs::read_to_string(&dest).context("reading fetched VERSION file")?;
     let version = version.trim();
     anyhow::ensure!(
-        version.split('.').count() == 3 && version.split('.').all(|p| p.parse::<u32>().is_ok()),
-        "VERSION file off the version branch doesn't look like MAJOR.MINOR.PATCH: '{version}'"
+        looks_like_version(version),
+        "VERSION file off the version branch doesn't look like MAJOR.MINOR.PATCH(.POINT): '{version}'"
     );
 
     let cargo_toml_path = repo_root.join("Cargo.toml");
@@ -406,6 +409,14 @@ fn stamp_version_from_release_branch(repo_root: &std::path::Path) -> Result<()> 
     std::fs::write(&cargo_toml_path, stamped).context("writing stamped Cargo.toml")?;
     tracing::info!(version, "stamped workspace version from the version branch");
     Ok(())
+}
+
+/// True for a MAJOR.MINOR.PATCH triple or a 4th, hand-added point-release
+/// component (MAJOR.MINOR.PATCH.POINT) -- at least 3 dot-separated numeric
+/// parts, matching what `release.yml`'s version-bump step now produces.
+fn looks_like_version(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() >= 3 && parts.iter().all(|p| p.parse::<u32>().is_ok())
 }
 
 /// Replaces the first `version = "..."` line's value with `new_version`.
@@ -446,6 +457,20 @@ mod tests {
     fn stamp_version_returns_none_when_no_version_field_exists() {
         let toml = "[workspace]\nmembers = [\"a\"]\n";
         assert!(stamp_version(toml, "1.2.3").is_none());
+    }
+
+    #[test]
+    fn looks_like_version_accepts_a_plain_triple_and_a_point_release_quad() {
+        assert!(looks_like_version("0.7.2"));
+        assert!(looks_like_version("0.7.2.1"));
+    }
+
+    #[test]
+    fn looks_like_version_rejects_non_numeric_or_too_short() {
+        assert!(!looks_like_version("0.7"));
+        assert!(!looks_like_version("v0.7.2"));
+        assert!(!looks_like_version("0.7.x"));
+        assert!(!looks_like_version(""));
     }
 
     #[test]
