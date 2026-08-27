@@ -13,6 +13,7 @@ pub mod components;
 pub mod e2e;
 pub mod fetch;
 pub mod kubeconfig;
+pub mod kube_api;
 pub mod manifests;
 pub mod pkg;
 pub mod pki;

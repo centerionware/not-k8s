@@ -10,7 +10,7 @@
 //! manifests" here was aspirational and wrong; corrected as of this
 //! finding.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::config::Config;
 
@@ -51,26 +51,15 @@ pub fn render_coredns(cluster_dns_ip: &str, cluster_domain: &str) -> String {
         )
 }
 
-/// `kubectl apply -f -`, same subprocess-call posture `rbac.rs` uses and
-/// explains (no `kube`/tokio stack for a one-shot CLI whose other checks
-/// are all synchronous).
+/// Apply the rendered manifest through the kube client. The bootstrapper is a
+/// synchronous one-shot CLI, so `kube_api` owns the small Tokio bridge.
 fn apply(kubeconfig: &std::path::Path, manifest: &str) -> Result<()> {
-    use std::io::Write;
-    let mut child = std::process::Command::new("kubectl")
-        .args(["--kubeconfig", &kubeconfig.to_string_lossy(), "apply", "-f", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("spawning kubectl apply")?;
-    child
-        .stdin
-        .take()
-        .expect("stdin was piped")
-        .write_all(manifest.as_bytes())
-        .context("writing manifest to kubectl's stdin")?;
-    let status = child.wait().context("waiting for kubectl apply")?;
-    if !status.success() {
-        anyhow::bail!("kubectl apply -f - (CoreDNS manifest) exited {status}");
-    }
+    let manifest = manifest.to_owned();
+    crate::kube_api::block_on(kubeconfig, move |client| async move {
+        let applied = crate::kube_api::apply_yaml(&client, &manifest, "nodebootstrap").await?;
+        tracing::info!(applied, "applied CoreDNS resources through the Kubernetes API");
+        Ok(())
+    })?;
     Ok(())
 }
 
