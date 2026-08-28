@@ -325,44 +325,19 @@ single-resource cache-registration primitive —
 `CacheRegistry::spawn(storage, group, version, resource)` starts a
 background `driver::reflect()` loop for one resource and hands back the
 `SharedCache` it keeps live, `get()` looks one up by `(group, version,
-resource)`. **Pure primitive only, not yet the full picture**: it does
-not enumerate every resource this build knows about and start one for
-each at boot (spawning on the order of 90 concurrent, long-running
-reconnect loops against nodestore at process startup is a real
-resource/ordering decision this crate hasn't made yet, not an
-oversight). `server::rest::get` now *can* consult a `SharedCache` if
+resource)`. The listener registers every built-in resource from the
+generated discovery table at boot; CRD-defined resources are registered
+lazily once their Established CRD is discovered. `server::rest::get` now
+*can* consult a `SharedCache` if
 handed one (`cache.get(key)`, a hit skips nodestore entirely; a miss
 always falls through to a real `Range` rather than trusting the cache's
 absence of an entry to mean "not found," since a not-yet-synced or
 never-registered cache is indistinguishable from a genuinely empty one
 using only what `SharedCache` exposes today — a pure latency win on the
-hit path, never a correctness risk on the miss path). `server::listener::run`
-now proves this end to end for one real resource: it spawns a
-`CacheRegistry` cache for `namespaces` (core group — the same resource
-Group F's first verified name-format rule already targets) and `GET`
-consults it whenever a request actually targets `namespaces`; every
-other resource's `GET`/`LIST`, and every `create`/`update`/`delete`
-regardless of resource, still reads/writes straight to nodestore. **One
-concrete case, not a general policy** at the time — enumerating *every*
-resource this build knows about and starting a cache for each at boot is
-still a real, separate, not-yet-made decision (how many at once, in what
-order, whether to wait for sync before serving traffic).
-
-**Follow-up**: `server::listener::run` now spawns a bounded, reasoned
-list of resources instead of just `namespaces` —
-`BOOT_CACHED_RESOURCES` (`namespaces`, `pods`, `services`, `secrets`,
-`configmaps`, `endpoints`, `nodes`, `discovery.k8s.io/v1`
-`endpointslices`: the resources a real cluster's own kubelets/kube-proxy/
-controllers read most heavily — mostly core-group, plus real
-`crates/nodeproxy`'s own actual `EndpointSlice` dependency, not the
-legacy `endpoints` API it might look like it'd need), and
-`GET`/`LIST` consult one whenever a request targets any resource in that
-list (`cache_registry.get(group, version, resource)` replaced the
-`namespaces`-only special case). This is still a deliberately bounded
-subset, not the general "every resource at boot" policy — that remains
-a real, separate, not-yet-made decision. **Not yet landed**: the
-per-Kind `SelectableFields` allowlist, and registering a cache for every
-resource at boot.
+hit path, never a correctness risk on the miss path). `GET`/`LIST` use
+that cache for every built-in GVR, while dynamic CRD GVRs are registered
+on first discovery/use. The remaining Group D gap is the per-Kind
+`SelectableFields` allowlist.
 
 **Follow-up**: `server::rest::list` now also consults a cache when
 handed one, closing the gap the paragraph above used to name — but it
@@ -612,9 +587,9 @@ of the object immediately before deletion" — `cacher::store::WatchCache`
 now retains exactly that on delete, closing what was previously named
 here as a real gap; see that module's own doc comment).
 
-**Milestone: `WATCH` is real end to end**, for any resource in
-`server::listener`'s own `BOOT_CACHED_RESOURCES`: a `GET
-.../pods?watch=true` (or the `/api/v1/watch/pods` legacy path form) now
+**Milestone: `WATCH` is real end to end**, for any registered built-in or
+discovered CRD resource: a `GET .../pods?watch=true` (or the
+`/api/v1/watch/pods` legacy path form) now
 gets a genuine streaming response — `cache.watch_from(resourceVersion)`'s
 own retained-history replay first, then every live event as it happens,
 each encoded by `to_watch_event_json` and framed as a newline-terminated
@@ -629,9 +604,9 @@ it by hand would have been wrong for an h2 connection). A
 `resourceVersion` older than the cache's retained history window gets a
 real `410 Gone` (`errors.NewResourceExpired`'s own shape — the signal
 every real `client-go` informer relists on) rather than silently serving
-a gap. A resource outside `BOOT_CACHED_RESOURCES` (no registered cache)
-falls through to the bring-up echo stub, same posture as `GET`/`LIST`
-already had for an uncached resource. **`WATCH` is now RBAC-gated too**
+a gap. A resource with no registered cache falls through to the bring-up
+echo stub, same posture as `GET`/`LIST` already had for an uncached
+resource. **`WATCH` is now RBAC-gated too**
 (`enforce_rbac`, resolved against a fresh cheap `storage.clone()` since
 `watch` otherwise needs no storage connection at all) — fails closed
 (`500`) if enforcement is on but no storage connection exists to resolve
