@@ -19,20 +19,16 @@
 //! reusing `crates/nodelet/src/server/exec.rs`'s own proven low-level
 //! `hyper::client::conn::http1::handshake` pattern.
 //!
-//! **`pods/log` is now a genuine live proxy, wired into
-//! `server::listener`** — `GET .../pods/{name}/log` resolves the target
-//! (fetching the pod + its node), dials nodelet for real, and relays
-//! its response — status, headers, streaming body (`follow=true`
-//! included) — back unmodified. exec/attach/port-forward and
-//! node/service proxy subresources aren't started yet, though they'd
-//! reuse the same `client_tls`/`http_client` primitives (attach/exec
-//! need the upgrade-splice half of `exec.rs`'s own pattern too, which
-//! this module doesn't need for a plain GET).
-//!
-//! Status: `pods/log` done and wired; exec/attach/port-forward and
-//! node/service proxy subresources not started (Group N — see
-//! docs/APISERVER.md).
+//! **`pods/log` is a genuine live proxy, and pod connection subresources are
+//! now upgraded through the same path, wired into `server::listener`** —
+//! `GET .../pods/{name}/log` resolves the target (fetching the pod + its
+//! node), while `exec`, `attach`, and `portforward` translate their query
+//! parameters to nodelet's kubelet-style routes. `http_client::upgrade`
+//! forwards the upgrade headers and splices both upgraded connections after
+//! the `101` response. Node/service proxy subresources remain separate work
+//! (Group N — see `docs/APISERVER.md`).
 
 pub mod client_tls;
 pub mod http_client;
 pub mod pod_log;
+pub mod pod_stream;
