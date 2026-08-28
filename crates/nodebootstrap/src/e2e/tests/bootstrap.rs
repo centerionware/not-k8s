@@ -1194,6 +1194,53 @@ pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E
             list.items.len()
         ),
     }
+}
+
+pub(super) async fn nodeapiserver_serves_generic_status_subresource(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("status-subresource checks are only exercised against nodeapiserver"));
+    }
+
+    let name = format!("nodeapiserver-status-{}", std::process::id());
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the status-subresource probe ConfigMap")?;
+
+    let uri = format!(
+        "/api/v1/namespaces/{}/configmaps/{name}/status",
+        context.namespace
+    );
+    let response = context
+        .client
+        .request::<Value>(
+            Request::builder()
+                .method("PATCH")
+                .uri(uri)
+                .header("Content-Type", "application/merge-patch+json")
+                .body(serde_json::to_vec(&json!({"status": {"phase": "Ready"}}))?)?,
+        )
+        .await
+        .context("patching a generic resource status subresource")?;
+    anyhow::ensure!(
+        response.pointer("/status/phase").and_then(Value::as_str) == Some("Ready"),
+        "nodeapiserver did not persist the status-only patch: {response}"
+    );
+    configmaps
+        .delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the status-subresource probe ConfigMap")?;
     Ok(())
 }
 
