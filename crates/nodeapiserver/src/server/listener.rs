@@ -2724,7 +2724,7 @@ async fn handle(
             let resource_cache = resource_cache.as_ref();
 
             if is_get {
-                match rest::get(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                match rest::get_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, resource_version_query(&query)).await {
                     Ok(rest::GetOutcome::Found(object)) => {
                         let body = if wants_table { crate::codec::table::convert_to_table(&object) } else { object };
                         return Ok(json_response(StatusCode::OK, &body));
@@ -2738,7 +2738,7 @@ async fn handle(
                     }
                 }
             } else if is_list {
-                match rest::list(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token).await {
+                match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table { crate::codec::table::convert_to_table(&list) } else { list };
                         return Ok(json_response(StatusCode::OK, &body));
