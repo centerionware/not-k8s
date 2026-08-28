@@ -241,6 +241,12 @@ CoreDNS, and apiserver serving certificate consistently. `--uninstall`
 removes nodebootstrap-managed host services, files, state, and tracked
 packages.
 
+At startup, nodelet reconciles bootstrap's disposable CNI seed Pod before
+checking CoreDNS readiness. Ordinary workload reconciliation remains paused
+until the local CoreDNS Pod is running and its health probe passes, but a
+slow API readiness check cannot prevent the seed from creating the first CNI
+bridge needed by CoreDNS itself.
+
 **HTTP fetch is a real Rust client, not `curl`/`wget` subprocesses**
 (decided 2026-08-22, user direction): `pkg::fetch_url` (every binary/
 release download in `toolchain.rs`/`containerd.rs`/`cni.rs`/`fetch.rs`/

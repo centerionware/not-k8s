@@ -750,6 +750,10 @@ serves. Fixed in `get`/`list` (both the cache and direct-nodestore
 paths) and `delete`; `server::watch_event::to_watch_event_json` had the
 identical gap for `Added`/`Modified`/`Deleted` watch events (only the
 synthetic `Bookmark` case already stamped one) and got the same fix.
+The same watch path restores the scoped top-level `kind` and `apiVersion` on
+decoded Added/Modified/Deleted objects: those fields belong to the stored
+protobuf envelope rather than the message body, and clients such as flannel
+require them to decode watch events as Kubernetes objects.
 
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
