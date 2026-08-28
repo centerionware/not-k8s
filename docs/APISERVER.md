@@ -402,9 +402,9 @@ hyper + h2 + rustls TLS listener (`server::tls` self-signs a cert on first
 start — explicitly **not** the cluster's real PKI, that's Group O's job,
 same layering nodelet's own HTTPS server already uses) that proves the
 listener/TLS/path-grammar stack works end to end — `nodeapiserver::run()`
-now actually binds and serves. **Its request handler is a bring-up stub**,
-answering `/healthz` and echoing the parsed `RequestInfo` as JSON, not the
-real REST dispatch. `server::discovery` builds the `/api` (`APIVersions`)
+now actually binds and serves. Its resource handler dispatches the landed
+REST verbs below; unsupported paths still fall through to a small bring-up
+echo response. `server::discovery` builds the `/api` (`APIVersions`)
 and `/apis`/`/apis/{group}` (`APIGroupList`/`APIGroup`) documents from
 Group A's discovery GVK table — real shapes confirmed against the
 vendored OpenAPI v3 specs, preferred-version selection via
@@ -556,7 +556,9 @@ assumed) rather than a plain `Put` that could silently clobber an
 existing object. Request bodies are decoded generically by negotiated
 `Content-Type` (JSON/YAML — a protobuf request body would need the
 target schema to decode, which needs the resource resolved first;
-named honestly as a real, separate gap, not guessed at). Real,
+named honestly as a real, separate gap, not guessed at). `dryRun=All`
+performs the same resolution, admission, validation, defaulting, and
+conflict checks without persisting the object. Real,
 distinct `Status` responses per outcome: `201` created, `409
 AlreadyExists` (lost the create race), `422 Invalid` (validation
 failures, joined into one message — real upstream's structured
@@ -565,12 +567,12 @@ failures, joined into one message — real upstream's structured
 the body and the URL. When `generateName` is supplied, the server appends
 a collision-resistant suffix before validation and persistence.
 
-`server::rest::delete` (single-object `DELETE`) is real too: one
-`DeleteRange` with `prev_kv: true` so the deleted object can be returned
-in the response, matching real upstream's own synchronous-delete shape.
-Named honestly as the bring-up floor, not the real thing: no
-`resourceVersion`/`uid` precondition checking
-(`metav1.DeleteOptions.Preconditions`), no `propagationPolicy`
+`server::rest::delete` (single-object `DELETE`) is real too: it reads the
+object, honors `resourceVersion`/`uid` preconditions from
+`metav1.DeleteOptions.Preconditions`, and removes it with an MVCC-guarded
+transaction so a concurrent update cannot invalidate the check. It returns
+the deleted object, matching real upstream's synchronous-delete shape.
+Named honestly as the current scope: no `propagationPolicy`
 (Foreground/Background/Orphan — no owner-reference garbage collector
 exists to orphan from or cascade through in the first place), no
 finalizer handling — an unconditional delete-if-present.
