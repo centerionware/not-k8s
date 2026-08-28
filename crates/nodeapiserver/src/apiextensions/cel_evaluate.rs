@@ -20,27 +20,31 @@
 //! `CREATE` — real upstream's own rule: `oldSelf` is genuinely
 //! unavailable then, not just empty).
 //!
-//! **Named, honest scope**: each rule gets its own [`crate::cel_ext::
-//! eval_bool_with_deadline`] call, deadline [`PER_RULE_DEADLINE`] (real
-//! upstream's own `PerCallLimit`, ~0.1s — already documented in
-//! `docs/APISERVER.md`'s own `cel_ext` section, this module's own real
-//! per-rule use of that same wall-clock stand-in). Real upstream's own
-//! *aggregate* `RuntimeCELCostBudget` across every rule evaluated for
-//! one object is **not enforced here** — this crate has no real
-//! runtime cost-accounting mechanism at all (`cel_ext`'s own top-level
-//! doc comment names this as Phase 2's still-not-closed gap), so a
-//! schema with very many rules could in principle run for the sum of
-//! all their own individual deadlines rather than one shared ~1s
-//! ceiling; a real, separate follow-up once real cost tracking exists,
-//! not silently assumed away.
+//! Each rule gets its own [`crate::cel_ext::eval_bool_with_deadline`] call,
+//! with the smaller of the real upstream `PerCallLimit` (~0.1s) and the
+//! remaining shared `RuntimeCELCostBudget` (~1s) for this object. The
+//! underlying CEL crate exposes no interpreter fuel/step hook, so the
+//! shared budget is enforced as a wall-clock deadline: it bounds the
+//! request-side evaluation window and stops walking further rules once
+//! that window is exhausted. A timed-out evaluation thread can still
+//! finish in the background because Rust cannot safely cancel arbitrary
+//! threads; the request concurrency gate limits how many such evaluations
+//! can be started at once.
 
-use crate::cel_ext::eval_bool_with_deadline;
+use crate::cel_ext::{eval_bool_with_deadline, Error as CelError};
 use serde_json::Value;
+use std::cmp::min;
 use std::time::Duration;
+use std::time::Instant;
 
 /// Real upstream's own `PerCallLimit`, in wall-clock terms — see this
 /// module's own doc comment.
 const PER_RULE_DEADLINE: Duration = Duration::from_millis(100);
+
+/// Real upstream's own `RuntimeCELCostBudget`, represented by a shared
+/// wall-clock budget because the CEL interpreter used here has no exposed
+/// cost or interruption hook.
+const RUNTIME_CEL_BUDGET: Duration = Duration::from_secs(1);
 
 /// One `x-kubernetes-validations` rule that failed against a real
 /// object — either it evaluated `false` (a real validation failure,
@@ -65,24 +69,51 @@ impl std::fmt::Display for RuleViolation {
 /// Real upstream's own runtime rule evaluation — see this module's own
 /// doc comment for the exact real scope.
 pub fn validate_object(schema: &Value, value: &Value, old_value: Option<&Value>) -> Vec<RuleViolation> {
+    validate_object_with_budget(schema, value, old_value, RUNTIME_CEL_BUDGET)
+}
+
+fn validate_object_with_budget(schema: &Value, value: &Value, old_value: Option<&Value>, budget: Duration) -> Vec<RuleViolation> {
     let mut out = Vec::new();
-    walk(schema, value, old_value, "", &mut out);
+    let deadline = Instant::now() + budget;
+    let mut budget_exhausted = false;
+    walk(schema, value, old_value, "", deadline, &mut budget_exhausted, &mut out);
     out
 }
 
-fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, out: &mut Vec<RuleViolation>) {
+fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, deadline: Instant, budget_exhausted: &mut bool, out: &mut Vec<RuleViolation>) {
+    if *budget_exhausted {
+        return;
+    }
     if let Some(rules) = schema.get("x-kubernetes-validations").and_then(Value::as_array) {
         for (i, rule) in rules.iter().enumerate() {
             let Some(rule_str) = rule.get("rule").and_then(Value::as_str) else { continue };
-            match eval_bool_with_deadline(rule_str, value, old_value, PER_RULE_DEADLINE) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                out.push(RuleViolation { path: path.to_string(), rule_index: i, message: "runtime CEL cost budget exceeded".to_string() });
+                *budget_exhausted = true;
+                return;
+            }
+            match eval_bool_with_deadline(rule_str, value, old_value, min(PER_RULE_DEADLINE, remaining)) {
                 Ok(true) => {}
                 Ok(false) => {
                     let message = rule.get("message").and_then(Value::as_str).unwrap_or("failed validation").to_string();
                     out.push(RuleViolation { path: path.to_string(), rule_index: i, message });
                 }
-                Err(e) => out.push(RuleViolation { path: path.to_string(), rule_index: i, message: format!("rule evaluation failed: {e}") }),
+                Err(e) => {
+                    let deadline_hit = matches!(&e, CelError::DeadlineExceeded);
+                    out.push(RuleViolation { path: path.to_string(), rule_index: i, message: format!("rule evaluation failed: {e}") });
+                    if deadline_hit {
+                        *budget_exhausted = true;
+                        return;
+                    }
+                }
             }
         }
+    }
+
+    if Instant::now() >= deadline {
+        *budget_exhausted = true;
+        return;
     }
 
     // Real upstream's own three real container shapes -- `properties`/
@@ -98,7 +129,8 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, ou
             for (name, prop_schema) in properties {
                 let Some(current) = obj.get(name) else { continue };
                 let old_current = old_value.and_then(|o| o.get(name));
-                walk(prop_schema, current, old_current, &join_path(path, name), out);
+                walk(prop_schema, current, old_current, &join_path(path, name), deadline, budget_exhausted, out);
+                if *budget_exhausted { return; }
             }
         }
         // A real nested schema only, never the boolean
@@ -108,7 +140,8 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, ou
         if let Some(additional) = schema.get("additionalProperties").filter(|a| a.is_object()) {
             for (key, val) in obj {
                 let old_val = old_value.and_then(|o| o.get(key));
-                walk(additional, val, old_val, &format!("{path}[{key}]"), out);
+                walk(additional, val, old_val, &format!("{path}[{key}]"), deadline, budget_exhausted, out);
+                if *budget_exhausted { return; }
             }
         }
     }
@@ -117,7 +150,8 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, ou
             let old_items = old_value.and_then(Value::as_array);
             for (i, item) in items.iter().enumerate() {
                 let old_item = old_items.and_then(|o| o.get(i));
-                walk(items_schema, item, old_item, &format!("{path}[{i}]"), out);
+                walk(items_schema, item, old_item, &format!("{path}[{i}]"), deadline, budget_exhausted, out);
+                if *budget_exhausted { return; }
             }
         }
     }
@@ -233,6 +267,17 @@ mod tests {
         let violations = validate_object(&schema, &value, None);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].path, "tags[1]");
+    }
+
+    #[test]
+    fn the_shared_runtime_budget_stops_evaluation_before_the_first_rule_when_exhausted() {
+        let schema = json!({
+            "type": "object",
+            "x-kubernetes-validations": [{"rule": "true"}],
+        });
+        let violations = validate_object_with_budget(&schema, &json!({}), None, Duration::ZERO);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].message, "runtime CEL cost budget exceeded");
     }
 
     #[test]

@@ -59,8 +59,9 @@
 //! **Not yet landed, named honestly**: enum membership, numeric ranges,
 //! format checks (RFC 1123 labels, ...) and any cross-field consistency
 //! rule (`x-kubernetes-validations` CEL is a CRD schema's real mechanism
-//! for all of that — needs the CEL cost budget built first, a named DoS
-//! surface, not optional hardening); conversion webhooks;
+//! for all of that — its static and shared request-side budget checks are
+//! now wired, while interpreter-level fuel remains a named DoS-hardening
+//! limitation); conversion webhooks;
 //! reacting to a CRD's own lifecycle (a lazily-spawned watch reflector
 //! keeps running even after its CRD is deleted, and a newly
 //! `Established` CRD is only discovered by the next watch/discovery
