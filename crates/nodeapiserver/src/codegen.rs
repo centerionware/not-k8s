@@ -138,7 +138,8 @@ pub fn openapi_v3_doc_index() -> &'static HashMap<&'static str, &'static openapi
 
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
 /// it — either bare, meaning "same package as the declaring message", or a
-/// fully proto-package-qualified name) into the openapi-style qualified
+/// fully proto-package-qualified name (with or without protobuf's leading
+/// dot) — into the openapi-style qualified
 /// name `PROTO_FIELDS`/`FIELD_META` key on, so the protobuf codec (Group
 /// B) can look up a referenced message's own field table.
 ///
@@ -151,6 +152,7 @@ pub fn openapi_v3_doc_index() -> &'static HashMap<&'static str, &'static openapi
 /// source: a proto-style package's first two dot-segments reversed
 /// (`k8s.io` -> `io.k8s`) is the openapi-style form of the same package.
 pub fn resolve_message_ref(declaring_message: &str, proto_type: &str) -> String {
+    let proto_type = proto_type.trim_start_matches('.');
     match proto_type.rfind('.') {
         Some(idx) => {
             // Fully proto-package-qualified already (e.g.
@@ -332,6 +334,10 @@ mod tests {
         // fully qualified, a different package.
         assert_eq!(
             resolve_message_ref(daemon_set_spec, "k8s.io.api.core.v1.PodTemplateSpec"),
+            "io.k8s.api.core.v1.PodTemplateSpec"
+        );
+        assert_eq!(
+            resolve_message_ref(daemon_set_spec, ".k8s.io.api.core.v1.PodTemplateSpec"),
             "io.k8s.api.core.v1.PodTemplateSpec"
         );
 
