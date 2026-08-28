@@ -918,9 +918,9 @@ non-matching elements appended, verified against the concrete
 including a two-levels-deep recursion case
 (`containers[].resources.limits`) to prove `ref_schema` resolution chains
 correctly, not just parent -> immediate child. Named, deliberate gaps
-(`strategic_merge`'s own doc comment): no `$patch`/`$setElementOrder`/
-`$deleteFromPrimitiveList` directives — a patch that never uses them
-(the overwhelming majority) behaves identically either way. **All three
+(`strategic_merge`'s own doc comment): `$patch`/`$setElementOrder`/
+`$deleteFromPrimitiveList` directives are supported for built-in and CRD
+schemas. **All three
 are now wired into a real `PATCH` verb** (Group E's own section has the
 detail: `server::rest::patch`, selected by real `Content-Type`, real
 optimistic concurrency, `namespace_lifecycle`/`LimitRanger` admission
@@ -959,8 +959,8 @@ resources; CRD-defined resources use the runtime-schema sibling
 `apiextensions::schema_apply`, including `managedFields`, associative-list
 ownership, and real conflict detection. Both paths share the same
 optimistic-concurrency persistence behavior.
-`$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directives remain
-unported, same as `strategic_merge`'s own gap.
+Default patch-strategy selection when `Content-Type` is omitted remains a
+separate gap; explicit strategic-merge requests honor the directive set.
 
 **H. Authentication** — **started**. `authn::x509::identity_from_der`
 derives an `Identity{name, groups, credential_id}` from a client

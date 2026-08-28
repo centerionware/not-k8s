@@ -60,9 +60,7 @@
 //! format checks (RFC 1123 labels, ...) and any cross-field consistency
 //! rule (`x-kubernetes-validations` CEL is a CRD schema's real mechanism
 //! for all of that — needs the CEL cost budget built first, a named DoS
-//! surface, not optional hardening); `$patch`/`$setElementOrder`/
-//! `$deleteFromPrimitiveList` strategic-merge-patch directives (same
-//! named gap the compiled path already has); conversion webhooks;
+//! surface, not optional hardening); conversion webhooks;
 //! reacting to a CRD's own lifecycle (a lazily-spawned watch reflector
 //! keeps running even after its CRD is deleted, and a newly
 //! `Established` CRD is only discovered by the next watch/discovery
