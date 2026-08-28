@@ -1182,10 +1182,12 @@ pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E
         .list(&ListParams::default().fields("data.unsupported=value"))
         .await
     {
-        Err(KubeError::Api(error)) => anyhow::ensure!(
-            error.code == 400,
-            "nodeapiserver returned the wrong status for an unsupported field selector: {error}"
-        ),
+        Err(KubeError::Api(error)) => {
+            anyhow::ensure!(
+                error.code == 400,
+                "nodeapiserver returned the wrong status for an unsupported field selector: {error}"
+            );
+        }
         Err(error) => anyhow::bail!(
             "nodeapiserver returned a non-API error for an unsupported field selector: {error}"
         ),
