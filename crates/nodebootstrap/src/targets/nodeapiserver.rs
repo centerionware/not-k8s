@@ -4,9 +4,13 @@
 //! node-side services, and the API listener all share one trust domain.
 
 use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::Namespace;
+use kube::api::{Api, PostParams};
 
 use crate::config::Config;
 use crate::service_mgr::{self, SupervisedService};
+
+const SYSTEM_NAMESPACES: &[&str] = &["default", "kube-system", "kube-public"];
 
 pub fn run_with(cfg: &Config) -> Result<()> {
     let bin = cfg.toolchain_dir().join("bin/nodeapiserver");
@@ -45,6 +49,12 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     )?;
     wait_for_readyz(cfg)?;
 
+    // Unlike kube-apiserver, the replacement has no bootstrap controller to
+    // seed the standard namespaces. NamespaceLifecycle intentionally rejects
+    // namespaced writes into a missing namespace, so create these before the
+    // first namespaced RBAC object is applied below.
+    ensure_system_namespaces(cfg)?;
+
     // The bootstrap objects are written through the admin kubeconfig. Start
     // without the replacement authorizer, install the RBAC bootstrap policy,
     // then restart with enforcement enabled so the steady-state service is
@@ -63,6 +73,36 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         wait_for_readyz(cfg)?;
     }
     Ok(())
+}
+
+fn ensure_system_namespaces(cfg: &Config) -> Result<()> {
+    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    crate::kube_api::block_on(&kubeconfig, |client| async move {
+        let namespaces: Api<Namespace> = Api::all(client);
+        for name in SYSTEM_NAMESPACES {
+            if namespaces.get_opt(name).await?.is_some() {
+                continue;
+            }
+            let namespace = Namespace {
+                metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                    name: Some((*name).to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            match namespaces.create(&PostParams::default(), &namespace).await {
+                Ok(_) => tracing::info!(
+                    namespace = *name,
+                    "created replacement-apiserver system namespace"
+                ),
+                Err(kube::Error::Api(error)) if error.code == 409 => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("creating system namespace {name}"));
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 fn install_service(
@@ -156,6 +196,19 @@ fn install_service(
 /// first start, so it has no upstream two-phase certificate handoff.
 pub fn enable_nodelet_proxy(_cfg: &Config) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SYSTEM_NAMESPACES;
+
+    #[test]
+    fn replacement_apiserver_seeds_the_standard_namespaces() {
+        assert_eq!(
+            SYSTEM_NAMESPACES,
+            &["default", "kube-system", "kube-public"]
+        );
+    }
 }
 
 /// The replacement apiserver does not run upstream's bootstrap-controller.
