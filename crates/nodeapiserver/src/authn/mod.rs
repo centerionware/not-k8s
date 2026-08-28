@@ -45,6 +45,10 @@
 //! at startup from `NODEAPISERVER_TOKEN_AUTH_FILE`, matching the static-file
 //! lifecycle of upstream's token authenticator.
 //!
+//! Bootstrap tokens and structured anonymous-authentication conditions are
+//! not started. The listener does expose the compatible boolean
+//! `NODEAPISERVER_ANONYMOUS_AUTH` switch.
+//!
 //! Status: in progress (see docs/APISERVER.md).
 
 pub mod bootstrap_token;

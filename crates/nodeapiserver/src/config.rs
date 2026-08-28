@@ -54,6 +54,11 @@ pub struct Config {
     /// `--token-auth-file` CSV used for static bootstrap bearer tokens.
     /// `None` leaves this authenticator disabled.
     pub bootstrap_token_file: Option<PathBuf>,
+    /// `NODEAPISERVER_ANONYMOUS_AUTH` controls whether requests without a
+    /// client certificate or bearer token authenticate as
+    /// `system:anonymous`. It defaults to enabled, matching kube-apiserver's
+    /// `--anonymous-auth=true` default.
+    pub anonymous_auth: bool,
     /// OIDC bearer-token authentication. Both values must be configured to
     /// enable it; an absent pair leaves OIDC disabled.
     pub oidc_issuer_url: Option<String>,
@@ -124,6 +129,7 @@ impl Default for Config {
             service_account_signing_key_file: None,
             service_account_issuer: "https://kubernetes.default.svc".to_string(),
             bootstrap_token_file: None,
+            anonymous_auth: true,
             oidc_issuer_url: None,
             oidc_client_id: None,
             oidc_username_claim: "sub".to_string(),
@@ -204,6 +210,9 @@ impl Config {
             !cfg.service_account_issuer.trim().is_empty(),
             "NODEAPISERVER_SERVICE_ACCOUNT_ISSUER must not be empty"
         );
+        if let Ok(value) = std::env::var("NODEAPISERVER_ANONYMOUS_AUTH") {
+            cfg.anonymous_auth = parse_bool("NODEAPISERVER_ANONYMOUS_AUTH", &value)?;
+        }
         cfg.oidc_issuer_url = string_env("NODEAPISERVER_OIDC_ISSUER_URL");
         cfg.oidc_client_id = string_env("NODEAPISERVER_OIDC_CLIENT_ID");
         anyhow::ensure!(
@@ -287,6 +296,14 @@ fn usize_env(name: &str, default: usize) -> Result<usize> {
             Ok(parsed)
         }
         Err(_) => Ok(default),
+    }
+}
+
+fn parse_bool(name: &str, value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        _ => Err(anyhow!("{name} must be one of true/false or 1/0")),
     }
 }
 
@@ -460,6 +477,31 @@ mod tests {
     #[test]
     fn enforce_rbac_defaults_to_false() {
         assert!(!Config::default().enforce_rbac);
+    }
+
+    #[test]
+    fn anonymous_auth_defaults_to_true_and_accepts_standard_boolean_values() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(Config::default().anonymous_auth);
+        for value in ["0", "false", "no"] {
+            std::env::set_var("NODEAPISERVER_ANONYMOUS_AUTH", value);
+            let _cleanup = EnvGuard(&["NODEAPISERVER_ANONYMOUS_AUTH"]);
+            assert!(!Config::from_env().unwrap().anonymous_auth, "{value:?} should disable anonymous auth");
+        }
+        for value in ["1", "true", "yes"] {
+            std::env::set_var("NODEAPISERVER_ANONYMOUS_AUTH", value);
+            let _cleanup = EnvGuard(&["NODEAPISERVER_ANONYMOUS_AUTH"]);
+            assert!(Config::from_env().unwrap().anonymous_auth, "{value:?} should enable anonymous auth");
+        }
+    }
+
+    #[test]
+    fn anonymous_auth_rejects_invalid_values() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_ANONYMOUS_AUTH", "sometimes");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_ANONYMOUS_AUTH"]);
+        let error = Config::from_env().expect_err("invalid anonymous-auth value must be rejected");
+        assert!(error.to_string().contains("NODEAPISERVER_ANONYMOUS_AUTH"));
     }
 
     #[test]

@@ -997,8 +997,12 @@ the listener validates the issuer metadata, loads its JWKS, verifies
 RS256/PS256/ES256 tokens, checks issuer/audience/expiry/required claims, and
 maps configurable username and group claims. A configured CA bundle is used
 for issuer requests, and a rotated JWKS is refreshed once on verification
-failure. Bootstrap tokens and the remaining anonymous-authentication
-configuration are not started.
+failure. `NODEAPISERVER_ANONYMOUS_AUTH` now controls the upstream-compatible
+boolean anonymous-authentication switch (enabled by default, matching
+`--anonymous-auth=true`); disabling it returns `401 Unauthorized` for a
+request with neither a client certificate nor a bearer token. Structured
+anonymous-authentication conditions and bootstrap-token files remain separate
+follow-up work.
 
 **I. Authorization** — **in progress**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own
