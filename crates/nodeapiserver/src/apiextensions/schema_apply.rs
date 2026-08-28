@@ -409,7 +409,11 @@ fn field_schema<'a>(schema: &'a Value, key: &str) -> Option<&'a Value> {
         .get("properties")
         .and_then(Value::as_object)
         .and_then(|properties| properties.get(key))
-        .or_else(|| schema.get("additionalProperties").filter(Value::is_object))
+        .or_else(|| {
+            schema
+                .get("additionalProperties")
+                .filter(|value| value.is_object())
+        })
 }
 
 fn list_type(schema: &Value) -> Option<&str> {
