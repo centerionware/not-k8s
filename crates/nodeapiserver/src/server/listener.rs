@@ -34,8 +34,9 @@
 //! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`,
 //! selected by the real `Content-Type` —
 //! `application/json-patch+json`/`application/merge-patch+json`/
-//! `application/strategic-merge-patch+json` — with a real `415` for
-//! anything else), **and now runs the two Group J plugins that ever
+//! `application/strategic-merge-patch+json` — with Kubernetes' default
+//! strategic-merge/CRD merge-patch selection when `Content-Type` is
+//! omitted and a real `415` for an unsupported explicit type), **and now runs the two Group J plugins that ever
 //! apply to an `Update`-shaped write** (`namespace_lifecycle`,
 //! `LimitRanger`'s own PVC validation — the split between
 //! `rest::patch_prepare`/`patch_persist` exists specifically so admission
@@ -1619,14 +1620,27 @@ async fn handle(
             };
         }
 
-        let Some(kind_of_patch) = content_type.as_deref().and_then(rest::patch_kind_for_content_type) else {
-            return Ok(json_response(
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                &bad_request_status(&path_str, "unsupported or missing Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
-            ));
-        };
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let kind_of_patch = match content_type.as_deref() {
+            Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                Some(kind) => kind,
+                None => {
+                    return Ok(json_response(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        &bad_request_status(&path_str, "unsupported Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
+                    ));
+                }
+            },
+            None => match rest::default_patch_kind_for_request(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(kind)) => kind,
+                Ok(None) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "resolving the default PATCH strategy failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            },
         };
         let body_bytes = match read_body_bytes(req).await {
             Ok(b) => b,
@@ -1820,14 +1834,27 @@ async fn handle(
     // `update_status` never itself returns but `rest::patch_status` can.
     if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource == "status" {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
-        let Some(kind_of_patch) = content_type.as_deref().and_then(rest::patch_kind_for_content_type) else {
-            return Ok(json_response(
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                &bad_request_status(&path_str, "unsupported or missing Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
-            ));
-        };
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let kind_of_patch = match content_type.as_deref() {
+            Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                Some(kind) => kind,
+                None => {
+                    return Ok(json_response(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        &bad_request_status(&path_str, "unsupported Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
+                    ));
+                }
+            },
+            None => match rest::default_patch_kind_for_request(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(kind)) => kind,
+                Ok(None) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "resolving the default PATCH strategy failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            },
         };
         let body_bytes = match read_body_bytes(req).await {
             Ok(b) => b,

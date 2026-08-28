@@ -660,7 +660,9 @@ parse.
 reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
 `strategic_merge`): the real `Content-Type` selects the patch kind
 (`application/json-patch+json`/`application/merge-patch+json`/
-`application/strategic-merge-patch+json` —
+`application/strategic-merge-patch+json`; when `Content-Type` is omitted,
+built-ins default to strategic merge and CRD-defined resources default to
+JSON merge patch —
 `rest::patch_kind_for_content_type`, a real `415` for anything else,
 Server-Side Apply's own `application/apply-patch+yaml` deliberately not
 recognized by this function — `server::listener` routes it into
@@ -959,8 +961,8 @@ resources; CRD-defined resources use the runtime-schema sibling
 `apiextensions::schema_apply`, including `managedFields`, associative-list
 ownership, and real conflict detection. Both paths share the same
 optimistic-concurrency persistence behavior.
-Default patch-strategy selection when `Content-Type` is omitted remains a
-separate gap; explicit strategic-merge requests honor the directive set.
+Explicit and default patch-strategy selection both honor the directive set;
+the default is strategic merge for built-ins and JSON merge patch for CRDs.
 
 **H. Authentication** — **started**. `authn::x509::identity_from_der`
 derives an `Identity{name, groups, credential_id}` from a client
