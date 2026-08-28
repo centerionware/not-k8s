@@ -1,6 +1,7 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use http::Request;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::authentication::v1::{
@@ -8,9 +9,10 @@ use k8s_openapi::api::authentication::v1::{
 };
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service, ServiceAccount};
+use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, WatchEvent, WatchParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
 use secrecy::SecretString;
 use serde_json::{json, Value};
@@ -439,6 +441,46 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         "nodeapiserver OpenAPI v2 response was not a populated Swagger document"
     );
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_watches_an_uncommon_builtin_resource(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("built-in watch-cache coverage is a nodeapiserver-only check"));
+    }
+
+    let name = format!("nodeapiserver-cache-{}", std::process::id());
+    let priority_classes: Api<PriorityClass> = Api::all(context.client.clone());
+    let watch = priority_classes.watch(&WatchParams::default().timeout(30), "0").await?;
+    futures::pin_mut!(watch);
+    let result = async {
+        let priority_class: PriorityClass = serde_json::from_value(json!({
+            "apiVersion": "scheduling.k8s.io/v1",
+            "kind": "PriorityClass",
+            "metadata": {"name": name.clone()},
+            "value": 123456,
+            "description": "nodeapiserver built-in cache e2e"
+        }))?;
+        priority_classes
+            .create(&PostParams::default(), &priority_class)
+            .await
+            .context("creating the uncommon built-in watch-cache fixture")?;
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            let event = tokio::time::timeout(Duration::from_secs(1), watch.next()).await;
+            let Ok(Some(event)) = event else { continue };
+            match event? {
+                WatchEvent::Added(object) | WatchEvent::Modified(object) if object.metadata.name.as_deref() == Some(name.as_str()) => return Ok(()),
+                WatchEvent::Error(status) => anyhow::bail!("built-in resource watch returned an error: {status:?}"),
+                _ => {}
+            }
+        }
+        anyhow::bail!("nodeapiserver did not deliver a watch event for the uncommon built-in resource")
+    }
+    .await;
+    let _ = priority_classes.delete(&name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(context: &E2eContext) -> Result<()> {
