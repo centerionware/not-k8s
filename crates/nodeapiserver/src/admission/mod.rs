@@ -174,37 +174,25 @@
 //! before a caller has actual decoded policy data to evaluate, instead of
 //! hand-built test fixtures.
 //!
+//! `policy_enforcement` is the storage-backed adapter for
+//! `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding`: it loads
+//! deny-capable bindings, evaluates the decoded policy against the final
+//! candidate object, and rejects the request before persistence. Parameter
+//! references and Warn/Audit reporting remain explicit gaps.
+//!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
 //! matching/persisted usage counter (above), a generic plugin-chain/
 //! registry abstraction to run more than one plugin without
 //! `server::listener` hand-calling each by name, mutating/validating
-//! admission webhooks themselves, and `ValidatingAdmissionPolicy`/
-//! `MutatingAdmissionPolicy` themselves as actual enforcement (both need
-//! `spec.paramRef` resolution and real CRUD/storage wiring — every real
-//! decision primitive `server::listener` would need now exists
+//! admission webhooks themselves, `MutatingAdmissionPolicy` itself as
+//! actual enforcement, `ValidatingAdmissionPolicy` parameter references,
+//! and Warn/Audit reporting — every real decision primitive
+//! `server::listener` would need now exists
 //! standalone, `match_conditions` through `validating_admission_policy`
 //! above (`policy_matching::build_eval_vars` is the real `object`/
 //! `oldObject`/`params` variable assembly itself; `PolicyOutcome::
 //! is_denial`/`validation_actions_deny` are the real enforcement-decision
-//! side), but nothing calls any of them from an actual admission request
-//! yet.
-//!
-//! **Deliberately not wired into `server::listener` this session**: doing
-//! so touches the live `CREATE`/`UPDATE`/`DELETE` path for every resource
-//! kind this crate serves — real, high-blast-radius surface — and this
-//! project's own merge protocol (`CLAUDE.md`) requires a behavioral
-//! change like this to be proven against a real running binary
-//! (`deploy/lib/test/cases/*.sh`, a real cluster, real `sudo`/root
-//! access) before it can honestly be called done, not just unit-tested.
-//! That infrastructure wasn't available this session — landing the wiring
-//! blind, with no way to verify it against a real request, would violate
-//! the same "verified against real infrastructure, not assumed correct"
-//! discipline `docs/E2E_FINDINGS.md` exists to enforce. Fetching the real
-//! `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding` objects
-//! a request should be evaluated against (including `paramRef`
-//! resolution) and the real call site in `server::listener` remain the
-//! next real work, once that verification is possible.
 
 pub mod attributes;
 pub mod default_storage_class;
@@ -214,6 +202,7 @@ pub mod match_conditions;
 pub mod namespace_lifecycle;
 pub mod pod_security;
 pub mod policy_decode;
+pub mod policy_enforcement;
 pub mod policy_matching;
 pub mod policy_validations;
 pub mod resource_quota;

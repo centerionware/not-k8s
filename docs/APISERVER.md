@@ -1053,7 +1053,7 @@ started. PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
 group.
 
-**J. Admission** — **started**. `admission::namespace_lifecycle` is a
+**J. Admission** — **in progress**. `admission::namespace_lifecycle` is a
 faithful port of real upstream's own `NamespaceLifecycle` plugin
 (`staging/src/k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle/admission.go`,
 fetched and read directly): forbids deleting the three immortal namespaces
@@ -1368,15 +1368,21 @@ Placed last among this crate's admission blocks (after `LimitRanger`'s
 own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.
 
+`ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` are now
+loaded from storage and deny-capable bindings are evaluated against the
+final candidate object before persistence. The existing pure policy
+decoder/matcher/CEL evaluator is reused; policies with `paramRef` are
+rejected as unsupported until parameter resolution exists, and Warn/Audit
+actions are not emitted yet.
+
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
 persisted usage counter (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
-ValidatingAdmissionPolicy/
-MutatingAdmissionPolicy on CEL. **Build the CEL cost budget before wiring
-any CEL-driven admission path** — an unbudgeted CEL evaluator in the
-request path is a denial-of-service surface.
+MutatingAdmissionPolicy. The ValidatingAdmissionPolicy path uses the
+existing per-expression deadline; the shared CEL cost budget remains a
+follow-up hardening item.
 
 **K. CRDs (apiextensions)** — **in progress**. Found on inspection, not
 assumed: `CustomResourceDefinition` itself needed *zero* new plumbing —

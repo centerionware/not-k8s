@@ -7,9 +7,10 @@ use k8s_openapi::api::authentication::v1::{
     TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec,
 };
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
-use k8s_openapi::api::core::v1::{Endpoints, Pod, Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
+use kube::Error as KubeError;
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
 use secrecy::SecretString;
 use serde_json::json;
@@ -415,6 +416,84 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
                 == Some("system:serviceaccount:kube-system:default".to_string())),
         "nodeapiserver TokenReview returned the wrong ServiceAccount identity"
     );
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("ValidatingAdmissionPolicy enforcement is a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let policy_name = format!("nodeapiserver-vap-{suffix}");
+    let binding_name = format!("nodeapiserver-vap-binding-{suffix}");
+    let policy = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingAdmissionPolicy",
+        "metadata": {"name": policy_name},
+        "spec": {
+            "failurePolicy": "Fail",
+            "matchConstraints": {
+                "resourceRules": [{
+                    "apiGroups": [""],
+                    "apiVersions": ["v1"],
+                    "operations": ["CREATE"],
+                    "resources": ["configmaps"]
+                }]
+            },
+            "validations": [{
+                "expression": "object.metadata.name == 'nodeapiserver-vap-allowed'",
+                "message": "this e2e policy only permits its named canary"
+            }]
+        }
+    });
+    let create_policy = Request::builder()
+        .method("POST")
+        .uri("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&policy)?)?;
+    context.client.request::<serde_json::Value>(create_policy).await.context("creating the e2e ValidatingAdmissionPolicy")?;
+
+    let binding = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingAdmissionPolicyBinding",
+        "metadata": {"name": binding_name},
+        "spec": {"policyName": policy_name, "validationActions": ["Deny"]}
+    });
+    let create_binding = Request::builder()
+        .method("POST")
+        .uri("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&binding)?)?;
+    context.client.request::<serde_json::Value>(create_binding).await.context("creating the e2e ValidatingAdmissionPolicyBinding")?;
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), "default");
+    let denied = configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(format!("nodeapiserver-vap-denied-{suffix}")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await;
+    match denied {
+        Err(KubeError::Api(error)) if error.code == 403 => {}
+        Err(error) => anyhow::bail!("ValidatingAdmissionPolicy denial returned the wrong API error: {error}"),
+        Ok(object) => anyhow::bail!("ValidatingAdmissionPolicy unexpectedly admitted {:?}", object.metadata.name),
+    }
+
+    for (method, uri) in [
+        ("DELETE", format!("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/{binding_name}")),
+        ("DELETE", format!("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/{policy_name}")),
+    ] {
+        let request = Request::builder().method(method).uri(uri).body(Vec::new())?;
+        let _ = context.client.request::<serde_json::Value>(request).await;
+    }
     Ok(())
 }
 
