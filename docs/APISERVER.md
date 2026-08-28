@@ -866,10 +866,15 @@ guessing at a rule for it, gating both `create` and `update`. Extending
 this to more resources is real, separate follow-up work, one verified
 entry at a time (the function's own doc comment says so explicitly).
 
-Conversion only needed for genuinely multi-version groups
-(admissionregistration, autoscaling, certificates, coordination,
-networking, resource, storage, apiserverinternal, storagemigration) —
-**not yet landed**.
+`scheme::conversion::to_version` now runs at the JSON response boundary for
+stored objects served through another API version. Compatible-shape resources
+receive the requested GVK, and the real autoscaling HPA v1/v2 CPU target is
+converted between v1's `targetCPUUtilizationPercentage` and v2's Resource
+metric form (including status). The remaining multi-version groups
+(admissionregistration, certificates, coordination, networking, resource,
+storage, apiserverinternal, storagemigration), plus their version-specific
+field conversions and conversion webhooks, remain explicit follow-up work;
+the converter does not silently claim those shapes are identical.
 
 `scheme::quantity::Quantity` parses real upstream's own resource-quantity
 string format (`100m`, `1.5Gi`, `1e3`, …) — a faithful port of the real
