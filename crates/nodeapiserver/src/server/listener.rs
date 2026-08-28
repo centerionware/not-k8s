@@ -13,17 +13,11 @@
 //! `rest::create`/`rest::delete`/`rest::update`, generic over every
 //! resource this build knows about — see `rest`'s own doc comment for
 //! exactly what's in and out of scope). `run()` also spawns a real
-//! `cacher::registry::CacheRegistry` cache for `BOOT_CACHED_RESOURCES` —
-//! a deliberately bounded, reasoned list (mostly core-group, plus real
-//! `crates/nodeproxy`'s own actual `discovery.k8s.io/v1` `EndpointSlice`
-//! dependency) of the resources a real cluster's own kubelets/kube-proxy/
-//! controllers read most heavily, not every resource this build knows
-//! about — and `GET`/`LIST`
-//! consult one whenever the request targets a resource in that list
-//! (`rest::get`/`rest::list`'s own `Option<&SharedCache>` parameter);
-//! every other resource still reads straight from nodestore (see
-//! `cacher::registry`'s own doc comment for why enumerating *every*
-//! resource at boot still isn't done). `WATCH` against a resource with a
+//! `cacher::registry::CacheRegistry` cache for every built-in resource in
+//! the generated discovery table; CRD-defined resources are registered
+//! lazily after their Established CRD is discovered. `GET`/`LIST`
+//! consult one whenever the request targets a registered resource.
+//! `WATCH` against a resource with a
 //! registered cache is real too now (`is_watch`'s own doc comment, and
 //! `watch_response_body`): the cache's own retained history replays
 //! first, then live events stream as they happen, real `Transfer-Encoding`
@@ -592,25 +586,16 @@ pub async fn run(cfg: Config) {
         }
     };
 
-    // Group D: a real, deliberately bounded first expansion beyond the
-    // original one-resource (`namespaces`) proof of concept. Registering
-    // a cache for every resource this build knows about at boot is still
-    // a real, separate, not-yet-made policy decision (`cacher::registry`'s
-    // own doc comment: spawning on the order of 90 concurrent,
-    // long-running reconnect loops at startup needs an ordering/pacing
-    // decision this crate hasn't made) — `BOOT_CACHED_RESOURCES` is a
-    // reasoned, small subset instead: the resources a real cluster's own
-    // kubelets/kube-proxy/controllers read most heavily (GET/LIST-heavy,
-    // write-light) -- mostly core-group, plus real `crates/nodeproxy`'s
-    // own actual `discovery.k8s.io/v1` `EndpointSlice` dependency, not
-    // an attempt at the general policy. `StorageClient::clone()` is
-    // cheap (a `tonic::transport::Channel`
-    // clone), so registering several of these costs no extra real
-    // connections.
+    // Group D: register one reflector for every built-in resource in the
+    // generated discovery table. `StorageClient::clone()` is cheap (a
+    // `tonic::transport::Channel` clone), and each reflector shares the
+    // same nodestore connection pool while keeping one cache per GVR, like
+    // a real informer factory. CRD-defined resources remain lazy because
+    // their GVRs do not exist until an Established CRD is stored.
     let cache_registry = crate::cacher::CacheRegistry::new();
     if let Some(s) = storage.as_ref() {
-        for (group, version, resource) in BOOT_CACHED_RESOURCES {
-            cache_registry.spawn(s.clone(), group, version, resource);
+        for resource in crate::codegen::api_resources::API_RESOURCES {
+            cache_registry.spawn(s.clone(), resource.group, resource.version, resource.resource);
         }
     }
 
@@ -652,7 +637,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = BOOT_CACHED_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = crate::codegen::api_resources::API_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
     let concurrency_limiter = Arc::new(crate::flowcontrol::limiter::ConcurrencyLimiter::new(
         cfg.apf_max_requests_inflight,
@@ -1025,28 +1010,6 @@ fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
 /// same as real upstream).
 const ANONYMOUS_USERNAME: &str = "system:anonymous";
 const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
-
-/// `(group, version, resource)` — `run()`'s own deliberately bounded
-/// first expansion of Group D's cache registration beyond the original
-/// single-resource (`namespaces`) proof of concept. See the call site's
-/// own doc comment for why this list, not "every resource," is the
-/// reasoned choice today.
-const BOOT_CACHED_RESOURCES: &[(&str, &str, &str)] = &[
-    ("", "v1", "namespaces"),
-    ("", "v1", "pods"),
-    ("", "v1", "services"),
-    ("", "v1", "secrets"),
-    ("", "v1", "configmaps"),
-    ("", "v1", "endpoints"),
-    ("", "v1", "nodes"),
-    // Real `crates/nodeproxy` watches `EndpointSlice`, not the legacy
-    // core/v1 `Endpoints` API this list already carried above
-    // (`crates/nodeproxy/src/svc.rs`'s own doc comment: "Backends come
-    // from `EndpointSlice` (not the legacy `Endpoints` API)") -- the
-    // resource this list's own stated rationale ("kube-proxy... read
-    // most heavily") actually meant was missing entirely until now.
-    ("discovery.k8s.io", "v1", "endpointslices"),
-];
 
 /// Group J: persists `ResourceQuota.status.used` after a successful pod/
 /// PVC/service `CREATE`, or the generic object-count evaluator's own
@@ -2916,10 +2879,9 @@ async fn handle(
                 }
             }
 
-            // `BOOT_CACHED_RESOURCES` (`run()`'s own doc comment) has a
-            // real cache registered; every other resource still gets
-            // `None` from `cache_registry.get`, same as before any cache
-            // existed. Shared by both verbs below; `rest::list`'s own doc
+            // Built-in resources have a real cache registered at startup;
+            // dynamically discovered CRD resources are registered lazily.
+            // Shared by both verbs below; `rest::list`'s own doc
             // comment covers why an unsynced cache is safe to pass here
             // too (it just falls through, same as `None`).
             let resource_cache = cache_registry.get(&info.api_group, &info.api_version, &info.resource);
@@ -3055,8 +3017,7 @@ async fn handle(
     }
 
     // Group D/E: real `WATCH`, served purely from an already-registered
-    // `cacher::CacheRegistry` cache — see `BOOT_CACHED_RESOURCES` for
-    // which resources that is today. A live cache already holds
+    // `cacher::CacheRegistry` cache. A live cache already holds
     // everything the read side of this handler needs (a snapshot to
     // replay from, a live event subscription), and if a resource has no
     // registered cache, this falls through to the RequestInfo echo below
@@ -3101,9 +3062,7 @@ async fn handle(
         // a live check against the dynamic CRD registry, lazily spawning
         // a cache for it right now on this, its first-ever watch request
         // (`cacher::registry::CacheRegistry::spawn` is callable at any
-        // time, not just at boot — see its own doc comment). A real
-        // built-in resource simply outside `BOOT_CACHED_RESOURCES` still
-        // gets no watch support, exactly as before Group K existed — only
+        // time, not just at boot — see its own doc comment). Only
         // a resource the static table has never heard of falls through to
         // the dynamic check, so this never masks a genuine 404 as "maybe
         // a CRD." **Named, honest scope**: nothing proactively reacts to
@@ -3130,6 +3089,12 @@ async fn handle(
         };
 
         if let Some((cache, kind)) = cache_and_kind {
+            if !cache.has_synced() {
+                if tokio::time::timeout(std::time::Duration::from_secs(30), cache.wait_until_synced()).await.is_err() {
+                    warn!(path = %path_str, "watch: cache did not complete its initial LIST before the startup wait expired");
+                    return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "watch cache is not synchronized yet")));
+                }
+            }
             // Same real label/field selector parsing `rest::list` already
             // runs — a malformed selector is the client's fault, a `400`,
             // not a server failure, checked before the stream even starts
