@@ -1983,21 +1983,15 @@ async fn handle(
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         if enforce_rbac {
-            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
+                Ok(allowed) => allowed,
+                Err(error) => {
+                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
             };
-            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, "").await;
-            let attrs = authz::rbac::RequestAttributes {
-                is_resource_request: true,
-                verb: "create",
-                api_group: &info.api_group,
-                resource: &info.resource,
-                subresource: &info.subresource,
-                name: &info.name,
-                path: &path_str,
-            };
-            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+            if !allowed {
+                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                 return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
             }
         }
@@ -2047,21 +2041,15 @@ async fn handle(
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         if enforce_rbac {
-            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
+                Ok(allowed) => allowed,
+                Err(error) => {
+                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
             };
-            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
-            let attrs = authz::rbac::RequestAttributes {
-                is_resource_request: true,
-                verb: "create",
-                api_group: "",
-                resource: "serviceaccounts",
-                subresource: "token",
-                name: &info.name,
-                path: &path_str,
-            };
-            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+            if !allowed {
+                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                 return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
             }
         }
@@ -2171,21 +2159,15 @@ async fn handle(
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
 
         if enforce_rbac {
-            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
+                Ok(allowed) => allowed,
+                Err(error) => {
+                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
             };
-            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
-            let attrs = authz::rbac::RequestAttributes {
-                is_resource_request: true,
-                verb: &info.verb,
-                api_group: &info.api_group,
-                resource: &info.resource,
-                subresource: &info.subresource,
-                name: &info.name,
-                path: &path_str,
-            };
-            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+            if !allowed {
+                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                 return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
             }
         }
@@ -2275,21 +2257,17 @@ async fn handle(
         // rather than reusing whatever the plain `pods` `get` branch
         // below would decide.
         if enforce_rbac {
-            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            let mut authz_info = info.clone();
+            authz_info.verb = "get".to_string();
+            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &authz_info).await {
+                Ok(allowed) => allowed,
+                Err(error) => {
+                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
             };
-            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
-            let attrs = authz::rbac::RequestAttributes {
-                is_resource_request: true,
-                verb: "get",
-                api_group: &info.api_group,
-                resource: &info.resource,
-                subresource: &info.subresource,
-                name: &info.name,
-                path: &path_str,
-            };
-            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+            if !allowed {
+                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                 return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
             }
         }
@@ -2713,21 +2691,15 @@ async fn handle(
             // identity is evaluated as the real anonymous user/group
             // upstream itself uses, not silently skipped.
             if enforce_rbac {
-                let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                    Some(id) => (id.name.as_str(), id.groups.clone()),
-                    None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+                let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
+                    Ok(allowed) => allowed,
+                    Err(error) => {
+                        warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
                 };
-                let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
-                let attrs = authz::rbac::RequestAttributes {
-                    is_resource_request: true,
-                    verb: &info.verb,
-                    api_group: &info.api_group,
-                    resource: &info.resource,
-                    subresource: &info.subresource,
-                    name: &info.name,
-                    path: "",
-                };
-                if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                if !allowed {
+                    let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                     return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
                 }
             }
@@ -2993,23 +2965,17 @@ async fn handle(
     // the verb) — not a gap.
     if is_watch {
         if enforce_rbac {
-            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
-            };
             match storage.clone() {
                 Some(mut client) => {
-                    let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
-                    let attrs = authz::rbac::RequestAttributes {
-                        is_resource_request: true,
-                        verb: &info.verb,
-                        api_group: &info.api_group,
-                        resource: &info.resource,
-                        subresource: &info.subresource,
-                        name: &info.name,
-                        path: "",
+                    let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
+                        Ok(allowed) => allowed,
+                        Err(error) => {
+                            warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
                     };
-                    if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                    if !allowed {
+                        let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                         return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
                     }
                 }

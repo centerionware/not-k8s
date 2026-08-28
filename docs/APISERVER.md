@@ -1000,7 +1000,7 @@ for issuer requests, and a rotated JWKS is refreshed once on verification
 failure. Bootstrap tokens and the remaining anonymous-authentication
 configuration are not started.
 
-**I. Authorization** — **started**. `authz::rbac` is the RBAC
+**I. Authorization** — **in progress**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own
 `VerbMatches`/`APIGroupMatches`/`ResourceMatches`/`ResourceNameMatches`/
 `NonResourceURLMatches` (`pkg/apis/rbac/v1/evaluation_helpers.go`) and
@@ -1066,11 +1066,18 @@ explicit deny either — only allow/no-opinion — and this crate's engine
 doesn't track which rule matched to build a `reason` string);
 `SelfSubjectRulesReview`'s own `incomplete`/`evaluationError` **are**
 populated, straight from `resolve::rules_for`'s own per-binding
-resolution errors. Node authorizer is wired separately; an optional
-`NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL` delegates each parsed request to
-an external `authorization.k8s.io/v1` `SubjectAccessReview` authorizer.
-Denials return `403`, and webhook failures fail closed with `503`.
-PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
+resolution errors. `authz::node` now implements the Node authorizer's
+node-identity checks, node/lease/CSINode ownership rules, field-selector
+scoping for pod and ResourceSlice watches, and storage-backed relationship
+checks for pods, Secrets, ConfigMaps, PVCs, PVs, ServiceAccount token
+requests, ResourceClaims, and VolumeAttachments. It runs before RBAC on
+the nodeapiserver target, so a broad legacy `system:node` binding cannot
+bypass those object-specific checks. The remaining authorization gap is
+webhook authorization. An optional `NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL`
+delegates each parsed request to an external
+`authorization.k8s.io/v1` `SubjectAccessReview` authorizer; denials return
+`403`, and webhook failures fail closed with `503`. PKI primitives
+(`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
 group.
 
