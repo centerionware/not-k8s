@@ -1,25 +1,12 @@
 //! A registry of per-resource watch caches, each kept live by its own
-//! `cacher::driver::reflect()` background task — the piece named "not yet
-//! started" repeatedly across this crate's own doc comments (nothing in
-//! `lib.rs::run()` calls `reflect()` at all today).
+//! `cacher::driver::reflect()` background task.
 //!
 //! # What this is, and deliberately isn't yet
 //!
 //! This module can start one reflector for one resource and hand back a
-//! [`SharedCache`] to read from — the primitive. It does **not** yet
-//! enumerate "every resource this build knows about" and start one for
-//! each at boot: spawning on the order of 90 concurrent, long-running
-//! reconnect loops against nodestore at process startup is a real
-//! resource/ordering decision this crate hasn't made yet (how many at
-//! once, in what order, whether to wait for any to sync before serving
-//! traffic), not an oversight. That boot-time integration for *every*
-//! resource is the remaining, not-yet-started follow-up work — the read
-//! side is no longer blocked on it: `server::rest::get`/`list` both
-//! already consult whatever cache a caller hands them (`rest`'s own doc
-//! comment), and `server::listener::run` now calls `spawn` for a
-//! deliberately bounded, reasoned list of resources
-//! (`BOOT_CACHED_RESOURCES`), not just the original one-resource
-//! (`namespaces`) proof of concept.
+//! [`SharedCache`] to read from. The listener uses that primitive for every
+//! built-in resource at startup; CRD-defined resources are registered lazily
+//! once their live discovery entry exists.
 //!
 //! Cache scope matches real kube-apiserver's own: one cache per
 //! `(group, version, resource)`, covering every namespace at once (not
@@ -72,8 +59,8 @@ impl CacheRegistry {
     /// registers the [`SharedCache`] it keeps live, replacing any
     /// previous registration for the same key (the old reflector, if any,
     /// keeps running against its own now-orphaned cache until the process
-    /// exits — restarting a registration cleanly is separate, not-yet-needed
-    /// work, since nothing calls this more than once per resource yet).
+    /// exits — restarting a registration cleanly is separate work, since
+    /// startup registers each built-in GVR only once.
     /// Returns the cache immediately; it starts empty and populates once
     /// the first `LIST` completes — a reader that consults it before then
     /// just sees a not-yet-synced cache, the same window a real

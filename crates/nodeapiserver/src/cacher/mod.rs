@@ -26,10 +26,8 @@
 //! comment).
 //! `registry` — starts a `driver::reflect()` background loop for one
 //! resource and hands back the `SharedCache` it keeps live
-//! (`CacheRegistry::spawn`). The primitive only — it does not yet
-//! enumerate every resource this build knows about and start one for
-//! each at boot (a real integration decision, not built) — see that
-//! module's own doc comment for exactly what's deferred and why.
+//! (`CacheRegistry::spawn`). The listener invokes it for every built-in
+//! resource at boot and lazily for CRD-defined resources.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
 //! `SharedCache` (including `has_synced()` — real `client-go`
@@ -46,12 +44,9 @@
 //! passed in (`get`: a hit skips nodestore, a miss always falls through;
 //! `list`: only once `has_synced()`, for the reason above — see `rest`'s
 //! own doc comment for the full contract of each).
-//! **Not yet landed**: a per-Kind `SelectableFields` allowlist, and
-//! registering a cache for *every* resource at boot — today
-//! `server::listener`'s own `BOOT_CACHED_RESOURCES` (a deliberately
-//! bounded, reasoned list, not every resource) is what passes
-//! `Some(cache)` to `get`/`list`; every resource outside that list still
-//! passes `None`, same as before caching existed for it.
+//! **Not yet landed**: a per-Kind `SelectableFields` allowlist. Built-in
+//! resources are registered at boot; CRD-defined resources are registered
+//! lazily after discovery.
 
 pub mod store;
 pub mod driver;

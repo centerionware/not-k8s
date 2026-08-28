@@ -38,10 +38,10 @@
 //! than trusting the cache to say "not found"; `list`: only once the
 //! cache's own `has_synced()` is true, since an empty `list()` is a
 //! valid answer on its own, not a fallthrough signal the way a `get`
-//! miss is). `server::listener` actually does this for a deliberately
-//! bounded list of resources (`server::listener`'s own
-//! `BOOT_CACHED_RESOURCES`); every resource outside that list still
-//! passes `None` to both. `create`/`update`/`delete` still read/write
+//! miss is). `server::listener` actually does this for every built-in
+//! resource in the generated discovery table; dynamically defined CRD
+//! resources are still registered lazily after discovery. `create`/`update`/
+//! `delete` still read/write
 //! straight to `storage::client::StorageClient` directly, bypassing the
 //! cache entirely — a real, valid strategy (upstream's own quorum-read /
 //! watch-cache-disabled path takes exactly this shape), not a shortcut.
@@ -434,11 +434,8 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// latency optimization on the hit path, never a correctness risk on the
 /// miss path — real upstream's own watch cache takes the same
 /// "consistent read falls through" posture for exactly this reason.
-/// `None` behaves exactly as before this parameter existed — the only
-/// real call site passing `Some` today is `server::listener`'s own
-/// `BOOT_CACHED_RESOURCES` list (see that module's own doc comment);
-/// every resource outside that list, and every other caller, still
-/// passes `None`.
+/// `None` behaves exactly as before this parameter existed; callers outside
+/// the listener's cache path can still pass `None`.
 pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
     get_at_revision(storage, cache, group, version, resource, namespace, name, 0).await
 }
@@ -541,9 +538,9 @@ fn list_kind(kind: &str) -> String {
 /// so this checks `has_synced()` up front instead (see that method's own
 /// doc comment for why it's a real flag, not inferred from the revision).
 /// An unsynced cache falls through to nodestore exactly as `cache: None`
-/// would. `None` behaves exactly as before this parameter existed; every
-/// call site but `server::listener`'s own `BOOT_CACHED_RESOURCES` list
-/// still passes `None` (same scope `get`'s own cache parameter is at).
+/// would. `None` behaves exactly as before this parameter existed; callers
+/// outside the listener's cache path still pass `None` (same scope as
+/// `get`'s own cache parameter).
 pub async fn list(
     storage: &mut StorageClient,
     cache: Option<&crate::cacher::store::SharedCache>,

@@ -14,7 +14,7 @@
 //! consistent reads, watch replay), not to shield the backend from load.
 
 use std::collections::{BTreeMap, VecDeque};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, Notify};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
@@ -277,6 +277,7 @@ pub async fn wait_for_revision(rx: &mut watch::Receiver<i64>, target: i64) {
 pub struct SharedCache {
     inner: std::sync::Arc<std::sync::RwLock<WatchCache>>,
     synced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    sync_notify: std::sync::Arc<Notify>,
 }
 
 impl SharedCache {
@@ -284,6 +285,7 @@ impl SharedCache {
         SharedCache {
             inner: std::sync::Arc::new(std::sync::RwLock::new(cache)),
             synced: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sync_notify: std::sync::Arc::new(Notify::new()),
         }
     }
 
@@ -301,6 +303,23 @@ impl SharedCache {
     /// a later relist replaces the data, it doesn't un-sync the cache.
     pub fn has_synced(&self) -> bool {
         self.synced.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Waits for the first successful reflector `LIST`. A watch opened
+    /// before that snapshot is ready would otherwise subscribe to the
+    /// temporary pre-sync cache and be closed when `replace()` installs the
+    /// real snapshot.
+    pub async fn wait_until_synced(&self) {
+        loop {
+            if self.has_synced() {
+                return;
+            }
+            let notified = self.sync_notify.notified();
+            if self.has_synced() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub fn revision(&self) -> i64 {
@@ -340,6 +359,7 @@ impl SharedCache {
     pub fn replace(&self, cache: WatchCache) {
         *self.write() = cache;
         self.synced.store(true, std::sync::atomic::Ordering::Release);
+        self.sync_notify.notify_waiters();
     }
 }
 

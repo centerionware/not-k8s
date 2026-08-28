@@ -199,6 +199,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_watches_an_uncommon_builtin_resource",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_validating_admission_policy_denies_create",
         group: TestGroup::General,
     },
@@ -1544,6 +1548,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
+        "test_nodeapiserver_watches_an_uncommon_builtin_resource" => {
+            bootstrap::nodeapiserver_watches_an_uncommon_builtin_resource(context).await
+        },
         "test_nodeapiserver_validating_admission_policy_denies_create" => {
             bootstrap::nodeapiserver_validating_admission_policy_denies_create(context).await
         },
