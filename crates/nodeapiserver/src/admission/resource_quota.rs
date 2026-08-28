@@ -114,7 +114,7 @@
 
 use crate::admission::limit_ranger::{pod_limits, pod_requests};
 use crate::scheme::quantity::Quantity;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub fn applies_to(operation: crate::admission::attributes::Operation, group: &str, resource: &str, subresource: &str) -> bool {
@@ -870,6 +870,7 @@ pub fn usage_after_object_count_create(group: &str, resource: &str, existing_obj
 mod tests {
     use super::*;
     use crate::admission::attributes::Operation;
+    use serde_json::json;
 
     fn pod_with_cpu_request(name: &str, cpu: &str) -> Value {
         json!({"metadata": {"name": name}, "spec": {"containers": [{"name": "c1", "resources": {"requests": {"cpu": cpu}}}]}})

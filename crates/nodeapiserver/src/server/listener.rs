@@ -1060,7 +1060,7 @@ async fn handle_with_audit(
     // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
     // has, not a new gap this metric introduces.
     let start = std::time::Instant::now();
-    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, oidc_authenticator, enforce_rbac, kubelet_tls).await;
+    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, kubelet_tls).await;
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
@@ -1197,7 +1197,6 @@ async fn handle(
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
-    oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     enforce_rbac: bool,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {

@@ -42,7 +42,6 @@
 //! has no equivalent here — there is no overflow to avoid within any
 //! realistic magnitude.
 
-use std::cmp::Ordering;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

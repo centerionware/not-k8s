@@ -43,6 +43,7 @@ thiserror = { workspace = true }
 # type; nothing here does that yet), so Value is what a format-transcoding
 # layer with no typed object model underneath can honestly operate on.
 serde_json = { workspace = true }
+serde = { workspace = true }
 serde_yaml = "0.9"
 # protobuf's `bytes` fields are base64 in the JSON representation — the
 # same convention every other Kubernetes JSON<->protobuf codec follows.

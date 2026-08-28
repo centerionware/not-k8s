@@ -39,7 +39,7 @@
 //!
 //! Status: in progress (see docs/APISERVER.md).
 
+pub mod oidc;
 pub mod self_review;
 pub mod service_account;
-pub mod oidc;
 pub mod x509;
