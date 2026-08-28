@@ -48,10 +48,9 @@ const CREATED_AT_DESCRIPTION: &str = "CreationTimestamp is a timestamp represent
 /// `defaultTableConvertor.ConvertToTable`'s real behavior field-for-field:
 /// one row per item (or the one object itself), `object` on each row set
 /// to the full item (real upstream's `IncludeObjectPolicy` default is
-/// actually `Metadata`-only, but this build has no `PartialObjectMetadata`
-/// support yet — see `codec` module doc — so the full object is used
-/// instead, a strict superset of what a client asked for rather than a
-/// silently wrong response), and `ResourceVersion`/`Continue`/
+/// actually `Metadata`-only; clients that need the standard metadata-only
+/// representation can negotiate `PartialObjectMetadata` through
+/// `codec::partial_metadata`), and `ResourceVersion`/`Continue`/
 /// `RemainingItemCount` copied through from a List's own metadata.
 pub fn convert_to_table(object: &Value) -> Value {
     let items = list_items(object);

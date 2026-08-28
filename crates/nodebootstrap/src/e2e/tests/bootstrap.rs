@@ -583,6 +583,80 @@ pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_serves_partial_object_metadata(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "the cluster is using the upstream apiserver target",
+        ));
+    }
+
+    let accept = "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1, application/json";
+    let object_request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/namespaces/default/services/kubernetes")
+        .header("Accept", accept)
+        .body(Vec::new())?;
+    let object: serde_json::Value = context
+        .client
+        .request(object_request)
+        .await
+        .context("requesting a PartialObjectMetadata Service")?;
+    anyhow::ensure!(
+        object.get("apiVersion").and_then(|value| value.as_str()) == Some("meta.k8s.io/v1")
+            && object.get("kind").and_then(|value| value.as_str())
+                == Some("PartialObjectMetadata"),
+        "nodeapiserver returned the wrong PartialObjectMetadata object shape: {object}"
+    );
+    anyhow::ensure!(
+        object.pointer("/metadata/name").and_then(|value| value.as_str()) == Some("kubernetes"),
+        "PartialObjectMetadata object lost the Service metadata: {object}"
+    );
+    anyhow::ensure!(
+        object.get("spec").is_none() && object.get("status").is_none(),
+        "PartialObjectMetadata response included the full object: {object}"
+    );
+
+    let list_request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/namespaces/default/services")
+        .header("Accept", accept)
+        .body(Vec::new())?;
+    let list: serde_json::Value = context
+        .client
+        .request(list_request)
+        .await
+        .context("requesting a PartialObjectMetadata ServiceList")?;
+    anyhow::ensure!(
+        list.get("apiVersion").and_then(|value| value.as_str()) == Some("meta.k8s.io/v1")
+            && list.get("kind").and_then(|value| value.as_str())
+                == Some("PartialObjectMetadataList"),
+        "nodeapiserver returned the wrong PartialObjectMetadataList shape: {list}"
+    );
+    let items = list
+        .get("items")
+        .and_then(|value| value.as_array())
+        .context("PartialObjectMetadataList had no items array")?;
+    anyhow::ensure!(
+        items.iter().any(|item| {
+            item.pointer("/metadata/name").and_then(|value| value.as_str()) == Some("kubernetes")
+        }),
+        "PartialObjectMetadataList did not include the kubernetes Service: {list}"
+    );
+    anyhow::ensure!(
+        items
+            .iter()
+            .all(|item| item.get("kind").and_then(|value| value.as_str())
+                == Some("PartialObjectMetadata")
+                && item.get("spec").is_none()
+                && item.get("status").is_none()),
+        "PartialObjectMetadataList contained a full object: {list}"
+    );
+    Ok(())
+}
+
 pub(super) async fn graceful_node_shutdown_manual_note(_context: &E2eContext) -> Result<()> {
     Err(skip_test(
         "graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case",

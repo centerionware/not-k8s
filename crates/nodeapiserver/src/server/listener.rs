@@ -2299,7 +2299,9 @@ async fn handle(
         // Same reasoning — `GET`/`LIST`'s own `Table` negotiation
         // (`kubectl get`'s real default `Accept` header) needs this
         // after `req` may already be gone.
-        let wants_table = req.headers().get("accept").and_then(|v| v.to_str().ok()).and_then(negotiation::negotiate).map(|a| a.wants_table()).unwrap_or(false);
+        let accepted = req.headers().get("accept").and_then(|v| v.to_str().ok()).and_then(negotiation::negotiate);
+        let wants_table = accepted.as_ref().is_some_and(|a| a.wants_table());
+        let wants_partial_metadata = accepted.as_ref().is_some_and(|a| a.wants_partial_object_metadata());
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
@@ -2726,7 +2728,13 @@ async fn handle(
             if is_get {
                 match rest::get_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, resource_version_query(&query)).await {
                     Ok(rest::GetOutcome::Found(object)) => {
-                        let body = if wants_table { crate::codec::table::convert_to_table(&object) } else { object };
+                        let body = if wants_table {
+                            crate::codec::table::convert_to_table(&object)
+                        } else if wants_partial_metadata {
+                            crate::codec::partial_metadata::object(&object)
+                        } else {
+                            object
+                        };
                         return Ok(json_response(StatusCode::OK, &body));
                     }
                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
@@ -2740,7 +2748,13 @@ async fn handle(
             } else if is_list {
                 match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
-                        let body = if wants_table { crate::codec::table::convert_to_table(&list) } else { list };
+                        let body = if wants_table {
+                            crate::codec::table::convert_to_table(&list)
+                        } else if wants_partial_metadata {
+                            crate::codec::partial_metadata::list(&list)
+                        } else {
+                            list
+                        };
                         return Ok(json_response(StatusCode::OK, &body));
                     }
                     Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
