@@ -229,6 +229,7 @@ const COREDNS_NAMESPACE: &str = "kube-system";
 const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
 const CNI_SEED_NAME: &str = "nodebootstrap-cni-seed";
 const COREDNS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const COREDNS_API_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Double the delay, up to the ceiling.
 ///
@@ -293,8 +294,8 @@ impl PodController {
             // before checking CoreDNS: a slow or stuck readiness LIST must
             // not prevent the seed from creating cni0, which would leave
             // CoreDNS unable to start and make this gate permanent.
-            match seed_api.get_opt(CNI_SEED_NAME).await {
-                Ok(Some(seed))
+            match tokio::time::timeout(COREDNS_API_TIMEOUT, seed_api.get_opt(CNI_SEED_NAME)).await {
+                Ok(Ok(Some(seed)))
                     if seed
                         .spec
                         .as_ref()
@@ -303,14 +304,20 @@ impl PodController {
                 {
                     self.reconcile(seed).await;
                 }
-                Ok(Some(_)) | Ok(None) => {}
-                Err(error) => warn!(?error, "failed to inspect the CNI seed Pod; retrying"),
+                Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
+                Ok(Err(error)) => warn!(?error, "failed to inspect the CNI seed Pod; retrying"),
+                Err(_) => warn!(timeout_secs = COREDNS_API_TIMEOUT.as_secs(), "timed out inspecting the CNI seed Pod; retrying"),
             }
 
-            let pods = match api.list(&params).await {
-                Ok(pods) => pods,
-                Err(error) => {
+            let pods = match tokio::time::timeout(COREDNS_API_TIMEOUT, api.list(&params)).await {
+                Ok(Ok(pods)) => pods,
+                Ok(Err(error)) => {
                     warn!(?error, "failed to inspect CoreDNS readiness; retrying");
+                    tokio::time::sleep(COREDNS_POLL_INTERVAL).await;
+                    continue;
+                }
+                Err(_) => {
+                    warn!(timeout_secs = COREDNS_API_TIMEOUT.as_secs(), "timed out inspecting CoreDNS readiness; retrying");
                     tokio::time::sleep(COREDNS_POLL_INTERVAL).await;
                     continue;
                 }
