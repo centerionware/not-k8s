@@ -79,11 +79,17 @@ fn schema_property<'a>(schema: &'a Value, name: &str) -> Option<&'a Value> {
         .get("properties")
         .and_then(Value::as_object)
         .and_then(|properties| properties.get(name))
-        .or_else(|| schema.get("additionalProperties").filter(Value::is_object))
+        .or_else(|| {
+            schema
+                .get("additionalProperties")
+                .filter(|value| value.is_object())
+        })
 }
 
 fn additional_schema(schema: &Value) -> Option<&Value> {
-    schema.get("additionalProperties").filter(Value::is_object)
+    schema
+        .get("additionalProperties")
+        .filter(|value| value.is_object())
 }
 
 fn list_type(schema: &Value) -> &str {
