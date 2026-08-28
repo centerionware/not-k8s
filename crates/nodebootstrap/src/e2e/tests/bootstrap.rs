@@ -450,12 +450,29 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
     let suffix = std::process::id();
     let policy_name = format!("nodeapiserver-vap-{suffix}");
     let binding_name = format!("nodeapiserver-vap-binding-{suffix}");
+    let parameter_name = format!("nodeapiserver-vap-parameter-{suffix}");
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), "default");
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(parameter_name.clone()),
+                    ..Default::default()
+                },
+                data: Some(BTreeMap::from([("allowed".to_string(), format!("nodeapiserver-vap-allowed-{suffix}"))])),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the ValidatingAdmissionPolicy parameter ConfigMap")?;
     let policy = json!({
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "ValidatingAdmissionPolicy",
         "metadata": {"name": policy_name},
         "spec": {
             "failurePolicy": "Fail",
+            "paramKind": {"apiGroup": "", "kind": "ConfigMap"},
             "matchConstraints": {
                 "resourceRules": [{
                     "apiGroups": [""],
@@ -465,7 +482,7 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
                 }]
             },
             "validations": [{
-                "expression": "object.metadata.name == 'nodeapiserver-vap-allowed'",
+                "expression": "params.data.allowed == object.metadata.name",
                 "message": "this e2e policy only permits its named canary"
             }]
         }
@@ -481,7 +498,11 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "ValidatingAdmissionPolicyBinding",
         "metadata": {"name": binding_name},
-        "spec": {"policyName": policy_name, "validationActions": ["Deny"]}
+        "spec": {
+            "policyName": policy_name,
+            "validationActions": ["Deny"],
+            "paramRef": {"name": parameter_name, "parameterNotFoundAction": "Deny"}
+        }
     });
     let create_binding = Request::builder()
         .method("POST")
@@ -490,7 +511,6 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
         .body(serde_json::to_vec(&binding)?)?;
     context.client.request::<serde_json::Value>(create_binding).await.context("creating the e2e ValidatingAdmissionPolicyBinding")?;
 
-    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), "default");
     let denied = configmaps
         .create(
             &PostParams::default(),
@@ -508,6 +528,24 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
         Err(error) => anyhow::bail!("ValidatingAdmissionPolicy denial returned the wrong API error: {error}"),
         Ok(object) => anyhow::bail!("ValidatingAdmissionPolicy unexpectedly admitted {:?}", object.metadata.name),
     }
+    let allowed_name = format!("nodeapiserver-vap-allowed-{suffix}");
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(allowed_name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the parameter-approved ConfigMap")?;
+    configmaps
+        .delete(&allowed_name, &DeleteParams::default())
+        .await
+        .context("cleaning up the parameter-approved ConfigMap")?;
 
     for (method, uri) in [
         ("DELETE", format!("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/{binding_name}")),
@@ -972,6 +1010,9 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     let _ = roles.delete(&role_name, &DeleteParams::default()).await;
     let _ = service_accounts
         .delete(&service_account_name, &DeleteParams::default())
+        .await;
+    let _ = configmaps
+        .delete(&parameter_name, &DeleteParams::default())
         .await;
     let _ = fs::remove_dir_all(&scratch);
     result
