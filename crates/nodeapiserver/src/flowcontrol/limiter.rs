@@ -144,8 +144,10 @@ mod tests {
     #[tokio::test]
     async fn queue_limit_rejects_without_waiting_forever() {
         let limiter = ConcurrencyLimiter::new(1, 1, 0);
+        let first = limiter.acquire(&request("get"), "", false).await.unwrap().unwrap();
         let error = limiter.acquire(&request("get"), "", false).await.unwrap_err();
         assert_eq!(error, Error::QueueFull);
+        drop(first);
     }
 
     #[tokio::test]
