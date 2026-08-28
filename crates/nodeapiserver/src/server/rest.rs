@@ -1809,6 +1809,20 @@ mod tests {
     }
 
     #[test]
+    fn resolve_kind_finds_namespaced_rbac_resources() {
+        for (resource, kind, schema) in [
+            ("roles", "Role", "io.k8s.api.rbac.v1.Role"),
+            ("rolebindings", "RoleBinding", "io.k8s.api.rbac.v1.RoleBinding"),
+        ] {
+            assert_eq!(resolve_kind("rbac.authorization.k8s.io", "v1", resource), Some(kind));
+            assert_eq!(
+                protobuf::schema_for_gvk("rbac.authorization.k8s.io", "v1", kind),
+                Some(schema)
+            );
+        }
+    }
+
+    #[test]
     fn resolve_kind_is_none_for_an_unknown_resource_or_group_version() {
         assert_eq!(resolve_kind("", "v1", "totally-made-up"), None);
         assert_eq!(resolve_kind("totally.made.up", "v1", "pods"), None);
