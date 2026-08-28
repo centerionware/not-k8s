@@ -12,11 +12,10 @@
 //! grammar `fieldset`'s own doc comment already ports) — no separate
 //! parser needed here.
 //!
-//! Not yet wired into `server::rest` — this module is the storage-shape
-//! primitive; the request-handling glue (parsing `metadata.managedFields`
-//! off a stored object, calling `updater::apply`/`update`, writing the
-//! rebuilt array back, `application/apply-patch+yaml` content-type
-//! routing) is separate, not-yet-started work.
+//! `server::rest` uses this module for the request-handling glue: it parses
+//! `metadata.managedFields` from stored objects, calls the appropriate
+//! updater, and writes the rebuilt array back. The listener routes the
+//! Apply media type separately from ordinary patch kinds.
 
 use super::fieldset::{DeserializeError, Set};
 use std::collections::BTreeMap;
