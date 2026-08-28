@@ -1408,9 +1408,9 @@ plugin order uses, so quota sees the final, fully-defaulted object.
 `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` are now
 loaded from storage and deny-capable bindings are evaluated against the
 final candidate object before persistence. The existing pure policy
-decoder/matcher/CEL evaluator is reused; policies with `paramRef` are
-rejected as unsupported until parameter resolution exists, and Warn/Audit
-actions are not emitted yet.
+decoder/matcher/CEL evaluator is reused; named and selector-based
+`paramRef` objects are resolved through generic REST storage, and
+Warn/Audit actions are not emitted yet.
 
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
 persisted usage counter (above), a
@@ -1869,10 +1869,12 @@ used*:
    static `UsesOldSelf`/uncorrelatable-schema
    rejection at CRD-acceptance time (an `oldSelf`-referencing rule that
    can't validly correlate old/new values in some schema shapes).
-5. Wire into Group J: `ValidatingAdmissionPolicy`/`MutatingAdmissionPolicy`
-   and mutating/validating admission webhooks themselves — the actual
-   *admission enforcement* (matching a request to a policy, running its
-   rules against it) is still **not started**. But
+5. **ValidatingAdmissionPolicy enforcement is landed.**
+   `admission::policy_enforcement` loads policies and bindings from storage,
+   resolves named or selector-based `paramRef` objects, and evaluates every
+   matching deny-capable binding against the final candidate object before
+   persistence. It also supplies `oldObject` for update/delete and the real
+   `request.dryRun` value. MutatingAdmissionPolicy remains separate work.
    `ValidatingAdmissionPolicy` itself is now **confirmed, live, working
    generic CRUD** (`tests/validating_admission_policy_roundtrip.rs`, a
    real round trip against a real `nodestore`: create/get/list/update/
@@ -1910,8 +1912,8 @@ used*:
    `eval_bool`/`eval_bool_with_deadline` to an arbitrary named-variable
    set (`object`/`oldObject`/`request`/`params`, not just `self`/
    `oldSelf`) — landed in the same PR, `eval_bool`/`eval_bool_with_deadline`
-   now thin wrappers around it, behavior unchanged. **Not yet wired to
-   anything real**: this is the standalone primitive.
+   now thin wrappers around it, behavior unchanged. The storage-backed
+   policy adapter calls it for real admission requests.
 
    **The `resourceRules`/`namespaceSelector`/`objectSelector` matching
    engine and `request` CEL variable construction are also now landed**,
@@ -2007,22 +2009,11 @@ used*:
    named, honest gap, this crate having no warning-header/audit-event
    plumbing to report them through yet).
 
-   Every real decision primitive `server::listener` would need to
-   actually enforce a `ValidatingAdmissionPolicy` on a real request now
-   exists standalone and is unit-tested — `match_conditions` through
-   `validating_admission_policy`'s own `is_denial`/`validation_actions_deny`.
-   **Deliberately not wired into `server::listener` this session**: real
-   CRUD/`paramRef` resolution for `ValidatingAdmissionPolicy`/
-   `ValidatingAdmissionPolicyBinding` and the actual call site both remain
-   not-yet-started, and — named explicitly, not silently skipped — that
-   wiring touches the live `CREATE`/`UPDATE`/`DELETE` path for every
-   resource kind this crate serves, which this project's own merge
-   protocol requires proving against a real running binary
-   (`deploy/lib/test/cases/*.sh`, a real cluster) before it can honestly
-   be called done. That infrastructure wasn't available this session;
-   landing it blind would be exactly the "assumed correct from reading
-   the spec" mistake `docs/E2E_FINDINGS.md` exists to catch, not a
-   missing-primitive gap.
+   The storage-backed adapter is wired into `server::listener` after
+   authorization and before persistence. Parameter references support named
+   and label-selected parameters, including `parameterNotFoundAction`;
+   `Warn`/`Audit` reporting and the additional `namespaceObject`,
+   `variables`, and `authorizer` CEL bindings remain explicit gaps.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read

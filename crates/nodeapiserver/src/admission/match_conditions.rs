@@ -13,19 +13,13 @@
 //! real `false` result does, immediately, even past conditions that
 //! already errored).
 //!
-//! **Not yet wired to anything real**: this crate has no
-//! `ValidatingWebhookConfiguration`/`MutatingWebhookConfiguration` or
-//! `ValidatingAdmissionPolicy` support at all yet (both genuinely
-//! not started — `docs/APISERVER.md`'s own Group J and `cel_ext`
-//! sections name this) — landed as the real, standalone, pure primitive
-//! either of those would need, the same "land the primitive first"
-//! discipline this whole arc has used throughout. Real upstream's own
+//! The storage-backed `ValidatingAdmissionPolicy` adapter now consumes this
+//! pure primitive for real admission requests; webhook integration remains
+//! separate work. Real upstream's own
 //! `object`/`oldObject`/`request`/`params`/`authorizer` CEL variable
 //! bindings aren't built here either — this module takes an already-
 //! bound `vars` slice (`cel_ext::eval_bool_with_vars`'s own shape),
-//! leaving "how those real variables get constructed from an actual
-//! admission request" to whichever future module actually wires a
-//! webhook or policy engine in.
+//! leaving the request-specific variable assembly to the policy adapter.
 
 use crate::cel_ext::eval_bool_with_vars_and_deadline;
 use serde_json::Value;

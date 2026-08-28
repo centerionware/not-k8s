@@ -169,6 +169,30 @@ pub fn resolve_kind(group: &str, version: &str, resource: &str) -> Option<&'stat
     codegen::api_resources_by_group_version().get(&(group, version))?.iter().find(|r| r.resource == resource).map(|r| r.kind)
 }
 
+/// Resolves a parameter kind from a `ValidatingAdmissionPolicy`'s
+/// `spec.paramKind`. Parameter kinds carry an API group and Kind but no
+/// version or resource plural, so choose the most-preferred served version
+/// from the static discovery table, then fall back to an Established CRD.
+/// This is intentionally a read-only inverse of the normal resource lookup;
+/// callers still use [`get`]` and [`list`]` for the actual parameter object.
+pub async fn resolve_resource_for_kind(storage: &mut StorageClient, group: &str, kind: &str) -> Result<Option<(String, String, String, bool)>, Error> {
+    let mut static_matches = codegen::api_resources::API_RESOURCES
+        .iter()
+        .filter(|resource| resource.group == group && resource.kind == kind)
+        .collect::<Vec<_>>();
+    static_matches.sort_by(|left, right| super::version_compare::compare_kube_aware_versions(&right.version, &left.version));
+    if let Some(resource) = static_matches.into_iter().next() {
+        return Ok(Some((resource.group.to_string(), resource.version.to_string(), resource.resource.to_string(), resource.namespaced)));
+    }
+
+    let mut dynamic_matches = apiextensions::registry::discoverable_resources(list_stored_crds(storage).await?.iter())
+        .into_iter()
+        .filter(|resource| resource.group == group && resource.kind == kind)
+        .collect::<Vec<_>>();
+    dynamic_matches.sort_by(|left, right| super::version_compare::compare_kube_aware_versions(&right.version, &left.version));
+    Ok(dynamic_matches.into_iter().next().map(|resource| (resource.group, resource.version, resource.resource, resource.namespaced)))
+}
+
 /// What [`resolve_resource`] found `(group, version, resource)` to be —
 /// either a built-in with a compiled proto schema (`resolve_kind`/
 /// `schema_for_gvk`, unchanged from before Group K existed), or a

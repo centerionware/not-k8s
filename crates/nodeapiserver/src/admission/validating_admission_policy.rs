@@ -14,8 +14,8 @@
 //! already-bound `object`/`oldObject`/`request`/`params` CEL variable set
 //! (`policy_matching::build_request_object` is the `request` half of
 //! that; `object`/`oldObject`/`params` construction from a real request
-//! body is still real, separate, not-yet-started work, named in
-//! `admission`'s own module doc comment).
+//! body is assembled by the storage-backed policy adapter before this pure
+//! evaluator is called).
 
 use super::match_conditions::{self, FailurePolicy, MatchCondition, MatchResult};
 use super::policy_matching::{self, ResourceRule};

@@ -2754,32 +2754,6 @@ async fn handle(
                 }
             }
 
-            // Group J: storage-backed `ValidatingAdmissionPolicy` bindings.
-            // This runs after the built-in mutators so CEL sees the same
-            // candidate that will be persisted. A policy failure is a real
-            // admission denial; a storage/evaluation setup failure is
-            // surfaced as an internal error instead of silently bypassing a
-            // configured policy.
-            if is_create || is_update || is_delete {
-                let operation = if is_create {
-                    "CREATE"
-                } else if is_update {
-                    "UPDATE"
-                } else {
-                    "DELETE"
-                };
-                match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), None).await {
-                    Ok(Some(message)) => {
-                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed");
-                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                    }
-                }
-            }
-
             // Group I: authorization, opt-in (see config::Config::enforce_rbac's
             // own doc comment for why this defaults to off rather than
             // being unconditional the moment identity extraction and RBAC
@@ -2797,6 +2771,41 @@ async fn handle(
                 if !allowed {
                     let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
                     return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                }
+            }
+
+            // Group J: storage-backed `ValidatingAdmissionPolicy` bindings.
+            // Authorization must complete before admission, and CEL gets
+            // the same candidate/old object pair that the write will use.
+            if is_create || is_update || is_delete {
+                let operation = if is_create {
+                    "CREATE"
+                } else if is_update {
+                    "UPDATE"
+                } else {
+                    "DELETE"
+                };
+                let old_object = if is_update || is_delete {
+                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(object)) => Some(object),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: reading the existing object for ValidatingAdmissionPolicy failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                } else {
+                    None
+                };
+                match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), old_object.as_ref(), dry_run).await {
+                    Ok(Some(message)) => {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
                 }
             }
 

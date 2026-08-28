@@ -1,6 +1,6 @@
 //! `ValidatingAdmissionPolicy`'s own `spec.matchConstraints` matching
-//! engine — the second real primitive [`super::match_conditions`]'s own doc comment
-//! named as still-not-started: whether a request even reaches a policy's
+//! engine. The storage-backed [`super::policy_enforcement`] adapter consumes
+//! this primitive to decide whether a request reaches a policy's
 //! `spec.matchConditions`/`spec.validations` at all. Same "land the
 //! primitive first" discipline as `match_conditions` — this module has no
 //! opinion on `ValidatingAdmissionPolicy` storage/CRUD, `ValidatingAdmission
@@ -61,14 +61,12 @@
 //!    upstream's own three other real variables — are not bound; see this
 //!    function's own doc comment.
 //!
-//! **Not yet wired to anything real**, same posture `match_conditions`
-//! itself still carries: this crate has no `ValidatingAdmissionPolicy`/
-//! `ValidatingAdmissionPolicyBinding` CRUD wiring or `spec.paramRef`
-//! resolution yet (`docs/APISERVER.md`'s own Group J section names this),
-//! so nothing calls this module from `server::listener` today — landed as
-//! the standalone, pure matching decision the eventual enforcement call
-//! site will need, exactly the shape `resource_quota`'s own evaluators
-//! were landed in before `server::listener` wired them in.
+//! The storage-backed `policy_enforcement` adapter calls this module from
+//! `server::listener` for real `ValidatingAdmissionPolicy` requests. This
+//! module remains deliberately pure: policy CRUD and `spec.paramRef`
+//! resolution belong to that adapter, while the named gaps here remain
+//! `Rule.Scope`, `kind`, `userInfo`, `namespaceObject`, `variables`, and
+//! `authorizer`.
 
 use crate::cacher::selector::{self, Operator, Requirement};
 use serde_json::{json, Value};
