@@ -31,9 +31,15 @@
 //! since built-in types never need more than one, not a reason to cap
 //! the CRD path the same way).
 //!
+//! `schema_apply` — runtime-schema Server-Side Apply for CRD-defined
+//! objects. It produces the same `fieldsV1` field sets as built-in SSA,
+//! including associative-list and set ownership, and is wired through
+//! `server::rest`'s normal optimistic-concurrency persistence path.
+//!
 //! `GET`/`LIST`/`CREATE`/`UPDATE`/`PATCH` (all three real kinds now,
 //! `JSON Patch`/`Merge Patch`/`strategic-merge-patch`)/`DELETE`/
-//! `DELETECOLLECTION`/`WATCH`/the `status` subresource are all real for
+//! `DELETECOLLECTION`/`WATCH`/the `status` subresource and
+//! Server-Side Apply are all real for
 //! CRD-defined resources now (`server::rest::resolve_resource`'s own doc
 //! comment for the read/write verbs; `server::rest::resolve_dynamic_kind`
 //! + `cacher::registry::CacheRegistry::spawn`, called lazily from
@@ -77,6 +83,7 @@ pub mod cel_validations;
 pub mod conditions;
 pub mod registry;
 pub mod schema_defaults;
+pub mod schema_apply;
 pub mod schema_pruning;
 pub mod schema_strategic_merge;
 pub mod schema_validation;

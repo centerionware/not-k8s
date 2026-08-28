@@ -950,9 +950,12 @@ object at this key creates one through the same create-only-if-absent
 same shape `patch_prepare`/`patch_persist` already has) lets both
 `namespace_lifecycle` *and* `LimitRanger` admission run against the real
 candidate object, matching the ordinary three-patch-kind `PATCH`
-branch's own coverage exactly. **Named, honest scope remaining**: only
-for a built-in resource (not a CRD-defined one — `updater`'s primitives
-key off compiled `FIELD_META`, not a runtime CRD schema).
+branch's own coverage exactly. **Named, honest scope remaining**:
+`updater`'s compiled `FIELD_META` path still applies only to built-in
+resources; CRD-defined resources use the runtime-schema sibling
+`apiextensions::schema_apply`, including `managedFields`, associative-list
+ownership, and real conflict detection. Both paths share the same
+optimistic-concurrency persistence behavior.
 `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directives remain
 unported, same as `strategic_merge`'s own gap.
 

@@ -194,13 +194,46 @@ async fn a_crd_defined_resource_routes_through_the_generic_rest_verbs() {
     let items = listed["items"].as_array().cloned().unwrap_or_default();
     assert_eq!(items.len(), 1, "the widget just created must be the only item listed: {listed}");
 
-    // 4. A resource this CRD does NOT define is still a genuine
+    // 4. Server-Side Apply uses the CRD's runtime schema, rather than
+    // returning the built-in-only 501 path. The first manager claims the
+    // field, and a different manager changing that field gets a real
+    // ownership conflict.
+    let apply_config = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Widget",
+        "metadata": {"name": "my-widget", "namespace": "default"},
+        "spec": {"color": "blue"},
+    });
+    let applied = match rest::server_side_apply(&mut storage, "example.com", "v1", "widgets", Some("default"), "my-widget", "crd-manager", false, &apply_config)
+        .await
+        .expect("CRD Server-Side Apply must not itself error")
+    {
+        rest::ApplyOutcome::Applied(object) => object,
+        other => panic!("expected Applied, got {other:?}"),
+    };
+    assert_eq!(applied["spec"]["color"], "blue");
+    assert_eq!(applied["metadata"]["managedFields"][0]["manager"], "crd-manager");
+
+    let conflicting_config = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Widget",
+        "metadata": {"name": "my-widget", "namespace": "default"},
+        "spec": {"color": "green"},
+    });
+    assert!(matches!(
+        rest::server_side_apply(&mut storage, "example.com", "v1", "widgets", Some("default"), "my-widget", "other-manager", false, &conflicting_config)
+            .await
+            .expect("conflicting CRD Server-Side Apply must not itself error"),
+        rest::ApplyOutcome::Conflict(conflicts) if conflicts.iter().any(|conflict| conflict.manager == "crd-manager")
+    ));
+
+    // 5. A resource this CRD does NOT define is still a genuine
     // UnknownResource -- the dynamic registry doesn't turn into "anything
     // goes."
     let unknown = rest::get(&mut storage, None, "example.com", "v1", "gizmos", Some("default"), "whatever").await.expect("rest::get must not error");
     assert_eq!(unknown, rest::GetOutcome::UnknownResource);
 
-    // 5. DELETE removes it, returning the object as it was.
+    // 6. DELETE removes it, returning the object as it was.
     let deleted = match rest::delete(&mut storage, "example.com", "v1", "widgets", Some("default"), "my-widget").await.expect("rest::delete must not error") {
         rest::DeleteOutcome::Deleted(object) => object,
         other => panic!("expected Deleted, got {other:?}"),
