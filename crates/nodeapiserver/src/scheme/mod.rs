@@ -18,10 +18,14 @@
 //! comparable value — a faithful-but-honestly-scoped port (no
 //! arbitrary-precision fallback; see that module's own doc comment for
 //! why that's a real, narrow, documented gap rather than a silent one).
-//! Conversion and the rest of validation (cross-field consistency, numeric
-//! ranges) not started (see docs/APISERVER.md).
+//! `conversion` provides the pure JSON boundary conversion used when a
+//! stored object is served through another supported API version. It starts
+//! with compatible-shape GVK rewriting and the autoscaling HPA v1/v2 CPU
+//! metric conversion; additional version pairs remain explicit follow-up
+//! work rather than an implicit lossy transform.
 
 pub mod defaulting;
 pub mod validation;
 pub mod name_format;
 pub mod quantity;
+pub mod conversion;
