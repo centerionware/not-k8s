@@ -701,8 +701,11 @@ verb-level admission gap left), the real handler chain fully unified into one
 ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
 requirement on order, not a style choice, once it fully exists; today
 each piece is wired in ad hoc, in the right relative order, not through
-one shared pipeline), `/openapi/v2`. The throwaway e2e rig described
-above should land as part of this group, not after it.
+one shared pipeline). `/openapi/v2` is now served as a Swagger 2.0
+document derived from the same vendored resource schemas and paths as
+`/openapi/v3`; the nodeapiserver target e2e check verifies it is populated.
+The throwaway e2e rig described above should land as part of this group,
+not after it.
 
 **The generic `<resource>/status` subresource is real too now, both
 `PUT` and `PATCH`** (`rest::update_status`/`rest::patch_status`, wired

@@ -78,7 +78,7 @@
 //! that module's own doc comment for exactly which checks are ported),
 //! and every non-resource discovery route
 //! (`/api`, `/api/{version}`, `/apis`, `/apis/{group}`,
-//! `/apis/{group}/{version}`, `/openapi/v3(/...)`, `/version`) is answered
+//! `/apis/{group}/{version}`, `/openapi/v2`, `/openapi/v3(/...)`, `/version`) is answered
 //! by `server::discovery`/`openapi`/`version`'s real document builders
 //! (`route_discovery`, pure and unit-tested below) rather than falling
 //! into the generic echo — these are the routes `kubectl` itself calls
@@ -769,6 +769,7 @@ fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate:
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
+        (Some("openapi"), Some("v2"), 2) => DiscoveryRoute::Found(openapi::v2()),
         (Some("openapi"), Some("v3"), 2) => DiscoveryRoute::Found(openapi::root()),
         (Some("openapi"), Some("v3"), n) if n > 2 => match openapi::doc(&parts[2..].join("/")) {
             Some(bytes) => DiscoveryRoute::FoundRaw(bytes),
@@ -3196,6 +3197,14 @@ mod tests {
         let route = route_discovery(&parts("/openapi/v3"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert!(doc["paths"].as_object().unwrap().contains_key("apis/apps/v1"));
+    }
+
+    #[test]
+    fn openapi_v2_serves_a_swagger_document() {
+        let route = route_discovery(&parts("/openapi/v2"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["swagger"], "2.0");
+        assert!(doc["definitions"].as_object().is_some_and(|definitions| definitions.contains_key("io.k8s.api.core.v1.Pod")));
     }
 
     #[test]
