@@ -72,7 +72,7 @@ impl ConcurrencyLimiter {
                 return Err(Error::Closed);
             }
         };
-        let mutating_requests = if is_mutating(info) {
+        let mut mutating_requests = if is_mutating(info) {
             match self.mutating_requests.clone().acquire_owned().await {
                 Ok(permit) => Some(permit),
                 Err(_) => {
