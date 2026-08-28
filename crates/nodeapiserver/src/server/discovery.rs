@@ -502,7 +502,8 @@ mod tests {
     #[test]
     fn non_resource_schema_gvks_do_not_create_phantom_api_groups() {
         assert!(api_group("admission.k8s.io").is_none());
-        let groups = api_group_list()["groups"].as_array().unwrap();
+        let group_list = api_group_list();
+        let groups = group_list["groups"].as_array().unwrap();
         assert!(groups.iter().all(|group| group["name"] != "admission.k8s.io"));
     }
 
