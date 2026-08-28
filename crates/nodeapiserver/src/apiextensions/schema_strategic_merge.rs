@@ -38,9 +38,19 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
         return patch.clone();
     };
 
+    match patch_map.get("$patch").and_then(Value::as_str) {
+        Some("delete") => return Value::Null,
+        Some("replace") => return Value::Object(without_directives(patch_map)),
+        _ => {}
+    }
+
     let properties = schema.get("properties").and_then(Value::as_object);
     let mut result = orig_map.clone();
+    apply_primitive_list_deletes(&mut result, patch_map);
     for (key, patch_value) in patch_map {
+        if key.starts_with('$') {
+            continue;
+        }
         if patch_value.is_null() {
             result.remove(key);
             continue;
@@ -67,9 +77,45 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
             }
             _ => patch_value.clone(),
         };
-        result.insert(key.clone(), merged);
+        if merged.is_null() {
+            result.remove(key);
+        } else {
+            result.insert(key.clone(), merged);
+        }
+    }
+    for (key, order) in patch_map.iter().filter_map(|(key, value)| key.strip_prefix("$setElementOrder/").map(|field| (field, value))) {
+        let Some(existing) = result.get(key).and_then(Value::as_array).map(|existing| existing.to_vec()) else { continue };
+        let Some(field_schema) = properties.and_then(|p| p.get(key)) else { continue };
+        let Some(merge_key) = merge_keys(field_schema).first().copied() else { continue };
+        result.insert(key.to_string(), Value::Array(reorder_list(&existing, order, merge_key)));
     }
     Value::Object(result)
+}
+
+fn without_directives(map: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    map.iter().filter(|(key, _)| !key.starts_with('$')).map(|(key, value)| (key.clone(), value.clone())).collect()
+}
+
+fn apply_primitive_list_deletes(result: &mut serde_json::Map<String, Value>, patch: &serde_json::Map<String, Value>) {
+    for (field, values) in patch.iter().filter_map(|(key, value)| key.strip_prefix("$deleteFromPrimitiveList/").map(|field| (field, value))) {
+        let Some(values) = values.as_array() else { continue };
+        let Some(existing) = result.get_mut(field).and_then(Value::as_array_mut) else { continue };
+        existing.retain(|value| !values.iter().any(|deleted| deleted == value));
+    }
+}
+
+fn reorder_list(existing: &[Value], order: &Value, merge_key: &str) -> Vec<Value> {
+    let Some(order) = order.as_array() else { return existing.to_vec() };
+    let mut remaining = existing.to_vec();
+    let mut ordered = Vec::with_capacity(existing.len());
+    for requested in order {
+        let Some(value) = requested.get(merge_key) else { continue };
+        if let Some(index) = remaining.iter().position(|item| item.get(merge_key) == Some(value)) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
 }
 
 /// True when `field_schema` names `x-kubernetes-list-type: "map"` with a
@@ -103,19 +149,32 @@ fn merge_list(field_schema: &Value, original: &[Value], patch: &[Value]) -> Vec<
     let empty = Value::Null;
     let items_schema = field_schema.get("items").unwrap_or(&empty);
 
-    let mut result = original.to_vec();
+    let replace = patch.iter().any(|item| item.get("$patch").and_then(Value::as_str) == Some("replace"));
+    let mut result = if replace { Vec::new() } else { original.to_vec() };
     'patch_elements: for patch_elem in patch {
+        let directive = patch_elem.get("$patch").and_then(Value::as_str);
+        if directive == Some("replace") {
+            continue;
+        }
         let Some(patch_key_values) = key_values(patch_elem, &keys) else {
+            if directive == Some("delete") {
+                continue;
+            }
             result.push(patch_elem.clone());
             continue;
         };
+        if directive == Some("delete") {
+            result.retain(|existing| key_values(existing, &keys).as_deref() != Some(&patch_key_values));
+            continue;
+        }
+        let cleaned_patch_elem = patch_elem.clone();
         for existing in result.iter_mut() {
             if key_values(existing, &keys).as_deref() == Some(&patch_key_values) {
-                *existing = merge(items_schema, existing, patch_elem);
+                *existing = merge(items_schema, existing, &cleaned_patch_elem);
                 continue 'patch_elements;
             }
         }
-        result.push(patch_elem.clone());
+        result.push(cleaned_patch_elem);
     }
     result
 }
@@ -222,5 +281,36 @@ mod tests {
         let merged2 = apply(&schema, &original, &patch2);
         assert_eq!(merged2["mounts"].as_array().unwrap().len(), 1);
         assert_eq!(merged2["mounts"][0]["readOnly"], true);
+    }
+
+    #[test]
+    fn patch_replace_discards_unmentioned_runtime_schema_fields() {
+        let merged = apply(&widget_schema(), &json!({"color": "red", "size": "large"}), &json!({"$patch": "replace", "color": "blue"}));
+        assert_eq!(merged, json!({"color": "blue"}));
+    }
+
+    #[test]
+    fn runtime_merge_list_supports_delete_and_replace_item_directives() {
+        let original = json!({"ports": [{"name": "http", "port": 80}, {"name": "metrics", "port": 9090}]});
+        let deleted = apply(&widget_schema(), &original, &json!({"ports": [{"name": "metrics", "$patch": "delete"}]}));
+        assert_eq!(deleted["ports"], json!([{"name": "http", "port": 80}]));
+        let replaced = apply(&widget_schema(), &original, &json!({"ports": [{"$patch": "replace"}, {"name": "fresh", "port": 8080}]}));
+        assert_eq!(replaced["ports"], json!([{"name": "fresh", "port": 8080}]));
+    }
+
+    #[test]
+    fn runtime_primitive_list_delete_and_element_order_directives_are_applied() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "args": {"type": "array", "items": {"type": "string"}},
+                "ports": {"type": "array", "x-kubernetes-list-type": "map", "x-kubernetes-list-map-keys": ["name"], "items": {"type": "object"}}
+            }
+        });
+        let original = json!({"args": ["--one", "--two"], "ports": [{"name": "http"}, {"name": "metrics"}]});
+        let patch = json!({"$deleteFromPrimitiveList/args": ["--two"], "$setElementOrder/ports": [{"name": "metrics"}, {"name": "http"}]});
+        let merged = apply(&schema, &original, &patch);
+        assert_eq!(merged["args"], json!(["--one"]));
+        assert_eq!(merged["ports"], json!([{"name": "metrics"}, {"name": "http"}]));
     }
 }
