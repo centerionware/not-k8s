@@ -10,7 +10,7 @@ use kube::api::{Api, PostParams};
 use crate::config::Config;
 use crate::service_mgr::{self, SupervisedService};
 
-const SYSTEM_NAMESPACES: &[&str] = &["default", "kube-system", "kube-public"];
+const SYSTEM_NAMESPACES: &[&str] = &["default", "kube-system", "kube-public", "kube-node-lease"];
 
 pub fn run_with(cfg: &Config) -> Result<()> {
     let bin = cfg.toolchain_dir().join("bin/nodeapiserver");
@@ -206,7 +206,7 @@ mod tests {
     fn replacement_apiserver_seeds_the_standard_namespaces() {
         assert_eq!(
             SYSTEM_NAMESPACES,
-            &["default", "kube-system", "kube-public"]
+            &["default", "kube-system", "kube-public", "kube-node-lease"]
         );
     }
 }
