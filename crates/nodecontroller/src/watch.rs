@@ -363,11 +363,11 @@ pub fn watch_node_leases(_client: &Client) -> BoxStream<'static, watcher::Result
 
 shared_watch!(watch_namespaces, SHARED_NAMESPACES, Namespace);
 
-/// Every controller that caches API discovery subscribes to this one
-/// informer. A CRD changes the set of API resources served by the apiserver;
-/// keeping that signal shared avoids one independent CRD watch per consumer
-/// while still letting namespace cleanup and garbage collection refresh their
-/// own discovery cache when a CRD is installed or removed.
+// Every controller that caches API discovery subscribes to this one
+// informer. A CRD changes the set of API resources served by the apiserver;
+// keeping that signal shared avoids one independent CRD watch per consumer
+// while still letting namespace cleanup and garbage collection refresh their
+// own discovery cache when a CRD is installed or removed.
 shared_watch!(
     watch_custom_resource_definitions,
     SHARED_CUSTOM_RESOURCE_DEFINITIONS,

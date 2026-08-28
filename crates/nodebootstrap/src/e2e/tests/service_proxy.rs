@@ -15,10 +15,6 @@ async fn create_backend(context: &E2eContext, name: &str) -> Result<()> {
     create_backend_with_marker(context, name, name, "service-proxy-marker").await
 }
 
-async fn exec_output(context: &E2eContext, pod: &str, command: &[&str]) -> Result<String> {
-    exec_output_in(context, pod, "app", command).await
-}
-
 async fn exec_probe_output(
     context: &E2eContext,
     pod: &str,

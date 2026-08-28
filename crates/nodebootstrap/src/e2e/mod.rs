@@ -123,12 +123,14 @@ mod volumes;
 mod watch_recovery;
 
 pub(super) mod grpc {
+    #[allow(dead_code)]
     pub mod authpb {
         tonic::include_proto!("authpb");
     }
     pub mod mvccpb {
         tonic::include_proto!("mvccpb");
     }
+    #[allow(dead_code)]
     pub mod etcdserverpb {
         tonic::include_proto!("etcdserverpb");
     }

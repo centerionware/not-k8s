@@ -403,6 +403,7 @@ pub(crate) fn env_name_component(name: &str) -> String {
 /// Services in the Pod's namespace are included, as are Services in the
 /// default namespace. The latter makes the cluster's `kubernetes` Service
 /// discoverable from system namespaces such as `kube-system`.
+#[cfg(test)]
 pub(crate) fn service_env_vars(services: &[Service], pod_namespace: &str) -> BTreeMap<String, Vec<u8>> {
     service_env_vars_for_pod(services, pod_namespace, true)
 }
