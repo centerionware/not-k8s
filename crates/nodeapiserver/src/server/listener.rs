@@ -619,13 +619,14 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, cached_resources = BOOT_CACHED_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = BOOT_CACHED_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
     let concurrency_limiter = Arc::new(crate::flowcontrol::limiter::ConcurrencyLimiter::new(
         cfg.apf_max_requests_inflight,
         cfg.apf_max_mutating_requests_inflight,
         cfg.apf_queue_length_limit,
     ));
+    let anonymous_auth = cfg.anonymous_auth;
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -682,7 +683,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1082,6 +1083,7 @@ async fn handle_with_audit(
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
     concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
+    anonymous_auth: bool,
     enforce_rbac: bool,
     peer: SocketAddr,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
@@ -1090,7 +1092,7 @@ async fn handle_with_audit(
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let identity = match authenticate_request(&req, identity, bootstrap_token_authenticator.as_deref(), service_account_authenticator.as_deref(), oidc_authenticator.as_deref()).await {
+    let identity = match authenticate_request(&req, identity, bootstrap_token_authenticator.as_deref(), service_account_authenticator.as_deref(), oidc_authenticator.as_deref(), anonymous_auth).await {
         Ok(identity) => identity,
         Err(detail) => return Ok(json_response(StatusCode::UNAUTHORIZED, &unauthorized_status(&path_str, detail))),
     };
@@ -1241,12 +1243,13 @@ async fn authenticate_request(
     bootstrap_token_authenticator: Option<&crate::authn::bootstrap_token::Authenticator>,
     service_account_authenticator: Option<&crate::authn::service_account::Authenticator>,
     oidc_authenticator: Option<&crate::authn::oidc::Authenticator>,
+    anonymous_auth: bool,
 ) -> std::result::Result<Option<crate::authn::x509::Identity>, &'static str> {
     if client_cert_identity.is_some() {
         return Ok(client_cert_identity);
     }
     let Some(header) = req.headers().get("authorization") else {
-        return Ok(None);
+        return if anonymous_auth { Ok(None) } else { Err("anonymous authentication is disabled") };
     };
     let value = header.to_str().map_err(|_| "Authorization header is not valid UTF-8")?;
     let Some(token) = value.strip_prefix("Bearer ").filter(|token| !token.is_empty()) else {
