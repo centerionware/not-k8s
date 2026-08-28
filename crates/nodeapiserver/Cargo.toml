@@ -43,6 +43,7 @@ thiserror = { workspace = true }
 # type; nothing here does that yet), so Value is what a format-transcoding
 # layer with no typed object model underneath can honestly operate on.
 serde_json = { workspace = true }
+serde = { workspace = true }
 serde_yaml = "0.9"
 # protobuf's `bytes` fields are base64 in the JSON representation — the
 # same convention every other Kubernetes JSON<->protobuf codec follows.
@@ -100,6 +101,10 @@ rcgen = "0.13"
 # EC P-256 PKCS#8 keypair (`sa.key`/`sa.pub`) for the same ES256 wire format
 # upstream kube-apiserver uses.
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+# Group H: OIDC discovery/JWKS fetches. The workspace already carries this
+# rustls-backed client for scheduler HTTP extenders; reuse that dependency
+# rather than adding a second TLS stack.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Group H: x509 client-certificate authentication. Same crate/version
 # nodecontroller's CSR controller and nodelet's own mTLS exec/logs server

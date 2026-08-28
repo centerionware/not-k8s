@@ -50,6 +50,17 @@ pub struct Config {
     /// authentication remains unavailable for standalone development runs.
     pub service_account_signing_key_file: Option<PathBuf>,
     pub service_account_issuer: String,
+    /// OIDC bearer-token authentication. Both values must be configured to
+    /// enable it; an absent pair leaves OIDC disabled.
+    pub oidc_issuer_url: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_username_claim: String,
+    pub oidc_username_prefix: Option<String>,
+    pub oidc_groups_claim: Option<String>,
+    pub oidc_groups_prefix: Option<String>,
+    pub oidc_required_claims: Vec<(String, String)>,
+    pub oidc_signing_algs: Vec<String>,
+    pub oidc_ca_file: Option<PathBuf>,
     /// `NODEAPISERVER_ENFORCE_RBAC` — `false` by default, deliberately:
     /// enabling this makes `server::rest::get`/`list` deny-by-default
     /// against real `authz::resolve::rules_for` output (Group I), but
@@ -98,6 +109,15 @@ impl Default for Config {
             client_ca_file: None,
             service_account_signing_key_file: None,
             service_account_issuer: "https://kubernetes.default.svc".to_string(),
+            oidc_issuer_url: None,
+            oidc_client_id: None,
+            oidc_username_claim: "sub".to_string(),
+            oidc_username_prefix: None,
+            oidc_groups_claim: None,
+            oidc_groups_prefix: None,
+            oidc_required_claims: Vec::new(),
+            oidc_signing_algs: vec!["RS256".to_string(), "PS256".to_string(), "ES256".to_string()],
+            oidc_ca_file: None,
             enforce_rbac: false,
             encryption_config_file: None,
             kubelet_client_cert_file: None,
@@ -164,6 +184,34 @@ impl Config {
             !cfg.service_account_issuer.trim().is_empty(),
             "NODEAPISERVER_SERVICE_ACCOUNT_ISSUER must not be empty"
         );
+        cfg.oidc_issuer_url = string_env("NODEAPISERVER_OIDC_ISSUER_URL");
+        cfg.oidc_client_id = string_env("NODEAPISERVER_OIDC_CLIENT_ID");
+        anyhow::ensure!(
+            cfg.oidc_issuer_url.is_none() == cfg.oidc_client_id.is_none(),
+            "NODEAPISERVER_OIDC_ISSUER_URL and NODEAPISERVER_OIDC_CLIENT_ID must be set together or not at all"
+        );
+        if let Some(value) = string_env("NODEAPISERVER_OIDC_USERNAME_CLAIM") {
+            cfg.oidc_username_claim = value;
+        }
+        cfg.oidc_username_prefix = string_env("NODEAPISERVER_OIDC_USERNAME_PREFIX");
+        cfg.oidc_groups_claim = string_env("NODEAPISERVER_OIDC_GROUPS_CLAIM");
+        cfg.oidc_groups_prefix = string_env("NODEAPISERVER_OIDC_GROUPS_PREFIX");
+        if let Some(value) = string_env("NODEAPISERVER_OIDC_REQUIRED_CLAIMS") {
+            cfg.oidc_required_claims = parse_required_claims(&value)?;
+        }
+        if let Some(value) = string_env("NODEAPISERVER_OIDC_SIGNING_ALGS") {
+            cfg.oidc_signing_algs = value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect();
+            anyhow::ensure!(
+                !cfg.oidc_signing_algs.is_empty(),
+                "NODEAPISERVER_OIDC_SIGNING_ALGS must contain at least one algorithm"
+            );
+        }
+        cfg.oidc_ca_file = path_env("NODEAPISERVER_OIDC_CA_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
@@ -187,6 +235,27 @@ fn path_env(name: &str) -> Option<PathBuf> {
         Ok(v) if !v.trim().is_empty() => Some(PathBuf::from(v)),
         _ => None,
     }
+}
+
+fn string_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+fn parse_required_claims(value: &str) -> Result<Vec<(String, String)>> {
+    value
+        .split(',')
+        .map(|entry| {
+            let (name, expected) = entry
+                .split_once('=')
+                .ok_or_else(|| anyhow!("OIDC required claim {entry:?} must use name=value"))?;
+            anyhow::ensure!(!name.trim().is_empty(), "OIDC required claim name must not be empty");
+            anyhow::ensure!(!expected.is_empty(), "OIDC required claim value must not be empty");
+            Ok((name.trim().to_string(), expected.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -334,5 +403,52 @@ mod tests {
         std::env::set_var("NODEAPISERVER_ENFORCE_RBAC", "yes");
         let _cleanup = EnvGuard(&["NODEAPISERVER_ENFORCE_RBAC"]);
         assert!(!Config::from_env().unwrap().enforce_rbac, "only the literal 1/true should enable it");
+    }
+
+    #[test]
+    fn oidc_requires_issuer_and_client_id_together() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_OIDC_ISSUER_URL", "https://issuer.example");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_OIDC_ISSUER_URL"]);
+        let err = Config::from_env().expect_err("OIDC must not accept a half-configured pair");
+        assert!(err.to_string().contains("set together"));
+    }
+
+    #[test]
+    fn oidc_options_are_read_and_required_claims_are_parsed() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_OIDC_ISSUER_URL", "https://issuer.example");
+        std::env::set_var("NODEAPISERVER_OIDC_CLIENT_ID", "not-k8s");
+        std::env::set_var("NODEAPISERVER_OIDC_USERNAME_CLAIM", "email");
+        std::env::set_var("NODEAPISERVER_OIDC_GROUPS_CLAIM", "groups");
+        std::env::set_var("NODEAPISERVER_OIDC_REQUIRED_CLAIMS", "tenant=edge,environment=test");
+        std::env::set_var("NODEAPISERVER_OIDC_SIGNING_ALGS", "RS256, ES256");
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_OIDC_ISSUER_URL",
+            "NODEAPISERVER_OIDC_CLIENT_ID",
+            "NODEAPISERVER_OIDC_USERNAME_CLAIM",
+            "NODEAPISERVER_OIDC_GROUPS_CLAIM",
+            "NODEAPISERVER_OIDC_REQUIRED_CLAIMS",
+            "NODEAPISERVER_OIDC_SIGNING_ALGS",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.oidc_issuer_url.as_deref(), Some("https://issuer.example"));
+        assert_eq!(cfg.oidc_client_id.as_deref(), Some("not-k8s"));
+        assert_eq!(cfg.oidc_username_claim, "email");
+        assert_eq!(cfg.oidc_groups_claim.as_deref(), Some("groups"));
+        assert_eq!(
+            cfg.oidc_required_claims,
+            vec![
+                ("tenant".to_string(), "edge".to_string()),
+                ("environment".to_string(), "test".to_string()),
+            ]
+        );
+        assert_eq!(cfg.oidc_signing_algs, vec!["RS256", "ES256"]);
+    }
+
+    #[test]
+    fn oidc_required_claims_reject_malformed_entries() {
+        let err = parse_required_claims("tenant").expect_err("a claim must include its value");
+        assert!(err.to_string().contains("name=value"));
     }
 }
