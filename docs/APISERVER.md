@@ -935,11 +935,14 @@ object at this key creates one through the same create-only-if-absent
 same shape `patch_prepare`/`patch_persist` already has) lets both
 `namespace_lifecycle` *and* `LimitRanger` admission run against the real
 candidate object, matching the ordinary three-patch-kind `PATCH`
-branch's own coverage exactly. **Named, honest scope remaining**: only
-for a built-in resource (not a CRD-defined one — `updater`'s primitives
-key off compiled `FIELD_META`, not a runtime CRD schema).
-`$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directives remain
-unported, same as `strategic_merge`'s own gap.
+branch's own coverage exactly. CRD-defined resources now use the matching
+runtime-schema SSA implementation (`patch::crd_apply`) against each
+established version's `openAPIV3Schema`, including managed-field ownership,
+conflict detection, structural list/map merge behavior, pruning, and
+create-on-apply. The remaining SSA scope is deliberately narrower: this
+build still has no multi-version CRD conversion and does not implement the
+strategic-merge directive family (`$patch`/`$setElementOrder`/
+`$deleteFromPrimitiveList`), same as `strategic_merge`'s own gap.
 
 **H. Authentication** — **started**. `authn::x509::identity_from_der`
 derives an `Identity{name, groups, credential_id}` from a client

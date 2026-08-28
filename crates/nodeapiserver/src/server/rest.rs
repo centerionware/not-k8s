@@ -1085,9 +1085,9 @@ pub enum PatchKind {
 /// (`k8s.io/apimachinery/pkg/types`): `application/json-patch+json`
 /// (RFC 6902), `application/merge-patch+json` (RFC 7386),
 /// `application/strategic-merge-patch+json` (k8s-specific). Server-Side
-/// Apply's own `application/apply-patch+yaml` isn't recognized — Group
-/// G's own doc comment already names SSA/managedFields as not yet
-/// landed.
+/// Apply's own `application/apply-patch+yaml` is routed separately by the
+/// listener because it has different query parameters and bookkeeping than
+/// the three ordinary patch kinds below.
 pub fn patch_kind_for_content_type(content_type: &str) -> Option<PatchKind> {
     match content_type.split(';').next().unwrap_or("").trim() {
         "application/json-patch+json" => Some(PatchKind::Json),
@@ -1326,14 +1326,9 @@ pub enum ApplyOutcome {
     /// current object, matching real upstream's own behavior.
     NoOp(Value),
     UnknownResource,
-    /// `crate::patch::updater`'s real primitives key off Group A's
-    /// compiled `FIELD_META` table, not a runtime-parsed CRD schema — a
-    /// CRD-defined resource has no `schema` to drive them, so Apply
-    /// isn't supported against one yet (same real gap `server_side_apply`'s
-    /// own `patch::strategic_merge` sibling doesn't have, since that one
-    /// has a runtime-schema fallback — `apiextensions::
-    /// schema_strategic_merge` — that Server-Side Apply's own primitives
-    /// have no equivalent of yet).
+    /// No usable compiled or runtime structural schema was available for
+    /// the resolved resource. Validated CRDs normally carry the latter;
+    /// this remains a defensive outcome for malformed or legacy CRD data.
     UnsupportedForCrd,
     /// Another manager owns a field this apply is changing — real
     /// upstream's own `409 Conflict`, not raised unless `force` is
@@ -1374,8 +1369,9 @@ pub enum ApplyOutcome {
 /// real candidate object in between, the same way it already does for
 /// the three-patch-kind `PATCH` path.
 ///
-/// See [`ApplyOutcome::UnsupportedForCrd`] for the one real, named gap
-/// this doesn't close.
+/// A CRD-defined resource with an established structural schema uses the
+/// runtime-schema SSA path; malformed or schema-less CRD records retain the
+/// defensive [`ApplyOutcome::UnsupportedForCrd`] outcome.
 pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
     match apply_prepare(storage, group, version, resource, namespace, name, manager, force, config).await? {
         ApplyPrepareOutcome::Ready(candidate, context) => apply_persist(storage, group, version, resource, namespace, context, candidate).await,
@@ -1394,7 +1390,8 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
 /// in between, the same split [`PatchContext`] already exists for.
 #[derive(Debug)]
 pub struct ApplyContext {
-    schema: &'static str,
+    schema: Option<&'static str>,
+    open_api_schema: Option<Value>,
     kind: String,
     key: String,
     /// `Some((existing_kv, live))` for an update-on-apply (persisted via
@@ -1429,9 +1426,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(ApplyPrepareOutcome::UnknownResource);
     };
-    let Some(schema) = resolved.schema else {
-        return Ok(ApplyPrepareOutcome::UnsupportedForCrd);
-    };
+    let schema = resolved.schema;
+    let open_api_schema = resolved.open_api_schema.clone();
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
@@ -1440,14 +1436,17 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         // Create-on-apply: real upstream's own Apply can create a
         // brand-new object when none exists yet (`liveObject` starts
-        // empty) -- `updater::apply` already supports that structurally.
+        // empty). Built-ins use the compiled schema; CRDs use their
+        // established version's runtime OpenAPI schema.
         let live = json!({});
         let no_prior_managers = std::collections::BTreeMap::new();
-        let applied = match crate::patch::updater::apply(schema, &live, config, &no_prior_managers, manager, force) {
+        let applied_result = match (schema, open_api_schema.as_ref()) {
+            (Some(schema), _) => crate::patch::updater::apply(schema, &live, config, &no_prior_managers, manager, force),
+            (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, config, &no_prior_managers, manager, force),
+            (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
+        };
+        let applied = match applied_result {
             Ok(a) => a,
-            // Unreachable in practice (an empty prior-managers map can
-            // never conflict), kept real rather than `unreachable!()` --
-            // `updater::apply`'s own contract doesn't promise this.
             Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
         };
         let Some(mut object) = applied.object else {
@@ -1469,15 +1468,27 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&[], &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
         set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
 
-        let mut violations: Vec<String> = validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
-        violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+        let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
+            (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+            (None, Some(schema)) => apiextensions::schema_validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+            (None, None) => Vec::new(),
+        };
+        match (schema, open_api_schema.as_ref()) {
+            (Some(schema), _) => violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind))),
+            (None, Some(schema)) => violations.extend(apiextensions::schema_validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind))),
+            (None, None) => {}
+        }
         violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
         if !violations.is_empty() {
             return Ok(ApplyPrepareOutcome::Invalid(violations));
         }
-        let object = defaulting::apply_defaults(schema, &object);
+        let object = match (schema, open_api_schema.as_ref()) {
+            (Some(schema), _) => defaulting::apply_defaults(schema, &object),
+            (None, Some(schema)) => apiextensions::schema_defaults::apply_defaults(schema, &object),
+            (None, None) => object,
+        };
 
-        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, open_api_schema, kind: resolved.kind, key, existing: None }));
     };
 
     let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
@@ -1492,7 +1503,12 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let entries = crate::patch::managed_fields::parse_managed_fields(&stored_managed_fields).unwrap_or_default();
     let managers = crate::patch::managed_fields::to_managers_map(&entries);
 
-    let applied = match crate::patch::updater::apply(schema, &live, config, &managers, manager, force) {
+    let applied_result = match (schema, open_api_schema.as_ref()) {
+        (Some(schema), _) => crate::patch::updater::apply(schema, &live, config, &managers, manager, force),
+        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, config, &managers, manager, force),
+        (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
+    };
+    let applied = match applied_result {
         Ok(a) => a,
         Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
     };
@@ -1504,15 +1520,27 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
     set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
 
-    let mut violations: Vec<String> = validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
-    violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+    let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
+        (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+        (None, Some(schema)) => apiextensions::schema_validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+        (None, None) => Vec::new(),
+    };
+    match (schema, open_api_schema.as_ref()) {
+        (Some(schema), _) => violations.extend(validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind))),
+        (None, Some(schema)) => violations.extend(apiextensions::schema_validation::validate_types(schema, &object).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind))),
+        (None, None) => {}
+    }
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
     if !violations.is_empty() {
         return Ok(ApplyPrepareOutcome::Invalid(violations));
     }
-    let object = defaulting::apply_defaults(schema, &object);
+    let object = match (schema, open_api_schema.as_ref()) {
+        (Some(schema), _) => defaulting::apply_defaults(schema, &object),
+        (None, Some(schema)) => apiextensions::schema_defaults::apply_defaults(schema, &object),
+        (None, None) => object,
+    };
 
-    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, open_api_schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
 }
 
 /// The "persist" half of [`server_side_apply`]: writes `object` (the
@@ -1522,7 +1550,10 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
 pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value) -> Result<ApplyOutcome, Error> {
     let Some((existing_kv, live)) = context.existing else {
         let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
-        let object_bytes = protobuf::encode_message(context.schema, &object)?;
+        let object_bytes = match context.schema {
+            Some(schema) => protobuf::encode_message(schema, &object)?,
+            None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
+        };
         let envelope = protobuf::wrap_unknown(&api_version, &context.kind, &object_bytes);
         let compare = pb::Compare {
             key: context.key.clone().into_bytes(),
@@ -1549,7 +1580,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, Some(context.schema), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object).await? {
+    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
@@ -1886,8 +1917,9 @@ mod tests {
     #[test]
     fn patch_kind_for_content_type_rejects_unknown_or_ssa_media_types() {
         assert_eq!(patch_kind_for_content_type("application/json"), None);
-        // Server-Side Apply's own media type isn't recognized -- Group G's
-        // own doc comment already names SSA/managedFields as not landed.
+        // Server-Side Apply has a separate listener path because its
+        // media type carries field-manager semantics rather than being one
+        // of the three ordinary patch kinds.
         assert_eq!(patch_kind_for_content_type("application/apply-patch+yaml"), None);
         assert_eq!(patch_kind_for_content_type(""), None);
     }
