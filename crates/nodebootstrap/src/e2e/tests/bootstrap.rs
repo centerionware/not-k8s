@@ -691,6 +691,64 @@ pub(super) async fn nodeapiserver_honors_generate_name(context: &E2eContext) -> 
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_honors_dry_run_and_delete_preconditions(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("write-option checks are only exercised against nodeapiserver"));
+    }
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let name = format!("nodeapiserver-write-options-{}", std::process::id());
+    let body = json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": name, "namespace": context.namespace},
+        "data": {"value": "dry-run"}
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/namespaces/{}/configmaps?dryRun=All", context.namespace))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&body)?)?;
+    let dry_run: Value = context.client.request(request).await.context("creating a dry-run ConfigMap")?;
+    anyhow::ensure!(dry_run.pointer("/metadata/name").and_then(Value::as_str) == Some(name.as_str()), "dry-run create returned the wrong object: {dry_run}");
+    match configmaps.get(&name).await {
+        Err(KubeError::Api(error)) if error.code == 404 => {}
+        Err(error) => anyhow::bail!("dry-run create left an unexpected API error: {error}"),
+        Ok(object) => anyhow::bail!("dry-run create persisted {:?}", object.metadata.name),
+    }
+
+    let created = configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the delete-precondition fixture")?;
+    let resource_version = created.metadata.resource_version.context("delete-precondition fixture had no resourceVersion")?;
+    let wrong = json!({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"resourceVersion": "0"}});
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/namespaces/{}/configmaps/{}", context.namespace, name))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&wrong)?)?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 409 => {}
+        Err(error) => anyhow::bail!("wrong delete precondition returned the wrong API error: {error}"),
+        Ok(value) => anyhow::bail!("wrong delete precondition unexpectedly deleted the object: {value}"),
+    }
+    anyhow::ensure!(configmaps.get(&name).await.is_ok(), "a failed delete precondition removed the object");
+    configmaps.delete(&name, &DeleteParams::default()).await.context("cleaning up the delete-precondition fixture")?;
+    anyhow::ensure!(!resource_version.is_empty(), "fixture resourceVersion was empty");
+    Ok(())
+}
+
 pub(super) async fn graceful_node_shutdown_manual_note(_context: &E2eContext) -> Result<()> {
     Err(skip_test(
         "graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case",
