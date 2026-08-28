@@ -289,7 +289,7 @@ async fn list_stored_crds(storage: &mut StorageClient) -> Result<Vec<Value>, Err
 pub fn decode_stored_object(bytes: &[u8]) -> Result<Value, protobuf::Error> {
     let (api_version, kind, object_bytes) = protobuf::unwrap_unknown(bytes)?;
     let (group, version) = split_api_version(&api_version);
-    match protobuf::schema_for_gvk(group, version, &kind) {
+    let mut object = match protobuf::schema_for_gvk(group, version, &kind) {
         Some(schema) => protobuf::decode_message(schema, &object_bytes),
         // Group K: no compiled schema for this Kind at all -- a CRD-
         // defined object, which `server::rest`'s write side always
@@ -300,7 +300,9 @@ pub fn decode_stored_object(bytes: &[u8]) -> Result<Value, protobuf::Error> {
         // function has no registry to tell the two apart, and both are
         // real "can't decode this" outcomes either way.
         None => Ok(serde_json::from_slice(&object_bytes).map_err(protobuf::Error::Json)?),
-    }
+    }?;
+    set_type_metadata(&mut object, &kind, &api_version);
+    Ok(object)
 }
 
 /// Group C: the encrypted-aware counterpart to [`decode_stored_object`] —
@@ -387,16 +389,17 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// every resource outside that list, and every other caller, still
 /// passes `None`.
 pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
-    if resolve_resource(storage, group, version, resource).await?.is_none() {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(GetOutcome::UnknownResource);
-    }
+    };
+    let kind = resolved.kind;
     let key = keys::object_key(group, resource, namespace, name);
 
     if let Some(cache) = cache {
         if let Some(entry) = cache.get(key.as_bytes()) {
             let mut object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
             set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
-            return Ok(GetOutcome::Found(object));
+            return Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)));
         }
     }
 
@@ -421,7 +424,7 @@ pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::stor
     // already carried a real `resourceVersion`, so nothing exercised a
     // genuine `GET` followed by an `UPDATE` until this one did.
     set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
-    Ok(GetOutcome::Found(object))
+    Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)))
 }
 
 #[derive(Debug, PartialEq)]
@@ -531,6 +534,7 @@ pub async fn list(
                     // revision, the same way real upstream does.
                     let mut object = decrypt_and_decode(storage, group, resource, key, &entry.value)?;
                     set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
+                    object = crate::scheme::conversion::to_version(group, version, kind, object);
                     Ok(object)
                 })
                 .collect::<Result<Vec<Value>, Error>>()?
@@ -587,6 +591,7 @@ pub async fn list(
         .map(|kv| {
             let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
             set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
+            object = crate::scheme::conversion::to_version(group, version, kind, object);
             Ok(object)
         })
         .collect::<Result<Vec<Value>, Error>>()?
@@ -747,6 +752,7 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
         (None, None) => body.clone(),
     };
+    object = crate::scheme::conversion::to_version(group, version, kind, object);
 
     // CEL Phase 4: real x-kubernetes-validations rule evaluation against
     // this actual custom resource instance — runs against the
@@ -1033,6 +1039,8 @@ async fn persist_update(
     if let Some(ns) = namespace {
         set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
     }
+
+    object = crate::scheme::conversion::to_version(group, version, kind, object);
 
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let object_bytes = match schema {
@@ -1688,6 +1696,12 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
     metadata[field] = value;
 }
 
+fn set_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
+    let Some(map) = object.as_object_mut() else { return };
+    map.insert("kind".to_string(), Value::String(kind.to_string()));
+    map.insert("apiVersion".to_string(), Value::String(api_version.to_string()));
+}
+
 /// Second-precision RFC3339 with a `Z` suffix (`"2026-08-20T09:30:00Z"`)
 /// — matches real upstream's own `metav1.Time` marshaling, which never
 /// carries sub-second precision.
@@ -1719,7 +1733,8 @@ pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, res
     };
     let mut object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
     set_metadata_field(&mut object, "resourceVersion", Value::String(prev.mod_revision.to_string()));
-    Ok(DeleteOutcome::Deleted(object))
+    let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
+    Ok(DeleteOutcome::Deleted(crate::scheme::conversion::to_version(group, version, &kind, object)))
 }
 
 #[derive(Debug, PartialEq)]
