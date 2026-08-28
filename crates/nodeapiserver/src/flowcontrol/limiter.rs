@@ -13,7 +13,7 @@ use crate::server::path::RequestInfo;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
@@ -60,35 +60,39 @@ impl ConcurrencyLimiter {
         if exempt || is_long_running(info, query) {
             return Ok(None);
         }
-        let previous = self.queued.fetch_add(1, Ordering::AcqRel);
-        if previous >= self.queue_length_limit {
-            self.queued.fetch_sub(1, Ordering::Release);
-            return Err(Error::QueueFull);
-        }
-        let requests = match self.requests.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => {
-                self.queued.fetch_sub(1, Ordering::Release);
-                return Err(Error::Closed);
-            }
-        };
+        let requests = acquire_seat(self.requests.clone(), &self.queued, self.queue_length_limit).await?;
         let mut mutating_requests = if is_mutating(info) {
-            match self.mutating_requests.clone().acquire_owned().await {
+            match acquire_seat(self.mutating_requests.clone(), &self.queued, self.queue_length_limit).await {
                 Ok(permit) => Some(permit),
-                Err(_) => {
+                Err(error) => {
                     drop(requests);
-                    self.queued.fetch_sub(1, Ordering::Release);
-                    return Err(Error::Closed);
+                    return Err(error);
                 }
             }
         } else {
             None
         };
-        self.queued.fetch_sub(1, Ordering::Release);
         Ok(Some(Permit {
             _requests: requests,
             _mutating_requests: mutating_requests.take(),
         }))
+    }
+}
+
+async fn acquire_seat(semaphore: Arc<Semaphore>, queued: &AtomicUsize, queue_length_limit: usize) -> Result<OwnedSemaphorePermit, Error> {
+    match semaphore.clone().try_acquire_owned() {
+        Ok(permit) => Ok(permit),
+        Err(TryAcquireError::Closed) => Err(Error::Closed),
+        Err(TryAcquireError::NoPermits) => {
+            let previous = queued.fetch_add(1, Ordering::AcqRel);
+            if previous >= queue_length_limit {
+                queued.fetch_sub(1, Ordering::Release);
+                return Err(Error::QueueFull);
+            }
+            let result = semaphore.acquire_owned().await.map_err(|_| Error::Closed);
+            queued.fetch_sub(1, Ordering::Release);
+            result
+        }
     }
 }
 
@@ -142,6 +146,13 @@ mod tests {
         let limiter = ConcurrencyLimiter::new(1, 1, 0);
         let error = limiter.acquire(&request("get"), "", false).await.unwrap_err();
         assert_eq!(error, Error::QueueFull);
+    }
+
+    #[tokio::test]
+    async fn zero_queue_length_still_allows_an_immediately_available_request() {
+        let limiter = ConcurrencyLimiter::new(1, 1, 0);
+        assert!(limiter.acquire(&request("get"), "", false).await.unwrap().is_some());
+        assert!(limiter.acquire(&request("create"), "", false).await.unwrap().is_some());
     }
 
     #[tokio::test]
