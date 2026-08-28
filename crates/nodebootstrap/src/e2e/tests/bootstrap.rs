@@ -365,7 +365,7 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         .body(serde_json::to_vec(&TokenRequest {
             metadata: Default::default(),
             spec: TokenRequestSpec {
-                audiences: None,
+                audiences: Vec::new(),
                 bound_object_ref: None,
                 expiration_seconds: Some(600),
             },
@@ -391,7 +391,7 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
             metadata: Default::default(),
             spec: TokenReviewSpec {
                 token: Some(token),
-                audiences: Vec::new(),
+                audiences: None,
             },
             status: None,
         })?)?;
