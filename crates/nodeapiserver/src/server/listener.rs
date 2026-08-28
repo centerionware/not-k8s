@@ -436,6 +436,21 @@ pub async fn run(cfg: Config) {
         None => None,
     };
 
+    // Group H: the upstream-compatible static token file is optional. A
+    // malformed file disables the listener rather than leaving a partially
+    // loaded token table in place; accepting only part of an operator's
+    // authentication configuration would be surprising and unsafe.
+    let bootstrap_token_authenticator = match &cfg.bootstrap_token_file {
+        Some(path) => match crate::authn::bootstrap_token::Authenticator::from_file(path) {
+            Ok(authenticator) => Some(Arc::new(authenticator)),
+            Err(error) => {
+                warn!(path = %path.display(), error, "failed to load NODEAPISERVER_TOKEN_AUTH_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
     // Group H: OIDC is optional, but a configured issuer must complete
     // discovery and load a usable JWKS before its bearer tokens are accepted.
     // If that setup fails, keep OIDC disabled rather than accepting tokens
@@ -631,6 +646,7 @@ pub async fn run(cfg: Config) {
         let kubelet_tls = kubelet_tls.clone();
         let service_account_authenticator = service_account_authenticator.clone();
         let oidc_authenticator = oidc_authenticator.clone();
+        let bootstrap_token_authenticator = bootstrap_token_authenticator.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -648,7 +664,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1029,6 +1045,7 @@ async fn handle_with_audit(
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
+    bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::Authenticator>>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     enforce_rbac: bool,
@@ -1039,7 +1056,7 @@ async fn handle_with_audit(
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let identity = match authenticate_request(&req, identity, service_account_authenticator.as_deref(), oidc_authenticator.as_deref()).await {
+    let identity = match authenticate_request(&req, identity, bootstrap_token_authenticator.as_deref(), service_account_authenticator.as_deref(), oidc_authenticator.as_deref()).await {
         Ok(identity) => identity,
         Err(detail) => return Ok(json_response(StatusCode::UNAUTHORIZED, &unauthorized_status(&path_str, detail))),
     };
@@ -1162,6 +1179,7 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
 async fn authenticate_request(
     req: &Request<Incoming>,
     client_cert_identity: Option<crate::authn::x509::Identity>,
+    bootstrap_token_authenticator: Option<&crate::authn::bootstrap_token::Authenticator>,
     service_account_authenticator: Option<&crate::authn::service_account::Authenticator>,
     oidc_authenticator: Option<&crate::authn::oidc::Authenticator>,
 ) -> std::result::Result<Option<crate::authn::x509::Identity>, &'static str> {
@@ -1175,6 +1193,11 @@ async fn authenticate_request(
     let Some(token) = value.strip_prefix("Bearer ").filter(|token| !token.is_empty()) else {
         return Err("Authorization must use the Bearer scheme");
     };
+    if let Some(authenticator) = bootstrap_token_authenticator {
+        if let Some(authenticated) = authenticator.authenticate(token) {
+            return Ok(Some(authenticated.identity));
+        }
+    }
     if let Some(authenticator) = service_account_authenticator {
         if let Some(authenticated) = authenticator.authenticate(token) {
             return Ok(Some(authenticated.identity));
@@ -1185,7 +1208,10 @@ async fn authenticate_request(
             return Ok(Some(identity));
         }
     }
-    if service_account_authenticator.is_none() && oidc_authenticator.is_none() {
+    if bootstrap_token_authenticator.is_none()
+        && service_account_authenticator.is_none()
+        && oidc_authenticator.is_none()
+    {
         return Err("bearer-token authentication is not configured");
     }
     Err("bearer token is invalid or expired")

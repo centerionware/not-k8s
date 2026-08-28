@@ -2,6 +2,11 @@
 //! issuance/validation, projected/bound tokens, OIDC discovery + JWKS,
 //! TokenReview, bootstrap tokens, anonymous.
 //!
+//! `bootstrap_token` — loads the standard `--token-auth-file` CSV format
+//! into an in-memory bearer-token authenticator. The listener loads it once
+//! at startup from `NODEAPISERVER_TOKEN_AUTH_FILE`, matching the static-file
+//! lifecycle of upstream's token authenticator.
+//!
 //! `x509` — the first real slice: derives a [`x509::Identity`] from a
 //! client certificate's Subject, the same `CommonName`-as-username/
 //! `Organization`-as-groups convention real upstream's own generic x509
@@ -34,11 +39,15 @@
 //! `oidc` — optional discovery-backed OIDC bearer-token authentication. The
 //! listener fetches the issuer metadata and JWKS at startup, verifies signed
 //! tokens locally, and refreshes keys once when a rotated key is encountered.
-//! Bootstrap tokens and the remaining anonymous-authentication configuration
-//! are not started.
+//!
+//! `bootstrap_token` — loads the standard `--token-auth-file` CSV format
+//! into an in-memory bearer-token authenticator. The listener loads it once
+//! at startup from `NODEAPISERVER_TOKEN_AUTH_FILE`, matching the static-file
+//! lifecycle of upstream's token authenticator.
 //!
 //! Status: in progress (see docs/APISERVER.md).
 
+pub mod bootstrap_token;
 pub mod oidc;
 pub mod self_review;
 pub mod service_account;

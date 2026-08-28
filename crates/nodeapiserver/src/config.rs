@@ -50,6 +50,10 @@ pub struct Config {
     /// authentication remains unavailable for standalone development runs.
     pub service_account_signing_key_file: Option<PathBuf>,
     pub service_account_issuer: String,
+    /// `NODEAPISERVER_TOKEN_AUTH_FILE` points at the standard
+    /// `--token-auth-file` CSV used for static bootstrap bearer tokens.
+    /// `None` leaves this authenticator disabled.
+    pub bootstrap_token_file: Option<PathBuf>,
     /// OIDC bearer-token authentication. Both values must be configured to
     /// enable it; an absent pair leaves OIDC disabled.
     pub oidc_issuer_url: Option<String>,
@@ -109,6 +113,7 @@ impl Default for Config {
             client_ca_file: None,
             service_account_signing_key_file: None,
             service_account_issuer: "https://kubernetes.default.svc".to_string(),
+            bootstrap_token_file: None,
             oidc_issuer_url: None,
             oidc_client_id: None,
             oidc_username_claim: "sub".to_string(),
@@ -175,6 +180,7 @@ impl Config {
 
         cfg.client_ca_file = path_env("NODEAPISERVER_CLIENT_CA_FILE");
         cfg.service_account_signing_key_file = path_env("NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE");
+        cfg.bootstrap_token_file = path_env("NODEAPISERVER_TOKEN_AUTH_FILE");
         if let Ok(v) = std::env::var("NODEAPISERVER_SERVICE_ACCOUNT_ISSUER") {
             if !v.trim().is_empty() {
                 cfg.service_account_issuer = v;
