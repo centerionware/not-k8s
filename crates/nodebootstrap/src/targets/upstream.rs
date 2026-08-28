@@ -134,7 +134,7 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
 /// The Pod gets its own explicitly-created ServiceAccount and does not mount a
 /// token, so this does not depend on a serviceaccount controller that
 /// nodecontroller intentionally does not replace yet.
-fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
+pub(crate) fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
     let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
     let kubeconfig = Kubeconfig::read_from(&kubeconfig_path)
         .with_context(|| format!("reading {} for the CNI seed Pod", kubeconfig_path.display()))?;
@@ -199,7 +199,7 @@ fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
 /// failure dump. On the successful path, remove it after the apiserver has
 /// switched to the reachable CNI gateway; the bridge remains managed by
 /// flannel and no bootstrap workload is left in the cluster.
-fn remove_cni_seed_pod(cfg: &Config) {
+pub(crate) fn remove_cni_seed_pod(cfg: &Config) {
     let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
     let kubeconfig = match Kubeconfig::read_from(&kubeconfig_path) {
         Ok(kubeconfig) => kubeconfig,
@@ -465,7 +465,7 @@ fn detect_host_address() -> Option<String> {
         })
 }
 
-fn wait_for_cni_address() -> Result<String> {
+pub(crate) fn wait_for_cni_address() -> Result<String> {
     tracing::info!("waiting for CNI bridge cni0 before publishing the apiserver Service endpoint...");
     for _ in 0..30 {
         if let Some(address) = detect_cni_address() {
