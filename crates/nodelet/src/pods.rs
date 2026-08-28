@@ -844,43 +844,16 @@ impl PodController {
         });
     }
 
-    /// Runtime told us a pod's actual state changed — reconcile just its status.
+    /// Runtime told us a pod's actual state changed — reconcile the desired
+    /// Pod against the runtime, then report the resulting status. This is also
+    /// used for the startup inventory: CRI events are not replayed after a
+    /// nodelet restart, and an API status from before the restart is not proof
+    /// that the corresponding runtime task still exists.
     async fn on_runtime_event(&self, key: &str) {
         let Some((ns, name)) = key.split_once('/') else { return };
-        let status = match self.runtime.status(ns, name).await {
-            Ok(Some(s)) => s,
-            Ok(None) => return,
-            Err(e) => {
-                warn!(pod = %key, error = ?e, "runtime status query failed");
-                return;
-            }
-        };
-        // Only write if the pod still exists in the apiserver.
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
         match api.get_opt(name).await {
-            Ok(Some(p)) => {
-                self.ensure_probe_supervisor(&p, ns, name, status.pod_ip.as_deref());
-                let gates = readiness_gate_types(&p);
-                let qos = crate::eviction::qos_class(&p);
-                if let Err(e) = write_status(
-                    &self.client,
-                    &self.host_ip,
-                    ns,
-                    name,
-                    &status,
-                    p.status.as_ref(),
-                    &gates,
-                    &self.health,
-                    qos,
-                    p.metadata.generation,
-                )
-                .await
-                {
-                    warn!(pod = %key, error = ?e, "failed to write pod status");
-                } else {
-                    debug!(pod = %key, phase = status.phase.as_str(), "status updated (event-driven)");
-                }
-            }
+            Ok(Some(p)) => self.reconcile(p).await,
             Ok(None) => debug!(pod = %key, "pod gone; skipping status write"),
             Err(e) => warn!(pod = %key, error = ?e, "get_opt failed"),
         }

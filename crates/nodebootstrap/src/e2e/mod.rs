@@ -557,6 +557,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_existing_pod_recreates_its_container_after_a_runtime_restart",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_endpointslice_is_produced_for_a_selected_pod",
         group: TestGroup::General,
     },
@@ -1761,6 +1765,10 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_a_pending_pod_recovers_after_the_node_failure_is_fixed" => {
             host_recovery::pending_pod_recovers_after_the_node_failure_is_fixed(context).await
+        }
+        "test_existing_pod_recreates_its_container_after_a_runtime_restart" => {
+            host_recovery::existing_pod_recreates_its_container_after_a_runtime_restart(context)
+                .await
         }
         "test_endpointslice_is_produced_for_a_selected_pod" => {
             endpoint_slice::endpointslice_is_produced_for_a_selected_pod(context).await

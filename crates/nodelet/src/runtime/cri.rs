@@ -580,6 +580,11 @@ impl CriRuntime {
         let (tx, rx) = unbounded_channel();
         let (priority_tx, priority_rx) = unbounded_channel();
         tokio::spawn(event_loop(channel, tx.clone()));
+        // CRI does not replay task events to a newly-started nodelet. Seed
+        // the same channel from the runtime's current inventory so existing
+        // sandboxes and containers are reconciled immediately after a nodelet
+        // or host restart, even when their API status still says Running.
+        tokio::spawn(seed_existing_runtime_pods(rt.clone(), tx));
 
         // Best-effort: a malformed/unreadable CredentialProviderConfig
         // shouldn't block startup any more than a missing one does —
