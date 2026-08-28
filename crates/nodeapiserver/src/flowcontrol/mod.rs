@@ -13,12 +13,15 @@
 //! response headers on every request — see that module's own doc comment
 //! for exactly what's covered.
 //!
-//! **No concurrency-limiting/queuing exists at all yet** (the much larger
-//! remaining piece of real APF — real upstream's own fair-queuing/
-//! seat-borrowing algorithm) — every request still runs at full priority,
-//! just correctly labeled.
+//! `limiter` — the request admission gate: bounded FIFO concurrency for
+//! ordinary requests, with exempt priority levels and long-running streams
+//! excluded from the finite request budget.
+//! The full upstream shuffle-sharded per-flow queue and seat-borrowing
+//! algorithm remain separate refinements; this gate still enforces finite
+//! request and mutating-request budgets.
 //!
 //! Status: in progress (Group M — see docs/APISERVER.md).
 
 pub mod flow_schema;
+pub mod limiter;
 pub mod resolve;

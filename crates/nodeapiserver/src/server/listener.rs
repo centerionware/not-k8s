@@ -621,6 +621,11 @@ pub async fn run(cfg: Config) {
     };
     info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, cached_resources = BOOT_CACHED_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
+    let concurrency_limiter = Arc::new(crate::flowcontrol::limiter::ConcurrencyLimiter::new(
+        cfg.apf_max_requests_inflight,
+        cfg.apf_max_mutating_requests_inflight,
+        cfg.apf_queue_length_limit,
+    ));
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -659,6 +664,7 @@ pub async fn run(cfg: Config) {
         let oidc_authenticator = oidc_authenticator.clone();
         let bootstrap_token_authenticator = bootstrap_token_authenticator.clone();
         let authorization_webhook = authorization_webhook.clone();
+        let concurrency_limiter = concurrency_limiter.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -676,7 +682,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -917,6 +923,19 @@ fn service_unavailable_status(path_str: &str, detail: &str) -> serde_json::Value
     })
 }
 
+fn too_many_requests_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: the API request queue is full"),
+        "reason": "TooManyRequests",
+        "details": {},
+        "code": 429,
+    })
+}
+
 /// Real upstream's own `AlreadyExists` shape for a `CREATE` that lost the
 /// create-only-if-absent race — `reason: "AlreadyExists"`, `code: 409`.
 fn conflict_status(path_str: &str) -> serde_json::Value {
@@ -1061,6 +1080,7 @@ async fn handle_with_audit(
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
+    concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
     enforce_rbac: bool,
     peer: SocketAddr,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
@@ -1097,12 +1117,36 @@ async fn handle_with_audit(
             }
         }
     }
-    // Group M (APF): a cheap clone (wraps a `tonic::transport::Channel`,
-    // same reasoning PR #107's watch-RBAC-gating clone already
-    // established) so flow-schema resolution below has its own
-    // connection independent of whatever `handle()` does with the one it
-    // owns.
-    let storage_for_pf = storage.clone();
+    let selected_priority = if let Some(mut client) = storage.clone() {
+        let (user_name, user_groups): (&str, Vec<String>) = match identity.as_ref() {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let digest = flowcontrol::flow_schema::RequestDigest {
+            user_name,
+            user_groups: &user_groups,
+            verb: &request_info.verb,
+            is_resource_request: request_info.is_resource_request,
+            api_group: &request_info.api_group,
+            resource: &request_info.resource,
+            subresource: &request_info.subresource,
+            namespace: &request_info.namespace,
+            path: &request_info.path,
+        };
+        flowcontrol::resolve::select_for_request(&mut client, &digest).await
+    } else {
+        None
+    };
+    let exempt = selected_priority.as_ref().is_some_and(|selected| selected.exempt);
+    let _permit = match concurrency_limiter.acquire(&request_info, &query, exempt).await {
+        Ok(permit) => permit,
+        Err(crate::flowcontrol::limiter::Error::QueueFull) => {
+            return Ok(json_response(StatusCode::TOO_MANY_REQUESTS, &too_many_requests_status(&path_str)));
+        }
+        Err(crate::flowcontrol::limiter::Error::Closed) => {
+            return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "API request concurrency limiter is unavailable")));
+        }
+    };
 
     // Group M: `apiserver_request_duration_seconds`'s own start time —
     // measured around the exact same `handle()` call the audit event and
@@ -1125,7 +1169,7 @@ async fn handle_with_audit(
         // discovery route, `/healthz`, ...) is counted under its real
         // verb with an empty `resource` label, matching real upstream's
         // own convention for that case.
-        let info = path::parse(&method, &path_str, &query);
+        let info = &request_info;
         metrics::record_request(&info.verb, &info.resource, status);
         metrics::record_duration(&info.verb, &info.resource, elapsed);
         // Group M: `apiserver_response_sizes` — only recorded when the
@@ -1141,38 +1185,16 @@ async fn handle_with_audit(
             }
         }
 
-        // Group M (APF): label the response with which FlowSchema/
-        // PriorityLevelConfiguration would govern it, real upstream's own
-        // observable behavior even before this build does any actual
-        // queuing/limiting — see `flowcontrol::resolve`'s own doc comment.
-        // Only for real resource/non-resource requests handled past
-        // discovery (matching real upstream's own filter chain scope);
-        // skipped entirely when there's no storage connection to resolve
-        // against.
-        if let Some(mut client) = storage_for_pf {
-            let (user_name, user_groups): (&str, Vec<String>) = match audit_identity.as_ref() {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
-            };
-            let digest = flowcontrol::flow_schema::RequestDigest {
-                user_name,
-                user_groups: &user_groups,
-                verb: &info.verb,
-                is_resource_request: info.is_resource_request,
-                api_group: &info.api_group,
-                resource: &info.resource,
-                subresource: &info.subresource,
-                namespace: &info.namespace,
-                path: &path_str,
-            };
-            if let Some(selected) = flowcontrol::resolve::select_for_request(&mut client, &digest).await {
-                if let (Ok(fs), Ok(pl)) = (
-                    hyper::header::HeaderValue::from_str(&selected.flow_schema_uid),
-                    hyper::header::HeaderValue::from_str(&selected.priority_level_uid),
-                ) {
-                    resp.headers_mut().insert(flowcontrol::resolve::FLOW_SCHEMA_UID_HEADER, fs);
-                    resp.headers_mut().insert(flowcontrol::resolve::PRIORITY_LEVEL_UID_HEADER, pl);
-                }
+        // Group M (APF): label the response with the FlowSchema and
+        // PriorityLevelConfiguration selected before the request entered
+        // the bounded concurrency gate.
+        if let Some(selected) = selected_priority {
+            if let (Ok(fs), Ok(pl)) = (
+                hyper::header::HeaderValue::from_str(&selected.flow_schema_uid),
+                hyper::header::HeaderValue::from_str(&selected.priority_level_uid),
+            ) {
+                resp.headers_mut().insert(flowcontrol::resolve::FLOW_SCHEMA_UID_HEADER, fs);
+                resp.headers_mut().insert(flowcontrol::resolve::PRIORITY_LEVEL_UID_HEADER, pl);
             }
         }
     }
