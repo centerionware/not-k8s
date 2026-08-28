@@ -46,15 +46,17 @@
 //! instance's own value (not just checking they're affordable), `self`/
 //! `oldSelf` bound per schema level, each rule capped by
 //! [`eval_bool_with_deadline`]'s own wall-clock stand-in
-//! (`PerCallLimit`'s real ~0.1s). Wired into `server::rest::create`/
-//! `update`/`patch_persist`'s existing CRD branches — a real custom
-//! resource that fails its own declared rule now gets a real `422` with
-//! the rule's own declared `message`. **Named, honest gap**: no
-//! aggregate `RuntimeCELCostBudget` wall-clock/cost ceiling across every
-//! rule evaluated for one object — each rule is capped individually,
-//! not the sum, since this crate has no real runtime cost-accounting
-//! mechanism (Phase 2's own still-open gap) to enforce a shared budget
-//! against. See `docs/APISERVER.md`'s own
+//! (`PerCallLimit`'s real ~0.1s). The same evaluator now enforces one
+//! shared ~1s wall-clock `RuntimeCELCostBudget` window per object and
+//! stops walking further schema rules once it is exhausted. Wired into
+//! `server::rest::create`/`update`/`patch_persist`'s existing CRD branches
+//! — a real custom resource that fails its own declared rule now gets a
+//! real `422` with the rule's own declared `message`. The remaining
+//! limitation is interpreter-level cost/fuel accounting: the `cel` crate
+//! exposes no interruption hook, so a timed-out worker thread may finish
+//! in the background even though the request is bounded and the request
+//! concurrency gate limits how many can be started at once. See
+//! `docs/APISERVER.md`'s own
 //! `cel_ext` section (right after Group K) for the real, verified full
 //! plan: real upstream's own budget numbers
 //! (`RuntimeCELCostBudget`/`PerCallLimit`/`CheckFrequency`, ..., fetched
@@ -66,12 +68,13 @@
 //! accounting during real evaluation, which a wall-clock deadline alone
 //! only partially covers — see [`eval_bool_with_deadline`]'s own doc
 //! comment for the real, named gap), and the remaining phases.
-//! **Still not safe to wire this module into any real request path**
-//! (Group J admission or Group K's `x-kubernetes-validations`) — a
-//! deadline alone isn't real upstream's own guarantee, and static
-//! checked-cost estimation (Phase 3) isn't wired to an actual CEL
-//! expression's AST yet, only its own arithmetic primitives are landed
-//! so far.
+//! Group K's `x-kubernetes-validations` path now uses the static check and
+//! the shared request-side wall-clock budget in
+//! `apiextensions::cel_evaluate`; callers must use that budgeted path rather
+//! than treating the raw deadline helper as an unbounded request primitive.
+//! The remaining difference from upstream is that the `cel` crate exposes
+//! no interpreter-level fuel or interruption hook, so timed-out evaluation
+//! threads cannot be forcibly reclaimed.
 //!
 //! Named `cel_ext`, not `cel` — see the module-map note in `lib.rs` for why
 //! (this crate also depends on the external `cel` crate).

@@ -1418,8 +1418,8 @@ generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
 MutatingAdmissionPolicy. The ValidatingAdmissionPolicy path uses the
-existing per-expression deadline; the shared CEL cost budget remains a
-follow-up hardening item.
+existing per-expression deadline and the shared request-side CEL budget;
+interpreter-level fuel accounting remains a follow-up hardening item.
 
 **K. CRDs (apiextensions)** — **in progress**. Found on inspection, not
 assumed: `CustomResourceDefinition` itself needed *zero* new plumbing —
@@ -1593,15 +1593,16 @@ missing declaration rejected, a real one accepted end to end.
 **Not yet landed, named honestly** (`apiextensions::mod`'s own doc
 comment carries this list too): enum membership, numeric ranges, format
 checks, and any cross-field consistency rule (`x-kubernetes-validations`
-CEL is a CRD schema's real mechanism for all of that — **needs the CEL
-cost budget built first**, Group J's own doc comment names this as a
-real DoS surface, not optional hardening). Conversion webhooks. Pruning/
+CEL is a CRD schema's real mechanism for all of that — runtime evaluation
+now has a shared request-side budget, while interpreter-level fuel
+accounting remains a real DoS-hardening limitation. Conversion webhooks. Pruning/
 validation on the `status` subresource write itself (`update_status`/
 `patch_status` keep the same "no structural checks on status" scope real
 upstream's own generic status strategy has for built-ins too).
 
-**`cel_ext` — the CEL cost budget, a real design pass (2026-08-21), no
-code yet.** Blocks `x-kubernetes-validations` (Group K) and
+**`cel_ext` — the CEL cost budget, a real design pass (2026-08-21).** The
+static estimator and request-side runtime budget now protect
+`x-kubernetes-validations` (Group K) and
 ValidatingAdmissionPolicy/MutatingAdmissionPolicy (Group J) both —
 scoped here rather than under either group since it's shared
 infrastructure neither owns.
@@ -1854,16 +1855,18 @@ used*:
    `oldSelf` bound per schema level (`oldSelf` genuinely unavailable on
    `CREATE`, not just empty), each rule capped by
    `eval_bool_with_deadline` (Phase 2, already landed) at real upstream's
-   own `PerCallLimit` (~0.1s). Wired into `server::rest::create`/
+   own `PerCallLimit` (~0.1s), under one shared ~1s wall-clock
+   `RuntimeCELCostBudget` per object. Once that shared window is exhausted,
+   the evaluator stops walking further schema rules. Wired into `server::rest::create`/
    `update`/`patch_persist`'s existing CRD branches, after pruning and
    required/type validation, against the fully-defaulted object (real
    upstream's own ordering — a rule commonly assumes a field already
-   carries its real default). **Named, honest gap**: no aggregate
-   `RuntimeCELCostBudget` ceiling across every rule evaluated for one
-   object — each rule is capped individually, not the sum, since this
-   crate has no real runtime cost-accounting mechanism (Phase 2's own
-   still-open gap) to enforce a shared budget against; also not ported:
-   real upstream's own static `UsesOldSelf`/uncorrelatable-schema
+   carries its real default). **Named, honest limitation**: the `cel` crate
+   exposes no interpreter-level fuel or interruption hook, so a timed-out
+   worker thread may finish in the background even though request-side
+   evaluation is bounded and the concurrency gate limits how many such
+   evaluations can be started at once. Also not ported: real upstream's own
+   static `UsesOldSelf`/uncorrelatable-schema
    rejection at CRD-acceptance time (an `oldSelf`-referencing rule that
    can't validly correlate old/new values in some schema shapes).
 5. Wire into Group J: `ValidatingAdmissionPolicy`/`MutatingAdmissionPolicy`
