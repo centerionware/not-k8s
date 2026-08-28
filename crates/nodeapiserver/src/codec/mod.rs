@@ -13,11 +13,14 @@
 //! like Pod's `READY`/`STATUS` columns are separate, unstarted work — see
 //! the module's own doc for exactly what's covered).
 //!
-//! Not yet done: `PartialObjectMetadata`.
+//! `partial_metadata` serves the standard `meta.k8s.io/v1`
+//! `PartialObjectMetadata` and `PartialObjectMetadataList` representations
+//! for negotiated `GET` and `LIST` responses.
 
 pub mod wire;
 pub mod protobuf;
 pub mod json;
 pub mod yaml;
 pub mod negotiation;
+pub mod partial_metadata;
 pub mod table;
