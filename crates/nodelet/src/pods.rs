@@ -252,6 +252,7 @@ const TEARDOWN_MAX_ATTEMPTS: u32 = 6;
 
 const COREDNS_NAMESPACE: &str = "kube-system";
 const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
+const CNI_SEED_NAME: &str = "nodebootstrap-cni-seed";
 const COREDNS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Double the delay, up to the ceiling.
@@ -333,6 +334,7 @@ impl PodController {
     async fn wait_for_coredns(&self) {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
         let params = ListParams::default().labels(COREDNS_SELECTOR);
+        let seed_api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
         let mut logged_wait = false;
 
         info!("waiting for CoreDNS to become ready before reconciling workloads");
@@ -391,6 +393,25 @@ impl PodController {
                     ready = true;
                     break;
                 }
+            }
+
+            // The bootstrapper creates this one disposable Pod specifically
+            // to make the first CNI network namespace appear. It is the one
+            // intentional exception to the DNS gate: without reconciling it,
+            // CoreDNS cannot obtain a network and the gate can never open.
+            // Ordinary workloads remain untouched until CoreDNS is healthy.
+            match seed_api.get_opt(CNI_SEED_NAME).await {
+                Ok(Some(seed))
+                    if seed
+                        .spec
+                        .as_ref()
+                        .and_then(|spec| spec.node_name.as_deref())
+                        == Some(&self.node_name) =>
+                {
+                    self.reconcile(seed).await;
+                }
+                Ok(Some(_)) | Ok(None) => {}
+                Err(error) => warn!(?error, "failed to inspect the CNI seed Pod; retrying"),
             }
 
             if ready {
