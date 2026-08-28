@@ -149,6 +149,8 @@ pub enum Error {
     /// reportable authoring mistake, not silently stringified.
     #[error("the CEL expression evaluated to {0:?}, not a string -- messageExpression must be a string")]
     NotString(CelValue),
+    #[error("the CEL expression result could not be converted to JSON: {0}")]
+    Serialize(#[from] serde_json::Error),
     /// [`eval_bool_with_deadline`]'s own real cost-budget enforcement —
     /// see that function's own doc comment for exactly what this does
     /// and doesn't guarantee.
@@ -309,6 +311,33 @@ pub fn eval_string_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Va
     rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
 }
 
+/// Evaluate a CEL expression whose result is a JSON-shaped value. This is
+/// the common representation used by admission policies: the CEL runtime
+/// evaluates the policy's typed value and the admission layer then applies
+/// the resulting JSON Patch or apply configuration to the request object.
+pub fn eval_json_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<Value, Error> {
+    let program = Program::compile(expr)?;
+    let mut ctx = Context::default();
+    register_kubernetes_extensions(&mut ctx);
+    for (name, value) in vars.iter().copied() {
+        ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
+    }
+    Ok(serde_json::to_value(program.execute(&ctx)?)?)
+}
+
+/// Evaluate [`eval_json_with_vars`] under the same wall-clock deadline used
+/// by the boolean and string admission CEL helpers.
+pub fn eval_json_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Value)], deadline: std::time::Duration) -> Result<Value, Error> {
+    let expr = expr.to_string();
+    let owned_vars: Vec<(&'static str, Value)> = vars.iter().map(|(name, value)| (*name, (*value).clone())).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<(&'static str, &Value)> = owned_vars.iter().map(|(name, value)| (*name, value)).collect();
+        let _ = tx.send(eval_json_with_vars(&expr, &borrowed));
+    });
+    rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +447,17 @@ mod tests {
         let request = json!({"operation": "CREATE"});
         let result = eval_bool_with_vars("request.operation == 'CREATE'", &[("request", &request)]);
         assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn eval_json_with_vars_round_trips_a_mutation_document() {
+        let value = eval_json_with_vars(
+            r#"[{"op": "add", "path": "/metadata/labels/managed", "value": "true"}]"#,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(value[0]["op"], "add");
+        assert_eq!(value[0]["path"], "/metadata/labels/managed");
     }
 
     #[test]
