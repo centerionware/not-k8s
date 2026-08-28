@@ -713,6 +713,13 @@ pub enum CreateOutcome {
 /// submitted object, decoded but otherwise untouched — this function
 /// validates and defaults it, it doesn't trust it.
 pub async fn create(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, body: &Value) -> Result<CreateOutcome, Error> {
+    create_with_options(storage, group, version, resource, namespace, body, false).await
+}
+
+/// [`create`] with the real Kubernetes `dryRun=All` write option. Dry-run
+/// still resolves, validates, defaults, and checks for an existing object,
+/// but never changes nodestore.
+pub async fn create_with_options(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, body: &Value, dry_run: bool) -> Result<CreateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(CreateOutcome::UnknownResource);
     };
@@ -818,6 +825,13 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
     }
 
     let key = keys::object_key(group, resource, namespace, &name);
+    if dry_run {
+        let existing = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+        if !existing.kvs.is_empty() {
+            return Ok(CreateOutcome::AlreadyExists);
+        }
+        return Ok(CreateOutcome::Created(object));
+    }
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let object_bytes = match resolved.schema {
         Some(schema) => protobuf::encode_message(schema, &object)?,
@@ -890,6 +904,13 @@ pub enum UpdateOutcome {
 /// object regardless of what the client submitted — real upstream
 /// treats both as immutable after creation.
 pub async fn update(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
+    update_with_options(storage, group, version, resource, namespace, name, body, false).await
+}
+
+/// [`update`] with the real Kubernetes `dryRun=All` write option. The
+/// candidate is prepared exactly like a normal update, but the final
+/// optimistic-concurrency write is omitted.
+pub async fn update_with_options(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -971,7 +992,7 @@ pub async fn update(storage: &mut StorageClient, group: &str, version: &str, res
         }
     }
 
-    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run).await
 }
 
 /// Real upstream's generic status subresource (`GenericStatusREST`,
@@ -1037,7 +1058,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, false).await
 }
 
 /// The tail [`update`] and [`patch`] share once each has its own
@@ -1061,6 +1082,7 @@ async fn persist_update(
     existing_object: &Value,
     namespace: Option<&str>,
     mut object: Value,
+    dry_run: bool,
 ) -> Result<UpdateOutcome, Error> {
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
@@ -1072,6 +1094,10 @@ async fn persist_update(
     }
 
     object = crate::scheme::conversion::to_version(group, version, kind, object);
+
+    if dry_run {
+        return Ok(UpdateOutcome::Updated(object));
+    }
 
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let object_bytes = match schema {
@@ -1289,7 +1315,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object).await
+    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, false).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -1336,7 +1362,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         }
     }
 
-    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object).await
+    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, false).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
@@ -1669,7 +1695,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object).await? {
+    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, false).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
@@ -1836,23 +1862,90 @@ pub enum DeleteOutcome {
     Deleted(Value),
     UnknownResource,
     ObjectNotFound,
+    /// The requested `resourceVersion` or `uid` did not match the live
+    /// object. Kubernetes reports this as a conflict and leaves it intact.
+    PreconditionFailed,
 }
 
 /// Deletes a single object. `namespace: None` for a cluster-scoped
 /// resource, same convention as [`get`]/[`list`]/[`create`].
 pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<DeleteOutcome, Error> {
+    delete_with_options(storage, group, version, resource, namespace, name, None, false).await
+}
+
+/// The subset of Kubernetes `DeleteOptions.preconditions` that can be
+/// enforced against nodestore's MVCC-backed objects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeletePreconditions {
+    pub resource_version: Option<String>,
+    pub uid: Option<String>,
+}
+
+/// Deletes a single object with optional `DeleteOptions` preconditions and
+/// `dryRun=All`. The read and delete are joined by an MVCC compare so a
+/// concurrent update cannot make a validated delete remove a newer object.
+pub async fn delete_with_options(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    preconditions: Option<&DeletePreconditions>,
+    dry_run: bool,
+) -> Result<DeleteOutcome, Error> {
     if resolve_resource(storage, group, version, resource).await?.is_none() {
         return Ok(DeleteOutcome::UnknownResource);
     }
     let key = keys::object_key(group, resource, namespace, name);
-    let resp = storage.delete_range(pb::DeleteRangeRequest { key: key.into_bytes(), prev_kv: true, ..Default::default() }).await?;
-    let Some(prev) = resp.prev_kvs.into_iter().next() else {
+    let current = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(prev) = current.kvs.into_iter().next() else {
         return Ok(DeleteOutcome::ObjectNotFound);
     };
     let mut object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
     set_metadata_field(&mut object, "resourceVersion", Value::String(prev.mod_revision.to_string()));
+    if let Some(preconditions) = preconditions {
+        if let Some(resource_version) = &preconditions.resource_version {
+            let matches = resource_version.parse::<i64>().ok() == Some(prev.mod_revision);
+            if !matches {
+                return Ok(DeleteOutcome::PreconditionFailed);
+            }
+        }
+        if let Some(uid) = &preconditions.uid {
+            if object.pointer("/metadata/uid").and_then(Value::as_str) != Some(uid.as_str()) {
+                return Ok(DeleteOutcome::PreconditionFailed);
+            }
+        }
+    }
     let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
-    Ok(DeleteOutcome::Deleted(crate::scheme::conversion::to_version(group, version, &kind, object)))
+    let object = crate::scheme::conversion::to_version(group, version, &kind, object);
+    if dry_run {
+        return Ok(DeleteOutcome::Deleted(object));
+    }
+
+    let compare = pb::Compare {
+        key: key.clone().into_bytes(),
+        result: pb::compare::CompareResult::Equal as i32,
+        target: pb::compare::CompareTarget::Mod as i32,
+        target_union: Some(pb::compare::TargetUnion::ModRevision(prev.mod_revision)),
+        range_end: Vec::new(),
+    };
+    let txn = pb::TxnRequest {
+        compare: vec![compare],
+        success: vec![pb::RequestOp {
+            request: Some(pb::request_op::Request::RequestDeleteRange(pb::DeleteRangeRequest {
+                key: key.into_bytes(),
+                prev_kv: true,
+                ..Default::default()
+            })),
+        }],
+        failure: vec![],
+    };
+    let response = storage.txn(txn).await?;
+    if !response.succeeded {
+        return Ok(DeleteOutcome::PreconditionFailed);
+    }
+    Ok(DeleteOutcome::Deleted(object))
 }
 
 #[derive(Debug, PartialEq)]
