@@ -52,8 +52,52 @@
 //! separately; webhook authorization is enabled only when its endpoint is
 //! configured.
 
+//! `node` — the request-specific Node authorizer, evaluated before RBAC for
+//! node identities, including storage-backed relationship checks for
+//! node-owned resources.
+
+pub mod node;
 pub mod rbac;
 pub mod resolve;
 pub mod sar;
 pub mod subject;
 pub mod webhook;
+
+use crate::authn::x509::Identity;
+use crate::server::path::RequestInfo;
+use crate::storage::client::StorageClient;
+
+/// Runs the authorization chain used by the nodeapiserver target: the
+/// request-specific Node authorizer first, then storage-backed RBAC when
+/// the Node authorizer has no opinion. This is the same ordering as
+/// kube-apiserver's `Node,RBAC` mode.
+pub async fn request_allowed(
+    storage: &mut StorageClient,
+    identity: Option<&Identity>,
+    info: &RequestInfo,
+) -> Result<bool, String> {
+    match node::authorize(storage, identity, info).await? {
+        node::Decision::Allow => return Ok(true),
+        node::Decision::Deny => return Ok(false),
+        node::Decision::NoOpinion => {}
+    }
+
+    let (user_name, user_groups): (&str, Vec<String>) = match identity {
+        Some(identity) => (identity.name.as_str(), identity.groups.clone()),
+        None => (
+            "system:anonymous",
+            vec!["system:unauthenticated".to_string()],
+        ),
+    };
+    let resolved = resolve::rules_for(storage, user_name, &user_groups, &info.namespace).await;
+    let attrs = rbac::RequestAttributes {
+        is_resource_request: info.is_resource_request,
+        verb: &info.verb,
+        api_group: &info.api_group,
+        resource: &info.resource,
+        subresource: &info.subresource,
+        name: &info.name,
+        path: &info.path,
+    };
+    Ok(rbac::rules_allow(&attrs, &resolved.rules))
+}
