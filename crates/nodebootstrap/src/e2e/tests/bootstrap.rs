@@ -5,7 +5,7 @@ use http::Request;
 use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{Pod, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
@@ -210,6 +210,34 @@ pub(super) async fn coredns_is_a_healthy_deployment(context: &E2eContext) -> Res
                     .and_then(|status| status.available_replicas)
                     .unwrap_or_default()
                     >= 1)
+            }
+        })
+        .await?;
+
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), "kube-system");
+    context
+        .wait_until("CoreDNS Pod to report Ready", Duration::from_secs(30), || {
+            let pods = pods.clone();
+            async move {
+                let pod = pods
+                    .list(&ListParams::default().labels("k8s-app=kube-dns"))
+                    .await?
+                    .items
+                    .into_iter()
+                    .any(|pod| {
+                        pod.status.as_ref().is_some_and(|status| {
+                            status.phase.as_deref() == Some("Running")
+                                && status.container_statuses.as_ref().is_some_and(|containers| {
+                                    !containers.is_empty() && containers.iter().all(|container| container.ready)
+                                })
+                                && status.conditions.as_ref().is_some_and(|conditions| {
+                                    conditions.iter().any(|condition| {
+                                        condition.type_ == "Ready" && condition.status == "True"
+                                    })
+                                })
+                        })
+                    });
+                Ok(pod)
             }
         })
         .await

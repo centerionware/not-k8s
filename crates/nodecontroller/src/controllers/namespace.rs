@@ -17,7 +17,7 @@
 //! remain present after the delete request, and no Namespace event is
 //! guaranteed when those finalizers eventually make progress.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{Api, DeleteParams, DynamicObject, ListParams, PostParams};

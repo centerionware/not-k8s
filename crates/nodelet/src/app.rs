@@ -167,7 +167,12 @@ pub async fn run() -> Result<()> {
     // until they were measured busy-looping at 128 requests a second against
     // a restarting apiserver. The pacing for that case lives on the streams
     // themselves (pods.rs's WatchBackoffPolicy), not here.
-    let mut controller = pods::PodController::new(client, runtime, cfg.node_name.clone());
+    let mut controller = pods::PodController::new_with_dns_gate(
+        client,
+        runtime,
+        cfg.node_name.clone(),
+        !cfg.cluster_dns.is_empty(),
+    );
     loop {
         if let Err(e) = controller.run().await {
             error!(error = ?e, "pod controller exited with error");

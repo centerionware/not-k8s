@@ -19,7 +19,7 @@ use k8s_openapi::api::core::v1::{
     ResourceStatus, Secret, Volume, VolumeMountStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use kube::api::{DeleteParams, Patch, PatchParams, Preconditions};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams, Preconditions};
 use kube::core::PartialObjectMeta;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
@@ -38,6 +38,7 @@ pub struct PodController {
     runtime: Arc<dyn PodRuntime>,
     node_name: String,
     host_ip: String,
+    dns_gate_enabled: bool,
     events: Option<UnboundedReceiver<String>>,
     /// Round 123: a probe transitioning readiness/started in `health` is a
     /// real state change (it flips `status.conditions[Ready]` and
@@ -224,6 +225,10 @@ const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
 /// Six attempts spans roughly five minutes on the shared backoff curve.
 const TEARDOWN_MAX_ATTEMPTS: u32 = 6;
 
+const COREDNS_NAMESPACE: &str = "kube-system";
+const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
+const COREDNS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Double the delay, up to the ceiling.
 ///
 /// Split out as a plain function so the schedule is testable without running
@@ -239,6 +244,15 @@ fn next_retry_delay(current: Duration) -> Duration {
 
 impl PodController {
     pub fn new(client: Client, runtime: Arc<dyn PodRuntime>, node_name: String) -> Self {
+        Self::new_with_dns_gate(client, runtime, node_name, false)
+    }
+
+    pub fn new_with_dns_gate(
+        client: Client,
+        runtime: Arc<dyn PodRuntime>,
+        node_name: String,
+        dns_gate_enabled: bool,
+    ) -> Self {
         let host_ip = crate::node::detect_internal_ip();
         let events = runtime.take_event_rx();
         let priority_events = runtime.take_priority_event_rx();
@@ -248,6 +262,7 @@ impl PodController {
             runtime,
             node_name,
             host_ip,
+            dns_gate_enabled,
             events,
             probe_events_tx,
             probe_events_rx: Some(probe_events_rx),
@@ -257,6 +272,100 @@ impl PodController {
             torn_down: Arc::new(Mutex::new(HashSet::new())),
             pod_refs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Wait for cluster DNS before allowing ordinary workloads to start.
+    /// During a node restart, the API can retain a stale CoreDNS Pod status
+    /// while containerd has no corresponding task. Reconcile the local
+    /// CoreDNS Pod from the live runtime, then require its health probe to
+    /// pass before processing the rest of the Pod watch.
+    async fn wait_for_coredns(&self) {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
+        let params = ListParams::default().labels(COREDNS_SELECTOR);
+        let mut logged_wait = false;
+
+        info!("waiting for CoreDNS to become ready before reconciling workloads");
+        loop {
+            let pods = match api.list(&params).await {
+                Ok(pods) => pods,
+                Err(error) => {
+                    warn!(?error, "failed to inspect CoreDNS readiness; retrying");
+                    tokio::time::sleep(COREDNS_POLL_INTERVAL).await;
+                    continue;
+                }
+            };
+            let mut ready = false;
+
+            for pod in pods {
+                if pod.metadata.deletion_timestamp.is_some() {
+                    continue;
+                }
+                let Some((namespace, name)) = key_parts(&pod) else { continue };
+                let is_local = pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref()) == Some(&self.node_name);
+                if !is_local {
+                    ready |= api_pod_is_ready(&pod);
+                    continue;
+                }
+
+                // The API's old status is not proof that the corresponding
+                // containerd task survived the restart. Establish the local
+                // runtime state and probe supervisor before judging readiness.
+                let mut runtime_status = match self.runtime.status(&namespace, &name).await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to inspect local CoreDNS runtime status; reconciling");
+                        None
+                    }
+                };
+                let key = pod_key(&namespace, &name);
+                let probe_supervisor_running = self.probe_tasks.lock().unwrap().contains_key(&key);
+                let needs_reconcile = runtime_status.as_ref().map_or(true, |status| {
+                    status.pod_ip.is_none() || !probe_supervisor_running
+                });
+                if needs_reconcile {
+                    self.reconcile(pod.clone()).await;
+                    runtime_status = match self.runtime.status(&namespace, &name).await {
+                        Ok(status) => status,
+                        Err(error) => {
+                            warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to re-read local CoreDNS runtime status");
+                            None
+                        }
+                    };
+                }
+
+                if runtime_status
+                    .as_ref()
+                    .is_some_and(|status| self.runtime_pod_is_ready(&namespace, &name, status))
+                {
+                    ready = true;
+                    break;
+                }
+            }
+
+            if ready {
+                info!("CoreDNS is ready; resuming pod reconciliation");
+                return;
+            }
+            if !logged_wait {
+                warn!("CoreDNS is not ready; workload reconciliation is paused");
+                logged_wait = true;
+            }
+            tokio::time::sleep(COREDNS_POLL_INTERVAL).await;
+        }
+    }
+
+    fn runtime_pod_is_ready(&self, namespace: &str, name: &str, status: &RuntimeStatus) -> bool {
+        status.phase == Phase::Running
+            && status.initialized
+            && !status.containers.is_empty()
+            && status.containers.iter().all(|container| {
+                container.running
+                    && container.ready
+                    && {
+                        let health = probes::container_health(&self.health, namespace, name, &container.name);
+                        health.started && health.ready
+                    }
+            })
     }
 
     /// Spawn a probe supervisor for this pod if it declares any probes and
@@ -324,6 +433,9 @@ impl PodController {
     /// Run the reconcile loop. Returns only if the watch stream terminates;
     /// the caller may call again to restart (the event receiver is retained).
     pub async fn run(&mut self) -> Result<()> {
+        if self.dns_gate_enabled {
+            self.wait_for_coredns().await;
+        }
         let api: Api<Pod> = Api::all(self.client.clone());
         let wc = watcher::Config::default()
             .fields(&format!("spec.nodeName={}", self.node_name));
@@ -844,43 +956,16 @@ impl PodController {
         });
     }
 
-    /// Runtime told us a pod's actual state changed — reconcile just its status.
+    /// Runtime told us a pod's actual state changed — reconcile the desired
+    /// Pod against the runtime, then report the resulting status. This is also
+    /// used for the startup inventory: CRI events are not replayed after a
+    /// nodelet restart, and an API status from before the restart is not proof
+    /// that the corresponding runtime task still exists.
     async fn on_runtime_event(&self, key: &str) {
         let Some((ns, name)) = key.split_once('/') else { return };
-        let status = match self.runtime.status(ns, name).await {
-            Ok(Some(s)) => s,
-            Ok(None) => return,
-            Err(e) => {
-                warn!(pod = %key, error = ?e, "runtime status query failed");
-                return;
-            }
-        };
-        // Only write if the pod still exists in the apiserver.
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
         match api.get_opt(name).await {
-            Ok(Some(p)) => {
-                self.ensure_probe_supervisor(&p, ns, name, status.pod_ip.as_deref());
-                let gates = readiness_gate_types(&p);
-                let qos = crate::eviction::qos_class(&p);
-                if let Err(e) = write_status(
-                    &self.client,
-                    &self.host_ip,
-                    ns,
-                    name,
-                    &status,
-                    p.status.as_ref(),
-                    &gates,
-                    &self.health,
-                    qos,
-                    p.metadata.generation,
-                )
-                .await
-                {
-                    warn!(pod = %key, error = ?e, "failed to write pod status");
-                } else {
-                    debug!(pod = %key, phase = status.phase.as_str(), "status updated (event-driven)");
-                }
-            }
+            Ok(Some(p)) => self.reconcile(p).await,
             Ok(None) => debug!(pod = %key, "pod gone; skipping status write"),
             Err(e) => warn!(pod = %key, error = ?e, "get_opt failed"),
         }
@@ -913,7 +998,13 @@ pub(crate) async fn write_status(
     // set between that GET and this PATCH. The foreign conditions are still
     // carried in `status` for readiness computation and pure status tests,
     // but must not be sent back as stale values here.
-    let patch_status = nodelet_owned_status_patch(&status);
+    //
+    // podIPs is also treated as a merge-keyed list by the apiserver. That is
+    // not appropriate for the single primary address nodelet reports: after
+    // a restart, merging the new address with the old one produces two IPv4
+    // addresses and the apiserver rejects the entire status update. Mark the
+    // list for replacement explicitly.
+    let patch_status = strategic_status_patch(&status);
     let patch = serde_json::json!({ "status": patch_status });
     api.patch_status(name, &PatchParams::default(), &Patch::Strategic(patch)).await?;
     Ok(())
@@ -930,11 +1021,21 @@ fn nodelet_owned_status_patch(status: &PodStatus) -> PodStatus {
     patch
 }
 
+fn strategic_status_patch(status: &PodStatus) -> Value {
+    let status = nodelet_owned_status_patch(status);
+    let mut patch = serde_json::to_value(status).expect("PodStatus must serialize");
+    if let Some(Value::Array(pod_ips)) = patch.get_mut("podIPs") {
+        pod_ips.insert(0, serde_json::json!({ "$patch": "replace" }));
+    }
+    patch
+}
+
 /// Return whether merging `desired` into the stored PodStatus would change
-/// anything. `patch_status()` uses JSON Merge Patch: object fields merge
-/// recursively, arrays replace as a whole, and null deletes a field. Checking
-/// this before the HTTP call matters because an identical PATCH can still
-/// produce a new resourceVersion and feed the same Pod back into our watch.
+/// anything. The comparison follows JSON Merge Patch semantics: object fields
+/// merge recursively, arrays replace as a whole, and null deletes a field.
+/// Checking this before the HTTP call matters because an identical PATCH can
+/// still produce a new resourceVersion and feed the same Pod back into our
+/// watch.
 fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
     let Some(prev) = prev else { return true };
     let prev = serde_json::to_value(prev).expect("PodStatus must serialize");
@@ -1375,6 +1476,17 @@ fn key_parts(pod: &Pod) -> Option<(String, String)> {
     let ns = pod.metadata.namespace.clone().unwrap_or_else(|| "default".to_string());
     let name = pod.metadata.name.clone()?;
     Some((ns, name))
+}
+
+fn api_pod_is_ready(pod: &Pod) -> bool {
+    let Some(status) = pod.status.as_ref() else { return false };
+    status.phase.as_deref() == Some("Running")
+        && status.container_statuses.as_ref().is_some_and(|containers| {
+            !containers.is_empty() && containers.iter().all(|container| container.ready)
+        })
+        && status.conditions.as_ref().is_some_and(|conditions| {
+            conditions.iter().any(|condition| condition.type_ == "Ready" && condition.status == "True")
+        })
 }
 
 #[derive(Debug, Clone, Copy)]

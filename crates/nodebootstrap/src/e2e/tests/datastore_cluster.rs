@@ -130,7 +130,6 @@ struct Member {
     id: u64,
     client_port: u16,
     peer_port: u16,
-    data_dir: PathBuf,
     log_path: PathBuf,
     child: Child,
 }
@@ -207,7 +206,6 @@ impl Cluster {
             id,
             client_port,
             peer_port,
-            data_dir,
             log_path: log,
             child,
         })

@@ -1,5 +1,83 @@
 use super::*;
 
+/// Seed the controller with every nodelet-managed pod already known to CRI.
+///
+/// A nodelet restart has no in-memory event history, and a containerd restart
+/// can leave CRI metadata for containers whose tasks no longer exist. Waiting
+/// for a new task event is therefore insufficient: the controller must inspect
+/// the runtime inventory as soon as it connects and run the ordinary desired-
+/// state reconciliation for each affected Pod.
+pub(crate) async fn seed_existing_runtime_pods(
+    mut rt: RuntimeServiceClient<Channel>,
+    tx: UnboundedSender<String>,
+) {
+    let mut keys = HashSet::new();
+
+    match tokio::time::timeout(
+        STARTUP_RPC_TIMEOUT,
+        rt.list_pod_sandbox(ListPodSandboxRequest { filter: None }),
+    )
+    .await
+    {
+        Ok(Ok(response)) => {
+            for sandbox in response.into_inner().items {
+                if let Some(key) = pod_key_from_labels(&sandbox.labels) {
+                    keys.insert(key);
+                }
+            }
+        }
+        Ok(Err(error)) => warn!(
+            error = ?error,
+            "CRI startup sandbox inventory failed; Pod watch reconciliation will still handle desired Pods"
+        ),
+        Err(_) => warn!(
+            timeout_secs = STARTUP_RPC_TIMEOUT.as_secs(),
+            "CRI startup sandbox inventory timed out; Pod watch reconciliation will still handle desired Pods"
+        ),
+    }
+
+    match tokio::time::timeout(
+        STARTUP_RPC_TIMEOUT,
+        rt.list_containers(ListContainersRequest { filter: None }),
+    )
+    .await
+    {
+        Ok(Ok(response)) => {
+            for container in response.into_inner().containers {
+                if let Some(key) = pod_key_from_labels(&container.labels) {
+                    keys.insert(key);
+                }
+            }
+        }
+        Ok(Err(error)) => warn!(
+            error = ?error,
+            "CRI startup container inventory failed; sandbox inventory and Pod watch reconciliation will still handle desired Pods"
+        ),
+        Err(_) => warn!(
+            timeout_secs = STARTUP_RPC_TIMEOUT.as_secs(),
+            "CRI startup container inventory timed out; sandbox inventory and Pod watch reconciliation will still handle desired Pods"
+        ),
+    }
+
+    let count = keys.len();
+    for key in keys {
+        if tx.send(key).is_err() {
+            return;
+        }
+    }
+    info!(
+        pod_count = count,
+        "CRI startup inventory queued for reconciliation"
+    );
+}
+
+fn pod_key_from_labels(labels: &HashMap<String, String>) -> Option<String> {
+    Some(crate::runtime::pod_key(
+        labels.get(POD_NS_LABEL)?,
+        labels.get(POD_NAME_LABEL)?,
+    ))
+}
+
 /// Event subscriber: prefer the CRI-standard `GetContainerEvents` (works on
 /// containerd >= 1.7 and CRI-O); if the runtime doesn't implement it, fall back
 /// to containerd's top-level `Events/Subscribe` API (present in every containerd

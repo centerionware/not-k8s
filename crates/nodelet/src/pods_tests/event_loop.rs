@@ -16,6 +16,28 @@ use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tower::service_fn;
 
+#[test]
+fn api_pod_readiness_requires_running_ready_containers_and_ready_condition() {
+    let mut pod: Pod = serde_json::from_value(serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "coredns", "namespace": "kube-system"},
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [{"name": "coredns", "ready": true}],
+            "conditions": [{"type": "Ready", "status": "False"}]
+        }
+    }))
+    .unwrap();
+    assert!(!api_pod_is_ready(&pod));
+
+    pod.status.as_mut().unwrap().conditions.as_mut().unwrap()[0].status = "True".to_string();
+    assert!(api_pod_is_ready(&pod));
+
+    pod.status.as_mut().unwrap().container_statuses.as_mut().unwrap()[0].ready = false;
+    assert!(!api_pod_is_ready(&pod));
+}
+
 #[tokio::test]
 async fn runtime_event_yields_the_pod_key_unchanged() {
     let (tx, rx) = unbounded_channel();

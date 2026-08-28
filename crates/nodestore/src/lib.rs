@@ -117,14 +117,6 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         );
     }
 
-    // Set only in a clustered run, and needed again further down where the
-    // peer server binds — hence declared out here rather than inside the
-    // branch that builds it.
-    let mut peer_tls: Option<tls::Material> = None;
-    let mut peer_incoming: Option<(
-        std::net::SocketAddr,
-        tonic::transport::server::TcpIncoming,
-    )> = None;
     // A peer-server failure has to bring the whole member down, not just its
     // own task. A member that keeps serving the client API with a dead raft
     // link answers reads it can no longer keep current and can never be
@@ -165,7 +157,6 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         )
         .context("preparing raft peer TLS material")?;
         info!(ca = %peer_material.ca.display(), "raft peer link requires mutual TLS");
-        peer_tls = Some(peer_material.clone());
 
         // Bind before starting the raft driver. The driver can campaign as
         // soon as its task is spawned; if the listener is only bound after
@@ -178,10 +169,9 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         let incoming = tonic::transport::server::TcpIncoming::bind(peer_addr)
             .with_context(|| format!("binding raft peer listener at {peer_addr}"))?;
         info!(%peer_addr, "raft peer listener bound before raft startup");
-        peer_incoming = Some((peer_addr, incoming));
 
         let transport =
-            replication::transport::Transport::new(cfg.member_id, Some(peer_material));
+            replication::transport::Transport::new(cfg.member_id, Some(peer_material.clone()));
         let members: Vec<command::Member> = cfg
             .initial_cluster
             .iter()
@@ -207,7 +197,7 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         let probe = replication::transport::probe_cluster(
             cfg.member_id,
             &members,
-            peer_tls.as_ref(),
+            Some(&peer_material),
             std::time::Duration::from_secs(2),
         )
         .await;
@@ -231,14 +221,8 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
         // leaves the first election messages racing a multi-second startup
         // gap. The transport is bounded and lossy by design, so the server
         // must be live before the first tick can campaign.
-        let (peer_addr, incoming) = peer_incoming
-            .take()
-            .context("clustered member has no pre-bound raft peer listener")?;
         let peer_service = replication::peer_service::PeerService::new(handle.clone(), Arc::clone(&node));
-        let material = peer_tls
-            .as_ref()
-            .context("a clustered member has no peer TLS material; refusing to serve raft in the clear")?;
-        let tls = tls::server_tls_config(material).context("building peer TLS config")?;
+        let tls = tls::server_tls_config(&peer_material).context("building peer TLS config")?;
         let peer_server = tonic::transport::Server::builder()
             .tls_config(tls)
             .context("applying peer TLS config")?
