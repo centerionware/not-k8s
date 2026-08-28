@@ -30,6 +30,7 @@ pub const PRIORITY_LEVEL_UID_HEADER: &str = "X-Kubernetes-PF-PriorityLevel-UID";
 pub struct Selected {
     pub flow_schema_uid: String,
     pub priority_level_uid: String,
+    pub exempt: bool,
 }
 
 /// Lists every real `FlowSchema`, selects the one that governs this
@@ -38,9 +39,8 @@ pub struct Selected {
 /// `PriorityLevelConfiguration` by name. `None` on any resolution failure
 /// (unknown resource, list/get error, no matching `FlowSchema`, missing
 /// `uid`) — deliberately fails open (no header gets set) rather than
-/// blocking the request, since nothing in this build enforces the result
-/// yet; a request should never be denied because APF bookkeeping itself
-/// failed.
+/// blocking the request, since the finite gate can still apply its safe
+/// default budget when APF bookkeeping fails.
 pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDigest<'_>) -> Option<Selected> {
     let flow_schemas = match rest::list(storage, None, GROUP, VERSION, "flowschemas", None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
@@ -56,7 +56,8 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     };
     let priority_level_uid = priority_level["metadata"]["uid"].as_str()?.to_string();
 
-    Some(Selected { flow_schema_uid, priority_level_uid })
+    let exempt = priority_level["spec"]["type"].as_str() == Some("Exempt");
+    Some(Selected { flow_schema_uid, priority_level_uid, exempt })
 }
 
 #[cfg(test)]

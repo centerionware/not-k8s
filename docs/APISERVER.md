@@ -2193,14 +2193,11 @@ response headers (`k8s.io/api/flowcontrol/v1/types.go`'s own
 `ResponseHeaderMatchedFlowSchemaUID`/
 `ResponseHeaderMatchedPriorityLevelConfigurationUID` constants, fetched
 and read directly) on every response that reaches a storage connection.
-Fails open (no header, never a blocked/delayed request) on any
-resolution failure. **Still no actual queuing/limiting** — every request
-still runs at full priority, just correctly labeled; that
-concurrency-limiting half of real APF (fair queuing, seat borrowing) is a
-genuinely separate, larger undertaking, named honestly as not started,
-along with the `distinguisherMethod` computation (meaningless without
-queuing) and the two mandatory bootstrap `FlowSchema`s real upstream
-always synthesizes (Group O's job).
+Fails open (no header) on resolution failure, while the listener still
+applies its bounded ordinary/mutating request budgets. The full upstream
+shuffle-sharded fair queue, seat borrowing, and `distinguisherMethod`
+computation remain separate refinements, as do the two mandatory
+bootstrap `FlowSchema`s real upstream always synthesizes (Group O's job).
 
 **N. Streaming and proxy subresources** — **`pods/log` is a genuine live
 proxy now, wired end to end.** `proxy::pod_log` ports real upstream's own

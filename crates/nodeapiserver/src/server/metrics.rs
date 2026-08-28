@@ -35,12 +35,11 @@
 //! utilization of real upstream's own APF concurrency-limiting semaphore
 //! (`request_kind`: `mutating`/`readonly`), sampled once per second by
 //! its own ticker — not a plain "requests currently being handled"
-//! count. This build has no concurrency limiter at all yet (Group M's
-//! own doc comment: APF's fair-queuing/seat-borrowing half is a
-//! genuinely separate, larger, not-yet-started undertaking) — faking
-//! this metric from raw in-flight request counts would misrepresent
-//! what it actually measures to anyone reading a real Prometheus
-//! dashboard, so it's skipped entirely rather than approximated.
+//! count. The full upstream fair-queuing/seat-borrowing implementation
+//! remains a separate refinement, so this metric is still skipped rather
+//! than approximated from raw in-flight request counts. The request gate
+//! does enforce finite ordinary and mutating budgets, but it does not yet
+//! expose the upstream metric's sampled seat-utilization semantics.
 //! `apiserver_response_sizes` (real upstream's own exponential-bucket
 //! histogram, `compbasemetrics.ExponentialBuckets(1000, 10.0, 7)` — 1KB
 //! to 1GB, confirmed directly) is ported too, from `http_body::Body::
