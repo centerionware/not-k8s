@@ -15,7 +15,8 @@
 //!
 //! `limiter` — the request admission gate: bounded FIFO concurrency for
 //! ordinary requests, with exempt priority levels and long-running streams
-//! excluded from the finite request budget.
+//! excluded from the finite request budget. An immediately available seat
+//! is acquired without consuming the configured waiting-queue allowance.
 //! The full upstream shuffle-sharded per-flow queue and seat-borrowing
 //! algorithm remain separate refinements; this gate still enforces finite
 //! request and mutating-request budgets.
