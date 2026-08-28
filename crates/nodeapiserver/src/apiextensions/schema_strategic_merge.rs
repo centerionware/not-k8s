@@ -149,28 +149,28 @@ fn merge_list(field_schema: &Value, original: &[Value], patch: &[Value]) -> Vec<
     let empty = Value::Null;
     let items_schema = field_schema.get("items").unwrap_or(&empty);
 
-    let replace = patch.first().and_then(Value::as_object).and_then(|item| item.get("$patch")).and_then(Value::as_str) == Some("replace");
-    let patch = if replace { &patch[1..] } else { patch };
+    let replace = patch.iter().any(|item| item.get("$patch").and_then(Value::as_str) == Some("replace"));
     let mut result = if replace { Vec::new() } else { original.to_vec() };
     'patch_elements: for patch_elem in patch {
+        let directive = patch_elem.get("$patch").and_then(Value::as_str);
+        if directive == Some("replace") {
+            continue;
+        }
         let Some(patch_key_values) = key_values(patch_elem, &keys) else {
+            if directive == Some("delete") {
+                continue;
+            }
             result.push(patch_elem.clone());
             continue;
         };
-        let directive = patch_elem.get("$patch").and_then(Value::as_str);
         if directive == Some("delete") {
             result.retain(|existing| key_values(existing, &keys).as_deref() != Some(&patch_key_values));
             continue;
         }
-        let cleaned_patch_elem = if directive == Some("replace") {
-            let Value::Object(map) = patch_elem else { continue };
-            Value::Object(without_directives(map))
-        } else {
-            patch_elem.clone()
-        };
+        let cleaned_patch_elem = patch_elem.clone();
         for existing in result.iter_mut() {
             if key_values(existing, &keys).as_deref() == Some(&patch_key_values) {
-                *existing = if directive == Some("replace") { cleaned_patch_elem.clone() } else { merge(items_schema, existing, &cleaned_patch_elem) };
+                *existing = merge(items_schema, existing, &cleaned_patch_elem);
                 continue 'patch_elements;
             }
         }
@@ -294,8 +294,8 @@ mod tests {
         let original = json!({"ports": [{"name": "http", "port": 80}, {"name": "metrics", "port": 9090}]});
         let deleted = apply(&widget_schema(), &original, &json!({"ports": [{"name": "metrics", "$patch": "delete"}]}));
         assert_eq!(deleted["ports"], json!([{"name": "http", "port": 80}]));
-        let replaced = apply(&widget_schema(), &original, &json!({"ports": [{"name": "http", "port": 8080, "$patch": "replace"}]}));
-        assert_eq!(replaced["ports"][0], json!({"name": "http", "port": 8080}));
+        let replaced = apply(&widget_schema(), &original, &json!({"ports": [{"$patch": "replace"}, {"name": "fresh", "port": 8080}]}));
+        assert_eq!(replaced["ports"], json!([{"name": "fresh", "port": 8080}]));
     }
 
     #[test]

@@ -162,31 +162,31 @@ fn merge_list(element_schema: Option<&str>, merge_key: Option<&str>, original: &
         return patch.to_vec();
     }
 
-    let replace = patch.first().and_then(Value::as_object).and_then(|item| item.get("$patch")).and_then(Value::as_str) == Some("replace");
-    let patch = if replace { &patch[1..] } else { patch };
+    let replace = patch.iter().any(|item| item.get("$patch").and_then(Value::as_str) == Some("replace"));
     let mut result = if replace { Vec::new() } else { original.to_vec() };
     'patch_elements: for patch_elem in patch {
+        let directive = patch_elem.get("$patch").and_then(Value::as_str);
+        if directive == Some("replace") {
+            continue;
+        }
         let Some(patch_key_value) = patch_elem.get(key) else {
+            if directive == Some("delete") {
+                continue;
+            }
             // A merge-list element missing its own merge key can't be
             // matched against anything — append it as-is, same as
             // upstream treats an unidentifiable element.
             result.push(patch_elem.clone());
             continue;
         };
-        let directive = patch_elem.get("$patch").and_then(Value::as_str);
         if directive == Some("delete") {
             result.retain(|existing| existing.get(key) != Some(patch_key_value));
             continue;
         }
-        let cleaned_patch_elem = if directive == Some("replace") {
-            let Value::Object(map) = patch_elem else { continue };
-            Value::Object(without_directives(map))
-        } else {
-            patch_elem.clone()
-        };
+        let cleaned_patch_elem = patch_elem.clone();
         for existing in result.iter_mut() {
             if existing.get(key) == Some(patch_key_value) {
-                *existing = if directive == Some("replace") { cleaned_patch_elem.clone() } else { merge(element_schema.unwrap_or(""), existing, &cleaned_patch_elem) };
+                *existing = merge(element_schema.unwrap_or(""), existing, &cleaned_patch_elem);
                 continue 'patch_elements;
             }
         }
@@ -300,8 +300,8 @@ mod tests {
         let original = json!({"containers": [{"name": "app", "image": "v1"}, {"name": "sidecar", "image": "v1"}]});
         let deleted = apply("io.k8s.api.core.v1.PodSpec", &original, &json!({"containers": [{"name": "sidecar", "$patch": "delete"}]}));
         assert_eq!(deleted["containers"], json!([{"name": "app", "image": "v1"}]));
-        let replaced = apply("io.k8s.api.core.v1.PodSpec", &original, &json!({"containers": [{"name": "app", "image": "v2", "$patch": "replace"}]}));
-        assert_eq!(replaced["containers"][0], json!({"name": "app", "image": "v2"}));
+        let replaced = apply("io.k8s.api.core.v1.PodSpec", &original, &json!({"containers": [{"$patch": "replace"}, {"name": "fresh", "image": "v2"}]}));
+        assert_eq!(replaced["containers"], json!([{"name": "fresh", "image": "v2"}]));
     }
 
     #[test]
