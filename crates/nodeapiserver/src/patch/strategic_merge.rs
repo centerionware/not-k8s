@@ -25,12 +25,11 @@
 //!
 //! # Named, deliberate simplifications
 //!
-//! - No `$patch: "delete"` / `$patch: "replace"` directives, no
-//!   `$deleteFromPrimitiveList`/`$setElementOrder` — upstream's own
-//!   advanced directive set for explicit list-item deletion and ordering
-//!   control. A patch that never uses them (the overwhelming majority of
-//!   real `kubectl apply`/controller patches) behaves identically either
-//!   way; one that does use them is not yet honored.
+//! - The four strategic-merge directives are supported for the built-in
+//!   schema path: `$patch: delete|replace`, `$deleteFromPrimitiveList`, and
+//!   `$setElementOrder`. Unknown directive values remain ordinary input and
+//!   are ignored, matching the forward-compatible behavior of the rest of
+//!   this generic codec.
 //! - A merge-list element that isn't a JSON object (patch-merge-key only
 //!   ever applies to object elements upstream too) falls back to
 //!   wholesale list replacement rather than attempting to merge scalars
@@ -64,8 +63,18 @@ fn merge(schema: &str, original: &Value, patch: &Value) -> Value {
         return patch.clone();
     };
 
+    match patch_map.get("$patch").and_then(Value::as_str) {
+        Some("delete") => return Value::Null,
+        Some("replace") => return Value::Object(without_directives(patch_map)),
+        _ => {}
+    }
+
     let mut result = orig_map.clone();
+    apply_primitive_list_deletes(&mut result, patch_map);
     for (key, patch_value) in patch_map {
+        if key.starts_with('$') {
+            continue;
+        }
         if patch_value.is_null() {
             result.remove(key);
             continue;
@@ -98,9 +107,45 @@ fn merge(schema: &str, original: &Value, patch: &Value) -> Value {
             }
             _ => patch_value.clone(),
         };
-        result.insert(key.clone(), merged);
+        if merged.is_null() {
+            result.remove(key);
+        } else {
+            result.insert(key.clone(), merged);
+        }
+    }
+    for (key, order) in patch_map.iter().filter_map(|(key, value)| key.strip_prefix("$setElementOrder/").map(|field| (field, value))) {
+        let Some(existing) = result.get(key).and_then(Value::as_array).map(|existing| existing.to_vec()) else { continue };
+        let Some(meta) = codegen::field_meta_index().get(&(schema, key)) else { continue };
+        let Some(merge_key) = meta.patch_merge_key else { continue };
+        result.insert(key.to_string(), Value::Array(reorder_list(&existing, order, merge_key)));
     }
     Value::Object(result)
+}
+
+fn without_directives(map: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    map.iter().filter(|(key, _)| !key.starts_with('$')).map(|(key, value)| (key.clone(), value.clone())).collect()
+}
+
+fn apply_primitive_list_deletes(result: &mut serde_json::Map<String, Value>, patch: &serde_json::Map<String, Value>) {
+    for (directive, values) in patch.iter().filter_map(|(key, value)| key.strip_prefix("$deleteFromPrimitiveList/").map(|field| (field, value))) {
+        let Some(values) = values.as_array() else { continue };
+        let Some(existing) = result.get_mut(directive).and_then(Value::as_array_mut) else { continue };
+        existing.retain(|value| !values.iter().any(|deleted| deleted == value));
+    }
+}
+
+fn reorder_list(existing: &[Value], order: &Value, merge_key: &str) -> Vec<Value> {
+    let Some(order) = order.as_array() else { return existing.to_vec() };
+    let mut remaining = existing.to_vec();
+    let mut ordered = Vec::with_capacity(existing.len());
+    for requested in order {
+        let Some(value) = requested.get(merge_key) else { continue };
+        if let Some(index) = remaining.iter().position(|item| item.get(merge_key) == Some(value)) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
 }
 
 /// Merges a `patch_strategy: merge` list: patch elements matching an
@@ -117,22 +162,35 @@ fn merge_list(element_schema: Option<&str>, merge_key: Option<&str>, original: &
         return patch.to_vec();
     }
 
-    let mut result = original.to_vec();
+    let replace = patch.iter().any(|item| item.get("$patch").and_then(Value::as_str) == Some("replace"));
+    let mut result = if replace { Vec::new() } else { original.to_vec() };
     'patch_elements: for patch_elem in patch {
+        let directive = patch_elem.get("$patch").and_then(Value::as_str);
+        if directive == Some("replace") {
+            continue;
+        }
         let Some(patch_key_value) = patch_elem.get(key) else {
+            if directive == Some("delete") {
+                continue;
+            }
             // A merge-list element missing its own merge key can't be
             // matched against anything — append it as-is, same as
             // upstream treats an unidentifiable element.
             result.push(patch_elem.clone());
             continue;
         };
+        if directive == Some("delete") {
+            result.retain(|existing| existing.get(key) != Some(patch_key_value));
+            continue;
+        }
+        let cleaned_patch_elem = patch_elem.clone();
         for existing in result.iter_mut() {
             if existing.get(key) == Some(patch_key_value) {
-                *existing = merge(element_schema.unwrap_or(""), existing, patch_elem);
+                *existing = merge(element_schema.unwrap_or(""), existing, &cleaned_patch_elem);
                 continue 'patch_elements;
             }
         }
-        result.push(patch_elem.clone());
+        result.push(cleaned_patch_elem);
     }
     result
 }
@@ -229,5 +287,35 @@ mod tests {
         });
         let merged = apply("io.k8s.api.core.v1.PodSpec", &original, &patch);
         assert_eq!(merged["containers"][0]["resources"]["limits"], json!({"cpu": "1", "memory": "512Mi"}));
+    }
+
+    #[test]
+    fn patch_replace_discards_unmentioned_object_fields() {
+        let merged = apply("io.k8s.api.apps.v1.DaemonSetSpec", &json!({"minReadySeconds": 5, "revisionHistoryLimit": 10}), &json!({"$patch": "replace", "minReadySeconds": 20}));
+        assert_eq!(merged, json!({"minReadySeconds": 20}));
+    }
+
+    #[test]
+    fn merge_list_supports_delete_and_replace_item_directives() {
+        let original = json!({"containers": [{"name": "app", "image": "v1"}, {"name": "sidecar", "image": "v1"}]});
+        let deleted = apply("io.k8s.api.core.v1.PodSpec", &original, &json!({"containers": [{"name": "sidecar", "$patch": "delete"}]}));
+        assert_eq!(deleted["containers"], json!([{"name": "app", "image": "v1"}]));
+        let replaced = apply("io.k8s.api.core.v1.PodSpec", &original, &json!({"containers": [{"$patch": "replace"}, {"name": "fresh", "image": "v2"}]}));
+        assert_eq!(replaced["containers"], json!([{"name": "fresh", "image": "v2"}]));
+    }
+
+    #[test]
+    fn primitive_list_delete_and_element_order_directives_are_applied() {
+        let original = json!({
+            "args": ["--one", "--two", "--three"],
+            "containers": [{"name": "app"}, {"name": "sidecar"}]
+        });
+        let patch = json!({
+            "$deleteFromPrimitiveList/args": ["--two"],
+            "$setElementOrder/containers": [{"name": "sidecar"}, {"name": "app"}]
+        });
+        let merged = apply("io.k8s.api.core.v1.PodSpec", &original, &patch);
+        assert_eq!(merged["args"], json!(["--one", "--three"]));
+        assert_eq!(merged["containers"], json!([{"name": "sidecar"}, {"name": "app"}]));
     }
 }
