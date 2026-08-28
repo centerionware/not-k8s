@@ -131,6 +131,9 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
 /// sufficient barrier because its Deployment/ReplicaSet may not have
 /// produced a Pod yet. A directly-created seed preserves the old shell
 /// bootstrap's smoke Pod behavior while keeping the bootstrap path in Rust.
+/// It is explicitly bound to this host because its only purpose is to create
+/// this host's first CNI network namespace; it is not a workload for the
+/// scheduler to place elsewhere.
 /// The Pod gets its own explicitly-created ServiceAccount and does not mount a
 /// token, so this does not depend on a serviceaccount controller that
 /// nodecontroller intentionally does not replace yet.
@@ -176,6 +179,7 @@ pub(crate) fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
                 "labels": {"app.kubernetes.io/name": "nodebootstrap-cni-seed"}
             },
             "spec": {
+                "nodeName": cfg.node_name,
                 "serviceAccountName": NAME,
                 "automountServiceAccountToken": false,
                 "restartPolicy": "Never",
