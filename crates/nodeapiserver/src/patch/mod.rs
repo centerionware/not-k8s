@@ -79,9 +79,9 @@
 //! runtime CRD schema).
 //!
 //! The `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directive set
-//! is supported for both compiled and runtime CRD schemas. The remaining
-//! strategic-merge gap is default patch-strategy selection when
-//! `Content-Type` is omitted.
+//! is supported for both compiled and runtime CRD schemas. When
+//! `Content-Type` is omitted, the REST listener selects strategic merge for
+//! built-ins and JSON merge patch for CRD-defined resources.
 
 pub mod fieldset;
 pub mod json_patch;
