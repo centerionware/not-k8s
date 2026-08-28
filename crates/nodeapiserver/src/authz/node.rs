@@ -16,7 +16,7 @@
 //! admission plugin to constrain create bodies after authorization.
 
 use crate::authn::x509::Identity;
-use crate::cacher::selector::{parse_field_selector, Operator};
+use crate::cacher::selector::parse_field_selector;
 use crate::server::{path::RequestInfo, rest};
 use crate::storage::client::StorageClient;
 use serde_json::Value;
@@ -463,9 +463,7 @@ fn has_exact_field_selector(selector: &str, field: &str, value: &str) -> bool {
         .ok()
         .is_some_and(|requirements| {
             requirements.iter().any(|requirement| {
-                requirement.field == field
-                    && requirement.operator == Operator::Equals
-                    && requirement.value == value
+                requirement.field == field && !requirement.negated && requirement.value == value
             })
         })
 }
