@@ -22,7 +22,7 @@
 //! that simplification was safe there, not a reason to repeat it here
 //! where the real annotation supports more).
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// Applies a strategic merge patch to `original`, shaped like `schema` —
 /// see this module's own doc comment for the semantics.
