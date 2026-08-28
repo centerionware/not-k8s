@@ -26,9 +26,15 @@
 //! (never persisted) posture `authz::sar`'s review kinds already
 //! established.
 //!
+//! `service_account` — ES256 ServiceAccount JWT issuance and validation. The
+//! nodebootstrap target supplies the cluster signing key; `TokenRequest`
+//! mints stateless bound/unbound tokens and `TokenReview` validates them for
+//! nodelet's bearer-token webhook path. OIDC, bootstrap tokens, and the
+//! remaining upstream authentication mechanisms are still not started.
+//!
 //! Status: in progress (see docs/APISERVER.md). Everything else named
-//! above (ServiceAccount JWT, OIDC, TokenReview, bootstrap tokens,
-//! anonymous) is not started.
+//! above (OIDC, bootstrap tokens, anonymous) is not started.
 
 pub mod self_review;
+pub mod service_account;
 pub mod x509;

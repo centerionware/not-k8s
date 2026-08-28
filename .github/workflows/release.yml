@@ -75,6 +75,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodescheduler
           sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
           sudo -E env "PATH=$PATH" cargo test -p nodecontroller
+          sudo -E env "PATH=$PATH" cargo test -p nodeapiserver
           sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
           sudo -E env "PATH=$PATH" cargo test -p notk8s
       - name: Stage the bootstrapper and combined runtime applet for e2e
@@ -487,7 +488,7 @@ jobs:
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/nodebootstrap-stage" dist
           mkdir -p dist
-          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
           for profile in debug release; do
             stage="$GITHUB_WORKSPACE/nodebootstrap-stage/$profile"
             mkdir -p "$stage"
@@ -505,7 +506,7 @@ jobs:
       - name: Stage and verify static binaries
         run: |
           set -euo pipefail
-          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
           for bin in "${bins[@]}"; do
             for profile in debug release; do
               file="dist/$bin-linux-${{ matrix.arch }}-$profile"
@@ -569,7 +570,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
           for bin in "${bins[@]}"; do
             for file in dist/"$bin"-linux-*; do
               [[ -f "$file" ]] || continue

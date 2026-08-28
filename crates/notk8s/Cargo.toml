@@ -22,14 +22,11 @@ path = "src/main.rs"
 #   cargo build -p notk8s --features cri                          # ... with nodelet's real CRI runtime
 #   cargo build -p notk8s --no-default-features --features nodelet # node agent only
 #
-# Adding a future component (nodeapiserver, ...) is: add it
-# here as an optional dependency, add it to `default`, and add one line to
-# APPLETS in src/main.rs. Nothing else in the build system needs to know
-# about it by name — deploy/lib/components.sh drives the shell side off its
-# own table, and `notk8s components` reports what a given binary actually
-# contains.
+# Adding a component is: add it here as an optional dependency, add it to
+# `default`, and add one line to `APPLETS` in src/main.rs. Nothing else in
+# the combined build needs to know about it by name.
 [features]
-default = ["nodelet", "nodeproxy", "nodestore", "nodescheduler", "nodecontroller", "nodebootstrap"]
+default = ["nodelet", "nodeproxy", "nodestore", "nodescheduler", "nodecontroller", "nodeapiserver", "nodebootstrap"]
 # nodelet's real containerd/CRI runtime. Weak (`nodelet?/cri`) so it can be
 # combined with --no-default-features without silently pulling the node
 # agent back in.
@@ -45,4 +42,5 @@ nodeproxy = { path = "../nodeproxy", optional = true }
 nodestore = { path = "../nodestore", optional = true }
 nodescheduler = { path = "../nodescheduler", optional = true }
 nodecontroller = { path = "../nodecontroller", optional = true }
+nodeapiserver = { path = "../nodeapiserver", optional = true }
 nodebootstrap = { path = "../nodebootstrap", optional = true }

@@ -1,8 +1,6 @@
 //! Configuration, from the environment — the same convention every other
 //! component in this workspace uses, so the combined `notk8s` binary needs
-//! no per-component config mechanism. Minimal today (Group A has no
-//! listener and no storage client yet); grows with each group that needs a
-//! new setting rather than being designed up front.
+//! no per-component config mechanism.
 
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
@@ -10,9 +8,14 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Where the REST/watch API is served — `server::listener::run` binds
-    /// this directly. Its handler is still a bring-up stub, not the real
-    /// REST dispatch (see `server::listener`'s own doc comment).
+    /// this directly.
     pub bind_addr: String,
+    /// Optional PEM serving certificate and PKCS#8 private key. Bootstrap
+    /// supplies the cluster-CA-signed pair so kubeconfigs and in-cluster
+    /// clients trust the replacement apiserver. When unset, the standalone
+    /// binary keeps its persisted self-signed development certificate.
+    pub tls_cert_file: Option<PathBuf>,
+    pub tls_key_file: Option<PathBuf>,
     /// The nodestore etcd v3 endpoint this apiserver is a client of (Group
     /// C). Loopback by default: a control-plane component talks to its
     /// datastore over localhost, the same posture `nodestore`'s own
@@ -40,18 +43,22 @@ pub struct Config {
     /// presenting a cert that does *not* chain to this CA fails the TLS
     /// handshake outright.
     pub client_ca_file: Option<PathBuf>,
+    /// `NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE` and
+    /// `NODEAPISERVER_SERVICE_ACCOUNT_ISSUER` configure the ServiceAccount
+    /// JWT issuer used by TokenRequest/TokenReview. The bootstrapper points
+    /// this at the cluster PKI's `sa.key`; when unset, ServiceAccount JWT
+    /// authentication remains unavailable for standalone development runs.
+    pub service_account_signing_key_file: Option<PathBuf>,
+    pub service_account_issuer: String,
     /// `NODEAPISERVER_ENFORCE_RBAC` — `false` by default, deliberately:
     /// enabling this makes `server::rest::get`/`list` deny-by-default
     /// against real `authz::resolve::rules_for` output (Group I), but
     /// Group O's cluster-bootstrap `system:` `ClusterRole`/
-    /// `ClusterRoleBinding` set (`docs/APISERVER.md`: "the ~90 `system:`
-    /// ClusterRoles/Bindings from upstream's `bootstrappolicy`") isn't
-    /// built yet. Turning this on against a cluster with no RBAC objects
-    /// provisioned at all — including no `cluster-admin` binding for
-    /// whoever is meant to administer it — locks out every request with
-    /// no path to grant access back. An operator enabling this today is
-    /// expected to have already provisioned their own bootstrap
-    /// `ClusterRoleBinding`s directly against nodestore.
+    /// `ClusterRoleBinding` set is supplied by nodebootstrap when the
+    /// nodeapiserver target is selected. A standalone nodeapiserver still
+    /// requires its operator to provision an administrative binding before
+    /// enabling this, or every request can be denied with no path to grant
+    /// access back.
     pub enforce_rbac: bool,
     /// `NODEAPISERVER_ENCRYPTION_CONFIG_FILE` — a real
     /// `apiserver.config.k8s.io/v1` `EncryptionConfiguration` YAML
@@ -65,13 +72,13 @@ pub struct Config {
     pub encryption_config_file: Option<PathBuf>,
     /// `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE` — the
     /// client identity `proxy::client_tls` presents when dialing
-    /// nodelet's own kubelet-style server for `pods/log` (Group N). Raw
-    /// DER (not PEM), matching `crates/nodelet/src/server/tls.rs`'s own
-    /// persisted-as-DER convention. `None` (either unset, or only one of
-    /// the pair set — same "both or neither" discipline the nodestore
-    /// TLS triple already enforces) connects with no client identity at
-    /// all, which only works against a nodelet that itself has no
-    /// `NODELET_CLIENT_CA_FILE` configured (a real, named limitation:
+    /// nodelet's own kubelet-style server for `pods/log` (Group N). The
+    /// files may contain PEM (the bootstrapper's format) or raw DER (the
+    /// nodelet runtime's persisted format). `None` (either unset, or only
+    /// one of the pair set — same "both or neither" discipline the
+    /// nodestore TLS triple already enforces) connects with no client
+    /// identity at all, which only works against a nodelet that itself has
+    /// no `NODELET_CLIENT_CA_FILE` configured (a real, named limitation:
     /// this build has no bearer-token credential nodelet's own
     /// `TokenReview` fallback path would accept).
     pub kubelet_client_cert_file: Option<PathBuf>,
@@ -82,11 +89,15 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             bind_addr: "0.0.0.0:6443".to_string(),
+            tls_cert_file: None,
+            tls_key_file: None,
             nodestore_endpoint: "https://127.0.0.1:2379".to_string(),
             nodestore_cert_file: None,
             nodestore_key_file: None,
             nodestore_ca_file: None,
             client_ca_file: None,
+            service_account_signing_key_file: None,
+            service_account_issuer: "https://kubernetes.default.svc".to_string(),
             enforce_rbac: false,
             encryption_config_file: None,
             kubelet_client_cert_file: None,
@@ -102,6 +113,14 @@ impl Config {
             if !v.trim().is_empty() {
                 cfg.bind_addr = v;
             }
+        }
+        cfg.tls_cert_file = path_env("NODEAPISERVER_TLS_CERT_FILE");
+        cfg.tls_key_file = path_env("NODEAPISERVER_TLS_KEY_FILE");
+        let tls_set = [cfg.tls_cert_file.is_some(), cfg.tls_key_file.is_some()];
+        if tls_set[0] != tls_set[1] {
+            return Err(anyhow!(
+                "NODEAPISERVER_TLS_CERT_FILE and NODEAPISERVER_TLS_KEY_FILE must be set together or not at all"
+            ));
         }
         if let Ok(v) = std::env::var("NODEAPISERVER_NODESTORE_ENDPOINT") {
             if !v.trim().is_empty() {
@@ -135,10 +154,26 @@ impl Config {
         }
 
         cfg.client_ca_file = path_env("NODEAPISERVER_CLIENT_CA_FILE");
+        cfg.service_account_signing_key_file = path_env("NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE");
+        if let Ok(v) = std::env::var("NODEAPISERVER_SERVICE_ACCOUNT_ISSUER") {
+            if !v.trim().is_empty() {
+                cfg.service_account_issuer = v;
+            }
+        }
+        anyhow::ensure!(
+            !cfg.service_account_issuer.trim().is_empty(),
+            "NODEAPISERVER_SERVICE_ACCOUNT_ISSUER must not be empty"
+        );
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
         cfg.kubelet_client_key_file = path_env("NODEAPISERVER_KUBELET_CLIENT_KEY_FILE");
+        let kubelet_set = [cfg.kubelet_client_cert_file.is_some(), cfg.kubelet_client_key_file.is_some()];
+        if kubelet_set[0] != kubelet_set[1] {
+            return Err(anyhow!(
+                "NODEAPISERVER_KUBELET_CLIENT_CERT_FILE and NODEAPISERVER_KUBELET_CLIENT_KEY_FILE must be set together or not at all"
+            ));
+        }
         Ok(cfg)
     }
 }
@@ -233,6 +268,20 @@ mod tests {
     }
 
     #[test]
+    fn service_account_signing_key_and_issuer_are_read_from_their_own_env_vars() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE", "/tmp/sa.key");
+        std::env::set_var("NODEAPISERVER_SERVICE_ACCOUNT_ISSUER", "https://kubernetes.default.svc.example");
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE",
+            "NODEAPISERVER_SERVICE_ACCOUNT_ISSUER",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.service_account_signing_key_file, Some(PathBuf::from("/tmp/sa.key")));
+        assert_eq!(cfg.service_account_issuer, "https://kubernetes.default.svc.example");
+    }
+
+    #[test]
     fn encryption_config_file_defaults_to_none_and_is_read_from_its_own_env_var() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(Config::default().encryption_config_file, None);
@@ -253,6 +302,15 @@ mod tests {
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.kubelet_client_cert_file, Some(PathBuf::from("/tmp/kubelet-client.der")));
         assert_eq!(cfg.kubelet_client_key_file, Some(PathBuf::from("/tmp/kubelet-client-key.der")));
+    }
+
+    #[test]
+    fn a_half_configured_kubelet_client_pair_is_refused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE", "/tmp/kubelet-client.pem");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_KUBELET_CLIENT_CERT_FILE"]);
+        let err = Config::from_env().expect_err("a kubelet cert without its key must be refused");
+        assert!(err.to_string().contains("must be set together"));
     }
 
     #[test]

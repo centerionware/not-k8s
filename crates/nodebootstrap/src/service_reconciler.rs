@@ -2,8 +2,8 @@
 //! `kubernetes.default.svc` resolve to the apiserver's own reachable
 //! address/port from inside the cluster.
 //!
-//! **Finding (2026-08-22), same shape as `rbac.rs`'s:** this is not a
-//! separate component to build at all. Real upstream `kube-apiserver`
+//! **Finding (2026-08-22), same shape as `rbac.rs`'s:** for the upstream
+//! target this is not a separate component to build at all. Real upstream `kube-apiserver`
 //! reconciles the `kubernetes` Service/Endpoints itself, unconditionally,
 //! via a `PostStartHook` (`bootstrap-controller`, wired in
 //! `pkg/controlplane/instance.go`, running `Controller.RunKubernetesService`
@@ -11,12 +11,14 @@
 //! and `--secure-port`, the same two flags `targets/upstream.rs` already
 //! sets. No RBAC gate, no opt-in flag: any real `kube-apiserver`, k3s's
 //! embedded one included, has always done this on its own. This module is
-//! therefore the same shape as `rbac.rs`: a thin verify-it-happened check,
-//! not a reconciler this crate runs itself.
+//! therefore the same shape as `rbac.rs` for that target: a thin
+//! verify-it-happened check. The nodeapiserver target has no upstream
+//! bootstrap-controller, so it uses the small explicit reconciler below.
 
 use anyhow::{bail, Context, Result};
 use k8s_openapi::api::core::v1::{Endpoints, Service};
-use kube::api::{Api, DeleteParams};
+use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
+use serde_json::json;
 
 use crate::config::Config;
 
@@ -32,7 +34,67 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    if matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        let address = cfg.advertise_address.as_deref().unwrap_or("127.0.0.1");
+        return reconcile_nodeapiserver_endpoint(cfg, address);
+    }
     verify_kubernetes_service(&kubeconfig)
+}
+
+/// Nodeapiserver intentionally does not embed upstream's bootstrap-controller.
+/// Create the one control-plane-owned Service and endpoint that every in-cluster
+/// client expects, then let the later CNI handoff replace the temporary
+/// loopback endpoint with a reachable node address.
+pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<()> {
+    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let service_ip = cfg.service_ip()?.to_string();
+    let service_ips = cfg
+        .service_ips()?
+        .into_iter()
+        .map(|ip| ip.to_string())
+        .collect::<Vec<_>>();
+    let endpoint = address.to_string();
+    crate::kube_api::block_on(&kubeconfig, move |client| async move {
+        let services: Api<Service> = Api::namespaced(client.clone(), "default");
+        let endpoints: Api<Endpoints> = Api::namespaced(client, "default");
+        if services.get_opt("kubernetes").await?.is_none() {
+            let service: Service = serde_json::from_value(json!({
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": "kubernetes", "namespace": "default"},
+                "spec": {
+                    "type": "ClusterIP",
+                    "clusterIP": service_ip,
+                    "clusterIPs": service_ips,
+                    "ports": [{"name": "https", "port": 6443, "protocol": "TCP", "targetPort": 6443}]
+                }
+            }))?;
+            services
+                .create(&PostParams::default(), &service)
+                .await
+                .context("creating default/kubernetes Service for nodeapiserver")?;
+        }
+
+        let endpoint: Endpoints = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Endpoints",
+            "metadata": {"name": "kubernetes", "namespace": "default"},
+            "subsets": [{
+                "addresses": [{"ip": endpoint}],
+                "ports": [{"name": "https", "port": 6443, "protocol": "TCP"}]
+            }]
+        }))?;
+        endpoints
+            .patch(
+                "kubernetes",
+                &PatchParams::apply("nodebootstrap"),
+                &Patch::Apply(&endpoint),
+            )
+            .await
+            .context("publishing the nodeapiserver default/kubernetes endpoint")?;
+        tracing::info!(address = %endpoint.subsets.as_ref().and_then(|subsets| subsets.first()).and_then(|subset| subset.addresses.as_ref()).and_then(|addresses| addresses.first()).map(|address| address.ip.as_str()).unwrap_or("unknown"), "reconciled nodeapiserver kubernetes Service endpoint");
+        Ok(())
+    })
 }
 
 /// Verify the apiserver's own bootstrap-controller created the Service.

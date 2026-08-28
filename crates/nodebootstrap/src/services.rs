@@ -87,10 +87,9 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 }
 
 /// Installed and started **before** `targets::run_with` in `run_all()` --
-/// `targets/upstream.rs` already orders `kube-apiserver.service` `After=
-/// nodestore.service`, so nodestore has to actually exist and be enabled
-/// by the time that runs, or the apiserver comes up with nothing to talk
-/// to.
+/// The selected apiserver target orders its service `After=nodestore.service`,
+/// so nodestore has to actually exist and be enabled by the time that target
+/// runs, or the apiserver comes up with nothing to talk to.
 pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodestore");
     anyhow::ensure!(bin.exists(), "no nodestore binary at {} -- run `nodebootstrap fetch` first", bin.display());
@@ -186,7 +185,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
             name: "nodelet",
             description: "nodelet -- not-k8s node agent (kubelet replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: (!cfg.worker).then_some("kube-apiserver.service"),
+            after: (!cfg.worker).then_some(cfg.apiserver_service()),
             env: &env,
         },
     )
@@ -229,7 +228,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
             name: "nodeproxy",
             description: "nodeproxy -- not-k8s Service routing (kube-proxy replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: (!cfg.worker).then_some("kube-apiserver.service"),
+            after: (!cfg.worker).then_some(cfg.apiserver_service()),
             env: &[
                 ("KUBECONFIG", &kubeconfig),
                 ("NODEPROXY_IP_FAMILY", &ip_family),
@@ -290,7 +289,7 @@ fn write_host_sysctl(path: &str, value: &str) {
 /// Data and PKI remain on disk so an operator can recover or rejoin
 /// deliberately.
 pub fn remove_control_plane(cfg: &Config) {
-    for name in ["kube-apiserver", "nodestore", "nodescheduler", "nodecontroller"] {
+    for name in ["kube-apiserver", "nodeapiserver", "nodestore", "nodescheduler", "nodecontroller"] {
         service_mgr::remove(cfg, name);
     }
     tracing::info!("removed local control-plane services; retained control-plane data and PKI");
@@ -321,7 +320,7 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
             name: "nodescheduler",
             description: "nodescheduler -- not-k8s scheduler (kube-scheduler replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: Some("kube-apiserver.service"),
+            after: Some(cfg.apiserver_service()),
             env: &env,
         },
     )
@@ -372,7 +371,7 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
             name: "nodecontroller",
             description: "nodecontroller -- not-k8s controller manager (kube-controller-manager replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: Some("kube-apiserver.service"),
+            after: Some(cfg.apiserver_service()),
             env: &env,
         },
     )
