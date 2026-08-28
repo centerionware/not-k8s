@@ -65,6 +65,8 @@ const APPLETS: &[Applet] = &[
     Applet { name: "nodescheduler", summary: "scheduler (kube-scheduler's job): pod placement, event-driven queue" },
     #[cfg(feature = "nodecontroller")]
     Applet { name: "nodecontroller", summary: "controller manager replacement: node lifecycle, workload controllers, GC" },
+    #[cfg(feature = "nodeapiserver")]
+    Applet { name: "nodeapiserver", summary: "Kubernetes API server: REST, watch, discovery, and CRDs" },
     #[cfg(feature = "nodebootstrap")]
     Applet { name: "nodebootstrap", summary: "full cluster bootstrap and update installer" },
 ];
@@ -144,6 +146,8 @@ async fn run_applet(name: &str) -> Result<()> {
         "nodescheduler" => nodescheduler::run().await,
         #[cfg(feature = "nodecontroller")]
         "nodecontroller" => nodecontroller::run().await,
+        #[cfg(feature = "nodeapiserver")]
+        "nodeapiserver" => nodeapiserver::run().await,
         // Unreachable via main() — is_applet() gates every path here — but
         // cheaper to answer honestly than to unwrap.
         other => bail!("component '{other}' was not built into this binary (see `notk8s components`)"),
@@ -191,6 +195,8 @@ mod tests {
         assert!(is_applet("nodescheduler"));
         #[cfg(feature = "nodecontroller")]
         assert!(is_applet("nodecontroller"));
+        #[cfg(feature = "nodeapiserver")]
+        assert!(is_applet("nodeapiserver"));
         #[cfg(feature = "nodebootstrap")]
         assert!(is_applet("nodebootstrap"));
         #[cfg(feature = "nodebootstrap")]

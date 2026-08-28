@@ -95,6 +95,11 @@ rustls = { workspace = true }
 # PKI (Group O's job) and what it is instead.
 rcgen = "0.13"
 
+# Group H: ServiceAccount JWT issuance/validation. nodebootstrap generates an
+# EC P-256 PKCS#8 keypair (`sa.key`/`sa.pub`) for the same ES256 wire format
+# upstream kube-apiserver uses.
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+
 # Group H: x509 client-certificate authentication. Same crate/version
 # nodecontroller's CSR controller and nodelet's own mTLS exec/logs server
 # already use (crates/nodelet/src/server/tls.rs's `client_identity_from_der`

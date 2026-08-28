@@ -53,6 +53,9 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     let arch = k8s_dl_arch(&cfg.arch()).with_context(|| format!("unsupported arch for upstream binaries: {}", cfg.arch()))?;
     let bin_dir = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&bin_dir).context("creating toolchain bin dir")?;
+    // A target change on an existing host must leave only one apiserver
+    // implementation bound to :6443.
+    service_mgr::remove(cfg, "nodeapiserver");
     fetch_binary("kube-apiserver", arch, &bin_dir)?;
 
     let spec = target_spec(cfg)?;
@@ -294,7 +297,7 @@ fn install_apiserver(
 /// (it doesn't need to complete a real etcd v3 handshake, just prove the
 /// listener is bound and accepting) and is far cheaper than parsing
 /// nodestore's own readiness signal out of its logs.
-fn wait_for_nodestore(etcd_servers: &str) -> Result<()> {
+pub(crate) fn wait_for_nodestore(etcd_servers: &str) -> Result<()> {
     let addr = etcd_servers.trim_start_matches("https://").trim_start_matches("http://");
     tracing::info!(addr, "waiting for nodestore to accept connections...");
     for _ in 0..30 {
@@ -396,7 +399,7 @@ fn nodestore_client_pki_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(data_dir).join("pki/client")
 }
 
-fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+pub(crate) fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let configured = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
     (
         configured("NODEBOOTSTRAP_JOIN_CA_FILE")
@@ -412,7 +415,7 @@ fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std:
     )
 }
 
-fn nodestore_etcd_servers() -> String {
+pub(crate) fn nodestore_etcd_servers() -> String {
     std::env::var("NODEBOOTSTRAP_ETCD_SERVERS").unwrap_or_else(|_| "https://127.0.0.1:2379".to_string())
 }
 

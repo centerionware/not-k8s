@@ -6,14 +6,12 @@
 //! reachable, spec-compliant apiserver -- it doesn't know or care which one
 //! this module started.
 //!
-//! `main`'s only implementation is `upstream` (real `kube-apiserver` +
-//! `kube-controller-manager` + `kube-scheduler` against `nodestore`, the
-//! same binaries `deploy/lib/upstream-kube-apiserver.sh` and its siblings
-//! already fetch -- but pointed at PKI this crate minted, not borrowed from
-//! k3s). A `nodeapiserver` implementation is added here, and made the
-//! default, only on the `nodeapiserver` integration branch once that
-//! component's own acceptance criteria in `APISERVER_PLAN.md` are met.
+//! `upstream` remains the default compatibility target (real
+//! `kube-apiserver` against `nodestore`). The integration branch also has a
+//! `nodeapiserver` target, selected with `--apiserver=nodeapiserver`, which
+//! runs this repository's replacement against the same PKI and datastore.
 
+pub mod nodeapiserver;
 pub mod upstream;
 
 use anyhow::Result;
@@ -23,6 +21,7 @@ use crate::config::{Config, Target};
 pub fn run_with(cfg: &Config) -> Result<()> {
     match cfg.target {
         Target::Upstream => upstream::run_with(cfg),
+        Target::NodeApiserver => nodeapiserver::run_with(cfg),
     }
 }
 
@@ -32,6 +31,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
     match cfg.target {
         Target::Upstream => upstream::enable_nodelet_proxy(cfg),
+        Target::NodeApiserver => nodeapiserver::enable_nodelet_proxy(cfg),
     }
 }
 
@@ -44,5 +44,6 @@ pub fn enable_nodelet_proxy(cfg: &Config) -> Result<()> {
 pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
     match cfg.target {
         Target::Upstream => upstream::refresh_network_advertise_address(cfg),
+        Target::NodeApiserver => nodeapiserver::refresh_network_advertise_address(cfg),
     }
 }

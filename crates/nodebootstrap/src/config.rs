@@ -41,14 +41,13 @@ pub enum Layout {
 /// Which apiserver/controller-manager/scheduler combination `targets/`
 /// installs and points the generated PKI/kubeconfig/RBAC at. See
 /// `docs/NODEBOOTSTRAP_PLAN.md`'s point 3: `main` defaults to `Upstream`
-/// (real `kube-apiserver` et al., no k3s); the `nodeapiserver` integration
-/// branch adds `NodeApiserver` and flips the default only once that
-/// component's own acceptance criteria are met.
+/// (real `kube-apiserver`, no k3s); the nodeapiserver integration branch
+/// exposes `NodeApiserver` as an explicit target until its full acceptance
+/// gate is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Upstream,
-    // NodeApiserver is added on the nodeapiserver branch, in targets.rs,
-    // once crates/nodeapiserver exists to point at.
+    NodeApiserver,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +167,18 @@ impl Config {
                 .context("--worker requires --kubeconfig=PATH (or KUBECONFIG) for the existing control plane");
         }
         Ok(self.kubeconfig_dir().join("admin.kubeconfig"))
+    }
+
+    /// Name of the local API-server unit that node-side services must wait
+    /// for. The target is selected once at installation time, but all unit
+    /// dependencies are derived from it so switching targets cannot leave
+    /// nodelet, nodeproxy, CNI, or controllers ordered after a service that
+    /// is not installed.
+    pub fn apiserver_service(&self) -> &'static str {
+        match self.target {
+            Target::Upstream => "kube-apiserver.service",
+            Target::NodeApiserver => "nodeapiserver.service",
+        }
     }
 
     pub fn control_plane_join_endpoint(&self) -> Result<String> {
@@ -492,7 +503,13 @@ impl Config {
             build_profile,
             layout,
             release_tag: std::env::var("NODEBOOTSTRAP_RELEASE_TAG").ok(),
-            target: Target::Upstream,
+            target: match std::env::var("NODEBOOTSTRAP_APISERVER").as_deref() {
+                Ok("nodeapiserver") => Target::NodeApiserver,
+                Ok("upstream") | Err(_) => Target::Upstream,
+                Ok(other) => anyhow::bail!(
+                    "NODEBOOTSTRAP_APISERVER must be upstream or nodeapiserver, got '{other}'"
+                ),
+            },
             skip_pki: flag("NODEBOOTSTRAP_SKIP_PKI"),
             skip_kubeconfig: flag("NODEBOOTSTRAP_SKIP_KUBECONFIG"),
             skip_rbac: flag("NODEBOOTSTRAP_SKIP_RBAC"),
