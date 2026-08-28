@@ -65,6 +65,10 @@ pub struct Config {
     pub oidc_required_claims: Vec<(String, String)>,
     pub oidc_signing_algs: Vec<String>,
     pub oidc_ca_file: Option<PathBuf>,
+    /// Optional `authorization.k8s.io/v1` SubjectAccessReview webhook.
+    /// When set, requests are denied if the webhook denies them and return
+    /// `503` if the webhook cannot be reached or returns an invalid review.
+    pub authorization_webhook_url: Option<String>,
     /// `NODEAPISERVER_ENFORCE_RBAC` — `false` by default, deliberately:
     /// enabling this makes `server::rest::get`/`list` deny-by-default
     /// against real `authz::resolve::rules_for` output (Group I), but
@@ -123,6 +127,7 @@ impl Default for Config {
             oidc_required_claims: Vec::new(),
             oidc_signing_algs: vec!["RS256".to_string(), "PS256".to_string(), "ES256".to_string()],
             oidc_ca_file: None,
+            authorization_webhook_url: None,
             enforce_rbac: false,
             encryption_config_file: None,
             kubelet_client_cert_file: None,
@@ -218,6 +223,7 @@ impl Config {
             );
         }
         cfg.oidc_ca_file = path_env("NODEAPISERVER_OIDC_CA_FILE");
+        cfg.authorization_webhook_url = string_env("NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
@@ -456,5 +462,20 @@ mod tests {
     fn oidc_required_claims_reject_malformed_entries() {
         let err = parse_required_claims("tenant").expect_err("a claim must include its value");
         assert!(err.to_string().contains("name=value"));
+    }
+
+    #[test]
+    fn authorization_webhook_url_is_read_from_its_own_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL",
+            "https://authz.example/review",
+        );
+        let _cleanup = EnvGuard(&["NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.authorization_webhook_url.as_deref(),
+            Some("https://authz.example/review")
+        );
     }
 }
