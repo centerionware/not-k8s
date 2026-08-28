@@ -110,6 +110,7 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
                 Ok(o) => o,
                 Err(e) => return Some(Err(e)),
             };
+            object = convert_event_object(object, kind, api_version, group);
             stamp_type_metadata(&mut object, kind, api_version);
             stamp_resource_version(&mut object, event.revision);
             Some(Ok(json!({"type": event_type, "object": object})))
@@ -131,6 +132,7 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
                 // actually carries.
                 match decode_event_value(event, &event.value, storage, group, resource) {
                     Ok(mut o) => {
+                        o = convert_event_object(o, kind, api_version, group);
                         stamp_type_metadata(&mut o, kind, api_version);
                         stamp_resource_version(&mut o, event.revision);
                         Some(Ok(json!({"type": event_type, "object": o})))
@@ -140,6 +142,11 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
             }
         }
     }
+}
+
+fn convert_event_object(object: Value, kind: &str, api_version: &str, group: &str) -> Value {
+    let requested_version = api_version.rsplit_once('/').map_or(api_version, |(_, version)| version);
+    crate::scheme::conversion::to_version(group, requested_version, kind, object)
 }
 
 #[cfg(test)]
