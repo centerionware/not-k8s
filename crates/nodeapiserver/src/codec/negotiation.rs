@@ -67,6 +67,14 @@ impl Accepted {
     pub fn wants_table(&self) -> bool {
         self.as_kind.as_deref() == Some("Table")
     }
+
+    /// `true` when the client asks for the standard metadata-only object
+    /// representation supported by this server.
+    pub fn wants_partial_object_metadata(&self) -> bool {
+        self.as_kind.as_deref() == Some("PartialObjectMetadata")
+            && self.as_group.as_deref() == Some("meta.k8s.io")
+            && self.as_version.as_deref() == Some("v1")
+    }
 }
 
 /// Parses one `Accept` header value (comma-separated media ranges, each
@@ -172,6 +180,20 @@ mod tests {
         assert!(accepted.wants_table());
         assert_eq!(accepted.as_group.as_deref(), Some("meta.k8s.io"));
         assert_eq!(accepted.as_version.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn partial_metadata_request_requires_the_standard_kind_group_and_version() {
+        let accepted = negotiate(
+            "application/json;as=PartialObjectMetadata;v=v1;g=meta.k8s.io, application/json",
+        )
+        .unwrap();
+        assert!(accepted.wants_partial_object_metadata());
+        let wrong_version = negotiate(
+            "application/json;as=PartialObjectMetadata;v=v1beta1;g=meta.k8s.io",
+        )
+        .unwrap();
+        assert!(!wrong_version.wants_partial_object_metadata());
     }
 
     /// `as=` is a generic client-requested-kind parameter, not a
