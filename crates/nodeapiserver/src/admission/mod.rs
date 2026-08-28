@@ -208,3 +208,4 @@ pub mod policy_validations;
 pub mod resource_quota;
 pub mod service_account;
 pub mod validating_admission_policy;
+pub mod webhook;
