@@ -2908,6 +2908,16 @@ async fn handle(
                     }
                 }
             } else if is_list {
+                if !info.field_selector.is_empty() {
+                    match crate::cacher::selector::parse_field_selector(&info.field_selector) {
+                        Ok(requirements) => {
+                            if let Err(error) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &requirements) {
+                                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string())));
+                            }
+                        }
+                        Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+                    }
+                }
                 match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table {
@@ -3115,6 +3125,9 @@ async fn handle(
                     Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
                 }
             };
+            if let Err(e) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &field_reqs) {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string())));
+            }
             let start_revision = resource_version_query(&query);
             match cache.watch_from(start_revision) {
                 Ok((replay, rx)) => {

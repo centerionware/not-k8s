@@ -336,8 +336,11 @@ never-registered cache is indistinguishable from a genuinely empty one
 using only what `SharedCache` exposes today — a pure latency win on the
 hit path, never a correctness risk on the miss path). `GET`/`LIST` use
 that cache for every built-in GVR, while dynamic CRD GVRs are registered
-on first discovery/use. The remaining Group D gap is the per-Kind
-`SelectableFields` allowlist.
+on first discovery/use. **Per-Kind `SelectableFields` is now enforced**:
+built-in registries accept their verified metadata and resource-specific
+fields, while CRDs accept only the universal metadata fields; unsupported
+field paths return `400 BadRequest` instead of silently matching no objects.
+The remaining cache gap is registering a cache for every resource at boot.
 
 **Follow-up**: `server::rest::list` now also consults a cache when
 handed one, closing the gap the paragraph above used to name — but it

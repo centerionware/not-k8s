@@ -49,6 +49,8 @@ pub enum ParseError {
     UnterminatedValueList,
     #[error("could not parse requirement {0:?}")]
     Malformed(String),
+    #[error("field label {0:?} is not supported for this resource")]
+    UnsupportedField(String),
 }
 
 /// Matches upstream's own `(*Requirement).Matches` exactly, including the
@@ -265,15 +267,10 @@ fn parse_field_term(term: &str) -> Result<FieldRequirement, ParseError> {
 // hand-written `SelectableFields` function per type
 // (`pkg/registry/*/*/strategy.go`, e.g. Pod adds `spec.nodeName`/
 // `status.phase`/... on top of the universal `metadata.name`/
-// `metadata.namespace`), and no such per-type allowlist is vendored or
-// built here yet. `field_value` below is a generic dotted-JSON-path
-// fallback (`"metadata.namespace"` -> pointer `/metadata/namespace`) —
-// it will resolve *any* path that exists on the object, a strict
-// superset of what real upstream allows for a given Kind, not a faithful
-// per-type restriction. Good enough to make selector filtering actually
-// work against real objects today; the per-type allowlist is separate,
-// named, not-yet-started work, same shape as Group F's still-missing
-// conversion.
+// `metadata.namespace`). `field_value` below remains a generic
+// dotted-JSON-path reader, but `validate_field_selector` rejects paths
+// outside the same allowlist before a request reaches storage. CRDs use
+// only the universal metadata fields, matching the generic CRD strategy.
 
 /// Every Kind's labels live at `metadata.labels` — the one part of "get a
 /// label map out of a decoded object" that's the same for every type.
@@ -300,6 +297,91 @@ pub fn field_value(item: &Value, field: &str) -> Option<String> {
         Some(Value::Number(n)) => Some(n.to_string()),
         _ => None,
     }
+}
+
+/// Returns the field paths accepted by Kubernetes' generic field-selector
+/// machinery for this resource. The two metadata paths are available to all
+/// resources; the additional entries mirror the hand-written selectable
+/// fields exposed by the built-in registries. CRD-defined resources retain
+/// only the generic metadata fields.
+pub fn selectable_fields(group: &str, resource: &str) -> &'static [&'static str] {
+    const METADATA: &[&str] = &["metadata.name", "metadata.namespace"];
+    match (group, resource) {
+        ("", "pods") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "spec.nodeName",
+            "spec.restartPolicy",
+            "spec.schedulerName",
+            "spec.serviceAccountName",
+            "spec.hostNetwork",
+            "status.phase",
+            "status.podIP",
+            "status.nominatedNodeName",
+        ],
+        ("", "events") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "involvedObject.kind",
+            "involvedObject.namespace",
+            "involvedObject.name",
+            "involvedObject.uid",
+            "involvedObject.apiVersion",
+            "involvedObject.resourceVersion",
+            "reason",
+            "reportingComponent",
+            "source",
+            "type",
+        ],
+        ("", "nodes") => &["metadata.name", "metadata.namespace", "spec.unschedulable", "status.phase"],
+        ("", "namespaces") => &["metadata.name", "metadata.namespace", "status.phase"],
+        ("", "services") => &["metadata.name", "metadata.namespace", "spec.clusterIP", "spec.type"],
+        ("", "replicationcontrollers") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "spec.replicas",
+            "status.replicas",
+            "status.fullyLabeledReplicas",
+            "status.readyReplicas",
+            "status.availableReplicas",
+        ],
+        ("", "persistentvolumes") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "status.phase",
+            "spec.storageClassName",
+            "spec.volumeMode",
+        ],
+        ("", "persistentvolumeclaims") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "status.phase",
+            "spec.storageClassName",
+            "spec.volumeName",
+            "spec.volumeMode",
+        ],
+        ("batch", "jobs") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "status.active",
+            "status.succeeded",
+            "status.failed",
+        ],
+        ("coordination.k8s.io", "leases") => &["metadata.name", "metadata.namespace", "spec.holderIdentity"],
+        _ => METADATA,
+    }
+}
+
+/// Rejects a field selector that names a path the target registry does not
+/// expose. Real kube-apiserver returns BadRequest for this case; treating an
+/// unsupported path as a missing field would silently turn a typo into an
+/// empty result and diverge from that contract.
+pub fn validate_field_selector(group: &str, resource: &str, requirements: &[FieldRequirement]) -> Result<(), ParseError> {
+    let allowed = selectable_fields(group, resource);
+    if let Some(requirement) = requirements.iter().find(|requirement| !allowed.contains(&requirement.field.as_str())) {
+        return Err(ParseError::UnsupportedField(requirement.field.clone()));
+    }
+    Ok(())
 }
 
 /// The real predicate a LIST call filters decoded cache items with: both
@@ -518,5 +600,32 @@ mod tests {
     fn object_matches_with_no_selectors_at_all_matches_everything() {
         let item = pod("web-1", "default", "node-a", serde_json::json!({}));
         assert!(object_matches(&item, &[], &[]));
+    }
+
+    #[test]
+    fn built_in_field_allowlist_accepts_pod_fields() {
+        let requirements = parse_field_selector("metadata.name=web-1,spec.nodeName=node-a,status.phase=Running").unwrap();
+        assert!(validate_field_selector("", "pods", &requirements).is_ok());
+    }
+
+    #[test]
+    fn unsupported_field_selector_is_rejected_instead_of_matching_nothing() {
+        let requirements = parse_field_selector("spec.containers[0].name=web").unwrap();
+        assert_eq!(
+            validate_field_selector("", "pods", &requirements),
+            Err(ParseError::UnsupportedField("spec.containers[0].name".into()))
+        );
+    }
+
+    #[test]
+    fn custom_resources_only_allow_universal_metadata_fields() {
+        let requirements = parse_field_selector("metadata.name=widget-1").unwrap();
+        assert!(validate_field_selector("example.com", "widgets", &requirements).is_ok());
+
+        let requirements = parse_field_selector("spec.color=blue").unwrap();
+        assert!(matches!(
+            validate_field_selector("example.com", "widgets", &requirements),
+            Err(ParseError::UnsupportedField(field)) if field == "spec.color"
+        ));
     }
 }

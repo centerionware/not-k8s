@@ -578,6 +578,7 @@ pub async fn list_at_revision(
     let kind = resolved.kind.as_str();
     let label_reqs = if label_selector.is_empty() { Vec::new() } else { selector::parse_label_selector(label_selector)? };
     let field_reqs = if field_selector.is_empty() { Vec::new() } else { selector::parse_field_selector(field_selector)? };
+    selector::validate_field_selector(group, resource, &field_reqs)?;
 
     let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     // Shared by both the cache path and the direct-nodestore path below —

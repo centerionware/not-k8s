@@ -443,6 +443,32 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("selectable field checks are only exercised against nodeapiserver"));
+    }
+
+    let configmaps: Api<ConfigMap> = Api::all(context.client.clone());
+    match configmaps
+        .list(&ListParams::default().fields("data.unsupported=value"))
+        .await
+    {
+        Err(KubeError::Api(error)) => anyhow::ensure!(
+            error.code == 400,
+            "nodeapiserver returned the wrong status for an unsupported field selector: {error}"
+        ),
+        Err(error) => anyhow::bail!(
+            "nodeapiserver returned a non-API error for an unsupported field selector: {error}"
+        ),
+        Ok(list) => anyhow::bail!(
+            "nodeapiserver accepted an unsupported field selector and returned {} ConfigMaps",
+            list.items.len()
+        ),
+    }
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_watches_an_uncommon_builtin_resource(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

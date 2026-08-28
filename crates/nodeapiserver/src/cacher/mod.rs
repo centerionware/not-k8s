@@ -20,10 +20,9 @@
 //! of upstream's own `labels`/`fields` package parsers, plus the adapter
 //! onto a decoded object (`object_labels`/`field_value`/`object_matches`):
 //! labels always live at `metadata.labels` (genuinely generic across every
-//! Kind), field lookups are a generic dotted-JSON-path fallback rather
-//! than upstream's real per-type `SelectableFields` allowlist (named,
-//! not-yet-started work — see that section of the module's own doc
-//! comment).
+//! Kind), and field selectors are checked against the built-in per-Kind
+//! `SelectableFields` allowlist before the generic dotted-JSON-path lookup
+//! runs. CRDs accept only the universal metadata fields.
 //! `registry` — starts a `driver::reflect()` background loop for one
 //! resource and hands back the `SharedCache` it keeps live
 //! (`CacheRegistry::spawn`). The listener invokes it for every built-in
@@ -44,9 +43,11 @@
 //! passed in (`get`: a hit skips nodestore, a miss always falls through;
 //! `list`: only once `has_synced()`, for the reason above — see `rest`'s
 //! own doc comment for the full contract of each).
-//! **Not yet landed**: a per-Kind `SelectableFields` allowlist. Built-in
-//! resources are registered at boot; CRD-defined resources are registered
-//! lazily after discovery.
+//! **Per-Kind `SelectableFields` is now enforced**: built-in resources use
+//! their verified metadata and resource-specific fields, while CRDs accept
+//! only universal metadata fields; unsupported paths are rejected rather than
+//! silently matching no objects. The remaining cache gap is registering a
+//! cache for every resource at boot.
 
 pub mod store;
 pub mod driver;
