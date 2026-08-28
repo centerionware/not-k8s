@@ -13,7 +13,7 @@ use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service, ServiceAcco
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, WatchEvent, WatchParams};
+use kube::api::{Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, PostParams, WatchEvent, WatchParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
 use kube::core::GroupVersionKind;
 use kube::discovery::ApiResource;
@@ -677,7 +677,7 @@ pub(super) async fn nodeapiserver_enforces_crd_schema_constraints(context: &E2eC
             })
             .await?;
 
-        let valid = serde_json::from_value(json!({
+        let valid: DynamicObject = serde_json::from_value(json!({
             "apiVersion": format!("{group}/v1"),
             "kind": "Widget",
             "metadata": {"name": widget_name.clone(), "namespace": &context.namespace},
