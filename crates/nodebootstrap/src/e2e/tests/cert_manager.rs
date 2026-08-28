@@ -57,7 +57,13 @@ fn nodecontroller_pid() -> Option<u32> {
 }
 
 fn run_kubectl(args: &[&str]) -> Result<()> {
+    // Do not let a discovery document cached by an earlier cluster (or by
+    // the runner image) decide whether this test can map a built-in or CRD
+    // kind.  The cache is shared across the apply and cleanup calls for this
+    // test, but isolated from every other kubectl invocation.
+    let cache_dir = std::env::temp_dir().join(format!("nodebootstrap-e2e-kubectl-cache-{}", std::process::id()));
     let output = Command::new("kubectl")
+        .arg(format!("--cache-dir={}", cache_dir.display()))
         .args(args)
         .output()
         .with_context(|| format!("running kubectl {}", args.join(" ")))?;
