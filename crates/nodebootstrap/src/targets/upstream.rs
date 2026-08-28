@@ -179,7 +179,7 @@ pub(crate) fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
                 "labels": {"app.kubernetes.io/name": "nodebootstrap-cni-seed"}
             },
             "spec": {
-                "nodeName": cfg.node_name,
+                "nodeName": cfg.node_name(),
                 "serviceAccountName": NAME,
                 "automountServiceAccountToken": false,
                 "restartPolicy": "Never",
