@@ -141,6 +141,15 @@ fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<Boxe
     Response::builder().status(status).header("Content-Type", "application/json").body(body_from_bytes(bytes)).unwrap()
 }
 
+fn aggregated_discovery_response(value: &serde_json::Value) -> Response<BoxedBody> {
+    let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList")
+        .body(body_from_bytes(bytes))
+        .unwrap()
+}
+
 /// Real upstream's own `resourceVersion` query parameter for a `watch`
 /// request — `path::RequestInfo` doesn't carry this (it's not part of
 /// the URL *path* grammar `path::parse` ports, only the query string), so
@@ -735,6 +744,7 @@ pub async fn run(cfg: Config) {
 enum DiscoveryRoute {
     NotApplicable,
     Found(serde_json::Value),
+    Aggregated(serde_json::Value),
     /// Same as `Found`, but the bytes are already-serialized JSON (an
     /// `/openapi/v3/<path>` document, embedded verbatim at build time) —
     /// serving them directly avoids a pointless parse-then-reserialize
@@ -793,13 +803,13 @@ fn aggregated_discovery_group_version<'a>(parts: &'a [String], aggregated: &'a [
 fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate::apiextensions::registry::DiscoverableResource], aggregated: &[(String, String)]) -> DiscoveryRoute {
     let seg = |i: usize| parts.get(i).map(String::as_str);
     match (seg(0), seg(1), parts.len()) {
-        (Some("api"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_v1_group_discovery_list_with_crds()),
+        (Some("api"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Aggregated(discovery::api_v1_group_discovery_list_with_crds()),
         (Some("api"), _, 1) => DiscoveryRoute::Found(discovery::api_versions()),
         (Some("api"), _, 2) => match discovery::api_resource_list("", &parts[1]) {
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
-        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_group_discovery_list_with_crds(crds, aggregated)),
+        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Aggregated(discovery::api_group_discovery_list_with_crds(crds, aggregated)),
         (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated)),
         (Some("apis"), _, 2) => match discovery::api_group_with_crds(&parts[1], crds, aggregated) {
             Some(doc) => DiscoveryRoute::Found(doc),
@@ -1393,6 +1403,7 @@ async fn handle(
         };
         match route_discovery(&parts, accept_header, &crds, &aggregated) {
             DiscoveryRoute::Found(doc) => return Ok(json_response(StatusCode::OK, &doc)),
+            DiscoveryRoute::Aggregated(doc) => return Ok(aggregated_discovery_response(&doc)),
             DiscoveryRoute::FoundRaw(bytes) => {
                 return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body_from_bytes(bytes.to_vec())).unwrap());
             }
@@ -3351,7 +3362,7 @@ mod tests {
     fn apis_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
         let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Aggregated(doc) = route else { panic!("expected Aggregated") };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
     }
 
@@ -3359,9 +3370,18 @@ mod tests {
     fn api_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
         let route = route_discovery(&parts("/api"), Some(accept), &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Aggregated(doc) = route else { panic!("expected Aggregated") };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
         assert_eq!(doc["items"][0]["metadata"]["name"], "");
+    }
+
+    #[test]
+    fn aggregated_discovery_sets_the_content_type_client_go_uses_to_decode_v2() {
+        let response = aggregated_discovery_response(&discovery::api_group_discovery_list());
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList"
+        );
     }
 
     #[test]
