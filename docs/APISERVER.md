@@ -972,8 +972,15 @@ wired for the nodeapiserver bootstrap target: it signs ES256
 projected/bound tokens from the cluster `sa.key`, serves the core
 `serviceaccounts/token` TokenRequest subresource, validates
 issuer/audience/lifetime, and answers authentication.k8s.io `TokenReview`
-for nodelet's bearer-token webhook path. OIDC, bootstrap tokens, and the
-remaining anonymous-authentication configuration are not started.
+for nodelet's bearer-token webhook path. `authn::oidc` is now an optional
+discovery-backed bearer-token authenticator: when
+`NODEAPISERVER_OIDC_ISSUER_URL` and `NODEAPISERVER_OIDC_CLIENT_ID` are set,
+the listener validates the issuer metadata, loads its JWKS, verifies
+RS256/PS256/ES256 tokens, checks issuer/audience/expiry/required claims, and
+maps configurable username and group claims. A configured CA bundle is used
+for issuer requests, and a rotated JWKS is refreshed once on verification
+failure. Bootstrap tokens and the remaining anonymous-authentication
+configuration are not started.
 
 **I. Authorization** — **started**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own

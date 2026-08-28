@@ -40,7 +40,7 @@
 //!   (unimplemented, see `patch/mod.rs`) will.
 
 use crate::codegen;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// Applies a strategic merge patch to `original`, which is understood to
 /// be shaped like `schema` (an openapi-style qualified schema name, e.g.

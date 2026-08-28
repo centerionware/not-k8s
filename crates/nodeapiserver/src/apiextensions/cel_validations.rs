@@ -31,7 +31,7 @@
 //! rule now finds out at CRD-acceptance time, not the first time some
 //! real custom resource instance trips it at runtime.
 
-use crate::cel_ext::budget::{check_rule_cost, RuleCostError, STATIC_ESTIMATED_COST_LIMIT};
+use crate::cel_ext::budget::{check_rule_cost, RuleCostError};
 use crate::cel_ext::decl_type;
 use serde_json::Value;
 
@@ -132,6 +132,7 @@ pub fn validate_crd_cel_costs(crd: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cel_ext::budget::STATIC_ESTIMATED_COST_LIMIT;
     use serde_json::json;
 
     #[test]
