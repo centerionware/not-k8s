@@ -47,7 +47,8 @@
 //! `APIResourceList` (`/api/v1`, `/apis/{group}/{version}`), driven
 //! entirely by Group A's discovery tables. Wired into `listener`'s actual
 //! routing now, not just a pure builder.
-//! `openapi` — `/openapi/v3` and `/openapi/v3/<path>`, serving every
+//! `openapi` — `/openapi/v2`, plus `/openapi/v3` and
+//! `/openapi/v3/<path>`, serving a derived Swagger v2 document and every
 //! vendored OpenAPI v3 document verbatim (Group A's `codegen::openapi_v3_docs`),
 //! wired into `listener`'s routing alongside the other discovery routes.
 //! `version` — `/version`, a `version.Info` document built from real

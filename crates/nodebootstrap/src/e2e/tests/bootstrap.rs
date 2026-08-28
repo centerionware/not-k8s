@@ -13,7 +13,7 @@ use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::Error as KubeError;
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
 use secrecy::SecretString;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -415,6 +415,27 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
             .is_some_and(|user| user.username
                 == Some("system:serviceaccount:kube-system:default".to_string())),
         "nodeapiserver TokenReview returned the wrong ServiceAccount identity"
+    );
+
+    // kubectl and client-go still use the legacy OpenAPI endpoint for
+    // schema discovery. Requiring a non-empty Swagger document here catches
+    // a listener that serves discovery and CRUD but leaves `/openapi/v2` as
+    // a stub or accidentally returns an OpenAPI v3 document there.
+    let openapi_v2 = context
+        .client
+        .request::<Value>(
+            Request::builder()
+                .method("GET")
+                .uri("/openapi/v2")
+                .body(Vec::new())?,
+        )
+        .await
+        .context("reading nodeapiserver OpenAPI v2")?;
+    anyhow::ensure!(
+        openapi_v2["swagger"] == "2.0"
+            && openapi_v2["paths"].as_object().is_some_and(|paths| !paths.is_empty())
+            && openapi_v2["definitions"].as_object().is_some_and(|definitions| !definitions.is_empty()),
+        "nodeapiserver OpenAPI v2 response was not a populated Swagger document"
     );
     Ok(())
 }
