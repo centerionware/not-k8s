@@ -1527,6 +1527,21 @@ async fn handle(
         }
     }
 
+    // Group N: the core node and Service proxy subresources are ordinary
+    // request/response relays.  Keep them ahead of the generic REST
+    // branches below: `GET .../services/name/proxy` otherwise looks like a
+    // normal GET with an unknown subresource and would be returned as a
+    // bring-up-shaped error instead of reaching the selected backend.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && matches!(info.resource.as_str(), "nodes" | "services")
+        && is_proxy_request(&info)
+        && !info.name.is_empty()
+        && matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")
+    {
+        return Ok(proxy_resource(req, storage, &info, &method, &path_str, &query, &identity, enforce_rbac, kubelet_tls).await);
+    }
+
     // Group E's real resource verbs so far: single-object GET (`get`, not
     // `list`/`watch` — `path::parse` already tells those apart by an empty
     // `name`), LIST (`list`, no name), CREATE (`create`, no name — a POST
@@ -3492,6 +3507,156 @@ async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &ser
     }
 }
 
+fn is_proxy_request(info: &path::RequestInfo) -> bool {
+    info.verb == "proxy" || info.subresource == "proxy"
+}
+
+/// Returns the path after the `proxy` marker.  `RequestInfo.parts` has
+/// already removed the API prefix, group/version, and optional namespace,
+/// so this handles both supported Kubernetes forms:
+/// `.../{resource}/{name}/proxy/{path}` and
+/// `.../proxy/{resource}/{name}/{path}`.
+fn proxy_suffix(info: &path::RequestInfo) -> String {
+    let start = if info.verb == "proxy" {
+        2
+    } else {
+        info.parts.iter().position(|part| part == "proxy").map_or(info.parts.len(), |index| index + 1)
+    };
+    let suffix = info.parts.get(start..).map(|parts| parts.join("/")).unwrap_or_default();
+    if suffix.is_empty() { "/".to_string() } else { format!("/{suffix}") }
+}
+
+/// Group N's core node/service proxy dispatch.  The object and EndpointSlice
+/// reads are intentionally performed before consuming the request body so an
+/// invalid or unavailable target returns a normal Kubernetes Status response.
+async fn proxy_resource(
+    req: Request<Incoming>,
+    storage: Option<StorageClient>,
+    info: &path::RequestInfo,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    identity: &Option<crate::authn::x509::Identity>,
+    enforce_rbac: bool,
+    kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Response<BoxedBody> {
+    let Some(mut client) = storage else {
+        return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+    };
+
+    if enforce_rbac {
+        let (user_name, user_groups): (&str, Vec<String>) = match identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+        let subresource = if info.verb == "proxy" { "proxy" } else { info.subresource.as_str() };
+        let attrs = authz::rbac::RequestAttributes {
+            is_resource_request: true,
+            verb: &info.verb,
+            api_group: &info.api_group,
+            resource: &info.resource,
+            subresource,
+            name: &info.name,
+            path: path_str,
+        };
+        if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+            return json_response(StatusCode::FORBIDDEN, &forbidden_status(path_str, user_name));
+        }
+    }
+
+    let suffix = proxy_suffix(info);
+    let target = if info.resource == "nodes" {
+        let node = match rest::get(&mut client, None, "", "v1", "nodes", None, &info.name).await {
+            Ok(rest::GetOutcome::Found(node)) => node,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return json_response(StatusCode::NOT_FOUND, &not_found_status(path_str));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: fetching the node failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        };
+        match proxy::node_proxy::target(&node, &suffix, query) {
+            Ok(target) => target,
+            Err(proxy::node_proxy::Error::NoNodeAddress) => {
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        }
+    } else {
+        if info.namespace.is_empty() {
+            return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "service proxy requires a namespace"));
+        }
+        let (service_name, _) = proxy::service_proxy::split_name(&info.name);
+        let service = match rest::get(&mut client, None, "", "v1", "services", Some(&info.namespace), service_name).await {
+            Ok(rest::GetOutcome::Found(service)) => service,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return json_response(StatusCode::NOT_FOUND, &not_found_status(path_str));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: fetching the Service failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        };
+        let endpoint_slices = match rest::list(&mut client, None, "discovery.k8s.io", "v1", "endpointslices", Some(&info.namespace), &format!("kubernetes.io/service-name={service_name}"), "", 0, "").await {
+            Ok(rest::ListOutcome::Found(list)) => list.get("items").and_then(serde_json::Value::as_array).cloned().unwrap_or_default(),
+            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: listing EndpointSlices failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        };
+        match proxy::service_proxy::target(&service, &endpoint_slices, &info.name, &suffix, query) {
+            Ok(target) => target,
+            Err(proxy::service_proxy::Error::MissingPort
+                | proxy::service_proxy::Error::InvalidPort(_)
+                | proxy::service_proxy::Error::UnsupportedProtocol(_)) =>
+            {
+                return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "the requested Service port does not exist"));
+            }
+            Err(proxy::service_proxy::Error::NoClusterIpOrEndpoint) => {
+                return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, "Service has no ready endpoints or ClusterIP"));
+            }
+        }
+    };
+
+    let headers = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str()))
+        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
+        .collect::<Vec<_>>();
+    let body = match read_body_bytes(req).await {
+        Ok(body) => body,
+        Err(error) => {
+            warn!(path = %path_str, error = ?error, "proxy: reading the request body failed");
+            return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "request body could not be read"));
+        }
+    };
+
+    let client_config = if target.scheme == "https" && info.resource == "services" {
+        match crate::proxy::client_tls::build_client_config(None) {
+            Ok(config) => std::sync::Arc::new(config),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: building the Service TLS client config failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        }
+    } else {
+        // Node proxies use the kubelet client configuration built at
+        // listener startup.  Plain HTTP Service targets ignore it.
+        kubelet_tls
+    };
+
+    match proxy::http_client::relay(&target, client_config, method, &headers, body).await {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(path = %path_str, host = %target.host, error = ?error, "proxy: dialing the backend failed");
+            json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, &error.to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3911,5 +4076,23 @@ mod tests {
     fn build_audit_event_carries_a_denied_response_code() {
         let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403);
         assert_eq!(event["responseStatus"]["code"], 403);
+    }
+
+    #[test]
+    fn proxy_suffix_supports_the_normal_subresource_form() {
+        let info = path::parse("GET", "/api/v1/namespaces/default/services/web:http/proxy/healthz", "");
+        assert_eq!(info.resource, "services");
+        assert_eq!(info.name, "web:http");
+        assert_eq!(info.subresource, "proxy");
+        assert_eq!(proxy_suffix(&info), "/healthz");
+    }
+
+    #[test]
+    fn proxy_suffix_supports_the_legacy_proxy_prefix_form() {
+        let info = path::parse("GET", "/api/v1/proxy/nodes/node-a/stats/summary", "");
+        assert_eq!(info.verb, "proxy");
+        assert_eq!(info.resource, "nodes");
+        assert_eq!(info.name, "node-a");
+        assert_eq!(proxy_suffix(&info), "/stats/summary");
     }
 }

@@ -1,6 +1,7 @@
 //! The actual live proxy dial: given a [`crate::proxy::pod_log::Target`]
 //! and a [`rustls::ClientConfig`] (`client_tls::build_client_config`),
-//! opens a real TLS connection to nodelet's kubelet-style server and
+//! opens a real connection to the target (TLS for `https`, plain HTTP for
+//! `http`) and
 //! relays the response back unmodified.
 //!
 //! Reuses `crates/nodelet/src/server/exec.rs`'s own proven low-level
@@ -136,14 +137,15 @@ fn build_uri(target: &Target) -> Result<Uri, Error> {
 type DialBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
 
 async fn dial(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper::client::conn::http1::SendRequest<DialBody>, Error> {
-    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
-
     let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
-    let connector = TlsConnector::from(client_config);
-    let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
-    let io = TokioIo::new(tls_stream);
-
-    let (sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
+    let (sender, conn) = if target.scheme == "http" {
+        hyper::client::conn::http1::handshake(TokioIo::new(tcp)).await.map_err(Error::HttpHandshake)?
+    } else {
+        let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
+        let connector = TlsConnector::from(client_config);
+        let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
+        hyper::client::conn::http1::handshake(TokioIo::new(tls_stream)).await.map_err(Error::HttpHandshake)?
+    };
     tokio::spawn(async move {
         if let Err(e) = conn.await {
             tracing::debug!(error = ?e, "proxy: connection ended");
@@ -155,12 +157,15 @@ async fn dial(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper
 type UpgradeBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 async fn dial_upgrade(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper::client::conn::http1::SendRequest<UpgradeBody>, Error> {
-    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
     let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
-    let connector = TlsConnector::from(client_config);
-    let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
-    let io = TokioIo::new(tls_stream);
-    let (sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
+    let (sender, conn) = if target.scheme == "http" {
+        hyper::client::conn::http1::handshake(TokioIo::new(tcp)).await.map_err(Error::HttpHandshake)?
+    } else {
+        let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
+        let connector = TlsConnector::from(client_config);
+        let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
+        hyper::client::conn::http1::handshake(TokioIo::new(tls_stream)).await.map_err(Error::HttpHandshake)?
+    };
     tokio::spawn(async move {
         if let Err(error) = conn.with_upgrades().await {
             tracing::debug!(?error, "proxy: upgraded connection ended");
