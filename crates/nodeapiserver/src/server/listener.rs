@@ -2535,11 +2535,6 @@ async fn handle(
             // identity is evaluated as the real anonymous user/group
             // upstream itself uses, not silently skipped.
             if enforce_rbac {
-                let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                    Some(id) => (id.name.as_str(), id.groups.clone()),
-                    None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
-                };
-                let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
                 let attrs = authz::rbac::RequestAttributes {
                     is_resource_request: true,
                     verb: &info.verb,
@@ -2549,8 +2544,22 @@ async fn handle(
                     name: &info.name,
                     path: "",
                 };
-                if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
-                    return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                match authz::node::authorize(identity.as_ref(), &attrs, &info.api_version, &info.field_selector, namespace) {
+                    authz::node::Decision::Allow => {}
+                    authz::node::Decision::Deny => {
+                        let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+                        return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                    }
+                    authz::node::Decision::NoOpinion => {
+                        let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                            Some(id) => (id.name.as_str(), id.groups.clone()),
+                            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+                        };
+                        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+                        if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                        }
+                    }
                 }
             }
 
@@ -2745,28 +2754,37 @@ async fn handle(
     // the verb) — not a gap.
     if is_watch {
         if enforce_rbac {
-            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
-                Some(id) => (id.name.as_str(), id.groups.clone()),
-                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            let attrs = authz::rbac::RequestAttributes {
+                is_resource_request: true,
+                verb: &info.verb,
+                api_group: &info.api_group,
+                resource: &info.resource,
+                subresource: &info.subresource,
+                name: &info.name,
+                path: "",
             };
+            match authz::node::authorize(identity.as_ref(), &attrs, &info.api_version, &info.field_selector, Some(info.namespace.as_str())) {
+                authz::node::Decision::Allow => {}
+                authz::node::Decision::Deny => {
+                    let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+                    return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+                }
+                authz::node::Decision::NoOpinion => {
+                    let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                        Some(id) => (id.name.as_str(), id.groups.clone()),
+                        None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+                    };
             match storage.clone() {
                 Some(mut client) => {
                     let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
-                    let attrs = authz::rbac::RequestAttributes {
-                        is_resource_request: true,
-                        verb: &info.verb,
-                        api_group: &info.api_group,
-                        resource: &info.resource,
-                        subresource: &info.subresource,
-                        name: &info.name,
-                        path: "",
-                    };
                     if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
                         return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
                     }
                 }
                 None => {
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
                 }
             }
         }

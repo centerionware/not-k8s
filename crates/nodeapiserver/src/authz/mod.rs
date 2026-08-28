@@ -45,9 +45,13 @@
 //! `LocalSubjectAccessReview` share one `POST` branch,
 //! `SelfSubjectRulesReview` has its own (different response shape).
 //!
-//! Status: in progress (see docs/APISERVER.md). The Node authorizer and
-//! webhook authorization are not started.
+//! `node` is the deny-capable built-in Node authorizer for the request shapes
+//! that are decidable without a live pod/object graph. Webhook authorization
+//! and graph-backed Node access remain separate follow-up slices.
+//!
+//! Status: in progress (see docs/APISERVER.md).
 
+pub mod node;
 pub mod rbac;
 pub mod resolve;
 pub mod sar;

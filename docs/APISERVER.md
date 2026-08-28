@@ -1048,8 +1048,11 @@ explicit deny either — only allow/no-opinion — and this crate's engine
 doesn't track which rule matched to build a `reason` string);
 `SelfSubjectRulesReview`'s own `incomplete`/`evaluationError` **are**
 populated, straight from `resolve::rules_for`'s own per-binding
-resolution errors. Node authorizer and webhook authorization are not
-started. PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
+resolution errors. The built-in `authz::node` authorizer now recognizes
+`system:node:<name>` identities and allows only the safe, attribute-only
+node, node-status, node-lease, and node-scoped pod list/watch shapes; its
+pod/object graph access and webhook authorization remain separate work.
+PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
 group.
 
