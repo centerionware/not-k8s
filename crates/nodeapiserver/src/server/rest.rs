@@ -96,22 +96,17 @@
 //! other resource is
 //! deliberately left unchecked rather than guessed at; see that
 //! function's own doc comment for how to extend it one verified entry at
-//! a time. `update` runs the exact same two checks. Named honestly, not
-//! overclaimed: dry-run, field-manager/
-//! Server-Side Apply bookkeeping, no admission plugins at all (Group J
-//! doesn't exist yet — a real cluster's `ServiceAccount`/
-//! `NamespaceLifecycle`/`ResourceQuota`/... plugins would each get a say
-//! here and don't).
+//! a time. `update` runs the exact same two checks. `create` and `update`
+//! also expose the listener's `dryRun=All` path, which returns the fully
+//! prepared object without persisting it. Server-Side Apply bookkeeping is
+//! handled by the separate apply path.
 //!
-//! `delete` is a single `DeleteRange` (`prev_kv: true` so the deleted
-//! object can be returned, matching real upstream's own synchronous
-//! delete response) with no preconditions yet: no
-//! `resourceVersion`/`uid` precondition checking
-//! (`metav1.DeleteOptions.Preconditions`), no `propagationPolicy`
-//! (Foreground/Background/Orphan — this build has no owner-reference
-//! garbage collector to orphan or cascade to in the first place), no
-//! finalizer handling at all. A real, unconditional delete-if-present,
-//! named honestly as the bring-up floor rather than the real thing.
+//! `delete` reads the object, checks optional `resourceVersion`/`uid`
+//! preconditions (`metav1.DeleteOptions.Preconditions`), and uses an MVCC
+//! compare with `DeleteRange` so a concurrent update cannot invalidate the
+//! check. It returns the deleted object, matching real upstream's own
+//! synchronous delete response. `propagationPolicy` and finalizer handling
+//! remain out of scope.
 //!
 //! `update` is real optimistic concurrency, not a blind overwrite: reads
 //! the current object first, requires the submitted body's own
@@ -151,6 +146,8 @@ pub enum Error {
     Selector(#[from] ParseError),
     #[error("encryption transform failed: {0}")]
     Encryption(#[from] crate::storage::encryption::Error),
+    #[error("invalid protobuf request: {0}")]
+    InvalidProtobufRequest(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -300,6 +297,37 @@ pub fn decode_stored_object(bytes: &[u8]) -> Result<Value, protobuf::Error> {
         // real "can't decode this" outcomes either way.
         None => Ok(serde_json::from_slice(&object_bytes).map_err(protobuf::Error::Json)?),
     }?;
+    set_type_metadata(&mut object, &kind, &api_version);
+    Ok(object)
+}
+
+/// Decodes a Kubernetes protobuf request envelope after resolving the
+/// resource named by the URL. Built-in resources use their generated schema;
+/// CRD objects use the envelope's raw JSON body because Kubernetes does not
+/// generate a compiled protobuf schema for operator-defined kinds.
+pub async fn decode_protobuf_request(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    bytes: &[u8],
+) -> Result<Option<Value>, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Ok(None);
+    };
+    Ok(Some(decode_protobuf_object(&resolved, resource, bytes)?))
+}
+
+fn decode_protobuf_object(resolved: &ResolvedResource, resource: &str, bytes: &[u8]) -> Result<Value, Error> {
+    let (api_version, kind, object_bytes) = protobuf::unwrap_unknown(bytes)?;
+    if kind != resolved.kind {
+        return Err(Error::InvalidProtobufRequest(format!("request kind {kind:?} does not match resource {resource:?}")));
+    }
+    let (body_group, body_version) = split_api_version(&api_version);
+    let mut object = match resolved.schema.or_else(|| protobuf::schema_for_gvk(body_group, body_version, &kind)) {
+        Some(schema) => protobuf::decode_message(schema, &object_bytes)?,
+        None => serde_json::from_slice(&object_bytes).map_err(protobuf::Error::Json)?,
+    };
     set_type_metadata(&mut object, &kind, &api_version);
     Ok(object)
 }
@@ -2211,5 +2239,38 @@ mod tests {
         assert!(first.starts_with("job-"));
         assert_eq!(first.len(), "job-".len() + 5);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn protobuf_request_decodes_a_built_in_object_envelope() {
+        let schema = protobuf::schema_for_gvk("", "v1", "ConfigMap").expect("ConfigMap has a generated schema");
+        let encoded = protobuf::encode_message(schema, &json!({
+            "metadata": {"name": "from-protobuf"},
+            "data": {"key": "value"}
+        })).unwrap();
+        let envelope = protobuf::wrap_unknown("v1", "ConfigMap", &encoded);
+        let resolved = ResolvedResource {
+            kind: "ConfigMap".to_string(),
+            schema: Some(schema),
+            open_api_schema: None,
+            has_status_subresource: true,
+        };
+        let decoded = decode_protobuf_object(&resolved, "configmaps", &envelope).unwrap();
+        assert_eq!(decoded["apiVersion"], "v1");
+        assert_eq!(decoded["kind"], "ConfigMap");
+        assert_eq!(decoded["metadata"]["name"], "from-protobuf");
+        assert_eq!(decoded["data"]["key"], "value");
+    }
+
+    #[test]
+    fn protobuf_request_rejects_a_kind_that_does_not_match_the_resource() {
+        let resolved = ResolvedResource {
+            kind: "ConfigMap".to_string(),
+            schema: None,
+            open_api_schema: None,
+            has_status_subresource: true,
+        };
+        let envelope = protobuf::wrap_unknown("v1", "Secret", br#"{}"#);
+        assert!(matches!(decode_protobuf_object(&resolved, "configmaps", &envelope), Err(Error::InvalidProtobufRequest(_))));
     }
 }

@@ -2437,12 +2437,11 @@ async fn handle(
                     let decoded: Result<serde_json::Value, String> = match format {
                         negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
                         negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
-                        negotiation::Format::Protobuf => {
-                            return Ok(json_response(
-                                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                                &bad_request_status(&path_str, "protobuf request bodies are not decoded yet for CREATE/UPDATE — use application/json or application/yaml"),
-                            ));
-                        }
+                        negotiation::Format::Protobuf => match rest::decode_protobuf_request(&mut client, &info.api_group, &info.api_version, &info.resource, &body_bytes).await {
+                            Ok(Some(value)) => Ok(value),
+                            Ok(None) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                            Err(error) => Err(error.to_string()),
+                        },
                     };
                     match decoded {
                         Ok(value) => (Some(value), None),
