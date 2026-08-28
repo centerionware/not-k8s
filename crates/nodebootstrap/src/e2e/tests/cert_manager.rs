@@ -76,6 +76,25 @@ fn run_kubectl(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn run_kubectl_output(args: &[&str]) -> Result<String> {
+    let cache_dir = std::env::temp_dir().join(format!(
+        "nodebootstrap-e2e-kubectl-cache-{}",
+        std::process::id()
+    ));
+    let output = Command::new("kubectl")
+        .arg(format!("--cache-dir={}", cache_dir.display()))
+        .args(args)
+        .output()
+        .with_context(|| format!("running kubectl {}", args.join(" ")))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "kubectl {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).context("kubectl returned non-UTF-8 output")
+}
+
 fn cert_manager_manifest_url() -> String {
     let version = std::env::var("TEST_CERT_MANAGER_VERSION")
         .unwrap_or_else(|_| CERT_MANAGER_VERSION.to_string());
@@ -161,6 +180,29 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
     let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
 
     let result = async {
+        let core_discovery: Value =
+            serde_json::from_str(&run_kubectl_output(["get", "--raw=/api/v1"].as_slice())?)
+                .context("decoding core API discovery")?;
+        anyhow::ensure!(
+            core_discovery["resources"]
+                .as_array()
+                .is_some_and(|resources| resources.iter().any(|resource| {
+                    resource["name"] == "namespaces" && resource["kind"] == "Namespace"
+                })),
+            "core API discovery did not advertise Namespace: {core_discovery}"
+        );
+        let apps_discovery: Value =
+            serde_json::from_str(&run_kubectl_output(["get", "--raw=/apis/apps/v1"].as_slice())?)
+                .context("decoding apps API discovery")?;
+        anyhow::ensure!(
+            apps_discovery["resources"]
+                .as_array()
+                .is_some_and(|resources| resources.iter().any(|resource| {
+                    resource["name"] == "deployments" && resource["kind"] == "Deployment"
+                })),
+            "apps API discovery did not advertise Deployment: {apps_discovery}"
+        );
+
         run_kubectl(["apply", "-f", manifest_url.as_str()].as_slice())
             .context("installing cert-manager and its CRDs")?;
 
