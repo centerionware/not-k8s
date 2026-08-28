@@ -97,8 +97,7 @@
 //! deliberately left unchecked rather than guessed at; see that
 //! function's own doc comment for how to extend it one verified entry at
 //! a time. `update` runs the exact same two checks. Named honestly, not
-//! overclaimed: no `generateName` (a request with no `metadata.name` is
-//! rejected, not given a generated one), no dry-run, no field-manager/
+//! overclaimed: dry-run, field-manager/
 //! Server-Side Apply bookkeeping, no admission plugins at all (Group J
 //! doesn't exist yet — a real cluster's `ServiceAccount`/
 //! `NamespaceLifecycle`/`ResourceQuota`/... plugins would each get a say
@@ -693,9 +692,8 @@ pub enum CreateOutcome {
     /// `creationTimestamp`/`uid`/`resourceVersion` set for real).
     Created(Value),
     UnknownResource,
-    /// No `metadata.name` in the submitted body — this build doesn't
-    /// support `generateName`, named honestly rather than silently
-    /// treating it as a name (see this module's own doc comment).
+    /// Neither `metadata.name` nor a usable `metadata.generateName` was
+    /// present in the submitted body.
     MissingName,
     /// `metadata.namespace` in the body disagreed with the URL's own
     /// namespace — real upstream rejects this rather than silently
@@ -720,10 +718,16 @@ pub async fn create(storage: &mut StorageClient, group: &str, version: &str, res
     };
     let kind = resolved.kind.as_str();
 
-    let Some(name) = body.pointer("/metadata/name").and_then(Value::as_str).filter(|n| !n.is_empty()) else {
+    let explicit_name = body.pointer("/metadata/name").and_then(Value::as_str).filter(|n| !n.is_empty());
+    let generated_prefix = body.pointer("/metadata/generateName").and_then(Value::as_str).filter(|prefix| !prefix.is_empty());
+    let Some(name) = explicit_name.map(str::to_string).or_else(|| generated_prefix.map(generate_name)) else {
         return Ok(CreateOutcome::MissingName);
     };
-    let name = name.to_string();
+    let mut submitted_body = body.clone();
+    if explicit_name.is_none() {
+        set_metadata_field(&mut submitted_body, "name", Value::String(name.clone()));
+    }
+    let body = &submitted_body;
 
     if let (Some(ns), Some(body_ns)) = (namespace, body.pointer("/metadata/namespace").and_then(Value::as_str)) {
         if !body_ns.is_empty() && body_ns != ns {
@@ -1804,6 +1808,12 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
     metadata[field] = value;
 }
 
+/// Allocates the short suffix used by the API server for generateName.
+fn generate_name(prefix: &str) -> String {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("{prefix}{}", &suffix[..5])
+}
+
 fn set_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
     let Some(map) = object.as_object_mut() else { return };
     map.insert("kind".to_string(), Value::String(kind.to_string()));
@@ -2099,5 +2109,14 @@ mod tests {
         set_metadata_field(&mut obj, "uid", Value::String("abc".to_string()));
         assert_eq!(obj["metadata"]["name"], "web-1");
         assert_eq!(obj["metadata"]["uid"], "abc");
+    }
+
+    #[test]
+    fn generated_name_appends_a_unique_five_character_suffix() {
+        let first = generate_name("job-");
+        let second = generate_name("job-");
+        assert!(first.starts_with("job-"));
+        assert_eq!(first.len(), "job-".len() + 5);
+        assert_ne!(first, second);
     }
 }

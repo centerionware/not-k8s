@@ -2888,7 +2888,7 @@ async fn handle(
                     }
                     Ok(rest::CreateOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                     Ok(rest::CreateOutcome::MissingName) => {
-                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.name is required (generateName is not supported)")));
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.name or metadata.generateName is required")));
                     }
                     Ok(rest::CreateOutcome::NamespaceMismatch) => {
                         return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.namespace does not match the request URL")));
