@@ -9,11 +9,12 @@ use k8s_openapi::api::authentication::v1::{
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
-use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::Error as KubeError;
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
 use secrecy::SecretString;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -515,6 +516,70 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
         let request = Request::builder().method(method).uri(uri).body(Vec::new())?;
         let _ = context.client.request::<serde_json::Value>(request).await;
     }
+pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "resourceVersion snapshot checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-rv-{}", std::process::id());
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let mut initial_data = BTreeMap::new();
+    initial_data.insert("value".to_string(), "before".to_string());
+    let created = configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                data: Some(initial_data),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the resourceVersion snapshot fixture")?;
+    let resource_version = created
+        .metadata
+        .resource_version
+        .context("resourceVersion snapshot fixture had no resourceVersion")?;
+
+    let mut patch_data = BTreeMap::new();
+    patch_data.insert("value".to_string(), "after".to_string());
+    configmaps
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"data": patch_data})),
+        )
+        .await
+        .context("updating the resourceVersion snapshot fixture")?;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/namespaces/{}/configmaps/{}?resourceVersion={resource_version}",
+            context.namespace, name
+        ))
+        .body(Vec::new())?;
+    let snapshot: ConfigMap = context
+        .client
+        .request(request)
+        .await
+        .context("reading the resourceVersion snapshot")?;
+    anyhow::ensure!(
+        snapshot.data.as_ref().and_then(|data| data.get("value")) == Some(&"before".to_string()),
+        "resourceVersion-pinned GET returned the current object instead of the requested snapshot"
+    );
+    configmaps
+        .delete(&name, &DeleteParams::default())
+        .await
+        .context("cleaning up the resourceVersion snapshot fixture")?;
     Ok(())
 }
 
