@@ -29,12 +29,17 @@
 //! `service_account` — ES256 ServiceAccount JWT issuance and validation. The
 //! nodebootstrap target supplies the cluster signing key; `TokenRequest`
 //! mints stateless bound/unbound tokens and `TokenReview` validates them for
-//! nodelet's bearer-token webhook path. OIDC, bootstrap tokens, and the
-//! remaining upstream authentication mechanisms are still not started.
+//! nodelet's bearer-token webhook path.
 //!
-//! Status: in progress (see docs/APISERVER.md). Everything else named
-//! above (OIDC, bootstrap tokens, anonymous) is not started.
+//! `oidc` — optional discovery-backed OIDC bearer-token authentication. The
+//! listener fetches the issuer metadata and JWKS at startup, verifies signed
+//! tokens locally, and refreshes keys once when a rotated key is encountered.
+//! Bootstrap tokens and the remaining anonymous-authentication configuration
+//! are not started.
+//!
+//! Status: in progress (see docs/APISERVER.md).
 
 pub mod self_review;
 pub mod service_account;
+pub mod oidc;
 pub mod x509;
