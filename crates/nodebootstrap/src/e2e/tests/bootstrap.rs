@@ -1197,6 +1197,7 @@ pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E
             list.items.len()
         ),
     }
+    Ok(())
 }
 
 pub(super) async fn nodeapiserver_serves_generic_status_subresource(context: &E2eContext) -> Result<()> {
