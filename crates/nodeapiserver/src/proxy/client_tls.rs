@@ -24,10 +24,8 @@
 //! # Client certificate
 //!
 //! Optional — `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE`
-//! (`config::Config`), raw DER (not PEM), matching
-//! `crates/nodelet/src/server/tls.rs`'s own persisted-as-DER convention
-//! exactly (avoids pulling in a PEM-parsing dependency this workspace
-//! doesn't otherwise need). When set, nodelet's own
+//! (`config::Config`), accepting either PEM (the format emitted by
+//! `nodebootstrap`) or raw DER (the format nodelet itself persists). When set, nodelet's own
 //! `NODELET_CLIENT_CA_FILE` x509-authenticates this connection directly
 //! — no `TokenReview` round trip (see `crates/nodelet/src/server/
 //! routes.rs`'s own doc comment on that path). When unset, nodelet
@@ -92,14 +90,16 @@ pub enum Error {
     NoCryptoProvider,
     #[error("reading client cert/key material at {path}: {source}")]
     ReadMaterial { path: std::path::PathBuf, source: std::io::Error },
+    #[error("parsing PEM client cert/key material at {path}")]
+    InvalidPem { path: std::path::PathBuf },
     #[error("building the TLS client config: {0}")]
     Tls(#[from] rustls::Error),
 }
 
 /// Builds the `rustls::ClientConfig` [`crate::proxy::http_client`] dials
-/// nodelet with. `client_cert_key` is `Some((cert_der_path,
-/// key_der_path))` when both `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/
-/// `_KEY_FILE` are configured — `None` connects with no client identity
+/// nodelet with. `client_cert_key` is `Some((cert_path, key_path))` when
+/// both `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE` are configured
+/// (each may be PEM or raw DER) — `None` connects with no client identity
 /// at all (nodelet then falls back to its own bearer-token path, which
 /// this build can't satisfy yet, so such a request will get a real
 /// `401` from nodelet itself, not a silent failure here).
@@ -109,8 +109,8 @@ pub fn build_client_config(client_cert_key: Option<(&std::path::Path, &std::path
 
     let config = match client_cert_key {
         Some((cert_path, key_path)) => {
-            let cert_der = std::fs::read(cert_path).map_err(|source| Error::ReadMaterial { path: cert_path.to_path_buf(), source })?;
-            let key_der = std::fs::read(key_path).map_err(|source| Error::ReadMaterial { path: key_path.to_path_buf(), source })?;
+            let cert_der = read_pem_or_der(cert_path)?;
+            let key_der = read_pem_or_der(key_path)?;
             let cert_chain = vec![CertificateDer::from(cert_der)];
             let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
             builder.with_client_auth_cert(cert_chain, key)?
@@ -118,6 +118,24 @@ pub fn build_client_config(client_cert_key: Option<(&std::path::Path, &std::path
         None => builder.with_no_client_auth(),
     };
     Ok(config)
+}
+
+fn read_pem_or_der(path: &std::path::Path) -> Result<Vec<u8>, Error> {
+    let bytes = std::fs::read(path).map_err(|source| Error::ReadMaterial {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !bytes.starts_with(b"-----BEGIN") {
+        return Ok(bytes);
+    }
+    x509_parser::pem::Pem::iter_from_buffer(&bytes)
+        .next()
+        .and_then(Result::ok)
+        .map(|pem| pem.contents)
+        .filter(|contents| !contents.is_empty())
+        .ok_or_else(|| Error::InvalidPem {
+            path: path.to_path_buf(),
+        })
 }
 
 #[cfg(test)]
@@ -132,6 +150,19 @@ mod tests {
     fn builds_a_client_config_with_no_client_cert() {
         ensure_provider();
         assert!(build_client_config(None).is_ok());
+    }
+
+    #[test]
+    fn accepts_pem_client_material_from_nodebootstrap() {
+        ensure_provider();
+        let dir = tempfile::tempdir().unwrap();
+        let generated = rcgen::generate_simple_self_signed(vec!["nodelet".to_string()]).unwrap();
+        let cert = dir.path().join("client.crt");
+        let key = dir.path().join("client.key");
+        std::fs::write(&cert, generated.cert.pem()).unwrap();
+        std::fs::write(&key, generated.key_pair.serialize_pem()).unwrap();
+
+        assert!(build_client_config(Some((&cert, &key))).is_ok());
     }
 
     #[test]

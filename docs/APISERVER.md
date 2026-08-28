@@ -963,9 +963,13 @@ authorization to enforce against, stale since Group I landed).
 branch, purely reflecting whatever identity `x509` (or the anonymous
 fallback) already produced into the real `UserInfo` shape, no new
 authentication logic, never persisted (same virtual-resource posture
-`authz::sar`'s review kinds established). Everything else named above
-(ServiceAccount JWT, OIDC, TokenReview, bootstrap tokens, anonymous) is
-not started.
+`authz::sar`'s review kinds established). `authn::service_account` is now
+wired for the nodeapiserver bootstrap target: it signs ES256
+projected/bound tokens from the cluster `sa.key`, serves the core
+`serviceaccounts/token` TokenRequest subresource, validates
+issuer/audience/lifetime, and answers authentication.k8s.io `TokenReview`
+for nodelet's bearer-token webhook path. OIDC, bootstrap tokens, and the
+remaining anonymous-authentication configuration are not started.
 
 **I. Authorization** — **started**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own
@@ -2234,8 +2238,8 @@ log` wiring doesn't need for a plain GET) and node/service proxy
 subresources remain entirely unstarted, though they'd reuse the same
 `client_tls`/`http_client` primitives.
 
-**O. Cluster bootstrap — the k3s replacement half** — **not started, and
-deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is
+**O. Cluster bootstrap — the k3s replacement half** — **owned by
+`nodebootstrap`, deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is
 **superseded by `docs/NODEBOOTSTRAP_PLAN.md` (2026-08-22)** — read that
 first. Summary of what changed: the crate is `nodebootstrap`, not
 `clusterbootstrap`; its scope grew to also absorb the shell bootstrap
@@ -2244,10 +2248,11 @@ tooling (toolchain/containerd/CNI/build-or-fetch/layout, replacing
 unblocks this group without waiting on `nodeapiserver` — it drops k3s
 entirely and is tested against **real upstream `kube-apiserver`/
 `kube-controller-manager`/`kube-scheduler`** instead, merging to `main` on
-its own gates now. `nodeapiserver` becomes a second `nodebootstrap` target
-(`targets/nodeapiserver.rs`) added on this branch once the binary exists,
-and only becomes the default once this component's own acceptance criteria
-below are met. Original 2026-08-21 rationale, still true of the pieces it
+its own gates now. `nodeapiserver` is now wired as a second `nodebootstrap`
+target (`targets/nodeapiserver.rs`) on this integration branch. It is selected
+with `--apiserver=nodeapiserver` while the upstream target remains the default;
+the default changes only after this component's own acceptance criteria below
+are met. Original 2026-08-21 rationale, still true of the pieces it
 named (decided before any of it was written): cluster PKI generation (CA,
 serving cert, SA signing keypair, per-component client certs, kubeconfig
 emission), the ~90 `system:` ClusterRoles/Bindings from upstream's
