@@ -215,27 +215,26 @@ mod tests {
 /// Refresh the endpoint object after CNI has assigned a reachable bridge
 /// address; `service_reconciler` owns the object contents for this target.
 pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
+    let needs_cni_seed = cfg.advertise_address.is_none();
+    if needs_cni_seed {
+        // A replacement apiserver does not have upstream's bootstrap Pod to
+        // cause the first CNI network namespace to be created. Reuse the
+        // shared seed path so the bridge exists before publishing the
+        // in-cluster endpoint.
+        super::upstream::ensure_cni_seed_pod(cfg)?;
+    }
     let address = cfg
         .advertise_address
         .clone()
-        .or_else(detect_cni_address)
-        .context("nodeapiserver needs --advertise-address or a CNI bridge address to publish default/kubernetes")?;
-    crate::service_reconciler::reconcile_nodeapiserver_endpoint(cfg, &address)
-}
-
-fn detect_cni_address() -> Option<String> {
-    std::process::Command::new("ip")
-        .args(["-4", "-o", "addr", "show", "cni0"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .split_whitespace()
-                .nth(3)
-                .and_then(|cidr| cidr.split('/').next())
-                .map(str::to_owned)
-        })
+        .map(Ok)
+        .unwrap_or_else(super::upstream::wait_for_cni_address);
+    let result = address.and_then(|address| {
+        crate::service_reconciler::reconcile_nodeapiserver_endpoint(cfg, &address)
+    });
+    if needs_cni_seed {
+        super::upstream::remove_cni_seed_pod(cfg);
+    }
+    result
 }
 
 fn wait_for_readyz(cfg: &Config) -> Result<()> {
