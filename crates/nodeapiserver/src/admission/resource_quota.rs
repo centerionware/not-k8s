@@ -114,7 +114,7 @@
 
 use crate::admission::limit_ranger::{pod_limits, pod_requests};
 use crate::scheme::quantity::Quantity;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 pub fn applies_to(operation: crate::admission::attributes::Operation, group: &str, resource: &str, subresource: &str) -> bool {

@@ -1391,7 +1391,6 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
 #[derive(Debug)]
 pub struct ApplyContext {
     schema: Option<&'static str>,
-    open_api_schema: Option<Value>,
     kind: String,
     key: String,
     /// `Some((existing_kv, live))` for an update-on-apply (persisted via
@@ -1488,7 +1487,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             (None, None) => object,
         };
 
-        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, open_api_schema, kind: resolved.kind, key, existing: None }));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
     };
 
     let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
@@ -1540,7 +1539,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         (None, None) => object,
     };
 
-    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, open_api_schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
 }
 
 /// The "persist" half of [`server_side_apply`]: writes `object` (the
