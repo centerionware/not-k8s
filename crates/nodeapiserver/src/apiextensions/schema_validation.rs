@@ -170,7 +170,7 @@ fn walk_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<Str
     match value {
         Value::Object(object) => {
             let properties = schema.get("properties").and_then(Value::as_object);
-            let additional = schema.get("additionalProperties").and_then(Value::as_object);
+            let additional = schema.get("additionalProperties");
             for (field, child) in object {
                 let child_schema = properties
                     .and_then(|fields| fields.get(field))
@@ -191,10 +191,10 @@ fn walk_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<Str
 }
 
 fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
-    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
-        && !allowed.iter().any(|candidate| candidate == value)
-    {
-        add_violation(path, "must be one of the values declared by the schema", out);
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
+        if !allowed.iter().any(|candidate| candidate == value) {
+            add_violation(path, "must be one of the values declared by the schema", out);
+        }
     }
 
     if let Some(number) = value.as_f64() {
@@ -210,21 +210,20 @@ fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mu
                 add_violation(path, &format!("must be {} {maximum}", if exclusive { "less than" } else { "at most" }), out);
             }
         }
-        if let Some(exclusive_minimum) = schema.get("exclusiveMinimum").and_then(Value::as_f64)
-            && number <= exclusive_minimum
-        {
-            add_violation(path, &format!("must be greater than {exclusive_minimum}"), out);
+        if let Some(exclusive_minimum) = schema.get("exclusiveMinimum").and_then(Value::as_f64) {
+            if number <= exclusive_minimum {
+                add_violation(path, &format!("must be greater than {exclusive_minimum}"), out);
+            }
         }
-        if let Some(exclusive_maximum) = schema.get("exclusiveMaximum").and_then(Value::as_f64)
-            && number >= exclusive_maximum
-        {
-            add_violation(path, &format!("must be less than {exclusive_maximum}"), out);
+        if let Some(exclusive_maximum) = schema.get("exclusiveMaximum").and_then(Value::as_f64) {
+            if number >= exclusive_maximum {
+                add_violation(path, &format!("must be less than {exclusive_maximum}"), out);
+            }
         }
-        if let Some(multiple_of) = schema.get("multipleOf").and_then(Value::as_f64)
-            && multiple_of > 0.0
-            && (number / multiple_of - (number / multiple_of).round()).abs() > 1e-9
-        {
-            add_violation(path, &format!("must be a multiple of {multiple_of}"), out);
+        if let Some(multiple_of) = schema.get("multipleOf").and_then(Value::as_f64) {
+            if multiple_of > 0.0 && (number / multiple_of - (number / multiple_of).round()).abs() > 1e-9 {
+                add_violation(path, &format!("must be a multiple of {multiple_of}"), out);
+            }
         }
     }
 
@@ -239,10 +238,10 @@ fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mu
                 Ok(_) => {}
             }
         }
-        if let Some(format) = schema.get("format").and_then(Value::as_str)
-            && !valid_format(format, string)
-        {
-            add_violation(path, &format!("must conform to format {format}"), out);
+        if let Some(format) = schema.get("format").and_then(Value::as_str) {
+            if !valid_format(format, string) {
+                add_violation(path, &format!("must conform to format {format}"), out);
+            }
         }
     }
 
