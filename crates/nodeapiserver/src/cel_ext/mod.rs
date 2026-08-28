@@ -150,7 +150,7 @@ pub enum Error {
     #[error("the CEL expression evaluated to {0:?}, not a string -- messageExpression must be a string")]
     NotString(CelValue),
     #[error("the CEL expression result could not be converted to JSON: {0}")]
-    Serialize(#[from] serde_json::Error),
+    Serialize(String),
     /// [`eval_bool_with_deadline`]'s own real cost-budget enforcement —
     /// see that function's own doc comment for exactly what this does
     /// and doesn't guarantee.
@@ -322,7 +322,10 @@ pub fn eval_json_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Resul
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
-    Ok(serde_json::to_value(program.execute(&ctx)?)?)
+    program
+        .execute(&ctx)?
+        .json()
+        .map_err(|error| Error::Serialize(error.to_string()))
 }
 
 /// Evaluate [`eval_json_with_vars`] under the same wall-clock deadline used
