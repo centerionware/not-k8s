@@ -300,7 +300,10 @@ mod tests {
         assert!(document["paths"].as_object().is_some_and(|paths| paths.contains_key("/apis/apps/v1/")));
         assert!(document["definitions"].as_object().is_some_and(|definitions| definitions.contains_key("io.k8s.api.core.v1.Pod")));
         let pod = &document["definitions"]["io.k8s.api.core.v1.Pod"];
-        assert_eq!(pod["properties"]["metadata"]["$ref"], "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta");
+        assert_eq!(
+            pod["properties"]["metadata"]["allOf"][0]["$ref"],
+            "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+        );
     }
 
     #[test]
