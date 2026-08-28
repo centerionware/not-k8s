@@ -1361,15 +1361,6 @@ pub enum ApplyOutcome {
     /// current object, matching real upstream's own behavior.
     NoOp(Value),
     UnknownResource,
-    /// `crate::patch::updater`'s real primitives key off Group A's
-    /// compiled `FIELD_META` table, not a runtime-parsed CRD schema — a
-    /// CRD-defined resource has no `schema` to drive them, so Apply
-    /// isn't supported against one yet (same real gap `server_side_apply`'s
-    /// own `patch::strategic_merge` sibling doesn't have, since that one
-    /// has a runtime-schema fallback — `apiextensions::
-    /// schema_strategic_merge` — that Server-Side Apply's own primitives
-    /// have no equivalent of yet).
-    UnsupportedForCrd,
     /// Another manager owns a field this apply is changing — real
     /// upstream's own `409 Conflict`, not raised unless `force` is
     /// false.
@@ -1408,14 +1399,10 @@ pub enum ApplyOutcome {
 /// instead, so it can run Group J's `LimitRanger` PVC check against the
 /// real candidate object in between, the same way it already does for
 /// the three-patch-kind `PATCH` path.
-///
-/// See [`ApplyOutcome::UnsupportedForCrd`] for the one real, named gap
-/// this doesn't close.
 pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
     match apply_prepare(storage, group, version, resource, namespace, name, manager, force, config).await? {
         ApplyPrepareOutcome::Ready(candidate, context) => apply_persist(storage, group, version, resource, namespace, context, candidate).await,
         ApplyPrepareOutcome::UnknownResource => Ok(ApplyOutcome::UnknownResource),
-        ApplyPrepareOutcome::UnsupportedForCrd => Ok(ApplyOutcome::UnsupportedForCrd),
         ApplyPrepareOutcome::Conflict(c) => Ok(ApplyOutcome::Conflict(c)),
         ApplyPrepareOutcome::Invalid(v) => Ok(ApplyOutcome::Invalid(v)),
         ApplyPrepareOutcome::NoOp(v) => Ok(ApplyOutcome::NoOp(v)),
@@ -1429,7 +1416,9 @@ pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version
 /// in between, the same split [`PatchContext`] already exists for.
 #[derive(Debug)]
 pub struct ApplyContext {
-    schema: &'static str,
+    /// `Some` for a built-in compiled schema and `None` for a CRD whose
+    /// runtime schema has already been consumed during preparation.
+    schema: Option<&'static str>,
     kind: String,
     key: String,
     /// `Some((existing_kv, live))` for an update-on-apply (persisted via
@@ -1443,7 +1432,6 @@ pub struct ApplyContext {
 pub enum ApplyPrepareOutcome {
     Ready(Value, ApplyContext),
     UnknownResource,
-    UnsupportedForCrd,
     Conflict(Vec<crate::patch::updater::Conflict>),
     Invalid(Vec<String>),
     /// The merged-and-pruned result was identical to what's already
@@ -1465,7 +1453,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyPrepareOutcome::UnknownResource);
     };
     let Some(schema) = resolved.schema else {
-        return Ok(ApplyPrepareOutcome::UnsupportedForCrd);
+        return apply_prepare_crd(storage, group, version, resource, namespace, name, manager, force, config, resolved.kind, resolved.open_api_schema.unwrap_or(Value::Null)).await;
     };
 
     let key = keys::object_key(group, resource, namespace, name);
@@ -1512,7 +1500,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         }
         let object = defaulting::apply_defaults(schema, &object);
 
-        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema: Some(schema), kind: resolved.kind, key, existing: None }));
     };
 
     let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
@@ -1547,7 +1535,97 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     }
     let object = defaulting::apply_defaults(schema, &object);
 
-    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema: Some(schema), kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+}
+
+/// The runtime-schema sibling of [`apply_prepare`] for a CRD-defined
+/// resource. Its storage envelope is JSON rather than protobuf, but the
+/// optimistic-concurrency and managed-fields protocol is identical to the
+/// built-in path above.
+async fn apply_prepare_crd(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    manager: &str,
+    force: bool,
+    config: &Value,
+    kind: String,
+    schema: Value,
+) -> Result<ApplyPrepareOutcome, Error> {
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let (live, existing_kv) = match existing_resp.kvs.into_iter().next() {
+        Some(existing_kv) => (decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?, Some(existing_kv)),
+        None => (json!({}), None),
+    };
+    let stored = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let entries = crate::patch::managed_fields::parse_managed_fields(&stored).unwrap_or_default();
+    let managers = crate::patch::managed_fields::to_managers_map(&entries);
+    let applied = match apiextensions::schema_apply::apply(&schema, &live, config, &managers, manager, force) {
+        Ok(applied) => applied,
+        Err(conflicts) => {
+            return Ok(ApplyPrepareOutcome::Conflict(
+                conflicts
+                    .into_iter()
+                    .map(|conflict| crate::patch::updater::Conflict { manager: conflict.manager, fields: conflict.fields })
+                    .collect(),
+            ));
+        }
+    };
+    let Some(mut object) = applied.object else {
+        return Ok(ApplyPrepareOutcome::NoOp(live));
+    };
+
+    if existing_kv.is_none() {
+        set_metadata_field(&mut object, "creationTimestamp", Value::String(now_rfc3339()));
+        set_metadata_field(&mut object, "uid", Value::String(uuid::Uuid::new_v4().to_string()));
+    }
+    set_metadata_field(&mut object, "name", Value::String(name.to_string()));
+    if let Some(namespace) = namespace {
+        set_metadata_field(&mut object, "namespace", Value::String(namespace.to_string()));
+    }
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
+    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+
+    let has_schema = !schema.is_null();
+    let object = if has_schema { apiextensions::schema_pruning::prune(&schema, &object) } else { object };
+    let mut violations: Vec<String> = if has_schema {
+        apiextensions::schema_validation::validate_required(&schema, &object)
+            .into_iter()
+            .map(|violation| format!("{}: Required value", violation.path))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if has_schema {
+        violations.extend(
+            apiextensions::schema_validation::validate_types(&schema, &object)
+                .into_iter()
+                .map(|violation| format!("{}: expected type {}, got {}", violation.path, violation.expected, violation.actual_kind)),
+        );
+    }
+    violations.extend(name_format_violations(group, resource, name).into_iter().map(|error| format!("metadata.name: {error}")));
+    if !violations.is_empty() {
+        return Ok(ApplyPrepareOutcome::Invalid(violations));
+    }
+    let object = if has_schema { apiextensions::schema_defaults::apply_defaults(&schema, &object) } else { object };
+    if has_schema && existing_kv.is_none() {
+        let rule_violations = apiextensions::cel_evaluate::validate_object(&schema, &object, None);
+        if !rule_violations.is_empty() {
+            return Ok(ApplyPrepareOutcome::Invalid(rule_violations.into_iter().map(|violation| violation.to_string()).collect()));
+        }
+    } else if has_schema {
+        let rule_violations = apiextensions::cel_evaluate::validate_object(&schema, &object, Some(&live));
+        if !rule_violations.is_empty() {
+            return Ok(ApplyPrepareOutcome::Invalid(rule_violations.into_iter().map(|violation| violation.to_string()).collect()));
+        }
+    }
+
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema: None, kind, key, existing: existing_kv.map(|existing_kv| (existing_kv, live)) }))
 }
 
 /// The "persist" half of [`server_side_apply`]: writes `object` (the
@@ -1557,7 +1635,10 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
 pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value) -> Result<ApplyOutcome, Error> {
     let Some((existing_kv, live)) = context.existing else {
         let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
-        let object_bytes = protobuf::encode_message(context.schema, &object)?;
+        let object_bytes = match context.schema {
+            Some(schema) => protobuf::encode_message(schema, &object)?,
+            None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
+        };
         let envelope = protobuf::wrap_unknown(&api_version, &context.kind, &object_bytes);
         let compare = pb::Compare {
             key: context.key.clone().into_bytes(),
@@ -1584,7 +1665,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, Some(context.schema), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object).await? {
+    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
