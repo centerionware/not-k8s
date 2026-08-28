@@ -1810,7 +1810,6 @@ pub struct ApplyContext {
     /// `Some` for a built-in compiled schema and `None` for a CRD whose
     /// runtime schema has already been consumed during preparation.
     schema: Option<&'static str>,
-    open_api_schema: Option<Value>,
     kind: String,
     key: String,
     /// `Some((existing_kv, live))` for an update-on-apply (persisted via
@@ -1906,7 +1905,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             (None, None) => object,
         };
 
-        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, open_api_schema, kind: resolved.kind, key, existing: None }));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
     };
 
     let live = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
@@ -1958,7 +1957,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         (None, None) => object,
     };
 
-    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, open_api_schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
 }
 
 /// The "persist" half of [`server_side_apply`]: writes `object` (the
