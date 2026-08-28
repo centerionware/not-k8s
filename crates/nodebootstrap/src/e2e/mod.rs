@@ -243,6 +243,14 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_service_proxy_reaches_clusterip",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_node_proxy_reaches_nodelet",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_graceful_node_shutdown_manual_note",
         group: TestGroup::General,
     },
@@ -1590,6 +1598,12 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_honors_dry_run_and_delete_preconditions" => {
             bootstrap::nodeapiserver_honors_dry_run_and_delete_preconditions(context).await
         },
+        "test_nodeapiserver_service_proxy_reaches_clusterip" => {
+            service_proxy::nodeapiserver_service_proxy_reaches_clusterip(context).await
+        }
+        "test_nodeapiserver_node_proxy_reaches_nodelet" => {
+            service_proxy::nodeapiserver_node_proxy_reaches_nodelet(context).await
+        }
         "test_graceful_node_shutdown_manual_note" => {
             bootstrap::graceful_node_shutdown_manual_note(context).await
         }

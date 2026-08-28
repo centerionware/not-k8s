@@ -1,16 +1,14 @@
 //! The actual live proxy dial: given a [`crate::proxy::pod_log::Target`]
 //! and a [`rustls::ClientConfig`] (`client_tls::build_client_config`),
-//! opens a real TLS connection to nodelet's kubelet-style server and
-//! relays the response back unmodified.
+//! opens a connection to nodelet's kubelet-style server or a plaintext
+//! Service ClusterIP and relays the response back unmodified.
 //!
 //! Reuses `crates/nodelet/src/server/exec.rs`'s own proven low-level
 //! pattern — a raw TCP dial + `hyper::client::conn::http1::handshake`
 //! over the connection's IO, rather than `hyper-util`'s higher-level
-//! pooled client — just with a TLS layer wrapped around the TCP stream
-//! first, since nodelet's own server here is a remote host over mTLS,
-//! not a local plaintext socket the way that module's own upstream-CRI
-//! proxy target is. No connection reuse/pooling: `pods/log` is a
-//! one-shot GET (or a long-lived streamed response for `follow=true`,
+//! pooled client — wrapping the TCP stream in TLS for nodelet targets and
+//! using it directly for Service targets. No connection reuse/pooling: this is a
+//! one-shot request (or a long-lived streamed response for `follow=true`,
 //! but still exactly one request on the connection either way), so
 //! pooling would add real complexity for no real benefit here.
 
@@ -25,6 +23,7 @@ use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -42,6 +41,8 @@ pub enum Error {
     BuildRequest(#[from] http::Error),
     #[error("nodelet request failed: {0}")]
     Request(#[source] hyper::Error),
+    #[error("unsupported proxy target scheme {0:?}")]
+    InvalidScheme(String),
 }
 
 /// Dials `target` over a real TLS connection (`client_config` decides
@@ -136,12 +137,17 @@ fn build_uri(target: &Target) -> Result<Uri, Error> {
 type DialBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
 
 async fn dial(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper::client::conn::http1::SendRequest<DialBody>, Error> {
-    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
-
     let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
-    let connector = TlsConnector::from(client_config);
-    let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
-    let io = TokioIo::new(tls_stream);
+    let io: Box<dyn ProxyIo> = match target.scheme {
+        "http" => Box::new(tcp),
+        "https" => {
+            let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
+            let connector = TlsConnector::from(client_config);
+            Box::new(connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?)
+        }
+        other => return Err(Error::InvalidScheme(other.to_string())),
+    };
+    let io = TokioIo::new(io);
 
     let (sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
     tokio::spawn(async move {
@@ -176,3 +182,6 @@ async fn splice(client: Upgraded, target: Upgraded) {
         tracing::debug!(?error, "proxy: upgraded connection ended");
     }
 }
+
+trait ProxyIo: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyIo for T {}

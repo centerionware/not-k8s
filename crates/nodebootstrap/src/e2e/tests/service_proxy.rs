@@ -190,6 +190,28 @@ fn require_service_proxy() -> Result<()> {
     Ok(())
 }
 
+fn require_nodeapiserver() -> Result<()> {
+    if crate::config::Config::from_env()?.target != crate::config::Target::NodeApiserver {
+        return Err(skip_test(
+            "nodeapiserver proxy checks require --apiserver=nodeapiserver",
+        ));
+    }
+    Ok(())
+}
+
+fn kubectl_raw(path: &str) -> Result<String> {
+    let output = Command::new("kubectl")
+        .args(["get", "--raw", path])
+        .output()
+        .with_context(|| format!("running kubectl get --raw {path}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "kubectl get --raw {path} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn nft_table() -> Result<String> {
     let direct = Command::new("nft")
         .args(["list", "table", "inet", "not_k8s_svc"])
@@ -279,6 +301,61 @@ pub(super) async fn clusterip_service_routes_to_its_backend_pod(
                 receives_marker(&format!("{cluster_ip}:18090"), "service-proxy-marker").await
             }
         })
+        .await
+}
+
+pub(super) async fn nodeapiserver_service_proxy_reaches_clusterip(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodeapiserver()?;
+    let name = "nodeapiserver-service-proxy";
+    let marker = "nodeapiserver-service-proxy-marker";
+    create_backend_with_marker(context, name, name, marker).await?;
+    create_service(context, name, "ClusterIP", 18096, None).await?;
+    let path = format!(
+        "/api/v1/namespaces/{}/services/{name}:http/proxy/",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "nodeapiserver Service proxy to reach the ClusterIP backend",
+            Duration::from_secs(90),
+            || {
+                let path = path.clone();
+                async move { Ok(kubectl_raw(&path).is_ok_and(|body| body.contains(marker))) }
+            },
+        )
+        .await
+}
+
+pub(super) async fn nodeapiserver_node_proxy_reaches_nodelet(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodeapiserver()?;
+    let node = Api::<Node>::all(context.client.clone())
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .context("the cluster has no Node object")?;
+    let name = node
+        .metadata
+        .name
+        .context("the Node object has no name")?;
+    let path = format!("/api/v1/nodes/{name}/proxy/metrics/resource");
+    context
+        .wait_until(
+            "nodeapiserver Node proxy to reach nodelet",
+            Duration::from_secs(60),
+            || {
+                let path = path.clone();
+                async move {
+                    Ok(kubectl_raw(&path)
+                        .is_ok_and(|body| body.contains("node_cpu_usage_seconds_total")))
+                }
+            },
+        )
         .await
 }
 

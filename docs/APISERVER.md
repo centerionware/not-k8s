@@ -2277,8 +2277,15 @@ kubelet-style routes, and `proxy::http_client::upgrade` forwards the
 upgrade headers before splicing both upgraded connections. The listener is
 served with hyper's upgrade-aware connection path. Existing streaming e2e
 cases for exec, attach, and port-forward exercise these routes against a
-real CRI runtime. Node and service proxy subresources remain entirely
-unstarted.
+real CRI runtime.
+
+Node and Service proxy subresources are now live through the same
+`client_tls`/`http_client` primitives: both canonical
+`.../{name}/proxy/{path}` and legacy `/proxy/...` URL forms resolve the
+referenced object, with Service requests sent through the ClusterIP and Node
+requests sent to the kubelet-style endpoint. exec/attach/port-forward still
+need `crates/nodelet/src/server/exec.rs`'s proven raw-upgrade-splice pattern,
+which this crate's `pods/log` wiring doesn't need for a plain GET.
 
 **O. Cluster bootstrap — the k3s replacement half** — **owned by
 `nodebootstrap`, deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is

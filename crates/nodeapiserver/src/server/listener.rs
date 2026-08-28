@@ -2346,6 +2346,106 @@ async fn handle(
         };
     }
 
+    // Group N: node and Service proxy subresources. Both the canonical
+    // `.../{name}/proxy/{path}` URL and the legacy
+    // `.../proxy/{resource}/{name}/{path}` URL parse into either a `proxy`
+    // verb or a `proxy` subresource. Resolve the backend object through
+    // the apiserver's own storage, then transparently relay the request.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && (info.verb == "proxy" || info.subresource == "proxy")
+        && matches!(info.resource.as_str(), "nodes" | "services")
+    {
+        let Some(mut client) = storage.clone() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let parts = path::split_path(&path_str);
+        let route = match proxy::node_service::route(&parts) {
+            Ok(route) => route,
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+        };
+        if route.resource != info.resource {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "proxy path resource does not match its parsed resource")));
+        }
+        let namespace = route.namespace.as_deref();
+
+        if enforce_rbac {
+            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, namespace.unwrap_or("")).await;
+            let attrs = authz::rbac::RequestAttributes {
+                is_resource_request: true,
+                verb: &info.verb,
+                api_group: &info.api_group,
+                resource: &info.resource,
+                subresource: (info.subresource == "proxy").then_some("proxy").unwrap_or(""),
+                name: &route.name,
+                path: &path_str,
+            };
+            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+            }
+        }
+
+        let target = if route.resource == "nodes" {
+            let node = match rest::get(&mut client, None, "", "v1", "nodes", None, &route.name).await {
+                Ok(rest::GetOutcome::Found(object)) => object,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "proxy: fetching the node failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            match proxy::node_service::node_target(&node, &route.path, &query) {
+                Ok(target) => target,
+                Err(error) => return Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &error.to_string()))),
+            }
+        } else {
+            let Some(namespace) = namespace else {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "Service proxy requests must be namespaced")));
+            };
+            let (service_name, service_port) = match proxy::node_service::service_name_and_port(&route.name) {
+                Ok(parts) => parts,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            };
+            let service = match rest::get(&mut client, None, "", "v1", "services", Some(namespace), service_name).await {
+                Ok(rest::GetOutcome::Found(object)) => object,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "proxy: fetching the Service failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            match proxy::node_service::service_target(&service, service_port, &route.path, &query) {
+                Ok(target) => target,
+                Err(error) => return Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &error.to_string()))),
+            }
+        };
+
+        let headers = req
+            .headers()
+            .iter()
+            .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str().to_ascii_lowercase().as_str()))
+            .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
+            .collect::<Vec<_>>();
+        let body = match read_body_bytes(req).await {
+            Ok(body) => body,
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        return match proxy::http_client::relay(&target, kubelet_tls, &method, &headers, body).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                warn!(path = %path_str, host = %target.host, error = ?error, "proxy: dialing node or Service failed");
+                Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &error.to_string())))
+            }
+        };
+    }
+
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
