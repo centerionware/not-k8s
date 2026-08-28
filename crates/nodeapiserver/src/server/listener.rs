@@ -493,6 +493,17 @@ pub async fn run(cfg: Config) {
         _ => None,
     };
 
+    let authorization_webhook = match cfg.authorization_webhook_url.clone() {
+        Some(url) => match crate::authz::webhook::WebhookAuthorizer::new(url.clone()) {
+            Ok(authorizer) => Some(Arc::new(authorizer)),
+            Err(error) => {
+                warn!(%url, error = ?error, "invalid NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
     let server_config = match cert.server_config(client_ca.as_ref()) {
         Ok(c) => c,
         Err(e) => {
@@ -647,6 +658,7 @@ pub async fn run(cfg: Config) {
         let service_account_authenticator = service_account_authenticator.clone();
         let oidc_authenticator = oidc_authenticator.clone();
         let bootstrap_token_authenticator = bootstrap_token_authenticator.clone();
+        let authorization_webhook = authorization_webhook.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -664,7 +676,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1048,6 +1060,7 @@ async fn handle_with_audit(
     bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::Authenticator>>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
+    authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
     enforce_rbac: bool,
     peer: SocketAddr,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
@@ -1061,6 +1074,29 @@ async fn handle_with_audit(
         Err(detail) => return Ok(json_response(StatusCode::UNAUTHORIZED, &unauthorized_status(&path_str, detail))),
     };
     let audit_identity = identity.clone();
+    let request_info = path::parse(&method, &path_str, &query);
+    if let Some(authorizer) = authorization_webhook {
+        match authorizer.authorize(&request_info, identity.as_ref()).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let user_name = identity
+                    .as_ref()
+                    .map(|identity| identity.name.as_str())
+                    .unwrap_or(ANONYMOUS_USERNAME);
+                return Ok(json_response(
+                    StatusCode::FORBIDDEN,
+                    &forbidden_status(&path_str, user_name),
+                ));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "authorization webhook failed");
+                return Ok(json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &service_unavailable_status(&path_str, "authorization webhook unavailable"),
+                ));
+            }
+        }
+    }
     // Group M (APF): a cheap clone (wraps a `tonic::transport::Channel`,
     // same reasoning PR #107's watch-RBAC-gating clone already
     // established) so flow-schema resolution below has its own
