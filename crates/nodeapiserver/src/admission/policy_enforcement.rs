@@ -4,9 +4,8 @@
 //! This module is the small adapter that loads policies and bindings from
 //! the same storage path as ordinary REST requests, builds the request CEL
 //! variables, and turns a bound `Deny` action into one admission message.
-//! Parameter references and warning/audit actions remain explicit follow-up
-//! work; a binding with a parameter reference is failed closed rather than
-//! evaluated with an incorrect `null` parameter.
+//! Parameter references are resolved through the ordinary REST storage path;
+//! warning/audit actions remain explicit follow-up work.
 
 use super::policy_decode::DecodedPolicy;
 use super::policy_matching::{self, RequestVariable};
@@ -32,6 +31,7 @@ pub async fn validate(
     name: &str,
     object: Option<&Value>,
     old_object: Option<&Value>,
+    dry_run: bool,
 ) -> Result<Option<String>, String> {
     let policies = list_items(storage, "validatingadmissionpolicies", None).await?;
     if policies.is_empty() {
@@ -51,7 +51,9 @@ pub async fn validate(
             Err(error) => return Err(format!("looking up namespace labels for ValidatingAdmissionPolicy: {error}")),
         }
     };
-    let object_labels = object.map(crate::cacher::selector::object_labels).unwrap_or_default();
+    // On DELETE, Kubernetes evaluates object selectors against the existing
+    // object (`oldObject`); the request object itself is intentionally null.
+    let object_labels = object.or(old_object).map(crate::cacher::selector::object_labels).unwrap_or_default();
     let request = policy_matching::build_request_object(&RequestVariable {
         uid: "",
         group,
@@ -61,9 +63,8 @@ pub async fn validate(
         namespace,
         name,
         operation,
-        dry_run: false,
+        dry_run,
     });
-    let vars = policy_matching::build_eval_vars(object, old_object, &request, None);
 
     for policy in &policies {
         let Some(policy_name) = policy.get("metadata").and_then(|m| m.get("name")).and_then(Value::as_str) else {
@@ -77,25 +78,32 @@ pub async fn validate(
             if !validating_admission_policy::validation_actions_deny(&actions) {
                 continue;
             }
-            if binding.get("spec").and_then(|s| s.get("paramRef")).is_some() {
-                return Err(format!("ValidatingAdmissionPolicyBinding for {policy_name:?} uses unsupported paramRef"));
-            }
             if !binding_matches(binding, operation, group, version, resource, subresource, &namespace_labels, &object_labels) {
                 continue;
             }
-            let definition = validating_admission_policy::PolicyDefinition {
-                resource_rules: &resource_rules,
-                exclude_resource_rules: &exclude_resource_rules,
-                namespace_selector: decoded.namespace_selector,
-                object_selector: decoded.object_selector,
-                match_conditions: &decoded.match_conditions,
-                validations: &decoded.validations,
-                failure_policy: decoded.failure_policy,
+            let parameter_values = match binding_parameters(storage, policy, binding).await? {
+                ParameterSelection::Values(values) => values,
+                ParameterSelection::Missing if matches!(decoded.failure_policy, super::match_conditions::FailurePolicy::Ignore) => continue,
+                ParameterSelection::Missing => {
+                    return Ok(Some(format!("ValidatingAdmissionPolicy {policy_name:?}: parameter was not found")));
+                }
             };
-            let outcome = validating_admission_policy::evaluate(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &vars);
-            if outcome.is_denial() {
-                let message = outcome.denial_message().unwrap_or_else(|| format!("ValidatingAdmissionPolicy {policy_name:?} denied the request"));
-                return Ok(Some(format!("ValidatingAdmissionPolicy {policy_name:?}: {message}")));
+            for params in parameter_values {
+                let vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
+                let definition = validating_admission_policy::PolicyDefinition {
+                    resource_rules: &resource_rules,
+                    exclude_resource_rules: &exclude_resource_rules,
+                    namespace_selector: decoded.namespace_selector,
+                    object_selector: decoded.object_selector,
+                    match_conditions: &decoded.match_conditions,
+                    validations: &decoded.validations,
+                    failure_policy: decoded.failure_policy,
+                };
+                let outcome = validating_admission_policy::evaluate(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &vars);
+                if outcome.is_denial() {
+                    let message = outcome.denial_message().unwrap_or_else(|| format!("ValidatingAdmissionPolicy {policy_name:?} denied the request"));
+                    return Ok(Some(format!("ValidatingAdmissionPolicy {policy_name:?}: {message}")));
+                }
             }
         }
     }
@@ -103,11 +111,72 @@ pub async fn validate(
 }
 
 async fn list_items(storage: &mut StorageClient, resource: &str, namespace: Option<&str>) -> Result<Vec<Value>, String> {
-    match rest::list(storage, None, GROUP, VERSION, resource, namespace, "", "", 0, "").await {
+    list_resource_items(storage, GROUP, VERSION, resource, namespace).await
+}
+
+async fn list_resource_items(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>) -> Result<Vec<Value>, String> {
+    match rest::list(storage, None, group, version, resource, namespace, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => Ok(list.get("items").and_then(Value::as_array).cloned().unwrap_or_default()),
         Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => Ok(Vec::new()),
-        Err(error) => Err(format!("listing {GROUP}/{VERSION}/{resource} for admission: {error}")),
+        Err(error) => Err(format!("listing {group}/{version}/{resource} for admission: {error}")),
     }
+}
+
+/// Resolve one binding's optional parameter reference. A missing parameter
+/// is an admission error by default, matching `parameterNotFoundAction:
+/// Deny`; `Allow` skips that binding. A selector may select more than one
+/// parameter object, in which case the policy must pass for every selected
+/// parameter, matching upstream's parameterized-policy semantics.
+enum ParameterSelection {
+    Values(Vec<Option<Value>>),
+    Missing,
+}
+
+async fn binding_parameters(storage: &mut StorageClient, policy: &Value, binding: &Value) -> Result<ParameterSelection, String> {
+    let Some(param_ref) = binding.get("spec").and_then(|spec| spec.get("paramRef")) else {
+        return Ok(ParameterSelection::Values(vec![None]));
+    };
+    let Some(param_kind) = policy.get("spec").and_then(|spec| spec.get("paramKind")) else {
+        return Err("ValidatingAdmissionPolicyBinding has a paramRef but its policy has no paramKind".to_string());
+    };
+    let api_group = param_kind.get("apiGroup").and_then(Value::as_str).unwrap_or("");
+    let kind = param_kind.get("kind").and_then(Value::as_str).filter(|kind| !kind.is_empty()).ok_or_else(|| "ValidatingAdmissionPolicy.paramKind.kind is missing".to_string())?;
+    let allow_missing = param_ref.get("parameterNotFoundAction").and_then(Value::as_str) == Some("Allow");
+    let Some((resolved_group, version, resource, namespaced)) = rest::resolve_resource_for_kind(storage, api_group, kind).await.map_err(|error| format!("resolving ValidatingAdmissionPolicy parameter kind {api_group}/{kind}: {error}"))? else {
+        return if allow_missing {
+            Ok(ParameterSelection::Values(Vec::new()))
+        } else {
+            Err(format!("ValidatingAdmissionPolicy parameter kind {api_group}/{kind} is not served"))
+        };
+    };
+    let requested_namespace = param_ref.get("namespace").and_then(Value::as_str).filter(|namespace| !namespace.is_empty());
+    if !namespaced && requested_namespace.is_some() {
+        return Err(format!("cluster-scoped ValidatingAdmissionPolicy parameter kind {resolved_group}/{kind} cannot use paramRef.namespace"));
+    }
+    let namespace = if namespaced { requested_namespace } else { None };
+    let selected = if let Some(name) = param_ref.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) {
+        if namespaced && namespace.is_none() {
+            list_resource_items(storage, &resolved_group, &version, &resource, None).await?.into_iter().filter(|object| object.pointer("/metadata/name").and_then(Value::as_str) == Some(name)).collect()
+        } else {
+            match rest::get(storage, None, &resolved_group, &version, &resource, namespace, name).await {
+                Ok(rest::GetOutcome::Found(object)) => vec![object],
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Vec::new(),
+                Err(error) => return Err(format!("reading ValidatingAdmissionPolicy parameter {resolved_group}/{resource}/{name}: {error}")),
+            }
+        }
+    } else if let Some(selector) = param_ref.get("selector") {
+        list_resource_items(storage, &resolved_group, &version, &resource, namespace)
+            .await?
+            .into_iter()
+            .filter(|object| policy_matching::matches_label_selector(Some(selector), &crate::cacher::selector::object_labels(object)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if selected.is_empty() && !allow_missing {
+        return Ok(ParameterSelection::Missing);
+    }
+    Ok(ParameterSelection::Values(selected.into_iter().map(Some).collect()))
 }
 
 fn binding_policy_name(binding: &Value) -> Option<&str> {

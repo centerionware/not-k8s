@@ -113,9 +113,8 @@
 //! (the real CEL-based pre-filter shared by both mutating/validating
 //! admission webhooks' own `spec.matchConditions` and
 //! `ValidatingAdmissionPolicy`'s own `spec.matchConditions`), landed as
-//! a pure, standalone primitive — see that module's own doc comment for
-//! why it's "not yet wired to anything real" (neither webhooks nor
-//! `ValidatingAdmissionPolicy` exist in this crate at all yet).
+//! a pure, standalone primitive consumed by the storage-backed policy
+//! enforcement adapter. Webhooks still do not call it.
 //!
 //! `policy_matching` — the other half of "does this policy even apply to
 //! this request": real upstream's own `resourceRules`/
@@ -128,8 +127,8 @@
 //! variable, when the caller has none. See that module's own doc comment
 //! for the named, honest gaps (`Rule.Scope` not matched, `kind`/`userInfo`
 //! not yet populated, `namespaceObject`/`variables`/`authorizer` not
-//! bound) and for why it's the same "not yet wired to anything real"
-//! standalone primitive `match_conditions` itself still is.
+//! bound). The storage-backed policy adapter consumes these pure matching
+//! and variable-building primitives for real policy requests.
 //!
 //! `policy_validations` — the actual `spec.validations[]` decision: real
 //! upstream's own `validator.Validate`, given an already-bound variable
@@ -176,9 +175,10 @@
 //!
 //! `policy_enforcement` is the storage-backed adapter for
 //! `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding`: it loads
-//! deny-capable bindings, evaluates the decoded policy against the final
-//! candidate object, and rejects the request before persistence. Parameter
-//! references and Warn/Audit reporting remain explicit gaps.
+//! deny-capable bindings, resolves named or selector-based parameter
+//! references, evaluates the decoded policy against the final candidate
+//! object, and rejects the request before persistence. Warn/Audit reporting
+//! remains an explicit gap.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
@@ -186,8 +186,7 @@
 //! registry abstraction to run more than one plugin without
 //! `server::listener` hand-calling each by name, mutating/validating
 //! admission webhooks themselves, `MutatingAdmissionPolicy` itself as
-//! actual enforcement, `ValidatingAdmissionPolicy` parameter references,
-//! and Warn/Audit reporting — every real decision primitive
+//! actual enforcement, and Warn/Audit reporting — every real decision primitive
 //! `server::listener` would need now exists
 //! standalone, `match_conditions` through `validating_admission_policy`
 //! above (`policy_matching::build_eval_vars` is the real `object`/

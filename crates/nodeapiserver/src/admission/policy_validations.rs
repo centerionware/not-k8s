@@ -36,8 +36,8 @@
 //! stays `true` so a caller can still tell the two apart, matching real
 //! upstream's own `Evaluation: EvalError` vs. `EvalDeny`/`EvalAdmit`.
 //!
-//! **Not yet wired to anything real**, same posture every other primitive
-//! in this arc still carries — see `admission`'s own module doc comment.
+//! The storage-backed policy adapter now consumes this pure decision
+//! primitive for real `ValidatingAdmissionPolicy` requests.
 
 use super::match_conditions::FailurePolicy;
 use crate::cel_ext::{eval_bool_with_vars_and_deadline, eval_string_with_vars_and_deadline};
