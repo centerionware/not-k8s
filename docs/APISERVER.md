@@ -707,6 +707,11 @@ document derived from the same vendored resource schemas and paths as
 The throwaway e2e rig described above should land as part of this group,
 not after it.
 
+`GET` and `LIST` also honor a positive `resourceVersion` by reading a
+consistent nodestore MVCC snapshot. These requests bypass the live watch
+cache, matching the snapshot semantics clients need when relisting after a
+watch interruption.
+
 **The generic `<resource>/status` subresource is real too now, both
 `PUT` and `PATCH`** (`rest::update_status`/`rest::patch_status`, wired
 into `server::listener` as their own branches): a faithful port of real
