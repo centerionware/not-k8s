@@ -78,10 +78,10 @@
 //! (`updater::apply`'s primitives key off compiled `FIELD_META`, not a
 //! runtime CRD schema).
 //!
-//! **Not yet landed**: `$patch`/`$setElementOrder`/
-//! `$deleteFromPrimitiveList` directives (named, deliberate
-//! simplifications — see `strategic_merge`'s own doc comment), plus the
-//! CRD-support gap named above.
+//! The `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directive set
+//! is supported for both compiled and runtime CRD schemas. The remaining
+//! strategic-merge gap is default patch-strategy selection when
+//! `Content-Type` is omitted.
 
 pub mod fieldset;
 pub mod json_patch;
