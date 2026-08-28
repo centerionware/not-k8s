@@ -96,6 +96,10 @@ pub async fn admit(
                 namespace,
                 &object,
                 namespace_object.as_ref(),
+                old_object.as_ref(),
+                &uid,
+                name,
+                identity,
             )? {
                 continue;
             }
@@ -140,6 +144,10 @@ pub async fn admit(
                 namespace,
                 &object,
                 namespace_object.as_ref(),
+                old_object.as_ref(),
+                &uid,
+                name,
+                identity,
             )? {
                 continue;
             }
@@ -236,6 +244,10 @@ fn matches_webhook(
     namespace: &str,
     object: &Value,
     namespace_object: Option<&Value>,
+    old_object: Option<&Value>,
+    uid: &str,
+    name: &str,
+    identity: Option<&Identity>,
 ) -> Result<bool, Error> {
     let Some(rules) = webhook.get("rules").and_then(Value::as_array) else {
         return Ok(false);
@@ -270,7 +282,70 @@ fn matches_webhook(
             return Ok(false);
         }
     }
-    Ok(true)
+
+    let Some(conditions) = webhook.get("matchConditions").and_then(Value::as_array) else {
+        return Ok(true);
+    };
+    if conditions.is_empty() {
+        return Ok(true);
+    }
+
+    let webhook_name = object_name(webhook);
+    let mut parsed = Vec::with_capacity(conditions.len());
+    for condition in conditions {
+        let condition_name = condition
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Invalid {
+                webhook: webhook_name.clone(),
+                detail: "matchConditions entry has no name".to_string(),
+            })?;
+        let expression = condition
+            .get("expression")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Invalid {
+                webhook: webhook_name.clone(),
+                detail: format!("matchCondition {condition_name:?} has no expression"),
+            })?;
+        parsed.push(crate::admission::match_conditions::MatchCondition {
+            name: condition_name,
+            expression,
+        });
+    }
+
+    let mut request = crate::admission::policy_matching::build_request_object(
+        &crate::admission::policy_matching::RequestVariable {
+            uid,
+            group,
+            version,
+            resource,
+            subresource,
+            namespace,
+            name,
+            operation: operation_name(operation),
+            dry_run: false,
+        },
+    );
+    let kind = object.get("kind").cloned().unwrap_or(Value::Null);
+    request["kind"]["kind"] = kind.clone();
+    request["requestKind"]["kind"] = kind;
+    request["userInfo"] = user_info(identity);
+    let old_object = old_object.cloned().unwrap_or(Value::Null);
+    let vars = [("object", object), ("oldObject", &old_object), ("request", &request)];
+    let failure_policy = if webhook.get("failurePolicy").and_then(Value::as_str) == Some("Ignore") {
+        crate::admission::match_conditions::FailurePolicy::Ignore
+    } else {
+        crate::admission::match_conditions::FailurePolicy::Fail
+    };
+    match crate::admission::match_conditions::match_conditions(&parsed, &vars, failure_policy) {
+        crate::admission::match_conditions::MatchResult::Matches => Ok(true),
+        crate::admission::match_conditions::MatchResult::DoesNotMatch { .. }
+        | crate::admission::match_conditions::MatchResult::Ignored { .. } => Ok(false),
+        crate::admission::match_conditions::MatchResult::Error { errors } => Err(Error::Invalid {
+            webhook: webhook_name,
+            detail: format!("matchConditions evaluation failed: {}", errors.join("; ")),
+        }),
+    }
 }
 
 fn rule_matches(
@@ -752,5 +827,66 @@ mod tests {
             (String::from("tier"), String::from("frontend")),
         ]);
         assert!(selector_matches(Some(&selector), &labels).unwrap());
+    }
+
+    #[test]
+    fn match_conditions_filter_a_webhook_before_invocation() {
+        let webhook = json!({
+            "metadata": {"name": "pod-filter"},
+            "rules": [{
+                "operations": ["CREATE"],
+                "apiGroups": [""],
+                "apiVersions": ["v1"],
+                "resources": ["pods"],
+                "scope": "Namespaced"
+            }],
+            "matchConditions": [{
+                "name": "production-only",
+                "expression": "object.metadata.labels.environment == 'production'"
+            }]
+        });
+        let dev_pod = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"labels": {"environment": "development"}}
+        });
+        assert!(!matches_webhook(
+            &webhook,
+            Operation::Create,
+            "",
+            "v1",
+            "pods",
+            "",
+            "default",
+            &dev_pod,
+            None,
+            None,
+            "uid",
+            "pod",
+            None,
+        )
+        .unwrap());
+
+        let production_pod = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"labels": {"environment": "production"}}
+        });
+        assert!(matches_webhook(
+            &webhook,
+            Operation::Create,
+            "",
+            "v1",
+            "pods",
+            "",
+            "default",
+            &production_pod,
+            None,
+            None,
+            "uid",
+            "pod",
+            None,
+        )
+        .unwrap());
     }
 }
