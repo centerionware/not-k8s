@@ -606,7 +606,7 @@ pub async fn run(cfg: Config) {
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
             let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), service_account_authenticator.clone(), enforce_rbac, peer, kubelet_tls.clone()));
-            if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
+            if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
         });
@@ -1950,6 +1950,104 @@ async fn handle(
                 Err(e) => warn!(path = %path_str, error = ?e, "aggregation: looking up a matching APIService failed"),
             }
         }
+    }
+    // Group N: pod connection subresources are HTTP upgrades. Resolve the
+    // pod and its node here, then let the streaming proxy carry the upgrade
+    // through to nodelet. This must run before the generic REST branches:
+    // `POST .../pods/{name}/exec` is otherwise indistinguishable from an
+    // ordinary create-shaped request to the path parser.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.resource == "pods"
+        && !info.name.is_empty()
+        && matches!(info.subresource.as_str(), "exec" | "attach" | "portforward")
+        && matches!(method.as_str(), "GET" | "POST")
+    {
+        let Some(mut client) = storage.clone() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+        if enforce_rbac {
+            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+            let attrs = authz::rbac::RequestAttributes {
+                is_resource_request: true,
+                verb: &info.verb,
+                api_group: &info.api_group,
+                resource: &info.resource,
+                subresource: &info.subresource,
+                name: &info.name,
+                path: &path_str,
+            };
+            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+            }
+        }
+
+        let pod = match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: fetching the pod for a streaming subresource failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let node_name = pod.pointer("/spec/nodeName").and_then(serde_json::Value::as_str).unwrap_or("");
+        if node_name.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+        }
+        let node = match rest::get(&mut client, None, "", "v1", "nodes", None, node_name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+            Err(error) => {
+                warn!(path = %path_str, node = %node_name, error = ?error, "proxy: fetching the pod node for a streaming subresource failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        let pairs = path::parse_query(&query);
+        let target = match proxy::pod_stream::target(&pod, &node, &info.subresource, &pairs) {
+            Ok(target) => target,
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::NoDefaultContainer { pod_name, candidates })) => {
+                let detail = if candidates.is_empty() {
+                    format!("a container name must be specified for pod {pod_name}")
+                } else {
+                    format!("a container name must be specified for pod {pod_name}, choose one of: {candidates:?}")
+                };
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &detail)));
+            }
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::UnknownContainer { pod_name, container })) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &format!("container {container} is not valid for pod {pod_name}"))));
+            }
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::PodNotScheduled)) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+            }
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::NoNodeAddress)) => {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+            Err(proxy::pod_stream::Error::MissingPort) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "at least one port is required for port-forward")));
+            }
+            Err(proxy::pod_stream::Error::InvalidPort(port)) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &format!("invalid port {port}"))));
+            }
+        };
+
+        return match proxy::http_client::upgrade(req, &target, kubelet_tls).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                warn!(path = %path_str, node = %node_name, error = ?error, "proxy: streaming upgrade to nodelet failed");
+                Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &error.to_string())))
+            }
+        };
     }
     // Group N: `pods/log` — a genuine live proxy to nodelet's own
     // `/containerLogs` endpoint (`crates/nodelet/src/server/logs.rs`),

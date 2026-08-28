@@ -2236,11 +2236,15 @@ matching real upstream's own subresource-is-a-separate-resource rule). A
 dial failure surfaces as a real `502`, not a `500` — the fault is
 nodelet/the network, not this process.
 
-exec/attach/port-forward (would reuse `crates/nodelet/src/server/
-exec.rs`'s proven raw-upgrade-splice pattern, which this crate's `pods/
-log` wiring doesn't need for a plain GET) and node/service proxy
-subresources remain entirely unstarted, though they'd reuse the same
-`client_tls`/`http_client` primitives.
+`exec`, `attach`, and `port-forward` are now live upgrade proxies too:
+`proxy::pod_stream` resolves the pod/node target, translates the API's
+`stdin`/`stdout`/`stderr` and plural `ports` query parameters to nodelet's
+kubelet-style routes, and `proxy::http_client::upgrade` forwards the
+upgrade headers before splicing both upgraded connections. The listener is
+served with hyper's upgrade-aware connection path. Existing streaming e2e
+cases for exec, attach, and port-forward exercise these routes against a
+real CRI runtime. Node and service proxy subresources remain entirely
+unstarted.
 
 **O. Cluster bootstrap — the k3s replacement half** — **owned by
 `nodebootstrap`, deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is

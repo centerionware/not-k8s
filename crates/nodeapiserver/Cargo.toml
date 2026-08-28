@@ -88,6 +88,7 @@ http-body-util = "0.1"
 # re-export of the trait; already resolved transitively (hyper/
 # http-body-util both depend on it), not a new dependency risk.
 http-body = "1"
+percent-encoding = "2"
 tokio-rustls = "0.26"
 rustls = { workspace = true }
 # Self-signed TLS server cert, generated on first start — see
