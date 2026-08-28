@@ -2,9 +2,11 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use http::Request;
-use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec};
-use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::authentication::v1::{
+    TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec,
+};
+use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{Endpoints, Pod, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
@@ -17,7 +19,10 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
-    let uid = Command::new("id").arg("-u").output().context("checking the e2e runner's uid")?;
+    let uid = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("checking the e2e runner's uid")?;
     let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
     let mut command = if uid == "0" {
         let mut command = Command::new(program);
@@ -55,7 +60,10 @@ pub(super) async fn external_cni_mode_disables_flannel(context: &E2eContext) -> 
         .list(&kube::api::ListParams::default())
         .await
         .context("checking that the external-CNI bootstrap still registered a node")?;
-    anyhow::ensure!(!nodes.items.is_empty(), "external-CNI bootstrap registered no nodes");
+    anyhow::ensure!(
+        !nodes.items.is_empty(),
+        "external-CNI bootstrap registered no nodes"
+    );
 
     anyhow::ensure!(
         std::process::Command::new("systemctl")
@@ -98,21 +106,32 @@ pub(super) async fn bootstrap_persists_installation_flags(_context: &E2eContext)
         ));
     }
     anyhow::ensure!(
-        flags.lines().any(|flag| flag.starts_with("--cluster-domain=")),
+        flags
+            .lines()
+            .any(|flag| flag.starts_with("--cluster-domain=")),
         "persisted bootstrap flags did not retain the explicitly supplied cluster domain: {flags}"
     );
     anyhow::ensure!(
-        !flags.lines().any(|flag| flag == "--e2e" || flag.starts_with("--only=") || flag.starts_with("--shard=")),
+        !flags.lines().any(|flag| flag == "--e2e"
+            || flag.starts_with("--only=")
+            || flag.starts_with("--shard=")),
         "one-shot e2e controls were persisted as installation flags: {flags}"
     );
     Ok(())
 }
 
-pub(super) async fn nodelet_service_has_cluster_dns_configured(_context: &E2eContext) -> Result<()> {
+pub(super) async fn nodelet_service_has_cluster_dns_configured(
+    _context: &E2eContext,
+) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     let output = run_privileged_output(
         "systemctl",
-        &["show", "nodelet.service", "--property=Environment", "--value"],
+        &[
+            "show",
+            "nodelet.service",
+            "--property=Environment",
+            "--value",
+        ],
     )?;
     if !output.status.success() {
         return Err(skip_test("nodelet.service environment requires systemd"));
@@ -120,7 +139,8 @@ pub(super) async fn nodelet_service_has_cluster_dns_configured(_context: &E2eCon
     let environment = String::from_utf8_lossy(&output.stdout);
     if cfg.disable_dns {
         anyhow::ensure!(
-            !environment.contains("NODELET_CLUSTER_DNS=") && !environment.contains("NODELET_CLUSTER_DOMAIN="),
+            !environment.contains("NODELET_CLUSTER_DNS=")
+                && !environment.contains("NODELET_CLUSTER_DOMAIN="),
             "nodelet retained DNS configuration despite --disable-dns: {environment}"
         );
     } else {
@@ -145,16 +165,24 @@ pub(super) async fn nodelet_service_has_cluster_dns_configured(_context: &E2eCon
 pub(super) async fn configured_service_cidrs_are_used(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if cfg.disable_dns {
-        return Err(skip_test("CoreDNS was intentionally disabled by --disable-dns"));
+        return Err(skip_test(
+            "CoreDNS was intentionally disabled by --disable-dns",
+        ));
     }
     let services: Api<Service> = Api::namespaced(context.client.clone(), "kube-system");
-    let service = services.get("kube-dns").await.context("getting the CoreDNS Service")?;
+    let service = services
+        .get("kube-dns")
+        .await
+        .context("getting the CoreDNS Service")?;
     let service = serde_json::to_value(service)?;
     let actual = service
         .pointer("/spec/clusterIPs")
         .and_then(serde_json::Value::as_array)
         .context("CoreDNS Service has no spec.clusterIPs")?;
-    let actual: Vec<&str> = actual.iter().filter_map(serde_json::Value::as_str).collect();
+    let actual: Vec<&str> = actual
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
     for expected in cfg.cluster_dns_ips() {
         anyhow::ensure!(
             actual.contains(&expected.as_str()),
@@ -166,7 +194,9 @@ pub(super) async fn configured_service_cidrs_are_used(context: &E2eContext) -> R
 
 pub(super) async fn coredns_is_a_healthy_deployment(context: &E2eContext) -> Result<()> {
     if crate::config::Config::from_env()?.disable_dns {
-        return Err(skip_test("CoreDNS was intentionally disabled by --disable-dns"));
+        return Err(skip_test(
+            "CoreDNS was intentionally disabled by --disable-dns",
+        ));
     }
     let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), "kube-system");
     let deployment = deployments
@@ -184,7 +214,10 @@ pub(super) async fn coredns_is_a_healthy_deployment(context: &E2eContext) -> Res
         .find(|container| container.name == "coredns")
         .context("CoreDNS Deployment has no coredns container")?;
     let container = serde_json::to_value(container)?;
-    for (probe_name, path, port) in [("livenessProbe", "/health", 8080), ("readinessProbe", "/ready", 8181)] {
+    for (probe_name, path, port) in [
+        ("livenessProbe", "/health", 8080),
+        ("readinessProbe", "/ready", 8181),
+    ] {
         let http_get = container
             .get(probe_name)
             .and_then(|probe| probe.get("httpGet"))
@@ -196,74 +229,109 @@ pub(super) async fn coredns_is_a_healthy_deployment(context: &E2eContext) -> Res
         let actual_port = http_get
             .get("port")
             .and_then(serde_json::Value::as_i64)
-            .or_else(|| http_get.get("port").and_then(serde_json::Value::as_str).and_then(|port| port.parse().ok()));
-        anyhow::ensure!(actual_port == Some(port), "CoreDNS {probe_name} does not use port {port}: {http_get}");
+            .or_else(|| {
+                http_get
+                    .get("port")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|port| port.parse().ok())
+            });
+        anyhow::ensure!(
+            actual_port == Some(port),
+            "CoreDNS {probe_name} does not use port {port}: {http_get}"
+        );
     }
     context
-        .wait_until("CoreDNS Deployment to have an available replica", Duration::from_secs(90), || {
-            let deployments = deployments.clone();
-            async move {
-                Ok(deployments
-                    .get("coredns")
-                    .await?
-                    .status
-                    .and_then(|status| status.available_replicas)
-                    .unwrap_or_default()
-                    >= 1)
-            }
-        })
+        .wait_until(
+            "CoreDNS Deployment to have an available replica",
+            Duration::from_secs(90),
+            || {
+                let deployments = deployments.clone();
+                async move {
+                    Ok(deployments
+                        .get("coredns")
+                        .await?
+                        .status
+                        .and_then(|status| status.available_replicas)
+                        .unwrap_or_default()
+                        >= 1)
+                }
+            },
+        )
         .await?;
 
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), "kube-system");
     context
-        .wait_until("CoreDNS Pod to report Ready", Duration::from_secs(30), || {
-            let pods = pods.clone();
-            async move {
-                let pod = pods
-                    .list(&ListParams::default().labels("k8s-app=kube-dns"))
-                    .await?
-                    .items
-                    .into_iter()
-                    .any(|pod| {
-                        pod.status.as_ref().is_some_and(|status| {
-                            status.phase.as_deref() == Some("Running")
-                                && status.container_statuses.as_ref().is_some_and(|containers| {
-                                    !containers.is_empty() && containers.iter().all(|container| container.ready)
-                                })
-                                && status.conditions.as_ref().is_some_and(|conditions| {
-                                    conditions.iter().any(|condition| {
-                                        condition.type_ == "Ready" && condition.status == "True"
+        .wait_until(
+            "CoreDNS Pod to report Ready",
+            Duration::from_secs(30),
+            || {
+                let pods = pods.clone();
+                async move {
+                    let pod = pods
+                        .list(&ListParams::default().labels("k8s-app=kube-dns"))
+                        .await?
+                        .items
+                        .into_iter()
+                        .any(|pod| {
+                            pod.status.as_ref().is_some_and(|status| {
+                                status.phase.as_deref() == Some("Running")
+                                    && status.container_statuses.as_ref().is_some_and(
+                                        |containers| {
+                                            !containers.is_empty()
+                                                && containers
+                                                    .iter()
+                                                    .all(|container| container.ready)
+                                        },
+                                    )
+                                    && status.conditions.as_ref().is_some_and(|conditions| {
+                                        conditions.iter().any(|condition| {
+                                            condition.type_ == "Ready" && condition.status == "True"
+                                        })
                                     })
-                                })
-                        })
-                    });
-                Ok(pod)
-            }
-        })
+                            })
+                        });
+                    Ok(pod)
+                }
+            },
+        )
         .await
 }
 
 pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
-        return Err(skip_test("the cluster is using the upstream apiserver target"));
+        return Err(skip_test(
+            "the cluster is using the upstream apiserver target",
+        ));
     }
-    let nodeapiserver_active = match run_privileged_output("systemctl", &["is-active", "--quiet", "nodeapiserver"]) {
-        Ok(output) => output.status.success(),
-        Err(error) => return Err(skip_test(format!("nodeapiserver service check requires systemd: {error}"))),
-    };
+    let nodeapiserver_active =
+        match run_privileged_output("systemctl", &["is-active", "--quiet", "nodeapiserver"]) {
+            Ok(output) => output.status.success(),
+            Err(error) => {
+                return Err(skip_test(format!(
+                    "nodeapiserver service check requires systemd: {error}"
+                )))
+            }
+        };
     anyhow::ensure!(nodeapiserver_active, "nodeapiserver.service is not active");
-    let upstream_active = run_privileged_output("systemctl", &["is-active", "--quiet", "kube-apiserver"])
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-    anyhow::ensure!(!upstream_active, "the upstream kube-apiserver service is still active alongside nodeapiserver");
+    let upstream_active =
+        run_privileged_output("systemctl", &["is-active", "--quiet", "kube-apiserver"])
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+    anyhow::ensure!(
+        !upstream_active,
+        "the upstream kube-apiserver service is still active alongside nodeapiserver"
+    );
 
     // A successful typed API request proves the kubeconfig trusts the
     // bootstrap CA-signed nodeapiserver certificate and that nodestore-backed
     // resource reads are live, not merely that the process is running.
     let services: Api<Service> = Api::namespaced(context.client.clone(), "default");
     let expected_cluster_ip = cfg.service_ip()?.to_string();
-    let service = services.get("kubernetes").await.context("reading nodeapiserver default/kubernetes Service")?;
+    let service = services
+        .get("kubernetes")
+        .await
+        .context("reading nodeapiserver default/kubernetes Service")?;
     anyhow::ensure!(
         service.spec.as_ref().is_some_and(|spec| {
             spec.cluster_ip.as_deref() == Some(expected_cluster_ip.as_str())
@@ -280,7 +348,10 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
             .unwrap_or_default()
             .into_iter()
             .flat_map(|subset| subset.addresses.unwrap_or_default())
-            .any(|address| address.ip.parse::<std::net::IpAddr>().is_ok_and(|ip| !ip.is_unspecified())),
+            .any(|address| address
+                .ip
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| !ip.is_unspecified())),
         "nodeapiserver default/kubernetes has no endpoint"
     );
 
@@ -294,7 +365,7 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         .body(serde_json::to_vec(&TokenRequest {
             metadata: Default::default(),
             spec: TokenRequestSpec {
-                audiences: Vec::new(),
+                audiences: None,
                 bound_object_ref: None,
                 expiration_seconds: Some(600),
             },
@@ -308,7 +379,10 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         .status
         .context("nodeapiserver TokenRequest response had no status")?
         .token;
-    anyhow::ensure!(!token.is_empty(), "nodeapiserver returned an empty ServiceAccount token");
+    anyhow::ensure!(
+        !token.is_empty(),
+        "nodeapiserver returned an empty ServiceAccount token"
+    );
     let token_review = Request::builder()
         .method("POST")
         .uri("/apis/authentication.k8s.io/v1/tokenreviews")
@@ -327,14 +401,18 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         .await
         .context("reviewing a nodeapiserver ServiceAccount token")?;
     anyhow::ensure!(
-        review.status.as_ref().is_some_and(|status| status.authenticated == Some(true)),
+        review
+            .status
+            .as_ref()
+            .is_some_and(|status| status.authenticated == Some(true)),
         "nodeapiserver TokenReview did not authenticate its own token"
     );
     anyhow::ensure!(
         review
             .status
             .and_then(|status| status.user)
-            .is_some_and(|user| user.username == Some("system:serviceaccount:kube-system:default".to_string())),
+            .is_some_and(|user| user.username
+                == Some("system:serviceaccount:kube-system:default".to_string())),
         "nodeapiserver TokenReview returned the wrong ServiceAccount identity"
     );
     Ok(())
@@ -370,7 +448,11 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
         )));
     }
 
-    let suffix = format!("{}-{}", std::process::id(), Instant::now().elapsed().as_nanos());
+    let suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    );
     let scratch = std::env::temp_dir().join(format!("nodebootstrap-tls-bootstrap-{suffix}"));
     fs::create_dir_all(&scratch)?;
     let service_account_name = format!("tls-bootstrap-{suffix}");
@@ -553,9 +635,13 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     if let Some(csr_name) = csr_name_for_cleanup {
         let _ = csrs.delete(&csr_name, &DeleteParams::default()).await;
     }
-    let _ = bindings.delete(&binding_name, &DeleteParams::default()).await;
+    let _ = bindings
+        .delete(&binding_name, &DeleteParams::default())
+        .await;
     let _ = roles.delete(&role_name, &DeleteParams::default()).await;
-    let _ = service_accounts.delete(&service_account_name, &DeleteParams::default()).await;
+    let _ = service_accounts
+        .delete(&service_account_name, &DeleteParams::default())
+        .await;
     let _ = fs::remove_dir_all(&scratch);
     result
 }
