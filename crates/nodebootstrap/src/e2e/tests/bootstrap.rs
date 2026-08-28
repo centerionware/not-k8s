@@ -657,6 +657,40 @@ pub(super) async fn nodeapiserver_serves_partial_object_metadata(
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_honors_generate_name(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("generateName checks are only exercised against nodeapiserver"));
+    }
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let prefix = format!("nodeapiserver-generated-{}-", std::process::id());
+    let created = configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::api::ObjectMeta {
+                    generate_name: Some(prefix.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating a generateName ConfigMap")?;
+    let name = created
+        .metadata
+        .name
+        .context("nodeapiserver did not return the generated ConfigMap name")?;
+    anyhow::ensure!(name.starts_with(&prefix), "generated name {name:?} did not retain prefix {prefix:?}");
+    anyhow::ensure!(name.len() > prefix.len(), "nodeapiserver returned no generated suffix for {name:?}");
+    configmaps
+        .delete(&name, &DeleteParams::default())
+        .await
+        .context("cleaning up the generateName ConfigMap")?;
+    Ok(())
+}
+
 pub(super) async fn graceful_node_shutdown_manual_note(_context: &E2eContext) -> Result<()> {
     Err(skip_test(
         "graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case",
