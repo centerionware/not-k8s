@@ -28,16 +28,17 @@
 //! (`cacher::selector::object_matches`, Group D's own generic adapter,
 //! wired in unchanged). `CREATE` runs Group F's
 //! `scheme::validation`/`defaulting`, sets real `creationTimestamp`/`uid`,
-//! and writes with a real create-only-if-absent `Txn`. `DELETE` is a
-//! single unconditional `DeleteRange` — no `resourceVersion`/`uid`
-//! preconditions, no `propagationPolicy`, no finalizers. `UPDATE` is
+//! and writes with a real create-only-if-absent `Txn`. `DELETE` reads and
+//! validates optional `resourceVersion`/`uid` preconditions, then uses an
+//! MVCC-guarded delete transaction; propagation and finalizer handling
+//! remain out of scope. `CREATE`/`UPDATE` also support `dryRun=All` without
+//! persisting. `UPDATE` is
 //! real optimistic concurrency (reads current, requires the submitted
 //! `resourceVersion` to match, writes with a `Txn` compared against that
 //! same revision — a real `Conflict` on a mismatch or a lost race, not a
 //! silent overwrite), preserving `creationTimestamp`/`uid` from the
-//! existing object regardless of what the client submitted. No admission
-//! (Group J) exists yet — the only gate on any of this is `listener`'s
-//! own opt-in RBAC (Groups H/I).
+//! existing object regardless of what the client submitted. Admission and
+//! authorization are applied by `listener` before the REST operation.
 //! `version_compare` — `CompareKubeAwareVersionStrings`, a faithful port
 //! (GA beats beta beats alpha, then major, then minor — maturity compared
 //! *before* major version, a real bug this module's own tests caught in
