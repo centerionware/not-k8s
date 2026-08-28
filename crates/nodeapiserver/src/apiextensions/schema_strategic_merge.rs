@@ -84,10 +84,10 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
         }
     }
     for (key, order) in patch_map.iter().filter_map(|(key, value)| key.strip_prefix("$setElementOrder/").map(|field| (field, value))) {
-        let Some(existing) = result.get(key).and_then(Value::as_array) else { continue };
+        let Some(existing) = result.get(key).and_then(Value::as_array).map(|existing| existing.to_vec()) else { continue };
         let Some(field_schema) = properties.and_then(|p| p.get(key)) else { continue };
         let Some(merge_key) = merge_keys(field_schema).first().copied() else { continue };
-        result.insert(key.to_string(), Value::Array(reorder_list(existing, order, merge_key)));
+        result.insert(key.to_string(), Value::Array(reorder_list(&existing, order, merge_key)));
     }
     Value::Object(result)
 }

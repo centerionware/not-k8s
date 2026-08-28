@@ -114,10 +114,10 @@ fn merge(schema: &str, original: &Value, patch: &Value) -> Value {
         }
     }
     for (key, order) in patch_map.iter().filter_map(|(key, value)| key.strip_prefix("$setElementOrder/").map(|field| (field, value))) {
-        let Some(existing) = result.get(key).and_then(Value::as_array) else { continue };
+        let Some(existing) = result.get(key).and_then(Value::as_array).map(|existing| existing.to_vec()) else { continue };
         let Some(meta) = codegen::field_meta_index().get(&(schema, key)) else { continue };
         let Some(merge_key) = meta.patch_merge_key else { continue };
-        result.insert(key.to_string(), Value::Array(reorder_list(existing, order, merge_key)));
+        result.insert(key.to_string(), Value::Array(reorder_list(&existing, order, merge_key)));
     }
     Value::Object(result)
 }
