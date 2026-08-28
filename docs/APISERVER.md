@@ -1048,8 +1048,11 @@ explicit deny either — only allow/no-opinion — and this crate's engine
 doesn't track which rule matched to build a `reason` string);
 `SelfSubjectRulesReview`'s own `incomplete`/`evaluationError` **are**
 populated, straight from `resolve::rules_for`'s own per-binding
-resolution errors. Node authorizer and webhook authorization are not
-started. PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
+resolution errors. Node authorizer is wired separately; an optional
+`NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL` delegates each parsed request to
+an external `authorization.k8s.io/v1` `SubjectAccessReview` authorizer.
+Denials return `403`, and webhook failures fail closed with `503`.
+PKI primitives (`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
 group.
 

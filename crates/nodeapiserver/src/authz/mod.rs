@@ -45,10 +45,15 @@
 //! `LocalSubjectAccessReview` share one `POST` branch,
 //! `SelfSubjectRulesReview` has its own (different response shape).
 //!
-//! Status: in progress (see docs/APISERVER.md). The Node authorizer and
-//! webhook authorization are not started.
+//! `webhook` — an optional, fail-closed HTTP `SubjectAccessReview` client
+//! for delegating authorization decisions to an external authorizer.
+//!
+//! Status: in progress (see docs/APISERVER.md). The Node authorizer is wired
+//! separately; webhook authorization is enabled only when its endpoint is
+//! configured.
 
 pub mod rbac;
 pub mod resolve;
 pub mod sar;
 pub mod subject;
+pub mod webhook;
