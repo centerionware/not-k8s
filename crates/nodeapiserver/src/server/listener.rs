@@ -211,6 +211,38 @@ fn force_query(query: &str) -> bool {
     path::parse_query(query).iter().any(|(k, v)| k == "force" && v == "true")
 }
 
+/// Parses the write-only `dryRun` query option. Kubernetes currently defines
+/// one value, `All`; accepting anything else would make a misspelled option
+/// look like a successful persisted write.
+fn dry_run_query(query: &str) -> Result<bool, &'static str> {
+    let Some((_, value)) = path::parse_query(query).into_iter().find(|(key, _)| key == "dryRun") else {
+        return Ok(false);
+    };
+    match value.as_str() {
+        "All" => Ok(true),
+        _ => Err("dryRun must be All"),
+    }
+}
+
+fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest::DeletePreconditions>, &'static str> {
+    let Some(preconditions) = value.and_then(|value| value.get("preconditions")) else {
+        return Ok(None);
+    };
+    let Some(preconditions) = preconditions.as_object() else {
+        return Err("metadata.preconditions must be an object");
+    };
+    let string_field = |name: &str| -> Result<Option<String>, &'static str> {
+        match preconditions.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => value.as_str().map(|value| Some(value.to_string())).ok_or("delete preconditions must be strings"),
+        }
+    };
+    Ok(Some(rest::DeletePreconditions {
+        resource_version: string_field("resourceVersion")?,
+        uid: string_field("uid")?,
+    }))
+}
+
 /// Real upstream's own `Conflict` shape for a Server-Side Apply
 /// ownership conflict — `reason: "Conflict"`, `code: 409`. Same "real
 /// subset, not the full type" posture every other `Status` builder in
@@ -948,6 +980,19 @@ fn conflict_status(path_str: &str) -> serde_json::Value {
         "status": "Failure",
         "message": format!("{path_str}: object already exists"),
         "reason": "AlreadyExists",
+        "details": {},
+        "code": 409,
+    })
+}
+
+fn precondition_failed_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: delete precondition failed"),
+        "reason": "Conflict",
         "details": {},
         "code": 409,
     })
@@ -2352,14 +2397,19 @@ async fn handle(
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
 
-            // Decode the body once, shared by CREATE and UPDATE (both
-            // take a full submitted object), per its real negotiated
-            // Content-Type. JSON/YAML only for now — a protobuf request
-            // body would need the target schema to decode, which needs
-            // the resource resolved first; named honestly as a real,
-            // separate gap rather than guessed at (see `rest`'s own
-            // module doc comment).
-            let mut body_value = if has_body {
+            let dry_run = if is_create || is_update || is_delete {
+                match dry_run_query(&query) {
+                    Ok(value) => value,
+                    Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+                }
+            } else {
+                false
+            };
+
+            // CREATE/UPDATE carry a full submitted object; DELETE carries
+            // DeleteOptions. Read the request exactly once because hyper's
+            // incoming body is single-consumer.
+            let (mut body_value, delete_options) = if has_body || is_delete {
                 let body_bytes = match read_body_bytes(req).await {
                     Ok(b) => b,
                     Err(e) => {
@@ -2367,23 +2417,40 @@ async fn handle(
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
                 };
-                let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
-                let decoded: Result<serde_json::Value, String> = match format {
-                    negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
-                    negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
-                    negotiation::Format::Protobuf => {
-                        return Ok(json_response(
-                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                            &bad_request_status(&path_str, "protobuf request bodies are not decoded yet for CREATE/UPDATE — use application/json or application/yaml"),
-                        ));
+                if is_delete {
+                    if body_bytes.is_empty() {
+                        (None, None)
+                    } else {
+                        let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
+                        let decoded = match format {
+                            negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
+                            negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
+                            negotiation::Format::Protobuf => Err("protobuf DELETE options are not decoded yet".to_string()),
+                        };
+                        match decoded {
+                            Ok(value) => (None, Some(value)),
+                            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error))),
+                        }
                     }
-                };
-                match decoded {
-                    Ok(v) => Some(v),
-                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
+                } else {
+                    let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
+                    let decoded: Result<serde_json::Value, String> = match format {
+                        negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
+                        negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
+                        negotiation::Format::Protobuf => {
+                            return Ok(json_response(
+                                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                                &bad_request_status(&path_str, "protobuf request bodies are not decoded yet for CREATE/UPDATE — use application/json or application/yaml"),
+                            ));
+                        }
+                    };
+                    match decoded {
+                        Ok(value) => (Some(value), None),
+                        Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error))),
+                    }
                 }
             } else {
-                None
+                (None, None)
             };
 
             // Group J: mutating admission — `DefaultTolerationSeconds`,
@@ -2872,7 +2939,7 @@ async fn handle(
                 // `has_body` guarantees this is `Some` — the decode
                 // happened above, before this branch was even chosen.
                 let body_value = body_value.expect("body_value is Some whenever is_create is true (has_body covers it)");
-                match rest::create(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value).await {
+                match rest::create_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value, dry_run).await {
                     Ok(rest::CreateOutcome::Created(object)) => {
                         // Group J: persist `ResourceQuota.status.used` now
                         // that the object this usage total was computed
@@ -2902,7 +2969,7 @@ async fn handle(
                 }
             } else if is_update {
                 let body_value = body_value.expect("body_value is Some whenever is_update is true (has_body covers it)");
-                match rest::update(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value).await {
+                match rest::update_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run).await {
                     Ok(rest::UpdateOutcome::Updated(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
@@ -2927,10 +2994,17 @@ async fn handle(
                 }
             } else {
                 // is_delete.
-                match rest::delete(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                let preconditions = match delete_preconditions(delete_options.as_ref()) {
+                    Ok(value) => value,
+                    Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+                };
+                match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, preconditions.as_ref(), dry_run).await {
                     Ok(rest::DeleteOutcome::Deleted(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::DeleteOutcome::ObjectNotFound) | Ok(rest::DeleteOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Ok(rest::DeleteOutcome::PreconditionFailed) => {
+                        return Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&path_str)));
                     }
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::delete failed");
@@ -3389,6 +3463,22 @@ mod tests {
         assert_eq!(status["kind"], "Status");
         assert_eq!(status["reason"], "AlreadyExists");
         assert_eq!(status["code"], 409);
+    }
+
+    #[test]
+    fn dry_run_query_accepts_only_all() {
+        assert_eq!(dry_run_query("dryRun=All").unwrap(), true);
+        assert_eq!(dry_run_query("fieldManager=test").unwrap(), false);
+        assert_eq!(dry_run_query("dryRun=Unknown").unwrap_err(), "dryRun must be All");
+    }
+
+    #[test]
+    fn delete_preconditions_decode_resource_version_and_uid() {
+        let value = serde_json::json!({"preconditions": {"resourceVersion": "7", "uid": "abc"}});
+        assert_eq!(
+            delete_preconditions(Some(&value)).unwrap(),
+            Some(rest::DeletePreconditions { resource_version: Some("7".to_string()), uid: Some("abc".to_string()) })
+        );
     }
 
     #[test]
