@@ -163,8 +163,10 @@ found this session: the converter had been landed and correctly
 documented for a while, but nothing in `server/` ever called it, so a
 real `kubectl get pods` against a live nodeapiserver got raw JSON
 instead of the columnar `Table` output every `kubectl get` actually
-negotiates by default. Not yet done: any per-type printer, and
-`PartialObjectMetadata`.
+negotiates by default. Not yet done: any per-type printer. The standard
+`meta.k8s.io/v1` `PartialObjectMetadata` and `PartialObjectMetadataList`
+representations are now served for negotiated `GET` and `LIST` responses;
+watch-response conversion remains separate work.
 
 **C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
 is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
