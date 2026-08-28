@@ -69,6 +69,12 @@ pub struct Config {
     /// When set, requests are denied if the webhook denies them and return
     /// `503` if the webhook cannot be reached or returns an invalid review.
     pub authorization_webhook_url: Option<String>,
+    /// APF's finite ordinary-request budgets. These mirror kube-apiserver's
+    /// separate read and mutating request limits; the queue bound prevents
+    /// unbounded memory growth while requests wait for a seat.
+    pub apf_max_requests_inflight: usize,
+    pub apf_max_mutating_requests_inflight: usize,
+    pub apf_queue_length_limit: usize,
     /// `NODEAPISERVER_ENFORCE_RBAC` — `false` by default, deliberately:
     /// enabling this makes `server::rest::get`/`list` deny-by-default
     /// against real `authz::resolve::rules_for` output (Group I), but
@@ -128,6 +134,9 @@ impl Default for Config {
             oidc_signing_algs: vec!["RS256".to_string(), "PS256".to_string(), "ES256".to_string()],
             oidc_ca_file: None,
             authorization_webhook_url: None,
+            apf_max_requests_inflight: 400,
+            apf_max_mutating_requests_inflight: 200,
+            apf_queue_length_limit: 1000,
             enforce_rbac: false,
             encryption_config_file: None,
             kubelet_client_cert_file: None,
@@ -224,6 +233,18 @@ impl Config {
         }
         cfg.oidc_ca_file = path_env("NODEAPISERVER_OIDC_CA_FILE");
         cfg.authorization_webhook_url = string_env("NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL");
+        cfg.apf_max_requests_inflight = usize_env(
+            "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
+            cfg.apf_max_requests_inflight,
+        )?;
+        cfg.apf_max_mutating_requests_inflight = usize_env(
+            "NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT",
+            cfg.apf_max_mutating_requests_inflight,
+        )?;
+        cfg.apf_queue_length_limit = usize_env(
+            "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
+            cfg.apf_queue_length_limit,
+        )?;
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
@@ -253,6 +274,19 @@ fn string_env(name: &str) -> Option<String> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Some(value),
         _ => None,
+    }
+}
+
+fn usize_env(name: &str, default: usize) -> Result<usize> {
+    match std::env::var(name) {
+        Ok(value) => {
+            let parsed = value
+                .parse::<usize>()
+                .map_err(|error| anyhow!("{name} must be a positive integer: {error}"))?;
+            anyhow::ensure!(parsed > 0, "{name} must be greater than zero");
+            Ok(parsed)
+        }
+        Err(_) => Ok(default),
     }
 }
 
@@ -290,6 +324,35 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.bind_addr.contains(':'));
         assert!(cfg.nodestore_endpoint.starts_with("https://"));
+        assert_eq!(cfg.apf_max_requests_inflight, 400);
+        assert_eq!(cfg.apf_max_mutating_requests_inflight, 200);
+        assert_eq!(cfg.apf_queue_length_limit, 1000);
+    }
+
+    #[test]
+    fn apf_limits_are_read_and_validated_from_environment() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT", "17");
+        std::env::set_var("NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT", "9");
+        std::env::set_var("NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT", "31");
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
+            "NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT",
+            "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.apf_max_requests_inflight, 17);
+        assert_eq!(cfg.apf_max_mutating_requests_inflight, 9);
+        assert_eq!(cfg.apf_queue_length_limit, 31);
+    }
+
+    #[test]
+    fn zero_apf_limit_is_refused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT", "0");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT"]);
+        let err = Config::from_env().expect_err("zero request budget must be refused");
+        assert!(err.to_string().contains("greater than zero"));
     }
 
     #[test]
