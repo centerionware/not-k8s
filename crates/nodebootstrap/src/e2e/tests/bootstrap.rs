@@ -554,6 +554,12 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
         let request = Request::builder().method(method).uri(uri).body(Vec::new())?;
         let _ = context.client.request::<serde_json::Value>(request).await;
     }
+    let _ = configmaps
+        .delete(&parameter_name, &DeleteParams::default())
+        .await;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
     context: &E2eContext,
 ) -> Result<()> {
@@ -1010,9 +1016,6 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     let _ = roles.delete(&role_name, &DeleteParams::default()).await;
     let _ = service_accounts
         .delete(&service_account_name, &DeleteParams::default())
-        .await;
-    let _ = configmaps
-        .delete(&parameter_name, &DeleteParams::default())
         .await;
     let _ = fs::remove_dir_all(&scratch);
     result
