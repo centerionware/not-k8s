@@ -174,6 +174,7 @@ pub fn transformers_for<'a>(config: &'a EncryptionConfig, group: &str, resource:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::encryption::Transformer;
 
     #[test]
     fn resource_matches_bare_name_is_core_group_only() {
