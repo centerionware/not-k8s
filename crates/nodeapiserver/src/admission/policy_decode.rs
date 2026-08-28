@@ -8,9 +8,8 @@
 //! `NamedRuleWithOperations`/`MatchCondition`/`Validation` schemas, not
 //! assumed from memory) — into the owned intermediate representation
 //! [`validating_admission_policy::PolicyDefinition`]'s own borrowed view
-//! needs. The last real gap named in `admission`'s own module doc comment
-//! before a real caller could call `evaluate` with real data instead of
-//! hand-built test fixtures.
+//! needs. The storage-backed policy adapter uses this representation for
+//! real admission requests as well as the unit-test fixtures.
 //!
 //! Kept deliberately dumb: no schema validation, no defaulting (real
 //! upstream's own CRD-acceptance-time validation is what's supposed to
