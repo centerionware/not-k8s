@@ -68,6 +68,16 @@ fn stamp_resource_version(object: &mut Value, revision: i64) {
     metadata["resourceVersion"] = Value::String(revision.to_string());
 }
 
+/// Stored protobuf values omit the top-level type envelope.  Put the type
+/// metadata back on every object emitted on the watch wire; clients such as
+/// flannel decode it as a Kubernetes object rather than as an untyped JSON
+/// document.
+fn stamp_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
+    let Some(map) = object.as_object_mut() else { return };
+    map.insert("kind".to_string(), Value::String(kind.to_string()));
+    map.insert("apiVersion".to_string(), Value::String(api_version.to_string()));
+}
+
 /// Real upstream's own `watch.EventType` string constants.
 pub fn event_type_str(kind: EventKind) -> &'static str {
     match kind {
@@ -84,6 +94,10 @@ pub fn event_type_str(kind: EventKind) -> &'static str {
 /// has no stored value to read them from at all) needs them supplied by
 /// the caller, who already knows what resource this watch is for.
 ///
+/// Decoded Added/Modified/Deleted objects have their `kind` and `apiVersion`
+/// restored from the watch's resource scope because those fields are not
+/// persisted in the protobuf message itself.
+///
 /// `None` for a `Deleted` event with no retained value (the one case
 /// `WatchCache` itself can't retain a value for — see this module's own
 /// doc comment) — an honest `None`, not a bug papered over with an
@@ -96,6 +110,7 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
                 Ok(o) => o,
                 Err(e) => return Some(Err(e)),
             };
+            stamp_type_metadata(&mut object, kind, api_version);
             stamp_resource_version(&mut object, event.revision);
             Some(Ok(json!({"type": event_type, "object": object})))
         }
@@ -116,6 +131,7 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
                 // actually carries.
                 match decode_event_value(event, &event.value, storage, group, resource) {
                     Ok(mut o) => {
+                        stamp_type_metadata(&mut o, kind, api_version);
                         stamp_resource_version(&mut o, event.revision);
                         Some(Ok(json!({"type": event_type, "object": o})))
                     }
@@ -149,6 +165,8 @@ mod tests {
             let json = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").expect("Added/Modified must always convert").expect("decode must succeed");
             assert_eq!(json["type"], if kind == EventKind::Added { "ADDED" } else { "MODIFIED" });
             assert_eq!(json["object"]["metadata"]["name"], "default");
+            assert_eq!(json["object"]["kind"], "Namespace");
+            assert_eq!(json["object"]["apiVersion"], "v1");
         }
     }
 
@@ -189,6 +207,8 @@ mod tests {
             let event = WatchEvent { kind, key: b"k".to_vec(), value: envelope.clone(), revision: 123 };
             let json = to_watch_event_json(&event, "Namespace", "v1", None, "", "namespaces").expect("must convert").expect("decode must succeed");
             assert_eq!(json["object"]["metadata"]["resourceVersion"], "123", "{kind:?} event must carry its own real resourceVersion");
+            assert_eq!(json["object"]["kind"], "Namespace");
+            assert_eq!(json["object"]["apiVersion"], "v1");
         }
     }
 
