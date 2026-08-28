@@ -1,8 +1,7 @@
 //! Discovery documents: `/api` (`APIVersions`), `/apis` (`APIGroupList`),
-//! `/apis/{group}` (`APIGroup`) — built entirely from Group A's
-//! `codegen::openapi_meta::DISCOVERY_GVKS` table, so nothing here
-//! hand-maintains a list of which groups/versions this build actually
-//! serves.
+//! `/apis/{group}` (`APIGroup`) — built entirely from Group A's generated
+//! resource table, so non-resource schemas such as `DeleteOptions` and
+//! `WatchEvent` cannot falsely advertise an API group or version.
 //!
 //! Real shapes (`APIVersions`/`APIGroupList`/`APIGroup`/
 //! `GroupVersionForDiscovery`) confirmed directly against the vendored
@@ -52,10 +51,13 @@ const CRD_VERBS: &[&str] = &["create", "delete", "deletecollection", "get", "lis
 
 /// `/api` — the legacy, groupless core group's own version list. This
 /// build always serves exactly `v1` for the core group (verified: every
-/// `DISCOVERY_GVKS` entry with `group == ""` has `version == "v1"`, since
+/// generated resource entry with `group == ""` has `version == "v1"`, since
 /// v1.34 vendors nothing else for the core group).
 pub fn api_versions() -> Value {
-    let mut versions: Vec<&str> = codegen::openapi_meta::DISCOVERY_GVKS.iter().filter(|g| g.group.is_empty()).map(|g| g.version).collect();
+    let mut versions: Vec<&str> = codegen::api_resources_by_group_version()
+        .keys()
+        .filter_map(|(group, version)| group.is_empty().then_some(*version))
+        .collect();
     versions.sort_unstable();
     versions.dedup();
     json!({
@@ -85,18 +87,18 @@ pub fn api_group(group: &str) -> Option<Value> {
     Some(api_group_value(group, versions))
 }
 
-/// `group -> [version, ...]`, deduplicated, from the discovery table. The
-/// core group (`""`) is deliberately excluded — it has no `/apis/{group}`
-/// document of its own, only `/api`.
+/// `group -> [version, ...]`, deduplicated, from the generated resource
+/// table. The core group (`""`) is deliberately excluded — it has no
+/// `/apis/{group}` document of its own, only `/api`.
 fn group_version_map() -> BTreeMap<&'static str, Vec<&'static str>> {
     let mut groups: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
-    for g in codegen::openapi_meta::DISCOVERY_GVKS {
-        if g.group.is_empty() {
+    for &(group, version) in codegen::api_resources_by_group_version().keys() {
+        if group.is_empty() {
             continue;
         }
-        let versions = groups.entry(g.group).or_default();
-        if !versions.contains(&g.version) {
-            versions.push(g.version);
+        let versions = groups.entry(group).or_default();
+        if !versions.contains(&version) {
+            versions.push(version);
         }
     }
     for versions in groups.values_mut() {
@@ -495,6 +497,14 @@ mod tests {
     #[test]
     fn an_unknown_group_is_none() {
         assert!(api_group("totally.made.up.group").is_none());
+    }
+
+    #[test]
+    fn non_resource_schema_gvks_do_not_create_phantom_api_groups() {
+        assert!(api_group("admission.k8s.io").is_none());
+        let group_list = api_group_list();
+        let groups = group_list["groups"].as_array().unwrap();
+        assert!(groups.iter().all(|group| group["name"] != "admission.k8s.io"));
     }
 
     #[test]
