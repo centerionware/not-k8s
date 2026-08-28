@@ -11,16 +11,13 @@
 //! formatting) already knows how to report either kind identically —
 //! this module adds no new violation shape of its own.
 //!
-//! Same two checks, same split between them, same reasoning
-//! `scheme::validation`'s own module doc comment gives for why real
-//! upstream's hand-written validation (format checks, cross-field
-//! consistency, enum membership, numeric ranges) isn't attempted here
-//! either — `x-kubernetes-validations` CEL is the real mechanism a CRD
-//! schema has for anything past "is this field present" and "is this
-//! field the right JSON kind," and that's Group K's own still-not-landed
-//! CEL work (needs the cost budget built first), not this module's job.
+//! The runtime walk also enforces the schema-local constraints represented
+//! directly in OpenAPI (`enum`, numeric/string/array/object bounds,
+//! `multipleOf`, `pattern`, and the standard scalar formats). Cross-field
+//! rules remain the CRD's `x-kubernetes-validations` CEL responsibility.
 
 use crate::scheme::validation::{MissingField, TypeMismatch};
+use base64::Engine as _;
 use serde_json::Value;
 
 /// Recursively checks that every field `schema`'s own `required` array
@@ -152,6 +149,162 @@ fn kind_name(value: &Value) -> &'static str {
     }
 }
 
+/// Validates constraints that are local to one OpenAPI schema node.
+///
+/// Kubernetes rejects these constraints for a CRD object before invoking
+/// its CEL rules. The returned strings intentionally follow the same path
+/// convention as [`MissingField`] and [`TypeMismatch`] so REST callers can
+/// report them alongside the existing structural violations.
+pub fn validate_constraints(schema: &Value, value: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    walk_constraints(schema, value, "", &mut out);
+    out
+}
+
+fn walk_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
+    if value.is_null() {
+        return;
+    }
+    validate_node_constraints(schema, value, path, out);
+
+    match value {
+        Value::Object(object) => {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            let additional = schema.get("additionalProperties").and_then(Value::as_object);
+            for (field, child) in object {
+                let child_schema = properties
+                    .and_then(|fields| fields.get(field))
+                    .or(additional);
+                let Some(child_schema) = child_schema else { continue };
+                walk_constraints(child_schema, child, &join_path(path, field), out);
+            }
+        }
+        Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                for (index, item) in items.iter().enumerate() {
+                    walk_constraints(item_schema, item, &format!("{path}[{index}]"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.iter().any(|candidate| candidate == value)
+    {
+        add_violation(path, "must be one of the values declared by the schema", out);
+    }
+
+    if let Some(number) = value.as_f64() {
+        if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
+            let exclusive = schema.get("exclusiveMinimum").and_then(Value::as_bool).unwrap_or(false);
+            if (exclusive && number <= minimum) || (!exclusive && number < minimum) {
+                add_violation(path, &format!("must be {} {minimum}", if exclusive { "greater than" } else { "at least" }), out);
+            }
+        }
+        if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64) {
+            let exclusive = schema.get("exclusiveMaximum").and_then(Value::as_bool).unwrap_or(false);
+            if (exclusive && number >= maximum) || (!exclusive && number > maximum) {
+                add_violation(path, &format!("must be {} {maximum}", if exclusive { "less than" } else { "at most" }), out);
+            }
+        }
+        if let Some(exclusive_minimum) = schema.get("exclusiveMinimum").and_then(Value::as_f64)
+            && number <= exclusive_minimum
+        {
+            add_violation(path, &format!("must be greater than {exclusive_minimum}"), out);
+        }
+        if let Some(exclusive_maximum) = schema.get("exclusiveMaximum").and_then(Value::as_f64)
+            && number >= exclusive_maximum
+        {
+            add_violation(path, &format!("must be less than {exclusive_maximum}"), out);
+        }
+        if let Some(multiple_of) = schema.get("multipleOf").and_then(Value::as_f64)
+            && multiple_of > 0.0
+            && (number / multiple_of - (number / multiple_of).round()).abs() > 1e-9
+        {
+            add_violation(path, &format!("must be a multiple of {multiple_of}"), out);
+        }
+    }
+
+    if let Some(string) = value.as_str() {
+        let length = string.chars().count();
+        check_bound(schema, "minLength", length, |actual, bound| actual < bound, "must be at least", path, out);
+        check_bound(schema, "maxLength", length, |actual, bound| actual > bound, "must be at most", path, out);
+        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+            match regex::Regex::new(pattern) {
+                Ok(pattern) if !pattern.is_match(string) => add_violation(path, "does not match the schema pattern", out),
+                Err(_) => add_violation(path, "uses an invalid schema pattern", out),
+                Ok(_) => {}
+            }
+        }
+        if let Some(format) = schema.get("format").and_then(Value::as_str)
+            && !valid_format(format, string)
+        {
+            add_violation(path, &format!("must conform to format {format}"), out);
+        }
+    }
+
+    if let Some(array) = value.as_array() {
+        check_bound(schema, "minItems", array.len(), |actual, bound| actual < bound, "must contain at least", path, out);
+        check_bound(schema, "maxItems", array.len(), |actual, bound| actual > bound, "must contain at most", path, out);
+        if schema.get("uniqueItems").and_then(Value::as_bool) == Some(true) {
+            for (index, item) in array.iter().enumerate() {
+                if array[..index].iter().any(|previous| previous == item) {
+                    add_violation(path, "must contain unique items", out);
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(object) = value.as_object() {
+        check_bound(schema, "minProperties", object.len(), |actual, bound| actual < bound, "must contain at least", path, out);
+        check_bound(schema, "maxProperties", object.len(), |actual, bound| actual > bound, "must contain at most", path, out);
+    }
+}
+
+fn check_bound(
+    schema: &Value,
+    key: &str,
+    actual: usize,
+    predicate: impl Fn(usize, usize) -> bool,
+    description: &str,
+    path: &str,
+    out: &mut Vec<String>,
+) {
+    let Some(bound) = schema.get(key).and_then(Value::as_u64).and_then(|bound| usize::try_from(bound).ok()) else { return };
+    if predicate(actual, bound) {
+        add_violation(path, &format!("{description} {bound}"), out);
+    }
+}
+
+fn add_violation(path: &str, message: &str, out: &mut Vec<String>) {
+    if path.is_empty() {
+        out.push(message.to_string());
+    } else {
+        out.push(format!("{path}: {message}"));
+    }
+}
+
+fn valid_format(format: &str, value: &str) -> bool {
+    match format {
+        "byte" => base64::engine::general_purpose::STANDARD.decode(value).is_ok(),
+        "date" => chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+        "date-time" => chrono::DateTime::parse_from_rfc3339(value).is_ok(),
+        "email" => value.contains('@') && !value.starts_with('@') && !value.ends_with('@'),
+        "hostname" | "idn-hostname" => crate::scheme::name_format::is_dns1123_subdomain(value).is_empty(),
+        "ipv4" => value.parse::<std::net::Ipv4Addr>().is_ok(),
+        "ipv6" => value.parse::<std::net::Ipv6Addr>().is_ok(),
+        "uuid" => uuid::Uuid::parse_str(value).is_ok(),
+        // Kubernetes treats unknown formats and formats intended only for
+        // presentation as advisory rather than rejecting arbitrary strings.
+        "password" | "uri" | "uri-reference" | "duration" | "int-or-string" => true,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +383,36 @@ mod tests {
     fn an_explicit_null_is_not_flagged_as_a_type_mismatch() {
         let value = json!({"spec": {"color": null}});
         assert_eq!(validate_types(&widget_schema(), &value), vec![]);
+    }
+
+    #[test]
+    fn local_scalar_constraints_are_checked_recursively() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "spec": {"type": "object", "properties": {
+                    "color": {"type": "string", "enum": ["red", "blue"], "minLength": 3, "pattern": "^[a-z]+$"},
+                    "weight": {"type": "number", "minimum": 1, "maximum": 5, "multipleOf": 0.5}
+                }}
+            }
+        });
+        let violations = validate_constraints(&schema, &json!({"spec": {"color": "GREEN", "weight": 5.25}}));
+        assert!(violations.iter().any(|violation| violation.contains("spec.color") && violation.contains("one of")));
+        assert!(violations.iter().any(|violation| violation.contains("spec.color") && violation.contains("pattern")));
+        assert!(violations.iter().any(|violation| violation.contains("spec.weight") && violation.contains("multiple")));
+    }
+
+    #[test]
+    fn collection_constraints_and_formats_are_checked() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "addresses": {"type": "array", "minItems": 2, "maxItems": 3, "uniqueItems": true, "items": {"type": "string", "format": "ipv4"}},
+                "id": {"type": "string", "format": "uuid"}
+            }
+        });
+        let violations = validate_constraints(&schema, &json!({"addresses": ["127.0.0.1", "127.0.0.1"], "id": "not-a-uuid"}));
+        assert!(violations.iter().any(|violation| violation.contains("addresses") && violation.contains("unique")));
+        assert!(violations.iter().any(|violation| violation.contains("id") && violation.contains("uuid")));
     }
 }

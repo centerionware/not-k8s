@@ -1565,12 +1565,13 @@ write, live-tested (`tests/crd_roundtrip.rs`'s
 `status_subresource_is_gated_on_the_crd_declaring_it`) both ways — a
 missing declaration rejected, a real one accepted end to end.
 
-**Not yet landed, named honestly** (`apiextensions::mod`'s own doc
-comment carries this list too): enum membership, numeric ranges, format
-checks, and any cross-field consistency rule (`x-kubernetes-validations`
-CEL is a CRD schema's real mechanism for all of that — runtime evaluation
-now has a shared request-side budget, while interpreter-level fuel
-accounting remains a real DoS-hardening limitation. Conversion webhooks. Pruning/
+Schema-local enum membership, numeric/string/collection bounds, patterns,
+uniqueness, and standard scalar formats are enforced by
+`apiextensions::schema_validation`. Cross-field consistency remains the
+CRD's `x-kubernetes-validations` CEL mechanism — runtime evaluation now has
+a shared request-side budget, while interpreter-level fuel accounting
+remains a real DoS-hardening limitation. **Not yet landed, named honestly**:
+conversion webhooks. Pruning/
 validation on the `status` subresource write itself (`update_status`/
 `patch_status` keep the same "no structural checks on status" scope real
 upstream's own generic status strategy has for built-ins too).
