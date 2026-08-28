@@ -77,17 +77,6 @@ fn main() {
     std::fs::write(out_dir.join("api_resources.rs"), discovery_out).expect("writing api_resources.rs");
     std::fs::write(out_dir.join("openapi_v3_docs.rs"), served_docs_out).expect("writing openapi_v3_docs.rs");
 
-    println!(
-        "cargo:warning=nodeapiserver codegen: {} protobuf fields across {} messages, {} field-meta entries, {} discovery GVKs, {} required-field entries, {} type-info entries, {} per-version API resources, {} servable OpenAPI v3 docs",
-        proto_fields.len(),
-        proto_messages.len(),
-        field_meta.len(),
-        gvks.len(),
-        required.len(),
-        types.len(),
-        resources.len(),
-        served_docs.len()
-    );
 
     println!("cargo:rerun-if-changed=proto/rpc.proto");
     println!("cargo:rerun-if-changed=proto/kv.proto");
