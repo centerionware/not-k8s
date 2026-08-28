@@ -661,6 +661,25 @@ fn status_patch_sends_only_nodelet_owned_conditions() {
 }
 
 #[test]
+fn status_patch_replaces_pod_ips_after_runtime_recreation() {
+    let status = bps("10.0.0.1", &running_status(), None);
+    let patch = strategic_status_patch(&status);
+    let pod_ips = patch.get("podIPs").and_then(serde_json::Value::as_array).unwrap();
+
+    let directive = pod_ips
+        .first()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|item| item.get("$patch"));
+    assert_eq!(directive.and_then(serde_json::Value::as_str), Some("replace"));
+    let ip = pod_ips
+        .get(1)
+        .and_then(serde_json::Value::as_object)
+        .and_then(|item| item.get("ip"))
+        .and_then(serde_json::Value::as_str);
+    assert_eq!(ip, Some("10.42.0.2"));
+}
+
+#[test]
 fn nodelet_owned_condition_types_are_not_duplicated_from_prev() {
     // prev's own "Ready"/"ContainersReady"/etc. entries must not also get
     // copied into `foreign_conditions` alongside the freshly computed ones.

@@ -998,7 +998,13 @@ pub(crate) async fn write_status(
     // set between that GET and this PATCH. The foreign conditions are still
     // carried in `status` for readiness computation and pure status tests,
     // but must not be sent back as stale values here.
-    let patch_status = nodelet_owned_status_patch(&status);
+    //
+    // podIPs is also treated as a merge-keyed list by the apiserver. That is
+    // not appropriate for the single primary address nodelet reports: after
+    // a restart, merging the new address with the old one produces two IPv4
+    // addresses and the apiserver rejects the entire status update. Mark the
+    // list for replacement explicitly.
+    let patch_status = strategic_status_patch(&status);
     let patch = serde_json::json!({ "status": patch_status });
     api.patch_status(name, &PatchParams::default(), &Patch::Strategic(patch)).await?;
     Ok(())
@@ -1015,11 +1021,21 @@ fn nodelet_owned_status_patch(status: &PodStatus) -> PodStatus {
     patch
 }
 
+fn strategic_status_patch(status: &PodStatus) -> Value {
+    let status = nodelet_owned_status_patch(status);
+    let mut patch = serde_json::to_value(status).expect("PodStatus must serialize");
+    if let Some(Value::Array(pod_ips)) = patch.get_mut("podIPs") {
+        pod_ips.insert(0, serde_json::json!({ "$patch": "replace" }));
+    }
+    patch
+}
+
 /// Return whether merging `desired` into the stored PodStatus would change
-/// anything. `patch_status()` uses JSON Merge Patch: object fields merge
-/// recursively, arrays replace as a whole, and null deletes a field. Checking
-/// this before the HTTP call matters because an identical PATCH can still
-/// produce a new resourceVersion and feed the same Pod back into our watch.
+/// anything. The comparison follows JSON Merge Patch semantics: object fields
+/// merge recursively, arrays replace as a whole, and null deletes a field.
+/// Checking this before the HTTP call matters because an identical PATCH can
+/// still produce a new resourceVersion and feed the same Pod back into our
+/// watch.
 fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
     let Some(prev) = prev else { return true };
     let prev = serde_json::to_value(prev).expect("PodStatus must serialize");
