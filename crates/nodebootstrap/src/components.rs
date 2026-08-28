@@ -54,7 +54,12 @@ pub const COMPONENTS: &[ComponentSpec] = &[
         prebuilt_env: "NOTK8S_NODECONTROLLER_PREBUILT",
         needs_protoc: false,
     },
-    // nodeapiserver is added here once it is wired into components.sh itself.
+    ComponentSpec {
+        name: "nodeapiserver",
+        cargo_package: "nodeapiserver",
+        prebuilt_env: "NOTK8S_NODEAPISERVER_PREBUILT",
+        needs_protoc: true,
+    },
     // nodebootstrap is the installer/app-bootstrap applet, not a runtime
     // service, so it deliberately does not belong in this table.
 ];

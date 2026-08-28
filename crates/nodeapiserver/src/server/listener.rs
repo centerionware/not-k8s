@@ -383,12 +383,23 @@ fn watch_response_body(
 /// workspace (see `crates/nodelet/src/server/mod.rs::run`'s own doc
 /// comment for the precedent).
 pub async fn run(cfg: Config) {
-    let cert_dir = std::path::PathBuf::from("/var/lib/nodeapiserver/pki");
-    let sans = vec!["localhost".to_string(), "127.0.0.1".to_string(), "kubernetes".to_string(), "kubernetes.default".to_string()];
-    let cert = match super::tls::load_or_generate(&cert_dir, &sans) {
+    let cert_result = match (&cfg.tls_cert_file, &cfg.tls_key_file) {
+        (Some(cert), Some(key)) => super::tls::load_from_pem(cert, key),
+        _ => {
+            let cert_dir = std::path::PathBuf::from("/var/lib/nodeapiserver/pki");
+            let sans = vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "kubernetes".to_string(),
+                "kubernetes.default".to_string(),
+            ];
+            super::tls::load_or_generate(&cert_dir, &sans)
+        }
+    };
+    let cert = match cert_result {
         Ok(c) => c,
         Err(e) => {
-            warn!(error = ?e, "failed to load/generate a TLS certificate; the REST/watch listener will not run");
+            warn!(error = ?e, "failed to load/generate the TLS certificate; the REST/watch listener will not run");
             return;
         }
     };
@@ -405,6 +416,21 @@ pub async fn run(cfg: Config) {
             Err(e) => {
                 warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_CLIENT_CA_FILE; client certificate authentication is disabled for this run");
                 None
+            }
+        },
+        None => None,
+    };
+
+    // Group H: ServiceAccount JWTs are optional for standalone development,
+    // but the nodebootstrap target supplies the cluster signing key so
+    // projected pod tokens and nodelet's TokenReview fallback work before
+    // RBAC enforcement is enabled.
+    let service_account_authenticator = match &cfg.service_account_signing_key_file {
+        Some(path) => match crate::authn::service_account::Authenticator::from_pem(path, cfg.service_account_issuer.clone()) {
+            Ok(authenticator) => Some(Arc::new(authenticator)),
+            Err(e) => {
+                warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE; the REST/watch listener will not run");
+                return;
             }
         },
         None => None,
@@ -561,6 +587,7 @@ pub async fn run(cfg: Config) {
         let storage = storage.clone();
         let cache_registry = cache_registry.clone();
         let kubelet_tls = kubelet_tls.clone();
+        let service_account_authenticator = service_account_authenticator.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -578,7 +605,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), service_account_authenticator.clone(), enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -715,6 +742,19 @@ fn internal_error_status(path_str: &str) -> serde_json::Value {
         "reason": "InternalError",
         "details": {},
         "code": 500,
+    })
+}
+
+fn unauthorized_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "Unauthorized",
+        "details": {},
+        "code": 401,
     })
 }
 
@@ -946,6 +986,7 @@ async fn handle_with_audit(
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
+    service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     enforce_rbac: bool,
     peer: SocketAddr,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
@@ -954,6 +995,10 @@ async fn handle_with_audit(
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let identity = match authenticate_request(&req, identity, service_account_authenticator.as_deref()) {
+        Ok(identity) => identity,
+        Err(detail) => return Ok(json_response(StatusCode::UNAUTHORIZED, &unauthorized_status(&path_str, detail))),
+    };
     let audit_identity = identity.clone();
     // Group M (APF): a cheap clone (wraps a `tonic::transport::Channel`,
     // same reasoning PR #107's watch-RBAC-gating clone already
@@ -971,7 +1016,7 @@ async fn handle_with_audit(
     // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
     // has, not a new gap this metric introduces.
     let start = std::time::Instant::now();
-    let mut response = handle(req, storage, cache_registry, identity, enforce_rbac, kubelet_tls).await;
+    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, kubelet_tls).await;
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
@@ -1070,11 +1115,36 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
     })
 }
 
+fn authenticate_request(
+    req: &Request<Incoming>,
+    client_cert_identity: Option<crate::authn::x509::Identity>,
+    service_account_authenticator: Option<&crate::authn::service_account::Authenticator>,
+) -> std::result::Result<Option<crate::authn::x509::Identity>, &'static str> {
+    if client_cert_identity.is_some() {
+        return Ok(client_cert_identity);
+    }
+    let Some(header) = req.headers().get("authorization") else {
+        return Ok(None);
+    };
+    let value = header.to_str().map_err(|_| "Authorization header is not valid UTF-8")?;
+    let Some(token) = value.strip_prefix("Bearer ").filter(|token| !token.is_empty()) else {
+        return Err("Authorization must use the Bearer scheme");
+    };
+    let Some(authenticator) = service_account_authenticator else {
+        return Err("bearer-token authentication is not configured");
+    };
+    authenticator
+        .authenticate(token)
+        .map(|authenticated| Some(authenticated.identity))
+        .ok_or("bearer token is invalid or expired")
+}
+
 async fn handle(
     req: Request<Incoming>,
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
+    service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     enforce_rbac: bool,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {
@@ -1695,6 +1765,162 @@ async fn handle(
         };
         let mut response_body = body_value;
         response_body["status"] = crate::authn::self_review::build_status(username, &groups);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // Group H: TokenReview is the webhook endpoint nodelet uses when a pod
+    // presents its projected ServiceAccount token. It is virtual, just like
+    // the authorization review resources above, and must never be written to
+    // nodestore.
+    if info.is_resource_request
+        && info.api_group == "authentication.k8s.io"
+        && info.resource == "tokenreviews"
+        && info.verb == "create"
+        && info.subresource.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        if enforce_rbac {
+            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, "").await;
+            let attrs = authz::rbac::RequestAttributes {
+                is_resource_request: true,
+                verb: "create",
+                api_group: &info.api_group,
+                resource: &info.resource,
+                subresource: &info.subresource,
+                name: &info.name,
+                path: &path_str,
+            };
+            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+            }
+        }
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the TokenReview body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let mut response_body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let token = response_body.pointer("/spec/token").and_then(serde_json::Value::as_str).unwrap_or("");
+        let authenticated = service_account_authenticator
+            .as_deref()
+            .and_then(|authenticator| (!token.is_empty()).then(|| authenticator.authenticate(token)).flatten());
+        response_body["apiVersion"] = serde_json::json!("authentication.k8s.io/v1");
+        response_body["kind"] = serde_json::json!("TokenReview");
+        response_body["status"] = match authenticated {
+            Some(authenticated) => serde_json::json!({
+                "authenticated": true,
+                "user": {
+                    "username": authenticated.identity.name,
+                    "uid": authenticated.service_account_uid,
+                    "groups": authenticated.identity.groups,
+                }
+            }),
+            None => serde_json::json!({"authenticated": false}),
+        };
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // Group H: ServiceAccount TokenRequest backs projected pod tokens. The
+    // caller must be authorized for the serviceaccounts/token subresource;
+    // the ServiceAccount and, when supplied, bound Pod are read from storage
+    // before the stateless signer is allowed to mint a token.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.resource == "serviceaccounts"
+        && info.subresource == "token"
+        && info.verb == "create"
+        && !info.namespace.is_empty()
+        && !info.name.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        if enforce_rbac {
+            let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+                Some(id) => (id.name.as_str(), id.groups.clone()),
+                None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+            };
+            let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+            let attrs = authz::rbac::RequestAttributes {
+                is_resource_request: true,
+                verb: "create",
+                api_group: "",
+                resource: "serviceaccounts",
+                subresource: "token",
+                name: &info.name,
+                path: &path_str,
+            };
+            if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+            }
+        }
+        let Some(authenticator) = service_account_authenticator.as_deref() else {
+            return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "ServiceAccount token signing is not configured")));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the TokenRequest body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let request = match crate::authn::service_account::parse_token_request(&body_value) {
+            Ok(request) => request,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
+        };
+        let service_account = match rest::get(&mut client, None, "", "v1", "serviceaccounts", Some(&info.namespace), &info.name).await {
+            Ok(rest::GetOutcome::Found(service_account)) => service_account,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "TokenRequest ServiceAccount lookup failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let service_account_uid = service_account
+            .pointer("/metadata/uid")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if let Some((pod_name, pod_uid)) = &request.bound_pod {
+            match rest::get(&mut client, None, "", "v1", "pods", Some(&info.namespace), pod_name).await {
+                Ok(rest::GetOutcome::Found(pod)) if pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str) == Some(pod_uid) => {}
+                Ok(rest::GetOutcome::Found(_)) => {
+                    return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "bound Pod UID does not match the current Pod")));
+                }
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                }
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "TokenRequest bound Pod lookup failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+        let issued = match authenticator.issue_token(&info.namespace, &info.name, service_account_uid, &request) {
+            Ok(issued) => issued,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let mut response_body = body_value;
+        response_body["apiVersion"] = serde_json::json!("authentication.k8s.io/v1");
+        response_body["kind"] = serde_json::json!("TokenRequest");
+        response_body["status"] = serde_json::json!({
+            "token": issued.token,
+            "expirationTimestamp": issued.expiration_timestamp,
+        });
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
     // Group L: aggregated APIs (`APIService`) — a genuine live reverse

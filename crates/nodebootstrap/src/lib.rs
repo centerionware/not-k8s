@@ -28,7 +28,7 @@ pub mod uninstall;
 use anyhow::{bail, Context, Result};
 
 /// Runs every phase in dependency order: toolchain -> containerd -> fetch
-/// -> pki -> kubeconfig -> targets (install/start the apiserver) -> cni ->
+/// -> pki -> kubeconfig -> targets (install/start the selected apiserver) -> cni ->
 /// service-reconciler -> manifests -> nodelet TLS/apiserver handoff -> rbac
 /// -> nodecontroller long enough for node-CIDR allocation -> nodescheduler
 /// -> CNI seed Pod and readiness -> apiserver network endpoint refresh ->
@@ -40,9 +40,9 @@ use anyhow::{bail, Context, Result};
 /// individual step stays independently testable and independently
 /// skippable (`config::Config`'s skip flags gate each call).
 ///
-/// `services::ensure_nodestore` runs before `targets` -- `targets/
-/// upstream.rs` orders `kube-apiserver.service` `After=nodestore.service`,
-/// so nodestore has to actually be installed and enabled first.
+/// `services::ensure_nodestore` runs before `targets` -- the selected target
+/// orders its apiserver service `After=nodestore.service`, so nodestore has to
+/// actually be installed and enabled first.
 /// `targets::run_with` itself runs after `pki`/`kubeconfig` (it needs the
 /// minted PKI to start the apiserver trusting it) and before
 /// `service_reconciler`/`manifests` (both need a reachable apiserver to
@@ -142,7 +142,7 @@ pub fn run_all() -> Result<()> {
             services::ensure_nodescheduler(&cfg)?;
             cni::wait_for_flannel_subnet(&cfg)?;
 
-            // This is the final kube-apiserver restart: the first instance
+            // This is the final selected-apiserver refresh: the first instance
             // starts before cni0 exists and advertises loopback, while pods
             // need the bridge address to reach the apiserver Service. The
             // controller that allocated the subnet is restarted below after
@@ -570,6 +570,11 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NODEBOOTSTRAP_CNI", value);
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--apiserver=") {
+            anyhow::ensure!(matches!(value, "upstream" | "nodeapiserver"), "--apiserver must be upstream or nodeapiserver");
+            std::env::set_var("NODEBOOTSTRAP_APISERVER", value);
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--ip-family=") {
             anyhow::ensure!(matches!(value, "auto" | "ipv4" | "ipv6" | "dual"), "--ip-family must be auto, ipv4, ipv6, or dual");
             std::env::set_var("NODEBOOTSTRAP_IP_FAMILY", value);
@@ -700,6 +705,7 @@ fn dispatch(subcommand: Option<&str>) -> Result<()> {
         Some("nodeproxy") => services::ensure_nodeproxy(&cfg),
         Some("nodescheduler") => services::ensure_nodescheduler(&cfg),
         Some("nodecontroller") => services::ensure_nodecontroller(&cfg),
+        Some("nodeapiserver") => targets::run_with(&cfg),
         Some("all") | None => run_all(),
         Some(other) => bail!("unknown subcommand '{other}' (try --help)"),
     }
@@ -711,7 +717,7 @@ fn print_help() {
     println!("Usage: bootstrap [options] [subcommand]");
     println!();
     println!("With no role flag, the command installs/updates a single-node cluster");
-    println!("including nodestore, upstream kube-apiserver, nodecontroller,");
+    println!("including nodestore, the selected kube-apiserver target, nodecontroller,");
     println!("nodescheduler, nodelet, nodeproxy, containerd, CNI, PKI, and CoreDNS.");
     println!("Existing services are restarted.");
     println!();
@@ -721,6 +727,7 @@ fn print_help() {
     println!("  --release [--tag=TAG]  fetch published component binaries");
     println!("  --layout=combined|split|both");
     println!("  --profile=debug|release  select the source-build Cargo profile");
+    println!("  --apiserver=upstream|nodeapiserver  select the API server implementation");
     println!("  --proxy=none           omit nodeproxy service");
     println!("  --without-flannel      skip flannel and remember external CNI for updates");
     println!("  --cni=none             use an externally-managed CNI for this run");
@@ -753,7 +760,7 @@ fn print_help() {
     println!();
     println!("Subcommands: all, toolchain, containerd, cni, flanneld, fetch, pki, kubeconfig,");
     println!("targets, rbac, service-reconciler, manifests, services, nodestore,");
-    println!("nodelet, nodeproxy, nodescheduler, nodecontroller");
+    println!("nodelet, nodeproxy, nodescheduler, nodecontroller, nodeapiserver");
 }
 
 #[cfg(test)]
@@ -781,6 +788,12 @@ mod tests {
             "--cidr6=fd00:99::/112".to_string(),
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn apiserver_target_flag_is_validated() {
+        assert!(parse_args(&["--apiserver=nodeapiserver".to_string()]).is_ok());
+        assert!(parse_args(&["--apiserver=unknown".to_string()]).is_err());
     }
 
     #[test]

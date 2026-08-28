@@ -16,6 +16,12 @@ on:
         default: nodeproxy
         type: choice
         options: [nodeproxy, none]
+      apiserver:
+        description: 'Select the upstream or repository API server target'
+        required: false
+        default: upstream
+        type: choice
+        options: [upstream, nodeapiserver]
       network:
         description: 'Use flannel or exercise the external-CNI bootstrap path'
         required: false
@@ -181,6 +187,7 @@ jobs:
       - name: Bootstrap a real cluster with Rust
         env:
           PROXY: ${{ inputs.proxy }}
+          APISERVER: ${{ inputs.apiserver }}
           NETWORK: ${{ inputs.network }}
           CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
           CIDR: ${{ inputs.cidr }}
@@ -190,6 +197,7 @@ jobs:
           args=(bootstrap \
             --layout=combined \
             --proxy="$PROXY" \
+            --apiserver="$APISERVER" \
             --datastore=nodestore \
             --scheduler=nodescheduler \
             --controller-manager=nodecontroller)

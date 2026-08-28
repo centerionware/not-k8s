@@ -3,15 +3,11 @@
 //! `crates/nodelet/src/server/tls.rs` already established for its own
 //! HTTPS server, adapted here rather than reinvented.
 //!
-//! **This is not the cluster's real PKI.** A production cluster needs
-//! kubectl/client-go to actually trust this certificate, which needs a
-//! real CA distributed as part of cluster bootstrap — that's Group O's
-//! job (`docs/APISERVER.md`: "cluster PKI generation (CA, serving cert,
-//! ...)"). This module gets Group E's listener running and testable now;
-//! Group O is expected to replace or wire real PKI material into it later,
-//! the same way real kube-apiserver's own `--tls-cert-file`/
-//! `--tls-private-key-file` flags let an operator supply real material
-//! instead of the generated fallback.
+//! A standalone binary uses a persisted self-signed development certificate.
+//! The nodebootstrap `nodeapiserver` target supplies the cluster's real
+//! CA-signed PEM serving pair instead, just as real kube-apiserver accepts
+//! `--tls-cert-file`/`--tls-private-key-file`; the generated certificate is
+//! retained as a fallback for direct development runs.
 //!
 //! Client certificate verification is optional and off by default
 //! (`with_no_client_auth()`, when `server_config` is called with
@@ -113,6 +109,31 @@ pub fn load_or_generate(cert_dir: &Path, sans: &[String]) -> Result<LoadedCert> 
     Ok(LoadedCert { cert_der, key_der })
 }
 
+/// Load the cluster bootstrapper's PEM certificate and PKCS#8 private key.
+/// The standalone fallback above intentionally remains available for local
+/// listener tests, but an installed apiserver must use the shared cluster CA
+/// rather than minting a second trust root.
+pub fn load_from_pem(cert_path: &Path, key_path: &Path) -> Result<LoadedCert> {
+    let cert_pem = std::fs::read(cert_path)
+        .with_context(|| format!("reading TLS certificate {}", cert_path.display()))?;
+    let key_pem = std::fs::read(key_path)
+        .with_context(|| format!("reading TLS private key {}", key_path.display()))?;
+    let cert = x509_parser::pem::Pem::iter_from_buffer(&cert_pem)
+        .next()
+        .context("TLS certificate PEM file is empty")?
+        .context("parsing TLS certificate PEM")?;
+    anyhow::ensure!(!cert.contents.is_empty(), "TLS certificate PEM file contains an empty certificate");
+    let key = x509_parser::pem::Pem::iter_from_buffer(&key_pem)
+        .next()
+        .context("TLS private key PEM file is empty")?
+        .context("parsing TLS private key PEM")?;
+    anyhow::ensure!(!key.contents.is_empty(), "TLS private key PEM file contains an empty key");
+    Ok(LoadedCert {
+        cert_der: CertificateDer::from(cert.contents),
+        key_der: key.contents,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +175,20 @@ mod tests {
         std::fs::write(dir.path().join("server.key.der"), []).unwrap();
         let cert = load_or_generate(dir.path(), &["localhost".to_string()]).unwrap();
         assert!(!cert.cert_der.is_empty());
+    }
+
+    #[test]
+    fn loads_a_bootstrap_pem_certificate_and_key() {
+        ensure_crypto_provider();
+        let dir = tempfile::tempdir().unwrap();
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+        std::fs::write(&cert_path, generated.cert.pem()).unwrap();
+        std::fs::write(&key_path, generated.key_pair.serialize_pem()).unwrap();
+
+        let loaded = load_from_pem(&cert_path, &key_path).unwrap();
+        assert!(loaded.server_config(None).is_ok());
     }
 
     fn self_signed_ca_pem(cn: &str) -> String {

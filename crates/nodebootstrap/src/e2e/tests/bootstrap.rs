@@ -2,10 +2,10 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use http::Request;
-use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
+use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Pod, Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{Endpoints, Pod, Service, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
@@ -241,6 +241,103 @@ pub(super) async fn coredns_is_a_healthy_deployment(context: &E2eContext) -> Res
             }
         })
         .await
+}
+
+pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("the cluster is using the upstream apiserver target"));
+    }
+    let nodeapiserver_active = match run_privileged_output("systemctl", &["is-active", "--quiet", "nodeapiserver"]) {
+        Ok(output) => output.status.success(),
+        Err(error) => return Err(skip_test(format!("nodeapiserver service check requires systemd: {error}"))),
+    };
+    anyhow::ensure!(nodeapiserver_active, "nodeapiserver.service is not active");
+    let upstream_active = run_privileged_output("systemctl", &["is-active", "--quiet", "kube-apiserver"])
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    anyhow::ensure!(!upstream_active, "the upstream kube-apiserver service is still active alongside nodeapiserver");
+
+    // A successful typed API request proves the kubeconfig trusts the
+    // bootstrap CA-signed nodeapiserver certificate and that nodestore-backed
+    // resource reads are live, not merely that the process is running.
+    let services: Api<Service> = Api::namespaced(context.client.clone(), "default");
+    let expected_cluster_ip = cfg.service_ip()?.to_string();
+    let service = services.get("kubernetes").await.context("reading nodeapiserver default/kubernetes Service")?;
+    anyhow::ensure!(
+        service.spec.as_ref().is_some_and(|spec| {
+            spec.cluster_ip.as_deref() == Some(expected_cluster_ip.as_str())
+                && spec.ports.iter().flatten().any(|port| port.port == 6443)
+        }),
+        "nodeapiserver default/kubernetes Service is missing the configured ClusterIP or port"
+    );
+    let endpoints: Api<Endpoints> = Api::namespaced(context.client.clone(), "default");
+    anyhow::ensure!(
+        endpoints
+            .get("kubernetes")
+            .await?
+            .subsets
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|subset| subset.addresses.unwrap_or_default())
+            .any(|address| address.ip.parse::<std::net::IpAddr>().is_ok_and(|ip| !ip.is_unspecified())),
+        "nodeapiserver default/kubernetes has no endpoint"
+    );
+
+    // The target also has to mint the projected token nodelet/CoreDNS use,
+    // and accept that token through TokenReview. This catches a listener
+    // that merely answers certificate-authenticated bootstrap requests.
+    let token_request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/namespaces/kube-system/serviceaccounts/default/token")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&TokenRequest {
+            metadata: Default::default(),
+            spec: TokenRequestSpec {
+                audiences: Vec::new(),
+                bound_object_ref: None,
+                expiration_seconds: Some(600),
+            },
+            status: None,
+        })?)?;
+    let token = context
+        .client
+        .request::<TokenRequest>(token_request)
+        .await
+        .context("requesting a ServiceAccount token from nodeapiserver")?
+        .status
+        .context("nodeapiserver TokenRequest response had no status")?
+        .token;
+    anyhow::ensure!(!token.is_empty(), "nodeapiserver returned an empty ServiceAccount token");
+    let token_review = Request::builder()
+        .method("POST")
+        .uri("/apis/authentication.k8s.io/v1/tokenreviews")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&TokenReview {
+            metadata: Default::default(),
+            spec: TokenReviewSpec {
+                token: Some(token),
+                audiences: Vec::new(),
+            },
+            status: None,
+        })?)?;
+    let review = context
+        .client
+        .request::<TokenReview>(token_review)
+        .await
+        .context("reviewing a nodeapiserver ServiceAccount token")?;
+    anyhow::ensure!(
+        review.status.as_ref().is_some_and(|status| status.authenticated == Some(true)),
+        "nodeapiserver TokenReview did not authenticate its own token"
+    );
+    anyhow::ensure!(
+        review
+            .status
+            .and_then(|status| status.user)
+            .is_some_and(|user| user.username == Some("system:serviceaccount:kube-system:default".to_string())),
+        "nodeapiserver TokenReview returned the wrong ServiceAccount identity"
+    );
+    Ok(())
 }
 
 pub(super) async fn graceful_node_shutdown_manual_note(_context: &E2eContext) -> Result<()> {

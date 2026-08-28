@@ -357,11 +357,9 @@ jobs:
               else
                 echo "crates/nodecontroller not present on this ref — skipping it."
               fi
-              # nodeapiserver: no features either. Not yet in
-              # deploy/lib/components.sh's table (Group O's job — see
-              # docs/APISERVER.md), so "Stage binaries" below won't pick its
-              # binary up even once built; built here anyway so a real
-              # cross-arch compile error surfaces here, not later.
+              # nodeapiserver: no features either. Keep this explicit build
+              # beside the component registry so a real cross-arch compile
+              # error surfaces before the staged artifact is used.
               if [[ -d crates/nodeapiserver ]]; then
                 # shellcheck disable=SC2086
                 cargo build $1 -p nodeapiserver $TARGET_FLAG
@@ -403,7 +401,7 @@ jobs:
           # Keep this list in sync with the Rust component registry and the
           # combined applet table. The old deploy/components.sh source of
           # truth was removed with the shell installer tree.
-          BINS=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodebootstrap notk8s)
+          BINS=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
             for bin in "${BINS[@]}"; do

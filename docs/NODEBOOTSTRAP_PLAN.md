@@ -114,9 +114,9 @@ crates/nodebootstrap/
                                #   kube-apiserver only; this project
                                #   supplies scheduler/controller services
                                #   against nodestore (main's default)
-      nodeapiserver.rs         # added on the nodeapiserver branch once that
-                                #   binary exists; becomes the default once
-                                #   its own acceptance criteria are met
+      nodeapiserver.rs         # integration-branch target, selected with
+                                #   --apiserver=nodeapiserver; upstream remains
+                                #   the default until acceptance is complete
 ```
 
 `targets/` is the seam that makes point 3 above real: everything above it
@@ -195,9 +195,10 @@ Standard `CLAUDE.md` merge protocol applies, group by group, same as
    `targets/nodeapiserver.rs`, plus whatever `nodeapiserver`'s own groups
    need from `nodebootstrap` that upstream's binaries didn't exercise
    (anything `nodeapiserver` does differently from real `kube-apiserver`).
-   Flipping the default target away from `targets/upstream.rs` happens only
-   once `APISERVER_PLAN.md`'s final acceptance criteria are met, per the
-   existing "no partial multi-phase work" standing rule.
+   The target is now wired behind `--apiserver=nodeapiserver`; flipping the
+   default away from `targets/upstream.rs` happens only once
+   `APISERVER_PLAN.md`'s final acceptance criteria are met, per the existing
+   "no partial multi-phase work" standing rule.
 
 The non-performance shell installer, deployment, diagnostic, and e2e files
 were deleted after the CI/CD cutover. The exact pre-cutover tree is preserved
@@ -221,8 +222,9 @@ comment for the specifics and what's queued next:
 | `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` and the Rust `flanneld` service applet) | n/a |
 | `fetch.rs` | ✅ real for source/release/prebuilt selection, including the<br>standalone and combined CLI paths (version-stamp + `cargo build` per layout), `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming), and the prebuilt seam (`NOTK8S_COMBINED_PREBUILT` / per-component `NOTK8S_*_PREBUILT`, checked before `cfg.source` -- same precedence `nodelet-build.sh`'s `build_nodelet()` documents; added 2026-08-22 so `release.yml`'s e2e stage can stage one compiled artifact into 5 shards instead of recompiling per shard) | n/a |
 | `targets/upstream.rs` | ✅ real -- **installs only `kube-apiserver`** now (2026-08-22, user direction: `nodescheduler`/`nodecontroller` are the scheduler/controller-manager, not upstream's binaries -- see `services.rs`), binary fetch + full flag-set construction + `service_mgr.rs` + a best-effort `/readyz` wait. **`K8S_VERSION` bumped `v1.33.13` -> `v1.34.11`**: `nodescheduler` hardcodes `resource.k8s.io/v1`, GA only from 1.34. `--runtime-config=api/all=true` was tried as a hedge and **removed** after it broke `rbac/bootstrap-roles` (`rbac.rs`'s whole finding depends on that PostStartHook succeeding). **`wait_for_nodestore`**: a real startup race found live -- `service_mgr.rs`'s `After=nodestore.service` only guarantees the unit started, not that its gRPC/TLS listener is accepting connections yet, and `rbac/bootstrap-roles` doesn't retry its own initial etcd connection failure. A hard TCP-connect wait before installing kube-apiserver closes it | n/a |
+| `targets/nodeapiserver.rs` | ✅ first integration slice -- installs the repository apiserver against nodestore, reuses bootstrap PKI/kubelet client credentials, bootstraps RBAC before enabling its authorizer, and publishes `default/kubernetes`; selected with `--apiserver=nodeapiserver`, not the default yet | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
-| `service_reconciler.rs` | ✅ real (thin verify -- second "kube-apiserver already does this" finding, same shape as `rbac.rs`) | n/a |
+| `service_reconciler.rs` | ✅ real -- thin verify for upstream's bootstrap-controller, explicit `default/kubernetes` Service/Endpoints reconciliation for nodeapiserver | n/a |
 | `service_mgr.rs` | ✅ real, all three tiers (systemd -> OpenRC -> self-restart loop + cron `@reboot`), unit-tested. Wired into `containerd.rs`, `targets/upstream.rs`, `cni.rs`, and `services.rs`. | n/a |
 | `services.rs` | ✅ real for all five, all wired into `run_all()`: `nodestore`, `nodescheduler`/`nodecontroller` (the default scheduler/controller-manager -- see `targets/upstream.rs`, using the `kube-scheduler.kubeconfig`/`kube-controller-manager.kubeconfig` `pki.rs` mints for exactly those identities), `nodelet`/`nodeproxy` (using `admin.kubeconfig`, matching current `bootstrap-source.sh` behavior) | ❌ not ported: a real per-node identity for `nodelet` (`system:node:<name>` via `nodecontroller`'s CSR-signing flow) -- using `admin.kubeconfig` isn't a regression from current behavior, but isn't tightened either |
 
