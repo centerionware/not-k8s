@@ -1486,7 +1486,7 @@ async fn handle(
                 }
             }
 
-            let (candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
+            let (mut candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
                 Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::ApplyPrepareOutcome::Conflict(conflicts)) => return Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
@@ -1517,6 +1517,44 @@ async fn handle(
                         warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                     }
+                }
+            }
+
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "admission: reading the existing object for apply webhooks failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let operation = if old_object.is_some() {
+                admission::attributes::Operation::Update
+            } else {
+                admission::attributes::Operation::Create
+            };
+            match admission::webhook::admit(
+                &mut client,
+                operation,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                &info.name,
+                candidate.clone(),
+                old_object,
+                identity.as_ref(),
+            )
+            .await
+            {
+                Ok(admission::webhook::Outcome::Allowed(admitted)) => candidate = admitted,
+                Ok(admission::webhook::Outcome::Denied(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission webhook invocation failed for apply");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                 }
             }
 
@@ -1586,7 +1624,7 @@ async fn handle(
             }
         }
 
-        let (candidate, context) = match rest::patch_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+        let (mut candidate, context) = match rest::patch_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
             Ok(rest::PatchPrepareOutcome::Ready(candidate, context)) => (candidate, context),
             Ok(rest::PatchPrepareOutcome::UnknownResource) | Ok(rest::PatchPrepareOutcome::ObjectNotFound) => {
                 return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
@@ -1619,6 +1657,39 @@ async fn handle(
                     warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                 }
+            }
+        }
+
+        let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => Some(object),
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "admission: reading the existing object for patch webhooks failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        match admission::webhook::admit(
+            &mut client,
+            admission::attributes::Operation::Update,
+            &info.api_group,
+            &info.api_version,
+            &info.resource,
+            &info.subresource,
+            &info.namespace,
+            &info.name,
+            candidate.clone(),
+            old_object,
+            identity.as_ref(),
+        )
+        .await
+        {
+            Ok(admission::webhook::Outcome::Allowed(admitted)) => candidate = admitted,
+            Ok(admission::webhook::Outcome::Denied(message)) => {
+                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "admission webhook invocation failed for patch");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             }
         }
 
@@ -2705,6 +2776,64 @@ async fn handle(
                             admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
                                 return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
                             }
+                        }
+                    }
+                }
+            }
+
+            // Group J: invoke configured mutating and validating webhooks
+            // after built-in admission and authorization have produced the
+            // candidate object, but before REST persists it. UPDATE and
+            // DELETE need the current object as oldObject (and DELETE's
+            // object); a missing object is left to REST to report NotFound.
+            if is_create || is_update || is_delete {
+                let old_object = if is_update || is_delete {
+                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(object)) => Some(object),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: reading the existing object for webhooks failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let webhook_object = body_value.clone().or_else(|| old_object.clone());
+                if let Some(webhook_object) = webhook_object {
+                    let operation = if is_create {
+                        admission::attributes::Operation::Create
+                    } else if is_update {
+                        admission::attributes::Operation::Update
+                    } else {
+                        admission::attributes::Operation::Delete
+                    };
+                    match admission::webhook::admit(
+                        &mut client,
+                        operation,
+                        &info.api_group,
+                        &info.api_version,
+                        &info.resource,
+                        &info.subresource,
+                        &info.namespace,
+                        &info.name,
+                        webhook_object,
+                        old_object,
+                        identity.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(admission::webhook::Outcome::Allowed(admitted)) => {
+                            if is_create || is_update {
+                                body_value = Some(admitted);
+                            }
+                        }
+                        Ok(admission::webhook::Outcome::Denied(message)) => {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission webhook invocation failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                         }
                     }
                 }
