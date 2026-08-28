@@ -560,9 +560,10 @@ named honestly as a real, separate gap, not guessed at). Real,
 distinct `Status` responses per outcome: `201` created, `409
 AlreadyExists` (lost the create race), `422 Invalid` (validation
 failures, joined into one message — real upstream's structured
-`details.causes` isn't built), `400` for a missing name (no
-`generateName` support) or a namespace mismatch between the body and
-the URL.
+`details.causes` isn't built), `400` when neither `metadata.name` nor
+`metadata.generateName` is supplied, or for a namespace mismatch between
+the body and the URL. When `generateName` is supplied, the server appends
+a collision-resistant suffix before validation and persistence.
 
 `server::rest::delete` (single-object `DELETE`) is real too: one
 `DeleteRange` with `prev_kv: true` so the deleted object can be returned

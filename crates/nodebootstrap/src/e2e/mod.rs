@@ -211,6 +211,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_generate_name",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_graceful_node_shutdown_manual_note",
         group: TestGroup::General,
     },
@@ -1544,6 +1548,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_serves_partial_object_metadata" => {
             bootstrap::nodeapiserver_serves_partial_object_metadata(context).await
+        },
+        "test_nodeapiserver_honors_generate_name" => {
+            bootstrap::nodeapiserver_honors_generate_name(context).await
         },
         "test_graceful_node_shutdown_manual_note" => {
             bootstrap::graceful_node_shutdown_manual_note(context).await
