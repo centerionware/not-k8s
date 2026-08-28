@@ -259,6 +259,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_webhook_match_conditions",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_honors_resource_version_snapshot",
         group: TestGroup::General,
     },
@@ -1636,6 +1640,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_validates_crd_status_subresource" => {
             bootstrap::nodeapiserver_validates_crd_status_subresource(context).await
+        },
+        "test_nodeapiserver_honors_webhook_match_conditions" => {
+            bootstrap::nodeapiserver_honors_webhook_match_conditions(context).await
         },
         "test_nodeapiserver_honors_resource_version_snapshot" => {
             bootstrap::nodeapiserver_honors_resource_version_snapshot(context).await

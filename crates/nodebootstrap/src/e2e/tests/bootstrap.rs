@@ -21,8 +21,13 @@ use secrecy::SecretString;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
@@ -1865,6 +1870,195 @@ pub(super) async fn nodeapiserver_validates_crd_status_subresource(
 
     let _ = widgets.delete(&widget_name, &DeleteParams::default()).await;
     let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
+    result
+}
+
+fn serve_webhook_connection(
+    mut stream: std::net::TcpStream,
+    calls: &AtomicUsize,
+) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let content_length = loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let Some(headers_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&request[..headers_end]);
+        break headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Content-Length:")
+                    .or_else(|| line.strip_prefix("content-length:"))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+    };
+    let headers_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP headers were found above")
+        + 4;
+    while request.len() < headers_end + content_length {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    let review: Value = serde_json::from_slice(&request[headers_end..headers_end + content_length])
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let uid = review
+        .pointer("/request/uid")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let body = serde_json::to_vec(&json!({
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "response": {"uid": uid, "allowed": true}
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(&body)?;
+    calls.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_honors_webhook_match_conditions(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "admission webhook checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("binding the e2e admission webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_calls = calls.clone();
+    let server_stopping = stopping.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_webhook_connection(stream, &server_calls);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let suffix = std::process::id();
+    let configuration_name = format!("nodeapiserver-webhook-{suffix}");
+    let skip_name = format!("nodeapiserver-webhook-skip-{suffix}");
+    let match_name = format!("nodeapiserver-webhook-match-{suffix}");
+    let configuration = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingWebhookConfiguration",
+        "metadata": {"name": configuration_name},
+        "webhooks": [{
+            "name": "matchconditions.nodeapiserver.test",
+            "admissionReviewVersions": ["v1"],
+            "sideEffects": "None",
+            "failurePolicy": "Fail",
+            "timeoutSeconds": 5,
+            "clientConfig": {"url": format!("http://{}", address)},
+            "rules": [{
+                "operations": ["CREATE"],
+                "apiGroups": [""],
+                "apiVersions": ["v1"],
+                "resources": ["configmaps"],
+                "scope": "Namespaced"
+            }],
+            "matchConditions": [{
+                "name": "only-the-canary",
+                "expression": format!("object.metadata.name == '{match_name}'")
+            }]
+        }]
+    });
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let create_configuration = Request::builder()
+        .method("POST")
+        .uri("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&configuration)?)?;
+    let result = async {
+        context
+            .client
+            .request::<Value>(create_configuration)
+            .await
+            .context("creating the matchConditions webhook configuration")?;
+        configmaps
+            .create(
+                &PostParams::default(),
+                &ConfigMap {
+                    metadata: kube::core::ObjectMeta {
+                        name: Some(skip_name.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the nonmatching webhook ConfigMap")?;
+        anyhow::ensure!(
+            calls.load(Ordering::SeqCst) == 0,
+            "matchConditions webhook was invoked for a nonmatching object"
+        );
+        configmaps
+            .create(
+                &PostParams::default(),
+                &ConfigMap {
+                    metadata: kube::core::ObjectMeta {
+                        name: Some(match_name.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the matching webhook ConfigMap")?;
+        context
+            .wait_until("matchConditions webhook invocation", Duration::from_secs(30), || {
+                let calls = calls.clone();
+                async move { Ok(calls.load(Ordering::SeqCst) == 1) }
+            })
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = configmaps.delete(&skip_name, &DeleteParams::default()).await;
+    let _ = configmaps.delete(&match_name, &DeleteParams::default()).await;
+    let delete_configuration = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/{configuration_name}"
+        ))
+        .body(Vec::new())?;
+    let _ = context.client.request::<Value>(delete_configuration).await;
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
     result
 }
 
