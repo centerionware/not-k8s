@@ -59,9 +59,9 @@
 //! for real (`cacher::selector::object_matches`, wired against every
 //! item's own decoded JSON — Group D's own generic adapter, unchanged
 //! here) and paginates for real too (`limit`/`continue_token`, its own
-//! opaque resume-key encoding — see `list`'s own doc comment). `list`'s
-//! remaining real gap: no `resourceVersion`-pinned reads (always reads
-//! at the current revision).
+//! opaque resume-key encoding — see `list`'s own doc comment). `get` and
+//! `list` also honor a positive `resourceVersion` by reading a consistent
+//! nodestore MVCC snapshot; pinned requests bypass the live watch cache.
 //!
 //! `create` runs Group F's already-landed `scheme::validation`
 //! (`validate_required`/`validate_types`, on the client's raw submitted
@@ -389,21 +389,29 @@ fn split_api_version(api_version: &str) -> (&str, &str) {
 /// every resource outside that list, and every other caller, still
 /// passes `None`.
 pub async fn get(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<GetOutcome, Error> {
+    get_at_revision(storage, cache, group, version, resource, namespace, name, 0).await
+}
+
+/// [`get`] with an optional etcd MVCC snapshot revision. A non-positive
+/// revision retains the normal current-state behavior.
+pub async fn get_at_revision(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, resource_version: i64) -> Result<GetOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(GetOutcome::UnknownResource);
     };
     let kind = resolved.kind;
     let key = keys::object_key(group, resource, namespace, name);
 
-    if let Some(cache) = cache {
-        if let Some(entry) = cache.get(key.as_bytes()) {
-            let mut object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
-            set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
-            return Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)));
+    if resource_version <= 0 {
+        if let Some(cache) = cache {
+            if let Some(entry) = cache.get(key.as_bytes()) {
+                let mut object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
+                set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
+                return Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)));
+            }
         }
     }
 
-    let resp = storage.range(RangeRequest { key: key.into_bytes(), ..Default::default() }).await?;
+    let resp = storage.range(RangeRequest { key: key.into_bytes(), revision: resource_version.max(0), ..Default::default() }).await?;
     let Some(kv) = resp.kvs.into_iter().next() else {
         return Ok(GetOutcome::ObjectNotFound);
     };
@@ -497,6 +505,25 @@ pub async fn list(
     limit: i64,
     continue_token: &str,
 ) -> Result<ListOutcome, Error> {
+    list_at_revision(storage, cache, group, version, resource, namespace, label_selector, field_selector, limit, continue_token, 0).await
+}
+
+/// [`list`] with an optional etcd MVCC snapshot revision. A positive
+/// revision bypasses the live watch cache and returns a consistent snapshot
+/// from nodestore.
+pub async fn list_at_revision(
+    storage: &mut StorageClient,
+    cache: Option<&crate::cacher::store::SharedCache>,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    label_selector: &str,
+    field_selector: &str,
+    limit: i64,
+    continue_token: &str,
+    resource_version: i64,
+) -> Result<ListOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(ListOutcome::UnknownResource);
     };
@@ -519,7 +546,7 @@ pub async fn list(
     // unordered cache doesn't. A paginated request (real `limit`/`continue`,
     // not the default "everything") always goes straight to nodestore
     // below, same as an unsynced cache would.
-    let paginated = limit > 0 || !continue_token.is_empty();
+    let paginated = limit > 0 || !continue_token.is_empty() || resource_version > 0;
     if let Some(cache) = cache {
         if cache.has_synced() && !paginated {
             let (entries, revision) = cache.list();
@@ -558,7 +585,7 @@ pub async fn list(
     // one listing sees a consistent snapshot, matching real upstream's
     // own pagination contract.
     let (start_key, at_revision) = if continue_token.is_empty() {
-        (prefix, 0)
+        (prefix, resource_version.max(0))
     } else {
         match decode_continue_token(continue_token) {
             Some((key, revision)) => (key, revision),
