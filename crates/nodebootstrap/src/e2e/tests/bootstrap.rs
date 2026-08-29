@@ -194,7 +194,7 @@ impl NodeapiserverAuthorizationWebhookOverride {
         let drop_in = drop_in_dir.join(format!("nodebootstrap-e2e-authz-webhook-{suffix}.conf"));
         let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-authz-webhook-{suffix}.conf"));
         let contents = format!(
-            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=1\nEnvironment=NODEAPISERVER_ENFORCE_RBAC=0\nEnvironment=NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL={url}\n"
+            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=1\nEnvironment=NODEAPISERVER_ENFORCE_RBAC=1\nEnvironment=NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL={url}\n"
         );
         fs::write(&local_drop_in, contents)
             .with_context(|| format!("writing {}", local_drop_in.display()))?;
@@ -2376,6 +2376,7 @@ pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
     let server_reviews = reviews.clone();
     let server_stopping = stopping.clone();
     let denied_name = format!("nodeapiserver-authz-denied-{}", std::process::id());
+    let allowed_name = format!("nodeapiserver-authz-allowed-{}", std::process::id());
     let server_denied_name = denied_name.clone();
     let server = thread::spawn(move || {
         while !server_stopping.load(Ordering::Relaxed) {
@@ -2454,13 +2455,38 @@ pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
             String::from_utf8_lossy(&denied.stderr)
         );
 
+        let allowed_url = format!(
+            "https://127.0.0.1:6443/api/v1/namespaces/{}/configmaps/{allowed_name}",
+            context.namespace
+        );
+        let allowed = Command::new("curl")
+            .args([
+                "-k",
+                "-sS",
+                "--max-time",
+                "10",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                &allowed_url,
+            ])
+            .output()
+            .context("checking an authorization webhook allow")?;
+        anyhow::ensure!(
+            allowed.status.success() && String::from_utf8_lossy(&allowed.stdout).trim() == "404",
+            "authorization webhook Allow did not bypass local RBAC: stdout={} stderr={}",
+            String::from_utf8_lossy(&allowed.stdout),
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+
         context
             .wait_until(
-                "authorization webhook to receive both test requests",
+                "authorization webhook to receive all test requests",
                 Duration::from_secs(30),
                 || {
                     let reviews = reviews.clone();
-                    async move { Ok(reviews.lock().is_ok_and(|reviews| reviews.len() >= 2)) }
+                    async move { Ok(reviews.lock().is_ok_and(|reviews| reviews.len() >= 3)) }
                 },
             )
             .await?;
@@ -2480,6 +2506,13 @@ pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
                     && review.pointer("/spec/resourceAttributes/name").and_then(Value::as_str) == Some(denied_name.as_str())
             }),
             "authorization webhook did not receive the expected resource attributes: {reviews:?}"
+        );
+        anyhow::ensure!(
+            reviews.iter().any(|review| {
+                review.pointer("/spec/resourceAttributes/resource").and_then(Value::as_str) == Some("configmaps")
+                    && review.pointer("/spec/resourceAttributes/name").and_then(Value::as_str) == Some(allowed_name.as_str())
+            }),
+            "authorization webhook did not receive the allowed resource request: {reviews:?}"
         );
         Ok::<(), anyhow::Error>(())
     }
