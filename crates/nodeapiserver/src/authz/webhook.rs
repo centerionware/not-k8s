@@ -6,13 +6,18 @@
 //! so a denial or an unavailable webhook cannot silently become an allow. The
 //! response preserves the upstream three-way result: `Allow` short-circuits
 //! the local chain, `Deny` rejects the request, and `NoOpinion` lets the next
-//! authorizer decide.
+//! authorizer decide. Transient transport and server failures are retried with
+//! a small bounded backoff; a valid response or a non-retryable HTTP status
+//! is returned immediately.
 
 use crate::authn::x509::Identity;
 use crate::server::path::RequestInfo;
 use serde_json::{json, Value};
 use std::time::Duration;
 use thiserror::Error;
+
+const MAX_ATTEMPTS: usize = 3;
+const RETRY_BACKOFF: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -57,17 +62,31 @@ impl WebhookAuthorizer {
         info: &RequestInfo,
         identity: Option<&Identity>,
     ) -> Result<Decision, Error> {
-        let response = self
-            .client
-            .post(&self.url)
-            .json(&build_review(info, identity))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
-        parse_decision(&response)
+        let review = build_review(info, identity);
+        for attempt in 0..MAX_ATTEMPTS {
+            let response = match self.client.post(&self.url).json(&review).send().await {
+                Ok(response) if retryable_status(response.status()) && attempt + 1 < MAX_ATTEMPTS => {
+                    tokio::time::sleep(RETRY_BACKOFF * (attempt as u32 + 1)).await;
+                    continue;
+                }
+                Ok(response) => response,
+                Err(_error) if attempt + 1 < MAX_ATTEMPTS => {
+                    tokio::time::sleep(RETRY_BACKOFF * (attempt as u32 + 1)).await;
+                    continue;
+                }
+                Err(error) => return Err(Error::Request(error)),
+            };
+            if !response.status().is_success() {
+                return Err(Error::InvalidResponse(format!("webhook returned HTTP {}", response.status())));
+            }
+            return parse_decision(&response.json::<Value>().await?);
+        }
+        unreachable!("authorization webhook attempts are bounded above")
     }
+}
+
+fn retryable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
 fn parse_decision(response: &Value) -> Result<Decision, Error> {
@@ -150,6 +169,8 @@ fn build_review(info: &RequestInfo, identity: Option<&Identity>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn accepts_only_http_and_https_endpoints() {
@@ -227,5 +248,31 @@ mod tests {
         assert!(parse_decision(&json!({"status": {"allowed": "yes"}})).is_err());
         assert!(parse_decision(&json!({"status": {"denied": "yes"}})).is_err());
         assert!(parse_decision(&json!({})).is_err());
+    }
+
+    #[tokio::test]
+    async fn retries_transient_webhook_failures_before_returning_the_decision() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = first.read(&mut request).await.unwrap();
+            first.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            let (mut second, _) = listener.accept().await.unwrap();
+            let _ = second.read(&mut request).await.unwrap();
+            second.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: close\r\n\r\n{\"status\":{\"allowed\":true}}").await.unwrap();
+        });
+        let authorizer = WebhookAuthorizer::new(format!("http://{address}/authorize")).unwrap();
+        let decision = authorizer.authorize(&RequestInfo::default(), None).await.unwrap();
+        assert_eq!(decision, Decision::Allow);
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn retries_server_errors_and_rate_limits_but_not_client_errors() {
+        assert!(retryable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
 }
