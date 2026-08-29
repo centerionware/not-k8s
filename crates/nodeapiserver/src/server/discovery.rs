@@ -61,6 +61,7 @@ pub fn api_versions() -> Value {
     versions.sort_unstable();
     versions.dedup();
     json!({
+        "apiVersion": "v1",
         "kind": "APIVersions",
         "versions": versions,
         "serverAddressByClientCIDRs": [],
@@ -477,6 +478,7 @@ mod tests {
     #[test]
     fn api_versions_serves_core_v1_only() {
         let v = api_versions();
+        assert_eq!(v["apiVersion"], "v1");
         assert_eq!(v["kind"], "APIVersions");
         assert_eq!(v["versions"], json!(["v1"]));
     }
