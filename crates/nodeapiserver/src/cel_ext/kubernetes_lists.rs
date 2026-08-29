@@ -6,9 +6,9 @@
 //! Every real function real upstream's own library declares —
 //! `isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum`/`includes` — is
 //! now landed. Real upstream's own separate `quantity`/`ip`/`cidr`/
-//! `url`/`semver`/`format`/`regex`/`authz` libraries remain separate,
-//! not-yet-started work, named in `docs/APISERVER.md`'s own Group K
-//! point 6, not silently folded in as "done".
+//! `url`/`semver`/`regex` libraries are now also wired into the shared
+//! runtime; the richer `format` and `authz` libraries remain separate,
+//! not-yet-started work, named in `docs/APISERVER.md`'s own Group K point 6.
 //!
 //! Every function here follows the same shape: a pure, directly-testable
 //! core taking `&[Value]` (plus whatever extra argument the real function

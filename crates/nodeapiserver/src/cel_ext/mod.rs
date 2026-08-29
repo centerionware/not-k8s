@@ -95,6 +95,8 @@
 //! component/query accessors.
 //! `kubernetes_semver` provides the upstream `kubernetes.Semver` parser,
 //! normalization, comparison, and component accessors.
+//! `kubernetes_regex` provides upstream's `find` and `findAll` substring
+//! helpers, including the optional match limit.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -128,6 +130,7 @@ pub mod kubernetes_cidr;
 pub mod kubernetes_ip;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
+pub mod kubernetes_regex;
 pub mod kubernetes_semver;
 pub mod kubernetes_url;
 pub mod path;
@@ -257,6 +260,8 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("major", kubernetes_semver::major_binding);
     ctx.add_function("minor", kubernetes_semver::minor_binding);
     ctx.add_function("patch", kubernetes_semver::patch_binding);
+    ctx.add_function("find", kubernetes_regex::find_binding);
+    ctx.add_function("findAll", kubernetes_regex::find_all_binding);
     ctx.add_function("string", string_binding);
     authorizer::register(ctx);
 }
@@ -694,6 +699,9 @@ mod tests {
         assert_eq!(eval_bool_with_vars("semver('2.0.0').isGreaterThan(semver('1.2.3'))", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("semver('1.2.3').compareTo(semver('1.2.3')) == 0", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("string(semver('1.2.3')) == '1.2.3'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("'abc 123 def 456'.find('[0-9]+') == '123'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("'123 abc 456'.findAll('[0-9]+')[1] == '456'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("'123 abc 456'.findAll('[0-9]+', 1).size() == 1", &[]).unwrap(), true);
     }
 
     #[test]
