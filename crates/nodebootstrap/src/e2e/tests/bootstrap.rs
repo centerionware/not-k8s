@@ -2335,7 +2335,37 @@ pub(super) async fn nodeapiserver_honors_dry_run_and_delete_preconditions(contex
         )
         .await
         .context("creating the delete-precondition fixture")?;
-    let resource_version = created.metadata.resource_version.context("delete-precondition fixture had no resourceVersion")?;
+    let resource_version = created
+        .metadata
+        .resource_version
+        .context("delete-precondition fixture had no resourceVersion")?;
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/api/v1/namespaces/{}/configmaps?fieldSelector=metadata.name%3D{name}&dryRun=All",
+            context.namespace
+        ))
+        .body(Vec::new())?;
+    let dry_collection: Value = context
+        .client
+        .request(request)
+        .await
+        .context("dry-running a ConfigMap collection delete")?;
+    anyhow::ensure!(
+        dry_collection["items"]
+            .as_array()
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.pointer("/metadata/name").and_then(Value::as_str)
+                        == Some(name.as_str())
+                })
+            }),
+        "dry-run collection delete did not return the matching ConfigMap: {dry_collection}"
+    );
+    anyhow::ensure!(
+        configmaps.get(&name).await.is_ok(),
+        "dry-run collection delete removed the ConfigMap"
+    );
     let wrong = json!({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"resourceVersion": "0"}});
     let request = Request::builder()
         .method("DELETE")
