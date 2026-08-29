@@ -1,4 +1,4 @@
-//! Policy-driven audit pipeline (the four stages) and its backends.
+//! Policy-driven audit pipeline and its backends.
 //!
 //! `event` — a pure builder for one real `audit.k8s.io/v1` `Event`
 //! document, `Metadata` level, `ResponseComplete` stage only — see that
@@ -9,15 +9,15 @@
 //! request via this crate's own `tracing` output and, when configured,
 //! an append-only JSON-lines file sink selected by
 //! `NODEAPISERVER_AUDIT_LOG_PATH`. Rotation and webhook delivery remain
-//! separate backends.
+//! separate backends. `policy` matches an upstream-shaped
+//! `audit.k8s.io/v1` policy in order and supports `None` suppression and
+//! `omitStages` for the currently emitted `ResponseComplete` event. Request
+//! and response object capture remains separate work.
 //!
-//! Status: started (Group M — see docs/APISERVER.md). Audit policy
-//! (per-rule level selection — every request is unconditionally logged
-//! at `Metadata` level today, real upstream's own policy-driven
-//! per-rule level selection isn't modeled), file rotation/webhook
-//! delivery, and APF (FlowSchema/
-//! PriorityLevelConfiguration enforcement) are all separate,
-//! not-yet-started work.
+//! Status: started (Group M — see docs/APISERVER.md). File
+//! rotation/webhook delivery and request/response object capture remain
+//! separate work.
 
 pub mod event;
+pub mod policy;
 pub mod sink;
