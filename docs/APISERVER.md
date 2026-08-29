@@ -284,11 +284,12 @@ authenticated data, matching real upstream's own
 `dataCtx.AuthenticatedData()` convention exactly. A resource with no
 matching entry in the loaded config is written/read as-is, unchanged
 from before this wiring existed — encryption is opt-in per resource,
-never a blanket switch. Named, honest gap: the real `stale` flag
-`transform_from_storage` returns (upstream's own "this was encrypted
-under a non-primary key, rewrite it with the current one next write" —
-a key-rotation migration signal) is read but discarded; there's no
-background re-encryption sweep to act on it yet.
+never a blanket switch. The real `stale` flag `transform_from_storage`
+returns (upstream's own "this was encrypted under a non-primary key,
+rewrite it with the current one next write" signal) is now honored on
+every nodestore-backed read. The rewrite is guarded by an MVCC compare
+against the revision that was read, so concurrent updates win and a
+failed rotation never breaks the successful read.
 
 **D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent

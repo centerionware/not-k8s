@@ -21,6 +21,7 @@
 use nodeapiserver::config::Config;
 use nodeapiserver::server::rest;
 use nodeapiserver::storage::client::StorageClient;
+use nodeapiserver::storage::encryption::Transformer;
 use nodeapiserver::storage::pb::etcdserverpb::RangeRequest;
 use serde_json::json;
 use std::path::PathBuf;
@@ -85,8 +86,30 @@ resources:
     )
 }
 
+fn rotated_encryption_config_yaml() -> String {
+    use base64::Engine;
+    let rotated_key = base64::engine::general_purpose::STANDARD.encode([1u8; 32]);
+    format!(
+        r#"
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      - aesgcm:
+          keys:
+            - name: rotated-key
+              secret: {rotated_key}
+            - name: test-key
+              secret: {TEST_AES_KEY_B64}
+      - identity: {{}}
+"#
+    )
+}
+
 #[tokio::test]
-async fn secrets_are_genuinely_encrypted_at_rest_and_decrypt_back_correctly() {
+async fn secrets_are_encrypted_and_stale_values_rotate_on_read() {
     let Some(nodestore_bin) = find_nodestore_binary() else {
         eprintln!("SKIPPED: no nodestore binary available and building one on demand failed (no crates/nodestore on this ref, or `cargo build -p nodestore` itself failed -- see stderr above)");
         return;
@@ -165,7 +188,7 @@ async fn secrets_are_genuinely_encrypted_at_rest_and_decrypt_back_correctly() {
     // and confirm they're genuinely ciphertext, not the plaintext
     // protobuf envelope `decode_stored_object` itself would recognize.
     let key_bytes = nodeapiserver::storage::keys::object_key("", "secrets", Some("default"), "test-secret").into_bytes();
-    let raw = storage.range(RangeRequest { key: key_bytes, ..Default::default() }).await.expect("raw Range must succeed").kvs;
+    let raw = storage.range(RangeRequest { key: key_bytes.clone(), ..Default::default() }).await.expect("raw Range must succeed").kvs;
     assert_eq!(raw.len(), 1, "the object must exist at its real etcd key");
     let raw_value = &raw[0].value;
     assert!(
@@ -188,6 +211,43 @@ async fn secrets_are_genuinely_encrypted_at_rest_and_decrypt_back_correctly() {
     };
     assert_eq!(read_back["data"]["password"], "c2VjcmV0");
     assert_eq!(read_back["metadata"]["name"], "test-secret");
+
+    // A live key rotation keeps the old key as a read fallback while
+    // selecting the new key for writes. The first read below must still
+    // succeed, and the stale value must be rewritten before the read
+    // returns; otherwise a later configuration that drops the old key
+    // would be unable to read this object.
+    let rotated_config = nodeapiserver::storage::encryption_config::parse(&rotated_encryption_config_yaml()).expect("parsing the rotated EncryptionConfiguration");
+    let mut storage_with_rotated_encryption = storage.clone().with_encryption(Some(rotated_config));
+    let old_raw = storage
+        .range(RangeRequest { key: key_bytes.clone(), ..Default::default() })
+        .await
+        .expect("raw Range before rotation must succeed")
+        .kvs;
+    assert_eq!(old_raw.len(), 1);
+    let old_prefix = format!("{}test-key:", nodeapiserver::storage::encryption::AES_GCM_PREFIX_V1);
+    assert!(old_raw[0].value.starts_with(old_prefix.as_bytes()), "the fixture must begin under the old key");
+
+    let rotated_read = match rest::get(&mut storage_with_rotated_encryption, None, "", "v1", "secrets", Some("default"), "test-secret").await.expect("rotated rest::get must not error") {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected Found after rotation, got {other:?}"),
+    };
+    assert_eq!(rotated_read["data"]["password"], "c2VjcmV0");
+
+    let rotated_raw = storage
+        .range(RangeRequest { key: key_bytes.clone(), ..Default::default() })
+        .await
+        .expect("raw Range after rotation must succeed")
+        .kvs;
+    assert_eq!(rotated_raw.len(), 1);
+    let rotated_prefix = format!("{}rotated-key:", nodeapiserver::storage::encryption::AES_GCM_PREFIX_V1);
+    assert!(rotated_raw[0].value.starts_with(rotated_prefix.as_bytes()), "the stale value must be rewritten under the new primary key");
+    assert_ne!(rotated_raw[0].value, old_raw[0].value);
+
+    let rotated_config = nodeapiserver::storage::encryption_config::parse(&rotated_encryption_config_yaml()).expect("parsing the rotated EncryptionConfiguration again");
+    let transformers = nodeapiserver::storage::encryption_config::transformers_for(&rotated_config, "", "secrets").expect("rotated configuration must match secrets");
+    let (_, stale) = transformers.transform_from_storage(&rotated_raw[0].value, &key_bytes).expect("the rewritten value must decrypt with the rotated configuration");
+    assert!(!stale, "the rewritten value must no longer be stale");
 
     let _ = child.kill().await;
     let _ = child.wait().await;
