@@ -1845,6 +1845,11 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
     let schema = resolved.schema;
     let open_api_schema = resolved.open_api_schema.clone();
+    // Prune a CRD's apply configuration before field ownership is
+    // calculated, so unknown fields cannot become owned. Prune the merged
+    // candidate again before validation/defaulting, matching the ordering of
+    // the ordinary CRD write paths.
+    let effective_config = prune_runtime_schema(open_api_schema.as_ref(), config);
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
@@ -1858,8 +1863,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         let live = json!({});
         let no_prior_managers = std::collections::BTreeMap::new();
         let applied_result = match (schema, open_api_schema.as_ref()) {
-            (Some(schema), _) => crate::patch::updater::apply(schema, &live, config, &no_prior_managers, manager, force),
-            (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, config, &no_prior_managers, manager, force),
+            (Some(schema), _) => crate::patch::updater::apply(schema, &live, &effective_config, &no_prior_managers, manager, force),
+            (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, &effective_config, &no_prior_managers, manager, force),
             (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
         };
         let applied = match applied_result {
@@ -1884,6 +1889,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         }
         let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&[], &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
         set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+        let object = prune_runtime_schema(open_api_schema.as_ref(), object);
 
         let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
             (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
@@ -1921,8 +1927,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let managers = crate::patch::managed_fields::to_managers_map(&entries);
 
     let applied_result = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => crate::patch::updater::apply(schema, &live, config, &managers, manager, force),
-        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, config, &managers, manager, force),
+        (Some(schema), _) => crate::patch::updater::apply(schema, &live, &effective_config, &managers, manager, force),
+        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, &effective_config, &managers, manager, force),
         (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
     };
     let applied = match applied_result {
@@ -1936,6 +1942,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
 
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
     set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+    let object = prune_runtime_schema(open_api_schema.as_ref(), object);
 
     let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
         (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
@@ -1958,6 +1965,13 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
 
     Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+}
+
+fn prune_runtime_schema(schema: Option<&Value>, value: Value) -> Value {
+    match schema {
+        Some(schema) => apiextensions::schema_pruning::prune(schema, &value),
+        None => value,
+    }
 }
 
 /// The "persist" half of [`server_side_apply`]: writes `object` (the
@@ -2428,6 +2442,29 @@ mod tests {
     fn omitted_content_type_uses_strategic_merge_for_builtins_and_merge_for_crds() {
         assert_eq!(default_patch_kind(false), PatchKind::StrategicMerge);
         assert_eq!(default_patch_kind(true), PatchKind::Merge);
+    }
+
+    #[test]
+    fn server_side_apply_prunes_unknown_crd_fields_before_ownership() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "spec": {"type": "object", "properties": {"color": {"type": "string"}}}
+            }
+        });
+        let result = prune_runtime_schema(
+            Some(&schema),
+            json!({
+                "apiVersion": "example.test/v1",
+                "kind": "Widget",
+                "metadata": {"name": "widget", "labels": {"kept": "yes"}},
+                "spec": {"color": "blue", "unknown": true},
+                "unknown": "dropped"
+            }),
+        );
+        assert_eq!(result["spec"], json!({"color": "blue"}));
+        assert!(result.get("unknown").is_none());
+        assert_eq!(result["metadata"]["labels"]["kept"], "yes");
     }
 
     #[test]
