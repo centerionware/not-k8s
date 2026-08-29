@@ -203,6 +203,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_apf_labels_requests",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rejects_unsupported_field_selector",
         group: TestGroup::General,
     },
@@ -1551,6 +1555,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
         "test_nodeapiserver_authentication_modes" => {
             bootstrap::nodeapiserver_authentication_modes(context).await
+        }
+        "test_nodeapiserver_apf_labels_requests" => {
+            bootstrap::nodeapiserver_apf_labels_requests(context).await
         }
         "test_nodeapiserver_rejects_unsupported_field_selector" => {
             bootstrap::nodeapiserver_rejects_unsupported_field_selector(context).await

@@ -9,11 +9,14 @@
 //! this gate still enforces the important safety property that ordinary
 //! requests cannot grow without bound.
 
+use crate::flowcontrol::resolve::PriorityLevelConfig;
 use crate::server::path::RequestInfo;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
@@ -27,6 +30,51 @@ pub enum Error {
 pub struct Permit {
     _requests: OwnedSemaphorePermit,
     _mutating_requests: Option<OwnedSemaphorePermit>,
+    _priority: Option<PriorityLease>,
+}
+
+#[derive(Debug)]
+struct PriorityState {
+    active: AtomicUsize,
+    queued: AtomicUsize,
+    max_concurrency: AtomicUsize,
+    queue_length_limit: AtomicUsize,
+    notify: Notify,
+}
+
+#[derive(Debug)]
+struct PriorityLease {
+    state: Arc<PriorityState>,
+}
+
+impl Drop for PriorityLease {
+    fn drop(&mut self) {
+        self.state.active.fetch_sub(1, Ordering::Release);
+        self.state.notify.notify_one();
+    }
+}
+
+struct QueueGuard {
+    state: Arc<PriorityState>,
+    armed: bool,
+}
+
+impl QueueGuard {
+    fn new(state: Arc<PriorityState>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for QueueGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.queued.fetch_sub(1, Ordering::Release);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -35,6 +83,8 @@ pub struct ConcurrencyLimiter {
     mutating_requests: Arc<Semaphore>,
     queued: Arc<AtomicUsize>,
     queue_length_limit: usize,
+    max_requests: usize,
+    priority_states: Arc<Mutex<HashMap<String, Arc<PriorityState>>>>,
 }
 
 impl ConcurrencyLimiter {
@@ -44,21 +94,27 @@ impl ConcurrencyLimiter {
             mutating_requests: Arc::new(Semaphore::new(max_mutating_requests)),
             queued: Arc::new(AtomicUsize::new(0)),
             queue_length_limit,
+            max_requests,
+            priority_states: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Acquire the request seats for one request. `exempt` is taken from the
-    /// selected PriorityLevelConfiguration. Watches and connection-upgrade
+    /// Acquire the request seats for one request. `priority` is the selected
+    /// PriorityLevelConfiguration, when APF resolution succeeded. Watches
+    /// and connection-upgrade
     /// proxy requests are intentionally unbounded, matching the upstream
     /// long-running-request exemption from the normal request budget.
     pub async fn acquire(
         &self,
         info: &RequestInfo,
         query: &str,
-        exempt: bool,
+        priority: Option<&PriorityLevelConfig>,
     ) -> Result<Option<Permit>, Error> {
-        if exempt || is_long_running(info, query) {
+        if priority.is_some_and(|level| level.exempt) || is_long_running(info, query) {
             return Ok(None);
+        }
+        if priority.is_some_and(|level| level.nominal_concurrency_shares == 0) {
+            return Err(Error::QueueFull);
         }
         let requests = acquire_seat(self.requests.clone(), &self.queued, self.queue_length_limit).await?;
         let mut mutating_requests = if is_mutating(info) {
@@ -72,10 +128,79 @@ impl ConcurrencyLimiter {
         } else {
             None
         };
+        let priority = match priority {
+            Some(level) => Some(acquire_priority(&self.priority_states, level, self.max_requests).await?),
+            None => None,
+        };
         Ok(Some(Permit {
             _requests: requests,
             _mutating_requests: mutating_requests.take(),
+            _priority: priority,
         }))
+    }
+}
+
+async fn acquire_priority(
+    states: &Arc<Mutex<HashMap<String, Arc<PriorityState>>>>,
+    config: &PriorityLevelConfig,
+    max_global_seats: usize,
+) -> Result<PriorityLease, Error> {
+    let limit = config
+        .nominal_concurrency_shares
+        .saturating_mul(max_global_seats)
+        .div_ceil(config.total_nominal_concurrency_shares)
+        .max(1);
+    let key = config.uid.clone();
+    let state = {
+        let mut states = states.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        states
+            .entry(key)
+            .or_insert_with(|| {
+                Arc::new(PriorityState {
+                    active: AtomicUsize::new(0),
+                    queued: AtomicUsize::new(0),
+                    max_concurrency: AtomicUsize::new(limit),
+                    queue_length_limit: AtomicUsize::new(config.queue_length_limit),
+                    notify: Notify::new(),
+                })
+            })
+            .clone()
+    };
+    state.max_concurrency.store(limit, Ordering::Release);
+    state.queue_length_limit.store(if config.reject { 0 } else { config.queue_length_limit }, Ordering::Release);
+
+    loop {
+        if try_claim(&state) {
+            return Ok(PriorityLease { state });
+        }
+        let notified = state.notify.notified();
+        let mut guard = QueueGuard::new(state.clone());
+        let previous = state.queued.fetch_add(1, Ordering::AcqRel);
+        if previous >= state.queue_length_limit.load(Ordering::Acquire) {
+            return Err(Error::QueueFull);
+        }
+        if try_claim(&state) {
+            guard.disarm();
+            let lease_state = state.clone();
+            drop(notified);
+            return Ok(PriorityLease { state: lease_state });
+        }
+        notified.await;
+        drop(guard);
+    }
+}
+
+fn try_claim(state: &PriorityState) -> bool {
+    let limit = state.max_concurrency.load(Ordering::Acquire);
+    let mut active = state.active.load(Ordering::Acquire);
+    loop {
+        if active >= limit {
+            return false;
+        }
+        match state.active.compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(observed) => active = observed,
+        }
     }
 }
 
@@ -129,10 +254,10 @@ mod tests {
     #[tokio::test]
     async fn ordinary_requests_are_bounded_and_mutations_use_both_budgets() {
         let limiter = ConcurrencyLimiter::new(1, 1, 2);
-        let first = limiter.acquire(&request("get"), "", false).await.unwrap().unwrap();
+        let first = limiter.acquire(&request("get"), "", None).await.unwrap().unwrap();
         let waiter = {
             let limiter = limiter.clone();
-            tokio::spawn(async move { limiter.acquire(&request("create"), "", false).await })
+            tokio::spawn(async move { limiter.acquire(&request("create"), "", None).await })
         };
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
@@ -144,8 +269,8 @@ mod tests {
     #[tokio::test]
     async fn queue_limit_rejects_without_waiting_forever() {
         let limiter = ConcurrencyLimiter::new(1, 1, 0);
-        let first = limiter.acquire(&request("get"), "", false).await.unwrap().unwrap();
-        let error = limiter.acquire(&request("get"), "", false).await.unwrap_err();
+        let first = limiter.acquire(&request("get"), "", None).await.unwrap().unwrap();
+        let error = limiter.acquire(&request("get"), "", None).await.unwrap_err();
         assert_eq!(error, Error::QueueFull);
         drop(first);
     }
@@ -153,19 +278,58 @@ mod tests {
     #[tokio::test]
     async fn zero_queue_length_still_allows_an_immediately_available_request() {
         let limiter = ConcurrencyLimiter::new(1, 1, 0);
-        assert!(limiter.acquire(&request("get"), "", false).await.unwrap().is_some());
-        assert!(limiter.acquire(&request("create"), "", false).await.unwrap().is_some());
+        assert!(limiter.acquire(&request("get"), "", None).await.unwrap().is_some());
+        assert!(limiter.acquire(&request("create"), "", None).await.unwrap().is_some());
     }
 
     #[tokio::test]
     async fn exempt_and_long_running_requests_do_not_consume_seats() {
         let limiter = ConcurrencyLimiter::new(1, 1, 0);
-        assert!(limiter.acquire(&request("get"), "", true).await.unwrap().is_none());
+        let exempt = PriorityLevelConfig { uid: "exempt".to_string(), exempt: true, nominal_concurrency_shares: 0, total_nominal_concurrency_shares: 1, queue_length_limit: 0, reject: false };
+        assert!(limiter.acquire(&request("get"), "", Some(&exempt)).await.unwrap().is_none());
         let mut watch = request("watch");
         watch.is_resource_request = true;
-        assert!(limiter.acquire(&watch, "", false).await.unwrap().is_none());
+        assert!(limiter.acquire(&watch, "", None).await.unwrap().is_none());
         let mut log = request("get");
         log.subresource = "log".to_string();
-        assert!(limiter.acquire(&log, "follow=true", false).await.unwrap().is_none());
+        assert!(limiter.acquire(&log, "follow=true", None).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn limited_priority_level_has_its_own_queue_limit() {
+        let limiter = ConcurrencyLimiter::new(2, 2, 2);
+        let level = PriorityLevelConfig {
+            uid: "limited".to_string(),
+            exempt: false,
+            nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
+            queue_length_limit: 0,
+            reject: false,
+        };
+        let first = limiter.acquire(&request("get"), "", Some(&level)).await.unwrap().unwrap();
+        assert_eq!(limiter.acquire(&request("get"), "", Some(&level)).await.unwrap_err(), Error::QueueFull);
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn priority_waiter_is_released_when_the_level_seat_is_dropped() {
+        let limiter = ConcurrencyLimiter::new(2, 2, 2);
+        let level = PriorityLevelConfig {
+            uid: "limited".to_string(),
+            exempt: false,
+            nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
+            queue_length_limit: 1,
+            reject: false,
+        };
+        let first = limiter.acquire(&request("get"), "", Some(&level)).await.unwrap().unwrap();
+        let waiter = {
+            let limiter = limiter.clone();
+            let level = level.clone();
+            tokio::spawn(async move { limiter.acquire(&request("get"), "", Some(&level)).await })
+        };
+        tokio::task::yield_now().await;
+        drop(first);
+        assert!(waiter.await.unwrap().unwrap().is_some());
     }
 }
