@@ -45,11 +45,14 @@
 //! at startup from `NODEAPISERVER_TOKEN_AUTH_FILE`, matching the static-file
 //! lifecycle of upstream's token authenticator.
 //!
-//! Bootstrap tokens and structured anonymous-authentication conditions are
-//! not started. The listener does expose the compatible boolean
-//! `NODEAPISERVER_ANONYMOUS_AUTH` switch.
+//! Bootstrap tokens and the compatible boolean anonymous-authentication
+//! switch are wired through the listener. Structured anonymous-authentication
+//! conditions and live reload of authentication files remain outside this
+//! slice.
 //!
-//! Status: in progress (see docs/APISERVER.md).
+//! Status: the supported x509, ServiceAccount, OIDC, static-token, and
+//! anonymous-authentication paths are implemented; see docs/APISERVER.md for
+//! the deliberately narrower follow-up scope.
 
 pub mod bootstrap_token;
 pub mod oidc;
