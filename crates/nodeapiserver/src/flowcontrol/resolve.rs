@@ -14,7 +14,7 @@
 //! `"X-Kubernetes-PF-FlowSchema-UID"`/`"X-Kubernetes-PF-PriorityLevel-UID"`,
 //! fetched and read directly).
 
-use crate::flowcontrol::flow_schema::{select_flow_schema, RequestDigest};
+use crate::flowcontrol::flow_schema::{flow_distinguisher, select_flow_schema, RequestDigest};
 use crate::server::rest::{self, GetOutcome, ListOutcome};
 use crate::storage::client::StorageClient;
 use serde_json::Value;
@@ -29,6 +29,7 @@ pub const PRIORITY_LEVEL_UID_HEADER: &str = "X-Kubernetes-PF-PriorityLevel-UID";
 pub struct Selected {
     pub flow_schema_uid: String,
     pub priority_level_uid: String,
+    pub flow_distinguisher: String,
     pub exempt: bool,
     pub priority_level: PriorityLevelConfig,
 }
@@ -61,6 +62,7 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     };
     let selected = select_flow_schema(&flow_schemas, digest)?;
     let flow_schema_uid = selected["metadata"]["uid"].as_str()?.to_string();
+    let flow_distinguisher = flow_distinguisher(selected, digest);
     let pl_name = selected["spec"]["priorityLevelConfiguration"]["name"].as_str()?;
 
     let priority_levels = match rest::list(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, "", "", 0, "").await {
@@ -102,7 +104,7 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
             reject: priority_level["spec"]["limited"]["limitResponse"]["type"].as_str() == Some("Reject"),
         }
     };
-    Some(Selected { flow_schema_uid, priority_level_uid, exempt, priority_level })
+    Some(Selected { flow_schema_uid, priority_level_uid, flow_distinguisher, exempt, priority_level })
 }
 
 fn nominal_concurrency_shares(priority_level: &Value) -> usize {
