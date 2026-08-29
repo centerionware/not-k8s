@@ -20,7 +20,8 @@
 //! **generic default converter** every type without one of those falls
 //! back to — most visibly, every CRD, since a CRD has no compiled-in Go
 //! printer at all. This module faithfully ports that generic converter and
-//! the core Pod printer; other per-type printers remain separate work.
+//! the verified common built-in printers; less-common per-type printers remain
+//! separate work.
 //! (`k8s.io/apiserver/pkg/registry/rest/table.go`'s `defaultTableConvertor`,
 //! fetched and read directly, not reconstructed from memory): exactly two
 //! columns, `Name` and `Created At`, cells `[metadata.name,
@@ -91,8 +92,23 @@ pub fn convert_to_table(object: &Value) -> Value {
 /// resource types this crate has verified. Resources without a printer keep
 /// the generic default-table behavior, including all CRD-defined resources.
 pub fn convert_to_table_for_resource(group: &str, version: &str, resource: &str, object: &Value) -> Value {
-    if group.is_empty() && version == "v1" && resource == "pods" {
-        return convert_pod_to_table(object);
+    if group.is_empty() && version == "v1" {
+        return match resource {
+            "pods" => convert_pod_to_table(object),
+            "namespaces" => convert_with_printer(object, namespace_columns(), namespace_row),
+            "nodes" => convert_with_printer(object, node_columns(), node_row),
+            "services" => convert_with_printer(object, service_columns(), service_row),
+            _ => convert_to_table(object),
+        };
+    }
+    if group == "apps" && version == "v1" {
+        return match resource {
+            "daemonsets" => convert_with_printer(object, daemon_set_columns(), daemon_set_row),
+            "deployments" => convert_with_printer(object, deployment_columns(), deployment_row),
+            "replicasets" => convert_with_printer(object, replica_set_columns(), replica_set_row),
+            "statefulsets" => convert_with_printer(object, stateful_set_columns(), stateful_set_row),
+            _ => convert_to_table(object),
+        };
     }
     convert_to_table(object)
 }
@@ -125,6 +141,379 @@ fn convert_pod_to_table(object: &Value) -> Value {
     });
     copy_list_metadata(&mut table, object, items.is_some());
     table
+}
+
+fn convert_with_printer(object: &Value, columns: Value, row_for: fn(&Value) -> Value) -> Value {
+    let items = list_items(object);
+    let rows = match &items {
+        Some(items) => items.iter().map(|item| row_for(item)).collect(),
+        None => vec![row_for(object)],
+    };
+    let mut table = json!({
+        "kind": "Table",
+        "apiVersion": "meta.k8s.io/v1",
+        "columnDefinitions": columns,
+        "rows": rows,
+    });
+    copy_list_metadata(&mut table, object, items.is_some());
+    table
+}
+
+fn deployment_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Ready", "type": "string", "description": "Number of the pod replicas that are ready.", "priority": 0},
+        {"name": "Up-to-date", "type": "integer", "description": "Number of the pod replicas that have been updated.", "priority": 0},
+        {"name": "Available", "type": "integer", "description": "Number of the pod replicas that are available.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+        {"name": "Containers", "type": "string", "description": "Names of each container in the template.", "priority": 1},
+        {"name": "Images", "type": "string", "description": "Images referenced by each container in the template.", "priority": 1},
+        {"name": "Selector", "type": "string", "description": "The selector used to match pods.", "priority": 1},
+    ])
+}
+
+fn replica_set_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Desired", "type": "integer", "description": "Number of desired pods.", "priority": 0},
+        {"name": "Current", "type": "integer", "description": "Number of current pods.", "priority": 0},
+        {"name": "Ready", "type": "integer", "description": "Number of ready pods.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+        {"name": "Containers", "type": "string", "description": "Names of each container in the template.", "priority": 1},
+        {"name": "Images", "type": "string", "description": "Images referenced by each container in the template.", "priority": 1},
+        {"name": "Selector", "type": "string", "description": "The selector used to match pods.", "priority": 1},
+    ])
+}
+
+fn stateful_set_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Ready", "type": "string", "description": "Number of the pod replicas that are ready.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+        {"name": "Containers", "type": "string", "description": "Names of each container in the template.", "priority": 1},
+        {"name": "Images", "type": "string", "description": "Images referenced by each container in the template.", "priority": 1},
+    ])
+}
+
+fn daemon_set_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Desired", "type": "integer", "description": "Number of nodes that should be running the daemon pod.", "priority": 0},
+        {"name": "Current", "type": "integer", "description": "Number of nodes that are running the daemon pod.", "priority": 0},
+        {"name": "Ready", "type": "integer", "description": "Number of nodes with a ready daemon pod.", "priority": 0},
+        {"name": "Up-to-date", "type": "integer", "description": "Number of nodes with an up-to-date daemon pod.", "priority": 0},
+        {"name": "Available", "type": "integer", "description": "Number of nodes with an available daemon pod.", "priority": 0},
+        {"name": "Node Selector", "type": "string", "description": "The selector used to choose nodes.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+        {"name": "Containers", "type": "string", "description": "Names of each container in the template.", "priority": 1},
+        {"name": "Images", "type": "string", "description": "Images referenced by each container in the template.", "priority": 1},
+        {"name": "Selector", "type": "string", "description": "The selector used to match pods.", "priority": 1},
+    ])
+}
+
+fn service_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Type", "type": "string", "description": "The type of the service.", "priority": 0},
+        {"name": "Cluster-IP", "type": "string", "description": "The cluster IP address of the service.", "priority": 0},
+        {"name": "External-IP", "type": "string", "description": "External IP addresses of the service.", "priority": 0},
+        {"name": "Port(s)", "type": "string", "description": "Service ports.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+    ])
+}
+
+fn node_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Status", "type": "string", "description": "The status of the node.", "priority": 0},
+        {"name": "Roles", "type": "string", "description": "Roles assigned to the node.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+        {"name": "Version", "type": "string", "description": "The kubelet version reported by the node.", "priority": 0},
+        {"name": "Internal-IP", "type": "string", "description": "The node's internal IP address.", "priority": 1},
+        {"name": "External-IP", "type": "string", "description": "The node's external IP address.", "priority": 1},
+        {"name": "OS-Image", "type": "string", "description": "The operating system image reported by the node.", "priority": 1},
+        {"name": "Kernel-Version", "type": "string", "description": "The kernel version reported by the node.", "priority": 1},
+        {"name": "Container-Runtime", "type": "string", "description": "The container runtime reported by the node.", "priority": 1},
+    ])
+}
+
+fn namespace_columns() -> Value {
+    json!([
+        {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+        {"name": "Status", "type": "string", "description": "The phase of the namespace.", "priority": 0},
+        {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+    ])
+}
+
+fn deployment_row(resource: &Value) -> Value {
+    let desired = replicas(resource, "/spec/replicas", 1);
+    let ready = int_at(resource, "/status/readyReplicas");
+    json!({
+        "cells": [
+            name_cell(resource),
+            format!("{ready}/{desired}"),
+            int_at(resource, "/status/updatedReplicas"),
+            int_at(resource, "/status/availableReplicas"),
+            age_cell(resource),
+            template_containers(resource),
+            template_images(resource),
+            selector_cell(resource, "/spec/selector"),
+        ],
+        "object": resource,
+    })
+}
+
+fn replica_set_row(resource: &Value) -> Value {
+    json!({
+        "cells": [
+            name_cell(resource),
+            replicas(resource, "/spec/replicas", 1),
+            int_at(resource, "/status/replicas"),
+            int_at(resource, "/status/readyReplicas"),
+            age_cell(resource),
+            template_containers(resource),
+            template_images(resource),
+            selector_cell(resource, "/spec/selector"),
+        ],
+        "object": resource,
+    })
+}
+
+fn stateful_set_row(resource: &Value) -> Value {
+    let desired = replicas(resource, "/spec/replicas", 1);
+    let ready = int_at(resource, "/status/readyReplicas");
+    json!({
+        "cells": [
+            name_cell(resource),
+            format!("{ready}/{desired}"),
+            age_cell(resource),
+            template_containers(resource),
+            template_images(resource),
+        ],
+        "object": resource,
+    })
+}
+
+fn daemon_set_row(resource: &Value) -> Value {
+    json!({
+        "cells": [
+            name_cell(resource),
+            int_at(resource, "/status/desiredNumberScheduled"),
+            int_at(resource, "/status/currentNumberScheduled"),
+            int_at(resource, "/status/numberReady"),
+            int_at(resource, "/status/updatedNumberScheduled"),
+            int_at(resource, "/status/numberAvailable"),
+            map_cell(resource, "/spec/template/spec/nodeSelector"),
+            age_cell(resource),
+            template_containers(resource),
+            template_images(resource),
+            selector_cell(resource, "/spec/selector"),
+        ],
+        "object": resource,
+    })
+}
+
+fn service_row(resource: &Value) -> Value {
+    json!({
+        "cells": [
+            name_cell(resource),
+            string_at(resource, "/spec/type", "ClusterIP"),
+            string_at(resource, "/spec/clusterIP", "<none>"),
+            service_external_ips(resource),
+            service_ports(resource),
+            age_cell(resource),
+        ],
+        "object": resource,
+    })
+}
+
+fn node_row(resource: &Value) -> Value {
+    let mut status = node_ready_status(resource);
+    if resource.pointer("/spec/unschedulable").and_then(Value::as_bool).unwrap_or(false) {
+        status.push_str(",SchedulingDisabled");
+    }
+    json!({
+        "cells": [
+            name_cell(resource),
+            status,
+            node_roles(resource),
+            age_cell(resource),
+            string_at(resource, "/status/nodeInfo/kubeletVersion", "<unknown>"),
+            node_address(resource, "InternalIP"),
+            node_address(resource, "ExternalIP"),
+            string_at(resource, "/status/nodeInfo/osImage", "<unknown>"),
+            string_at(resource, "/status/nodeInfo/kernelVersion", "<unknown>"),
+            string_at(resource, "/status/nodeInfo/containerRuntimeVersion", "<unknown>"),
+        ],
+        "object": resource,
+    })
+}
+
+fn namespace_row(resource: &Value) -> Value {
+    json!({
+        "cells": [
+            name_cell(resource),
+            string_at(resource, "/status/phase", "<unknown>"),
+            age_cell(resource),
+        ],
+        "object": resource,
+    })
+}
+
+fn name_cell(resource: &Value) -> Value {
+    resource.pointer("/metadata/name").cloned().unwrap_or(Value::Null)
+}
+
+fn age_cell(resource: &Value) -> String {
+    relative_age(resource.pointer("/metadata/creationTimestamp").and_then(Value::as_str))
+}
+
+fn string_at(resource: &Value, path: &str, default: &str) -> String {
+    resource.pointer(path).and_then(Value::as_str).filter(|value| !value.is_empty()).unwrap_or(default).to_string()
+}
+
+fn int_at(resource: &Value, path: &str) -> i64 {
+    resource.pointer(path).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn replicas(resource: &Value, path: &str, default: i64) -> i64 {
+    resource.pointer(path).and_then(Value::as_i64).unwrap_or(default)
+}
+
+fn template_containers(resource: &Value) -> String {
+    let Some(containers) = resource.pointer("/spec/template/spec/containers").and_then(Value::as_array) else {
+        return "<none>".to_string();
+    };
+    let names: Vec<_> = containers.iter().filter_map(|container| container.get("name").and_then(Value::as_str)).collect();
+    if names.is_empty() { "<none>".to_string() } else { names.join(",") }
+}
+
+fn template_images(resource: &Value) -> String {
+    let Some(containers) = resource.pointer("/spec/template/spec/containers").and_then(Value::as_array) else {
+        return "<none>".to_string();
+    };
+    let images: Vec<_> = containers.iter().filter_map(|container| container.get("image").and_then(Value::as_str)).collect();
+    if images.is_empty() { "<none>".to_string() } else { images.join(",") }
+}
+
+fn selector_cell(resource: &Value, path: &str) -> String {
+    let Some(selector) = resource.pointer(path) else {
+        return "<none>".to_string();
+    };
+    let Some(selector) = selector.as_object() else {
+        return "<none>".to_string();
+    };
+    let mut parts = Vec::new();
+    if let Some(match_labels) = selector.get("matchLabels") {
+        parts.extend(map_parts(match_labels));
+    }
+    if let Some(expressions) = selector.get("matchExpressions").and_then(Value::as_array) {
+        for expression in expressions {
+            let key = expression.get("key").and_then(Value::as_str).unwrap_or("");
+            let operator = expression.get("operator").and_then(Value::as_str).unwrap_or("");
+            let values = expression
+                .get("values")
+                .and_then(Value::as_array)
+                .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            if !key.is_empty() && !operator.is_empty() {
+                parts.push(if values.is_empty() {
+                    format!("{key} {operator}")
+                } else {
+                    format!("{key} {operator} ({values})")
+                });
+            }
+        }
+    }
+    parts.sort_unstable();
+    if parts.is_empty() { "<none>".to_string() } else { parts.join(",") }
+}
+
+fn map_cell(resource: &Value, path: &str) -> String {
+    let Some(map) = resource.pointer(path) else {
+        return "<none>".to_string();
+    };
+    let parts = map_parts(map);
+    if parts.is_empty() { "<none>".to_string() } else { parts.join(",") }
+}
+
+fn map_parts(value: &Value) -> Vec<String> {
+    let Some(map) = value.as_object() else { return Vec::new() };
+    let mut parts: Vec<_> = map
+        .iter()
+        .map(|(key, value)| format!("{key}={}", value.as_str().unwrap_or_default()))
+        .collect();
+    parts.sort_unstable();
+    parts
+}
+
+fn service_external_ips(resource: &Value) -> String {
+    let Some(ips) = resource.pointer("/spec/externalIPs").and_then(Value::as_array) else {
+        return "<none>".to_string();
+    };
+    let ips: Vec<_> = ips.iter().filter_map(Value::as_str).collect();
+    if ips.is_empty() { "<none>".to_string() } else { ips.join(",") }
+}
+
+fn service_ports(resource: &Value) -> String {
+    let Some(ports) = resource.pointer("/spec/ports").and_then(Value::as_array) else {
+        return "<none>".to_string();
+    };
+    let mut formatted = Vec::new();
+    for port in ports {
+        let Some(number) = port.get("port").and_then(Value::as_i64) else { continue };
+        let protocol = port.get("protocol").and_then(Value::as_str).unwrap_or("TCP");
+        let value = match port.get("nodePort").and_then(Value::as_i64).filter(|node_port| *node_port != 0) {
+            Some(node_port) => format!("{number}:{node_port}/{protocol}"),
+            None => format!("{number}/{protocol}"),
+        };
+        formatted.push(value);
+    }
+    if formatted.is_empty() { "<none>".to_string() } else { formatted.join(",") }
+}
+
+fn node_ready_status(resource: &Value) -> String {
+    resource
+        .pointer("/status/conditions")
+        .and_then(Value::as_array)
+        .and_then(|conditions| conditions.iter().find(|condition| condition.get("type").and_then(Value::as_str) == Some("Ready")))
+        .and_then(|condition| condition.get("status").and_then(Value::as_str))
+        .map_or_else(
+            || "Unknown".to_string(),
+            |status| match status {
+                "True" => "Ready".to_string(),
+                "False" => "NotReady".to_string(),
+                _ => "Unknown".to_string(),
+            },
+        )
+}
+
+fn node_roles(resource: &Value) -> String {
+    let Some(labels) = resource.pointer("/metadata/labels").and_then(Value::as_object) else {
+        return "<none>".to_string();
+    };
+    let mut roles: Vec<_> = labels
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("node-role.kubernetes.io/")
+                .map(|role| if role.is_empty() { "<none>".to_string() } else { role.to_string() })
+                .or_else(|| (key == "kubernetes.io/role").then(|| value.as_str().unwrap_or("<none>").to_string()))
+        })
+        .collect();
+    roles.sort_unstable();
+    roles.dedup();
+    if roles.is_empty() { "<none>".to_string() } else { roles.join(",") }
+}
+
+fn node_address(resource: &Value, address_type: &str) -> String {
+    resource
+        .pointer("/status/addresses")
+        .and_then(Value::as_array)
+        .and_then(|addresses| addresses.iter().find(|address| address.get("type").and_then(Value::as_str) == Some(address_type)))
+        .and_then(|address| address.get("address").and_then(Value::as_str))
+        .filter(|address| !address.is_empty())
+        .unwrap_or("<none>")
+        .to_string()
 }
 
 fn pod_row(pod: &Value) -> Value {
@@ -417,11 +806,111 @@ mod tests {
     }
 
     #[test]
-    fn only_pods_use_the_builtin_printer() {
+    fn unknown_resources_keep_the_generic_printer() {
         let object = json!({"metadata": {"name": "x"}});
         let table = convert_to_table_for_resource("example.com", "v1", "pods", &object);
         assert_eq!(table["columnDefinitions"].as_array().unwrap().len(), 2);
-        let table = convert_to_table_for_resource("", "v1", "services", &object);
+        let table = convert_to_table_for_resource("", "v1", "configmaps", &object);
         assert_eq!(table["columnDefinitions"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn common_workload_printers_emit_kubectl_rows() {
+        let template = json!({
+            "spec": {
+                "containers": [
+                    {"name": "web", "image": "nginx:1.27"},
+                    {"name": "sidecar", "image": "busybox:1.36"}
+                ]
+            }
+        });
+        let deployment = json!({
+            "metadata": {"name": "web"},
+            "spec": {
+                "replicas": 3,
+                "selector": {"matchLabels": {"app": "web"}},
+                "template": template.clone()
+            },
+            "status": {"readyReplicas": 2, "updatedReplicas": 2, "availableReplicas": 2}
+        });
+        let table = convert_to_table_for_resource("apps", "v1", "deployments", &deployment);
+        assert_eq!(table["rows"][0]["cells"], json!(["web", "2/3", 2, 2, "<unknown>", "sidecar,web", "busybox:1.36,nginx:1.27", "app=web"]));
+
+        let replica_set = json!({
+            "metadata": {"name": "web-abc"},
+            "spec": {"replicas": 3, "selector": {"matchLabels": {"app": "web"}}, "template": template.clone()},
+            "status": {"replicas": 2, "readyReplicas": 1}
+        });
+        let table = convert_to_table_for_resource("apps", "v1", "replicasets", &replica_set);
+        assert_eq!(&table["rows"][0]["cells"].as_array().unwrap()[1..4], json!([3, 2, 1]).as_array().unwrap());
+
+        let stateful_set = json!({
+            "metadata": {"name": "web"},
+            "spec": {"replicas": 2, "template": template.clone()},
+            "status": {"readyReplicas": 1}
+        });
+        let table = convert_to_table_for_resource("apps", "v1", "statefulsets", &stateful_set);
+        assert_eq!(&table["rows"][0]["cells"].as_array().unwrap()[..2], json!(["web", "1/2"]).as_array().unwrap());
+
+        let daemon_set = json!({
+            "metadata": {"name": "agent"},
+            "spec": {"selector": {"matchLabels": {"app": "agent"}}, "template": {
+                "spec": {"nodeSelector": {"kubernetes.io/os": "linux"}, "containers": [{"name": "agent", "image": "agent:v1"}]}
+            }},
+            "status": {
+                "desiredNumberScheduled": 3,
+                "currentNumberScheduled": 3,
+                "numberReady": 2,
+                "updatedNumberScheduled": 3,
+                "numberAvailable": 2
+            }
+        });
+        let table = convert_to_table_for_resource("apps", "v1", "daemonsets", &daemon_set);
+        assert_eq!(&table["rows"][0]["cells"].as_array().unwrap()[1..8], json!([3, 3, 2, 3, 2, "kubernetes.io/os=linux", "<unknown>"]).as_array().unwrap());
+    }
+
+    #[test]
+    fn service_node_and_namespace_printers_emit_kubectl_rows() {
+        let service = json!({
+            "metadata": {"name": "api"},
+            "spec": {
+                "type": "LoadBalancer",
+                "clusterIP": "10.43.0.10",
+                "externalIPs": ["192.0.2.10"],
+                "ports": [
+                    {"port": 80, "nodePort": 30080, "protocol": "TCP"},
+                    {"port": 443, "protocol": "TCP"}
+                ]
+            }
+        });
+        let table = convert_to_table_for_resource("", "v1", "services", &service);
+        assert_eq!(table["rows"][0]["cells"], json!(["api", "LoadBalancer", "10.43.0.10", "192.0.2.10", "80:30080/TCP,443/TCP", "<unknown>"]));
+
+        let node = json!({
+            "metadata": {
+                "name": "worker-1",
+                "labels": {"node-role.kubernetes.io/worker": ""}
+            },
+            "spec": {"unschedulable": true},
+            "status": {
+                "conditions": [{"type": "Ready", "status": "True"}],
+                "addresses": [
+                    {"type": "InternalIP", "address": "192.0.2.20"},
+                    {"type": "ExternalIP", "address": "198.51.100.20"}
+                ],
+                "nodeInfo": {
+                    "kubeletVersion": "v1.33.0",
+                    "osImage": "Debian GNU/Linux",
+                    "kernelVersion": "6.1.0",
+                    "containerRuntimeVersion": "containerd://2.0.0"
+                }
+            }
+        });
+        let table = convert_to_table_for_resource("", "v1", "nodes", &node);
+        assert_eq!(table["rows"][0]["cells"], json!(["worker-1", "Ready,SchedulingDisabled", "worker", "<unknown>", "v1.33.0", "192.0.2.20", "198.51.100.20", "Debian GNU/Linux", "6.1.0", "containerd://2.0.0"]));
+
+        let namespace = json!({"metadata": {"name": "apps"}, "status": {"phase": "Active"}});
+        let table = convert_to_table_for_resource("", "v1", "namespaces", &namespace);
+        assert_eq!(table["rows"][0]["cells"], json!(["apps", "Active", "<unknown>"]));
     }
 }
