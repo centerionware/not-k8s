@@ -482,7 +482,7 @@ mod tests {
             uid: "limited".to_string(),
             exempt: false,
             nominal_concurrency_shares: 1,
-            total_nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
             queues: 8,
             hand_size: 2,
             queue_length_limit: 2,
