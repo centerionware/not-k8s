@@ -3272,6 +3272,9 @@ async fn handle(
                     }
                     Ok(rest::CreateOutcome::AlreadyExists) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
                     Ok(rest::CreateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    Ok(rest::CreateOutcome::UnsupportedForCrd) => {
+                        return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "this resource has no usable structural schema")));
+                    }
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::create failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));

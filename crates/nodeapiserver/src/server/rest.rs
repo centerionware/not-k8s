@@ -1902,7 +1902,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
             (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
             (None, Some(schema)) => {
-                let mut violations = apiextensions::schema_validation::validate_required(schema, &object)
+                let mut violations: Vec<String> = apiextensions::schema_validation::validate_required(schema, &object)
                     .into_iter()
                     .map(|m| format!("{}: Required value", m.path))
                     .collect();
@@ -1968,7 +1968,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
         (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
         (None, Some(schema)) => {
-            let mut violations = apiextensions::schema_validation::validate_required(schema, &object)
+            let mut violations: Vec<String> = apiextensions::schema_validation::validate_required(schema, &object)
                 .into_iter()
                 .map(|m| format!("{}: Required value", m.path))
                 .collect();
