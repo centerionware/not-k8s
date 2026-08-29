@@ -1829,6 +1829,10 @@ pub enum ApplyPrepareOutcome {
     UnknownResource,
     Conflict(Vec<crate::patch::updater::Conflict>),
     Invalid(Vec<String>),
+    /// No usable compiled or runtime structural schema was available for
+    /// the resolved resource. Established CRDs normally carry the latter;
+    /// this remains a defensive outcome for malformed or legacy CRD data.
+    UnsupportedForCrd,
     /// The merged-and-pruned result was identical to what's already
     /// stored (or, for create-on-apply, `config` was itself empty) —
     /// nothing to persist, `Value` is what to return to the caller.
