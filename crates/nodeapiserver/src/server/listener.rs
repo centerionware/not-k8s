@@ -1620,7 +1620,7 @@ async fn handle(
             };
         }
 
-        let Some(client) = storage else {
+        let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         let kind_of_patch = match content_type.as_deref() {
@@ -2054,7 +2054,7 @@ async fn handle(
         && info.verb == "create"
         && info.subresource.is_empty()
     {
-        let Some(mut client) = storage else {
+        let Some(client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         let body_bytes = match read_body_bytes(req).await {
