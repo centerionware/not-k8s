@@ -21,7 +21,6 @@
 //! bound `vars` slice (`cel_ext::eval_bool_with_vars`'s own shape),
 //! leaving the request-specific variable assembly to the policy adapter.
 
-use crate::cel_ext::eval_bool_with_vars_and_deadline;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -103,9 +102,15 @@ impl MatchResult {
 /// comment for the real, named "not yet wired" scope and the real
 /// `vars` shape it expects.
 pub fn match_conditions(conditions: &[MatchCondition], vars: &[(&'static str, &Value)], failure_policy: FailurePolicy) -> MatchResult {
+    match_conditions_with_cel_vars(conditions, vars, &[], failure_policy)
+}
+
+/// [`match_conditions`] with native CEL values in addition to JSON values.
+/// This is used for the opaque Kubernetes `authorizer` binding.
+pub fn match_conditions_with_cel_vars(conditions: &[MatchCondition], vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, cel::Value)], failure_policy: FailurePolicy) -> MatchResult {
     let mut errors: Vec<String> = Vec::new();
     for condition in conditions {
-        match eval_bool_with_vars_and_deadline(condition.expression, vars, MATCH_CONDITION_DEADLINE) {
+        match crate::cel_ext::eval_bool_with_vars_and_cel_vars_and_deadline(condition.expression, vars, cel_vars, MATCH_CONDITION_DEADLINE) {
             Ok(true) => {}
             // Real upstream's own real ordering: a `false` result wins
             // immediately, even over conditions that already errored

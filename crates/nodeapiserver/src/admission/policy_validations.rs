@@ -40,7 +40,7 @@
 //! primitive for real `ValidatingAdmissionPolicy` requests.
 
 use super::match_conditions::FailurePolicy;
-use crate::cel_ext::{eval_bool_with_vars_and_deadline, eval_string_with_vars_and_deadline};
+use crate::cel_ext::{eval_bool_with_vars_and_cel_vars_and_deadline, eval_string_with_vars_and_deadline};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -90,11 +90,21 @@ pub struct Decision {
 /// `vars` — see this module's own doc comment for why this never
 /// short-circuits, unlike [`super::match_conditions::match_conditions`].
 pub fn evaluate_validations(validations: &[Validation], vars: &[(&'static str, &Value)], failure_policy: FailurePolicy) -> Vec<Decision> {
-    validations.iter().map(|v| evaluate_validation(v, vars, failure_policy)).collect()
+    evaluate_validations_with_cel_vars(validations, vars, &[], failure_policy)
 }
 
 fn evaluate_validation(v: &Validation, vars: &[(&'static str, &Value)], failure_policy: FailurePolicy) -> Decision {
-    match eval_bool_with_vars_and_deadline(v.expression, vars, PER_VALIDATION_DEADLINE) {
+    evaluate_validation_with_cel_vars(v, vars, &[], failure_policy)
+}
+
+/// [`evaluate_validations`] with native CEL values in addition to JSON
+/// values. The extra values are used for opaque Kubernetes CEL bindings.
+pub fn evaluate_validations_with_cel_vars(validations: &[Validation], vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, cel::Value)], failure_policy: FailurePolicy) -> Vec<Decision> {
+    validations.iter().map(|v| evaluate_validation_with_cel_vars(v, vars, cel_vars, failure_policy)).collect()
+}
+
+fn evaluate_validation_with_cel_vars(v: &Validation, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, cel::Value)], failure_policy: FailurePolicy) -> Decision {
+    match eval_bool_with_vars_and_cel_vars_and_deadline(v.expression, vars, cel_vars, PER_VALIDATION_DEADLINE) {
         Err(e) => Decision { action: error_action(failure_policy), is_error: true, message: Some(e.to_string()), reason: None },
         Ok(true) => Decision { action: Action::Admit, is_error: false, message: None, reason: None },
         Ok(false) => Decision {

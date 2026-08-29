@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `0365c5f` on
+This snapshot is checked against `origin/nodeapiserver` at `168fb7d` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1493,9 +1493,8 @@ loaded from storage before validating admission. Matching bindings can apply
 multiple JSON Patch operations or an apply configuration in order, including
 parameter and selector matching, with the policy's `failurePolicy` honored.
 The current CEL adapter accepts JSON-shaped mutation results; typed
-`JSONPatch{}`/`Object{}` declarations and the additional `authorizer` binding
-remain explicit follow-up work. Composed `spec.variables` are evaluated in
-declaration order and exposed to validation and mutation expressions through
+`JSONPatch{}`/`Object{}` declarations remain explicit follow-up work. Composed
+`spec.variables` are evaluated in declaration order and exposed to validation and mutation expressions through
 the `variables` object; match conditions remain evaluated before composition.
 Each matching policy chain is evaluated once per write; the e2e coverage uses
 a non-idempotent finalizer append to guard against duplicate dispatch.
@@ -2115,8 +2114,13 @@ used*:
 
    The storage-backed adapter is wired into `server::listener` after
    authorization and before persistence. Parameter references support named
-   and label-selected parameters, including `parameterNotFoundAction`;
-   The additional `authorizer` CEL binding remains an explicit gap.
+   and label-selected parameters, including `parameterNotFoundAction`.
+   The Kubernetes `authorizer` CEL library is bound for validation
+   expressions from a request-local RBAC snapshot. Its fluent
+   `group`/`resource`/`namespace`/`name`/`check`/`allowed` chain,
+   `requestResource`, non-resource `path` checks, and service-account
+   principal switching are covered by focused tests. The remaining policy
+   matching gaps are `Rule.Scope`, `request.kind`, and `request.userInfo`.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
