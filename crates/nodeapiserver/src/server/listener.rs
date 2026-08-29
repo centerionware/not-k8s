@@ -1483,8 +1483,15 @@ async fn handle_with_audit(
         None
     };
     let selected_priority_config = selected_priority.as_ref().map(|selected| &selected.priority_level);
+    let configured_priorities = selected_priority
+        .as_ref()
+        .map(|selected| selected.priority_levels.as_slice())
+        .unwrap_or(&[]);
     let flow_distinguisher = selected_priority.as_ref().map(|selected| selected.flow_distinguisher.as_str()).unwrap_or("");
-    let _permit = match concurrency_limiter.acquire(&request_info, &query, selected_priority_config, flow_distinguisher).await {
+    let _permit = match concurrency_limiter
+        .acquire_with_priorities(&request_info, &query, selected_priority_config, configured_priorities, flow_distinguisher)
+        .await
+    {
         Ok(permit) => permit,
         Err(crate::flowcontrol::limiter::Error::QueueFull) => {
             return Ok(json_response(StatusCode::TOO_MANY_REQUESTS, &too_many_requests_status(&path_str)));
