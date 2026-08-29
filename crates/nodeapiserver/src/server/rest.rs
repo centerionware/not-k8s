@@ -817,6 +817,7 @@ pub async fn create_with_options(storage: &mut StorageClient, group: &str, versi
         (None, Some(open_api_schema)) => {
             let mut v: Vec<String> = apiextensions::schema_validation::validate_required(open_api_schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(apiextensions::schema_validation::validate_types(open_api_schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v.extend(apiextensions::schema_validation::validate_constraints(open_api_schema, body));
             v
         }
         (None, None) => Vec::new(),
@@ -1011,6 +1012,7 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
         (None, Some(open_api_schema)) => {
             let mut v: Vec<String> = apiextensions::schema_validation::validate_required(open_api_schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(apiextensions::schema_validation::validate_types(open_api_schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v.extend(apiextensions::schema_validation::validate_constraints(open_api_schema, body));
             v
         }
         (None, None) => Vec::new(),
@@ -1355,6 +1357,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
         (None, Some(open_api_schema)) => {
             let mut v: Vec<String> = apiextensions::schema_validation::validate_required(open_api_schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(apiextensions::schema_validation::validate_types(open_api_schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v.extend(apiextensions::schema_validation::validate_constraints(open_api_schema, &candidate));
             v
         }
         (None, None) => Vec::new(),
@@ -1700,6 +1703,7 @@ async fn apply_prepare_crd(
                 .into_iter()
                 .map(|violation| format!("{}: expected type {}, got {}", violation.path, violation.expected, violation.actual_kind)),
         );
+        violations.extend(apiextensions::schema_validation::validate_constraints(&schema, &object));
     }
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|error| format!("metadata.name: {error}")));
     if !violations.is_empty() {

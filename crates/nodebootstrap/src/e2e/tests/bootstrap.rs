@@ -3,6 +3,7 @@ use super::skip_test;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use http::Request;
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::authentication::v1::{
     TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec,
@@ -12,8 +13,10 @@ use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service, ServiceAcco
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, WatchEvent, WatchParams};
+use kube::api::{Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, PostParams, WatchEvent, WatchParams};
 use kube::config::{AuthInfo, Context as KubeContext, Kubeconfig, NamedAuthInfo, NamedContext};
+use kube::core::GroupVersionKind;
+use kube::discovery::ApiResource;
 use secrecy::SecretString;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -626,6 +629,125 @@ pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(cont
         .delete(&parameter_name, &DeleteParams::default())
         .await;
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_enforces_crd_schema_constraints(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("CRD schema constraint enforcement is a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let group = format!("nodeapiserver-e2e-{suffix}.test");
+    let crd_name = format!("widgets.{group}");
+    let widget_name = format!("widget-{suffix}");
+    let crds: Api<CustomResourceDefinition> = Api::all(context.client.clone());
+    let widgets: Api<DynamicObject> = Api::namespaced_with(
+        context.client.clone(),
+        &context.namespace,
+        &ApiResource::from_gvk(&GroupVersionKind::gvk(&group, "v1", "Widget")),
+    );
+    let crd: CustomResourceDefinition = serde_json::from_value(json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": crd_name},
+        "spec": {
+            "group": group.clone(),
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "listKind": "WidgetList"
+            },
+            "scope": "Namespaced",
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "schema": {"openAPIV3Schema": {
+                    "type": "object",
+                    "required": ["spec"],
+                    "properties": {"spec": {
+                        "type": "object",
+                        "required": ["color", "replicas"],
+                        "properties": {
+                            "color": {"type": "string", "enum": ["blue", "green"]},
+                            "replicas": {"type": "integer", "minimum": 1, "maximum": 3}
+                        }
+                    }}
+                }}
+            }]
+        }
+    }))?;
+
+    let result = async {
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("creating a CRD with enum and numeric constraints")?;
+        context
+            .wait_until("CRD schema constraint resource to become established", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move {
+                    Ok(crds
+                        .get_opt(&crd_name)
+                        .await?
+                        .and_then(|crd| crd.status)
+                        .and_then(|status| status.conditions)
+                        .is_some_and(|conditions| {
+                            conditions.iter().any(|condition| {
+                                condition.type_ == "Established" && condition.status == "True"
+                            })
+                        }))
+                }
+            })
+            .await?;
+
+        let valid: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": widget_name.clone(), "namespace": &context.namespace},
+            "spec": {"color": "blue", "replicas": 2}
+        }))?;
+        widgets
+            .create(&PostParams::default(), &valid)
+            .await
+            .context("creating a CRD object that satisfies its schema")?;
+
+        for (description, object) in [
+            (
+                "an enum-invalid CRD object",
+                json!({
+                    "apiVersion": format!("{group}/v1"),
+                    "kind": "Widget",
+                    "metadata": {"name": format!("{widget_name}-enum"), "namespace": &context.namespace},
+                    "spec": {"color": "red", "replicas": 2}
+                }),
+            ),
+            (
+                "a maximum-invalid CRD object",
+                json!({
+                    "apiVersion": format!("{group}/v1"),
+                    "kind": "Widget",
+                    "metadata": {"name": format!("{widget_name}-maximum"), "namespace": &context.namespace},
+                    "spec": {"color": "blue", "replicas": 4}
+                }),
+            ),
+        ] {
+            let object: DynamicObject = serde_json::from_value(object)?;
+            match widgets.create(&PostParams::default(), &object).await {
+                Err(KubeError::Api(error)) if error.code == 422 => {}
+                Err(error) => anyhow::bail!("{description} returned the wrong API error: {error}"),
+                Ok(_) => anyhow::bail!("{description} was accepted"),
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = widgets.delete(&widget_name, &DeleteParams::default()).await;
+    let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
