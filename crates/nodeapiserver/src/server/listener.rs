@@ -3083,50 +3083,6 @@ async fn handle(
                 }
             }
 
-            // Group J: storage-backed `MutatingAdmissionPolicy` bindings.
-            // Apply policy mutations before validating admission and before
-            // the built-in validators inspect the final candidate. UPDATE
-            // supplies the existing object as `oldObject`; CREATE has no
-            // old object. The policy module also enforces the admission
-            // configuration exemptions required to avoid locking the API
-            // server out of its own policy storage.
-            if is_create || is_update {
-                let old_object = if is_update {
-                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
-                        Ok(rest::GetOutcome::Found(object)) => Some(object),
-                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
-                        Err(error) => {
-                            warn!(path = %path_str, error = ?error, "admission: reading the existing object for MutatingAdmissionPolicy failed");
-                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                        }
-                    }
-                } else {
-                    None
-                };
-                if let Some(candidate) = body_value.take() {
-                    match admission::mutating_admission_policy::mutate(
-                        &mut client,
-                        if is_create { "CREATE" } else { "UPDATE" },
-                        &info.api_group,
-                        &info.api_version,
-                        &info.resource,
-                        &info.subresource,
-                        &info.namespace,
-                        &info.name,
-                        candidate,
-                        old_object.as_ref(),
-                        dry_run,
-                    )
-                    .await
-                    {
-                        Ok(mutated) => body_value = Some(mutated),
-                        Err(error) => {
-                            warn!(path = %path_str, error = %error, "admission: MutatingAdmissionPolicy evaluation failed");
-                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                        }
-                    }
-                }
-            }
             // Group J: storage-backed `ValidatingAdmissionPolicy` bindings.
             // Authorization must complete before admission, and CEL gets
             // the same candidate/old object pair that the write will use.
