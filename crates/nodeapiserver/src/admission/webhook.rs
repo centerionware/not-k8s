@@ -401,6 +401,14 @@ fn operation_name(operation: Operation) -> &'static str {
     }
 }
 
+fn options_kind(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Create => "CreateOptions",
+        Operation::Update => "UpdateOptions",
+        Operation::Delete => "DeleteOptions",
+    }
+}
+
 fn list_contains(values: Option<&Vec<Value>>, wanted: &str) -> bool {
     values.is_some_and(|values| {
         values
@@ -527,9 +535,9 @@ async fn invoke(
         "operation": operation_name(operation),
         "userInfo": user_info(identity),
         "object": object,
-        "oldObject": old_object.filter(|_| operation == Operation::Update).cloned().unwrap_or(Value::Null),
+        "oldObject": old_object.filter(|_| operation != Operation::Create).cloned().unwrap_or(Value::Null),
         "dryRun": dry_run,
-        "options": {"apiVersion": "meta.k8s.io/v1", "kind": "CreateOptions"}
+        "options": {"apiVersion": "meta.k8s.io/v1", "kind": options_kind(operation)}
     });
     let payload = json!({"apiVersion": format!("admission.k8s.io/{review_version}"), "kind": "AdmissionReview", "request": admission_request});
     let response = client
@@ -871,6 +879,7 @@ mod tests {
             "uid",
             "pod",
             None,
+            false,
         )
         .unwrap());
 
@@ -893,7 +902,15 @@ mod tests {
             "uid",
             "pod",
             None,
+            false,
         )
         .unwrap());
+    }
+
+    #[test]
+    fn admission_options_follow_the_request_operation() {
+        assert_eq!(options_kind(Operation::Create), "CreateOptions");
+        assert_eq!(options_kind(Operation::Update), "UpdateOptions");
+        assert_eq!(options_kind(Operation::Delete), "DeleteOptions");
     }
 }
