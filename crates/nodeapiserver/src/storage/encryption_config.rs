@@ -47,7 +47,7 @@
 //! port just takes first-match-wins at face value, same as it takes the
 //! document's own field values at face value elsewhere.
 
-use crate::storage::encryption::{Gcm, Identity, PrefixTransformer, PrefixTransformers, Transformer, AES_GCM_PREFIX_V1};
+use crate::storage::encryption::{Gcm, Identity, PrefixTransformer, PrefixTransformers, AES_GCM_PREFIX_V1};
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]

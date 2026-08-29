@@ -820,6 +820,10 @@ pub enum CreateOutcome {
     /// violation (`"containers[1].name: Required value"`-shaped) — the
     /// caller's job to turn into a real `422 Unprocessable Entity`.
     Invalid(Vec<String>),
+    /// No usable compiled or runtime structural schema was available for
+    /// the resolved resource. Established CRDs normally carry the latter;
+    /// this remains a defensive outcome for malformed or legacy CRD data.
+    UnsupportedForCrd,
 }
 
 /// Creates a new object. `namespace: None` for a cluster-scoped resource,
@@ -1849,7 +1853,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     // calculated, so unknown fields cannot become owned. Prune the merged
     // candidate again before validation/defaulting, matching the ordering of
     // the ordinary CRD write paths.
-    let effective_config = prune_runtime_schema(open_api_schema.as_ref(), config);
+    let effective_config = prune_runtime_schema(open_api_schema.as_ref(), config.clone());
 
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
