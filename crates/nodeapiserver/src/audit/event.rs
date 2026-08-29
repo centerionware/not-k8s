@@ -32,6 +32,7 @@
 //! rather than a silently wrong claim.
 
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 /// Real upstream's own `Level` constants — only `"Metadata"` is actually
 /// produced by [`build_event`] today (see this module's own doc
@@ -55,6 +56,7 @@ pub struct EventInput<'a> {
     /// `ObjectRef` is `nil` there too).
     pub object_ref: Option<ObjectRef<'a>>,
     pub response_code: u16,
+    pub annotations: Option<&'a BTreeMap<String, String>>,
     /// RFC3339 (real upstream uses `MicroTime`, sub-second precision —
     /// this crate's own `chrono`-based timestamps elsewhere in the code
     /// base are already RFC3339-second precision, so this is that same
@@ -112,6 +114,9 @@ pub fn build_event(input: &EventInput<'_>) -> Value {
             "apiVersion": obj.api_version,
         });
     }
+    if let Some(annotations) = input.annotations.filter(|annotations| !annotations.is_empty()) {
+        event["annotations"] = json!(annotations);
+    }
 
     event
 }
@@ -132,6 +137,7 @@ mod tests {
             user_agent: None,
             object_ref: None,
             response_code: 200,
+            annotations: None,
             timestamp: "2026-08-20T12:00:00Z",
         }
     }
@@ -189,5 +195,14 @@ mod tests {
         input.user_groups = &groups;
         let event = build_event(&input);
         assert_eq!(event["user"]["groups"], json!(["system:authenticated", "developers"]));
+    }
+
+    #[test]
+    fn build_event_includes_audit_annotations_when_present() {
+        let mut input = minimal_input();
+        let annotations = BTreeMap::from([(String::from("example.com/check"), String::from("failed"))]);
+        input.annotations = Some(&annotations);
+        let event = build_event(&input);
+        assert_eq!(event["annotations"]["example.com/check"], "failed");
     }
 }
