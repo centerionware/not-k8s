@@ -72,6 +72,10 @@
 //! the shared request-side wall-clock budget in
 //! `apiextensions::cel_evaluate`; callers must use that budgeted path rather
 //! than treating the raw deadline helper as an unbounded request primitive.
+//! `type_check` supplies the schema-aware declaration phase for those CRD
+//! rules: it resolves `self`/`oldSelf`, checks exposed fields and obvious
+//! overloads, and enforces a boolean result at CRD acceptance while leaving
+//! dynamic schema portions permissive.
 //! The remaining difference from upstream is that the `cel` crate exposes
 //! no interpreter-level fuel or interruption hook, so timed-out evaluation
 //! threads cannot be forcibly reclaimed.
@@ -137,6 +141,7 @@ pub mod kubernetes_regex;
 pub mod kubernetes_semver;
 pub mod kubernetes_url;
 pub mod path;
+pub mod type_check;
 
 use cel::extractors::This;
 use cel::{Context, FunctionContext, Program, Value as CelValue};
