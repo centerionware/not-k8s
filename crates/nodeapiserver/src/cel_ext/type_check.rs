@@ -113,7 +113,7 @@ impl Display for TypeError {
 
 /// Check one rule against the schema at the rule's own scope.
 pub fn check_rule(schema: &Value, rule: &str) -> Vec<TypeError> {
-    check_rule_with_type(schema_type_for(schema), rule)
+    check_rule_with_type(schema_type(schema), rule)
 }
 
 /// Check a rule at the top-level resource scope. Kubernetes exposes a small
@@ -149,7 +149,7 @@ fn check_rule_with_type(root: Option<CelType>, rule: &str) -> Vec<TypeError> {
 /// validation scope. The root adds the metadata fields Kubernetes exposes
 /// even when they are not repeated in a CRD's user schema.
 pub fn schema_type_for_root(schema: &Value) -> Option<CelType> {
-    let mut root = schema_type_for(schema)?;
+    let mut root = schema_type(schema)?;
     let CelType::Object { fields, .. } = &mut root else {
         return Some(root);
     };
@@ -216,7 +216,7 @@ fn schema_type(schema: &Value) -> Option<CelType> {
                 .unwrap_or_default();
             let additional = schema
                 .get("additionalProperties")
-                .and_then(Value::as_object)
+                .filter(|value| value.is_object())
                 .and_then(schema_type)
                 .map(Box::new);
             if fields.is_empty() && additional.is_none() {
