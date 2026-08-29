@@ -679,14 +679,17 @@ which a collection delete never has, and `LimitRanger`'s only
 
 **Every real, generic REST verb this build knows about is now wired
 in** — `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/`PATCH`/`DELETECOLLECTION`,
-plus a real streaming response for `WATCH`. **Not yet landed**: the rest
-of admission (Group J's own section has the
-running plugin list; `DELETECOLLECTION`'s own small gap above is the only
-verb-level admission gap left), the real handler chain fully unified into one
+plus a real streaming response for `WATCH`. **The authorization stage is
+now centralized**: after authentication and APF have completed, one
+listener gate evaluates every resource request before any admission or
+REST-specific handler, including PATCH, status, deletecollection, watch,
+token, aggregation, and node/service/pod proxy routes. Virtual access-review
+resources remain outside that gate because they answer authorization
+questions rather than authorize a resource mutation. The remaining
+handler-chain work is to unify the admission and REST stages behind the same
 ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
-requirement on order, not a style choice, once it fully exists; today
-each piece is wired in ad hoc, in the right relative order, not through
-one shared pipeline). `/openapi/v2` is now served as a Swagger 2.0
+requirement on order, not a style choice); the current admission plugins are
+still selected directly by the listener. `/openapi/v2` is now served as a Swagger 2.0
 document derived from the same vendored resource schemas and paths as
 `/openapi/v3`; the nodeapiserver target e2e check verifies it is populated.
 The throwaway e2e rig described above should land as part of this group,
@@ -1020,9 +1023,10 @@ each one's `RoleRef` to a real `Role`/`ClusterRole`'s rules (via
 `server::rest::get`) — real upstream's own `DefaultRuleResolver`
 (`VisitRulesFor`), ported, with the same non-fatal-per-binding-error,
 purely-additive posture. **Now wired into `server::listener`, opt-in**:
-`handle` calls `resolve::rules_for` + `rbac::rules_allow` to gate all
-five real CRUD verbs (`GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`) with a
-real `403` on denial, gated behind
+one pre-dispatch gate calls `resolve::rules_for` + `rbac::rules_allow` for
+every resource route, including the generic CRUD verbs, PATCH/status,
+deletecollection/watch, token and proxy subresources, with a real `403` on
+denial, gated behind
 `NODEAPISERVER_ENFORCE_RBAC` (`config::Config::enforce_rbac`), **off by
 default** — enabling deny-by-default RBAC before Group O's bootstrap
 `ClusterRole`/`ClusterRoleBinding` set exists (the ~90 `system:` roles
