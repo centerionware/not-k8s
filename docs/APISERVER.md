@@ -2202,10 +2202,10 @@ and logging one real event per request once the response status is
 known. Every request is unconditionally logged at `Metadata` level —
 real upstream's own policy-driven per-rule level selection isn't
 modeled. **The sink is this crate's own `tracing` output**
-(`target: "nodeapiserver::audit"`, one JSON line per request) — a real,
-working choice consistent with how every other component in this
-workspace already logs, not real upstream's own dedicated
-`--audit-log-path` file with rotation, and not a webhook backend either.
+(`target: "nodeapiserver::audit"`, one JSON line per request) and an
+optional append-only JSON-lines file selected by
+`NODEAPISERVER_AUDIT_LOG_PATH`. Rotation and webhook delivery remain
+separate backends.
 `/healthz`/`/readyz`/`/livez` now have real per-check output too
 (`server::healthz`, a faithful-but-scoped port of real upstream's own
 `k8s.io/apiserver/pkg/server/healthz`, fetched and read directly):

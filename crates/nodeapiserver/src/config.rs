@@ -80,6 +80,11 @@ pub struct Config {
     pub apf_max_requests_inflight: usize,
     pub apf_max_mutating_requests_inflight: usize,
     pub apf_queue_length_limit: usize,
+    /// `NODEAPISERVER_AUDIT_LOG_PATH` selects the append-only JSON-lines
+    /// audit sink. The default remains the component's structured log
+    /// output, while an explicit path mirrors kube-apiserver's
+    /// `--audit-log-path` without changing the request event shape.
+    pub audit_log_path: Option<PathBuf>,
     /// `NODEAPISERVER_ENFORCE_RBAC` — `false` by default, deliberately:
     /// enabling this makes `server::rest::get`/`list` deny-by-default
     /// against real `authz::resolve::rules_for` output (Group I), but
@@ -143,6 +148,7 @@ impl Default for Config {
             apf_max_requests_inflight: 400,
             apf_max_mutating_requests_inflight: 200,
             apf_queue_length_limit: 1000,
+            audit_log_path: None,
             enforce_rbac: false,
             encryption_config_file: None,
             kubelet_client_cert_file: None,
@@ -254,6 +260,7 @@ impl Config {
             "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
             cfg.apf_queue_length_limit,
         )?;
+        cfg.audit_log_path = path_env("NODEAPISERVER_AUDIT_LOG_PATH");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
@@ -344,6 +351,7 @@ mod tests {
         assert_eq!(cfg.apf_max_requests_inflight, 400);
         assert_eq!(cfg.apf_max_mutating_requests_inflight, 200);
         assert_eq!(cfg.apf_queue_length_limit, 1000);
+        assert!(cfg.audit_log_path.is_none());
     }
 
     #[test]
@@ -352,15 +360,18 @@ mod tests {
         std::env::set_var("NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT", "17");
         std::env::set_var("NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT", "9");
         std::env::set_var("NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT", "31");
+        std::env::set_var("NODEAPISERVER_AUDIT_LOG_PATH", "/tmp/nodeapiserver-audit.log");
         let _cleanup = EnvGuard(&[
             "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
             "NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT",
             "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
+            "NODEAPISERVER_AUDIT_LOG_PATH",
         ]);
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.apf_max_requests_inflight, 17);
         assert_eq!(cfg.apf_max_mutating_requests_inflight, 9);
         assert_eq!(cfg.apf_queue_length_limit, 31);
+        assert_eq!(cfg.audit_log_path.as_deref(), Some(std::path::Path::new("/tmp/nodeapiserver-audit.log")));
     }
 
     #[test]

@@ -171,6 +171,53 @@ impl Drop for NodeapiserverAuthenticationOverride {
     }
 }
 
+struct NodeapiserverAuditLogOverride {
+    drop_in: PathBuf,
+    audit_log: PathBuf,
+}
+
+impl NodeapiserverAuditLogOverride {
+    fn install() -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; audit-log checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let audit_log = std::env::temp_dir().join(format!("nodeapiserver-e2e-audit-{suffix}.log"));
+        let _ = fs::remove_file(&audit_log);
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-audit-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-audit-{suffix}.conf"));
+        let contents = format!("[Service]\nEnvironment=NODEAPISERVER_AUDIT_LOG_PATH={}\n", audit_log.display());
+        fs::write(&local_drop_in, contents)
+            .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in, audit_log };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverAuditLogOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = fs::remove_file(&self.audit_log);
+    }
+}
+
 /// This check is selected by the external-CNI workflow mode. A normal
 /// single-node run intentionally skips it because flannel is expected there.
 pub(super) async fn external_cni_mode_disables_flannel(context: &E2eContext) -> Result<()> {
@@ -976,6 +1023,62 @@ pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
         )
         .await?;
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_writes_audit_log(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("audit-log checks are only exercised against nodeapiserver"));
+    }
+
+    let audit = NodeapiserverAuditLogOverride::install()?;
+    context
+        .wait_until(
+            "nodeapiserver to answer requests after audit configuration",
+            Duration::from_secs(60),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "2",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "https://127.0.0.1:6443/healthz",
+                    ])
+                    .output();
+                Ok(output.is_ok_and(|output| {
+                    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() != "000"
+                }))
+            },
+        )
+        .await?;
+    let response = Command::new("curl")
+        .args(["-k", "-sS", "--max-time", "10", "https://127.0.0.1:6443/version"])
+        .output()
+        .context("calling nodeapiserver while audit logging is enabled")?;
+    anyhow::ensure!(
+        response.status.success(),
+        "nodeapiserver request failed: {}",
+        String::from_utf8_lossy(&response.stderr)
+    );
+
+    context
+        .wait_until(
+            "audit log to contain the version request",
+            Duration::from_secs(30),
+            || async {
+                Ok(fs::read_to_string(&audit.audit_log).is_ok_and(|content| {
+                    content
+                        .lines()
+                        .any(|line| line.contains("\"requestURI\":\"/version\""))
+                }))
+            },
+        )
+        .await
 }
 
 pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E2eContext) -> Result<()> {
