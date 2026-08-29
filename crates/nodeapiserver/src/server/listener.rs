@@ -627,6 +627,20 @@ pub async fn run(cfg: Config) {
         None => None,
     };
 
+    let audit_sink = match cfg.audit_log_path.as_deref() {
+        Some(path) => match crate::audit::sink::AuditSink::open(path) {
+            Ok(sink) => {
+                info!(path = %path.display(), "nodeapiserver: opened audit log");
+                Some(Arc::new(sink))
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error = ?error, "failed to open NODEAPISERVER_AUDIT_LOG_PATH; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
     let server_config = match cert.server_config(client_ca.as_ref()) {
         Ok(c) => c,
         Err(e) => {
@@ -794,6 +808,7 @@ pub async fn run(cfg: Config) {
         let bootstrap_token_authenticator = bootstrap_token_authenticator.clone();
         let authorization_webhook = authorization_webhook.clone();
         let concurrency_limiter = concurrency_limiter.clone();
+        let audit_sink = audit_sink.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -811,7 +826,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), audit_sink.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1182,14 +1197,11 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
 /// `path::parse` is a pure function safe to call a second time here),
 /// so it's the far less invasive place to add auditing than threading an
 /// audit-context return value out through every one of `handle`'s own
-/// early-return branches would have been. **The sink is this crate's own
-/// `tracing` output** (`target: "nodeapiserver::audit"`, one JSON line
-/// per request) — a real, working choice consistent with how every other
-/// component in this workspace already does its own logging (no
-/// component here writes to a separate log file), not real upstream's
-/// own dedicated `--audit-log-path` file with rotation, and not a
-/// webhook backend either; an operator wanting a separate audit stream
-/// filters this crate's own log output by that target today. See
+/// early-return branches would have been. The sink is this crate's own
+/// `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
+/// request) and, when configured, an append-only file selected by
+/// `NODEAPISERVER_AUDIT_LOG_PATH`; rotation and webhook delivery remain
+/// separate backends. See
 /// `audit::event`'s own doc comment for exactly which real `Event`
 /// fields are populated and which stage/level this always uses.
 async fn handle_with_audit(
@@ -1202,6 +1214,7 @@ async fn handle_with_audit(
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
     concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
+    audit_sink: Option<Arc<crate::audit::sink::AuditSink>>,
     anonymous_auth: bool,
     enforce_rbac: bool,
     peer: SocketAddr,
@@ -1284,7 +1297,7 @@ async fn handle_with_audit(
 
     if let Ok(resp) = &mut response {
         let status = resp.status().as_u16();
-        log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status);
+        log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref());
         // Group M: `/metrics`'s own request counter (`server::metrics`) —
         // recorded from the exact same parsed `RequestInfo` the audit
         // event above already builds, so a non-resource request (a
@@ -1323,8 +1336,13 @@ async fn handle_with_audit(
     response
 }
 
-fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16) {
+fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, audit_sink: Option<&crate::audit::sink::AuditSink>) {
     let event = build_audit_event(method, path_str, query, user_agent, identity, peer, status);
+    if let Some(sink) = audit_sink {
+        if let Err(error) = sink.write(&event) {
+            warn!(error = ?error, "nodeapiserver: failed to write audit event");
+        }
+    }
     tracing::info!(target: "nodeapiserver::audit", "{event}");
 }
 
