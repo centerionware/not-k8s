@@ -19,19 +19,45 @@
 //! server — mirrored here, not reinvented. `authn::x509::identity_from_der`
 //! is what turns an accepted, verified peer certificate into an
 //! `Identity`; this module only handles the TLS-layer verification.
+//!
+//! `ReloadableClientCa` refreshes the client trust bundle for new TLS
+//! connections after a valid file replacement, retaining the last valid
+//! bundle if a rotation is temporarily malformed.
 
 use anyhow::{Context, Result};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 use tracing::warn;
 
 pub struct LoadedCert {
     cert_der: CertificateDer<'static>,
     key_der: Vec<u8>,
+}
+
+/// A client-CA bundle that reloads after an atomic replacement or edit. The
+/// listener builds a fresh TLS verifier for each accepted connection, so a
+/// valid rotation takes effect without restarting nodeapiserver. Invalid or
+/// temporarily incomplete contents retain the last valid trust store.
+#[derive(Clone)]
+pub struct ReloadableClientCa {
+    path: PathBuf,
+    state: Arc<RwLock<ClientCaState>>,
+}
+
+struct ClientCaState {
+    fingerprint: FileFingerprint,
+    store: RootCertStore,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
 }
 
 impl LoadedCert {
@@ -79,6 +105,67 @@ pub fn load_client_ca(path: &Path) -> Result<RootCertStore> {
         anyhow::bail!("client CA file {} contained no PEM certificates", path.display());
     }
     Ok(store)
+}
+
+impl ReloadableClientCa {
+    /// Load a client CA bundle and retain its last valid contents during
+    /// later malformed rotations.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let store = load_client_ca(path)?;
+        let fingerprint = file_fingerprint(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            state: Arc::new(RwLock::new(ClientCaState { fingerprint, store })),
+        })
+    }
+
+    /// Return the latest valid root store, refreshing it when the source file
+    /// has changed.
+    pub fn current(&self) -> RootCertStore {
+        self.refresh_if_needed();
+        self.state
+            .read()
+            .map(|state| state.store.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().store.clone())
+    }
+
+    fn refresh_if_needed(&self) {
+        let Ok(fingerprint) = file_fingerprint(&self.path) else {
+            return;
+        };
+        let needs_reload = self
+            .state
+            .read()
+            .map(|state| state.fingerprint != fingerprint)
+            .unwrap_or(false);
+        if !needs_reload {
+            return;
+        }
+
+        let store = match load_client_ca(&self.path) {
+            Ok(store) => store,
+            Err(error) => {
+                if let Ok(mut state) = self.state.write() {
+                    state.fingerprint = fingerprint;
+                }
+                warn!(path = %self.path.display(), error = ?error, "client CA bundle changed but could not be reloaded; retaining the last valid trust store");
+                return;
+            }
+        };
+        if let Ok(mut state) = self.state.write() {
+            state.fingerprint = fingerprint;
+            state.store = store;
+        }
+    }
+}
+
+fn file_fingerprint(path: &Path) -> Result<FileFingerprint> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("reading client CA file metadata {}", path.display()))?;
+    Ok(FileFingerprint {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
 }
 
 /// Loads a cert/key pair from `cert_dir` if present, else generates a
@@ -232,5 +319,25 @@ mod tests {
         let store = load_client_ca(&ca_path).unwrap();
 
         assert!(cert.server_config(Some(&store)).is_ok());
+    }
+
+    #[test]
+    fn reloadable_client_ca_refreshes_and_retains_the_last_valid_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("client-ca.pem");
+        std::fs::write(&ca_path, self_signed_ca_pem("first-ca")).unwrap();
+        let client_ca = ReloadableClientCa::from_file(&ca_path).unwrap();
+        assert_eq!(client_ca.current().len(), 1);
+
+        let replacement = format!(
+            "{}{}",
+            self_signed_ca_pem("second-ca"),
+            self_signed_ca_pem("third-ca")
+        );
+        std::fs::write(&ca_path, replacement).unwrap();
+        assert_eq!(client_ca.current().len(), 2);
+
+        std::fs::write(&ca_path, "not a certificate").unwrap();
+        assert_eq!(client_ca.current().len(), 2);
     }
 }
