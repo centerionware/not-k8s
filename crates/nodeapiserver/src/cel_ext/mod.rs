@@ -93,6 +93,8 @@
 //! parser, containment, masking, and prefix-length helpers.
 //! `kubernetes_url` provides the upstream `kubernetes.urls` parser and URL
 //! component/query accessors.
+//! `kubernetes_semver` provides the upstream `kubernetes.Semver` parser,
+//! normalization, comparison, and component accessors.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -126,6 +128,7 @@ pub mod kubernetes_cidr;
 pub mod kubernetes_ip;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
+pub mod kubernetes_semver;
 pub mod kubernetes_url;
 pub mod path;
 
@@ -246,6 +249,14 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("getPort", kubernetes_url::get_port_binding);
     ctx.add_function("getEscapedPath", kubernetes_url::get_escaped_path_binding);
     ctx.add_function("getQuery", kubernetes_url::get_query_binding);
+    ctx.add_function("semver", kubernetes_semver::semver_binding);
+    ctx.add_function("isSemver", kubernetes_semver::is_semver_binding);
+    ctx.add_function("isGreaterThan", kubernetes_semver::is_greater_than_binding);
+    ctx.add_function("isLessThan", kubernetes_semver::is_less_than_binding);
+    ctx.add_function("compareTo", kubernetes_semver::compare_to_binding);
+    ctx.add_function("major", kubernetes_semver::major_binding);
+    ctx.add_function("minor", kubernetes_semver::minor_binding);
+    ctx.add_function("patch", kubernetes_semver::patch_binding);
     ctx.add_function("string", string_binding);
     authorizer::register(ctx);
 }
@@ -255,6 +266,9 @@ fn string_binding(ftx: &FunctionContext, This(value): This<CelValue>) -> Result<
         return Ok(CelValue::String(std::sync::Arc::new(value)));
     }
     if let Some(value) = kubernetes_cidr::string_value(&value) {
+        return Ok(CelValue::String(std::sync::Arc::new(value)));
+    }
+    if let Some(value) = kubernetes_semver::string_value(&value) {
         return Ok(CelValue::String(std::sync::Arc::new(value)));
     }
     kubernetes_ip::string_binding(ftx, This(value))
@@ -670,6 +684,16 @@ mod tests {
         assert_eq!(eval_bool_with_vars("url('https://example.com:8443/path%20with%20spaces?k=a&k=b').getEscapedPath() == '/path%20with%20spaces'", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("url('https://example.com/path?k=a&k=b').getQuery()['k'][1] == 'b'", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("string(url('https://example.com/path')) == 'https://example.com/path'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isSemver('1.2.3')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isSemver('v1.2.3')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("isSemver('v01.2', true)", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("semver('1.2.3').major() == 1", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("semver('1.2.3').minor() == 2", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("semver('1.2.3').patch() == 3", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("semver('1.2.3').isLessThan(semver('2.0.0'))", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("semver('2.0.0').isGreaterThan(semver('1.2.3'))", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("semver('1.2.3').compareTo(semver('1.2.3')) == 0", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("string(semver('1.2.3')) == '1.2.3'", &[]).unwrap(), true);
     }
 
     #[test]
