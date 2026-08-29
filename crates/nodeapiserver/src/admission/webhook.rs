@@ -719,7 +719,7 @@ pub(crate) async fn endpoint(
             detail: "service name and namespace are required".to_string(),
         });
     }
-    let service_object = match rest::get(
+    let service_object = match Box::pin(rest::get(
         storage,
         None,
         "",
@@ -727,7 +727,7 @@ pub(crate) async fn endpoint(
         "services",
         Some(service_namespace),
         service_name,
-    )
+    ))
     .await?
     {
         rest::GetOutcome::Found(value) => value,

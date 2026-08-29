@@ -153,7 +153,7 @@ pub async fn to_watch_event_json_with_conversion(
     event: &WatchEvent,
     kind: &str,
     api_version: &str,
-    mut storage: Option<&mut StorageClient>,
+    storage: Option<&mut StorageClient>,
     group: &str,
     resource: &str,
     conversion_webhook: Option<&crate::apiextensions::registry::ConversionWebhook>,

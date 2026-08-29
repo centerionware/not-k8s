@@ -103,8 +103,12 @@ use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
@@ -467,6 +471,76 @@ async fn encode_watch_event_with_conversion(
     }
 }
 
+type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send>>;
+type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
+
+struct ConversionWatchState {
+    events: WatchEventStream,
+    pending: Option<WatchFrameFuture>,
+    kind: String,
+    api_version: String,
+    storage: Option<StorageClient>,
+    group: String,
+    resource: String,
+    version: String,
+    partial_metadata: bool,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+}
+
+struct ConversionWatchStream {
+    state: Arc<Mutex<ConversionWatchState>>,
+}
+
+impl tokio_stream::Stream for ConversionWatchStream {
+    type Item = Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut state = self.state.lock().expect("conversion watch state lock poisoned");
+        loop {
+            if state.pending.is_some() {
+                let poll = state.pending.as_mut().expect("pending conversion future exists").as_mut().poll(cx);
+                match poll {
+                    Poll::Ready(result) => {
+                        state.pending = None;
+                        if let Some(result) = result {
+                            return Poll::Ready(Some(result));
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            let event = match state.events.as_mut().poll_next(cx) {
+                Poll::Ready(Some(event)) => event,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            let kind = state.kind.clone();
+            let api_version = state.api_version.clone();
+            let storage = state.storage.clone();
+            let group = state.group.clone();
+            let resource = state.resource.clone();
+            let version = state.version.clone();
+            let partial_metadata = state.partial_metadata;
+            let conversion_webhook = state.conversion_webhook.clone();
+            state.pending = Some(Box::pin(async move {
+                encode_watch_event_with_conversion(
+                    &event,
+                    &kind,
+                    &api_version,
+                    storage,
+                    &group,
+                    &resource,
+                    &version,
+                    partial_metadata,
+                    conversion_webhook,
+                )
+                .await
+            }));
+        }
+    }
+}
+
 /// The real streaming `watch` response body: every already-retained
 /// history event past `start_revision` (`replay`), then every live event
 /// as it arrives on `rx`, each encoded by [`encode_watch_event`]. A
@@ -562,33 +636,29 @@ fn watch_response_body(
     // their own `'static`-owned copy of the encryption-lookup context.
     let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
     let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
-    let storage_for_encode = storage.clone();
-    let frames = filtered
-        .then(move |event| {
-            let storage = storage_for_encode.clone();
-            let conversion_webhook = conversion_webhook.clone();
-            let kind = kind.clone();
-            let api_version = api_version.clone();
-            let group = group.clone();
-            let resource = resource.clone();
-            let version = version.clone();
-            async move {
-                encode_watch_event_with_conversion(
-                    &event,
-                    &kind,
-                    &api_version,
-                    storage,
-                    &group,
-                    &resource,
-                    &version,
-                    partial_metadata,
-                    conversion_webhook,
-                )
-                .await
-            }
-        })
-        .filter_map(|event| event);
-    StreamBody::new(frames).boxed()
+    if conversion_webhook.is_none() {
+        let frames = filtered.filter_map(move |event| {
+            encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata)
+        });
+        return StreamBody::new(frames).boxed();
+    }
+
+    let events: WatchEventStream = Box::pin(filtered);
+    let stream = ConversionWatchStream {
+        state: Arc::new(Mutex::new(ConversionWatchState {
+            events,
+            pending: None,
+            kind,
+            api_version,
+            storage,
+            group,
+            resource,
+            version,
+            partial_metadata,
+            conversion_webhook,
+        })),
+    };
+    StreamBody::new(stream).boxed()
 }
 
 /// Runs the listener forever (until the process exits). Best-effort on
