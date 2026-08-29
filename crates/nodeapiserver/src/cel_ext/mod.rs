@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(eval_bool_with_vars("'123 abc 456'.findAll('[0-9]+', 1).size() == 1", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("format.dns1123Label().validate('valid-name').hasValue() == false", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("format.dns1123Label().validate('-invalid').hasValue()", &[]).unwrap(), true);
-        assert_eq!(eval_bool_with_vars("format.named('uuid').validate('123e4567-e89b-12d3-a456-426614174000').hasValue() == false", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("format.named('uuid').value().validate('123e4567-e89b-12d3-a456-426614174000').hasValue() == false", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("format.date().validate('2021-01-01').hasValue() == false", &[]).unwrap(), true);
     }
 
