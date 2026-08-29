@@ -30,5 +30,7 @@
 
 pub mod client_tls;
 pub mod http_client;
+pub mod node_proxy;
 pub mod pod_log;
 pub mod pod_stream;
+pub mod service_proxy;

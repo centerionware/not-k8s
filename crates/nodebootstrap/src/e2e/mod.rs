@@ -1175,6 +1175,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_proxy_subresources_relay_requests",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeport_service_is_reachable_on_the_node_ip",
         group: TestGroup::General,
     },
@@ -2299,6 +2303,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_clusterip_service_routes_to_its_backend_pod" => {
             service_proxy::clusterip_service_routes_to_its_backend_pod(context).await
+        }
+        "test_nodeapiserver_proxy_subresources_relay_requests" => {
+            service_proxy::nodeapiserver_proxy_subresources_relay_requests(context).await
         }
         "test_nodeport_service_is_reachable_on_the_node_ip" => {
             service_proxy::nodeport_service_is_reachable_on_the_node_ip(context).await

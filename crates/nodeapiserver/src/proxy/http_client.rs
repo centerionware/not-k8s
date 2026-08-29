@@ -1,6 +1,7 @@
 //! The actual live proxy dial: given a [`crate::proxy::pod_log::Target`]
 //! and a [`rustls::ClientConfig`] (`client_tls::build_client_config`),
-//! opens a real TLS connection to nodelet's kubelet-style server and
+//! opens a real connection to the target (TLS for `https`, plain HTTP for
+//! `http`) and
 //! relays the response back unmodified.
 //!
 //! Reuses `crates/nodelet/src/server/exec.rs`'s own proven low-level
@@ -25,6 +26,7 @@ use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -134,15 +136,12 @@ fn build_uri(target: &Target) -> Result<Uri, Error> {
 /// "connect to this one target," everything else about a request
 /// (method/headers/body) is the caller's own concern.
 type DialBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}
+type ProxyIo = TokioIo<Box<dyn ProxyStream>>;
 
 async fn dial(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper::client::conn::http1::SendRequest<DialBody>, Error> {
-    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
-
-    let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
-    let connector = TlsConnector::from(client_config);
-    let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
-    let io = TokioIo::new(tls_stream);
-
+    let io = connect(target, client_config).await?;
     let (sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
@@ -155,11 +154,7 @@ async fn dial(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper
 type UpgradeBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 async fn dial_upgrade(target: &Target, client_config: Arc<ClientConfig>) -> Result<hyper::client::conn::http1::SendRequest<UpgradeBody>, Error> {
-    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
-    let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
-    let connector = TlsConnector::from(client_config);
-    let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
-    let io = TokioIo::new(tls_stream);
+    let io = connect(target, client_config).await?;
     let (sender, conn) = hyper::client::conn::http1::handshake(io).await.map_err(Error::HttpHandshake)?;
     tokio::spawn(async move {
         if let Err(error) = conn.with_upgrades().await {
@@ -167,6 +162,17 @@ async fn dial_upgrade(target: &Target, client_config: Arc<ClientConfig>) -> Resu
         }
     });
     Ok(sender)
+}
+
+async fn connect(target: &Target, client_config: Arc<ClientConfig>) -> Result<ProxyIo, Error> {
+    let tcp = TcpStream::connect((target.host.as_str(), target.port)).await.map_err(|source| Error::Connect { host: target.host.clone(), port: target.port, source })?;
+    if target.scheme == "http" {
+        return Ok(TokioIo::new(Box::new(tcp)));
+    }
+    let server_name = ServerName::try_from(target.host.clone()).map_err(|_| Error::InvalidServerName { host: target.host.clone() })?;
+    let connector = TlsConnector::from(client_config);
+    let tls_stream = connector.connect(server_name, tcp).await.map_err(|source| Error::Tls { host: target.host.clone(), port: target.port, source })?;
+    Ok(TokioIo::new(Box::new(tls_stream)))
 }
 
 async fn splice(client: Upgraded, target: Upgraded) {
