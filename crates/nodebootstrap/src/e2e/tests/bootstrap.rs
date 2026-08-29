@@ -903,6 +903,34 @@ pub(super) async fn nodeapiserver_watches_an_uncommon_builtin_resource(context: 
     result
 }
 
+pub(super) async fn nodeapiserver_rejects_unsupported_resource_route(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "unsupported-resource route checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods/nodeapiserver-route-check/unsupported",
+            context.namespace
+        ))
+        .body(Vec::new())?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 404 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "unsupported resource route returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!(
+            "unsupported resource route was accepted instead of returning 404: {value}"
+        ),
+    }
+}
+
 pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

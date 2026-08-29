@@ -219,6 +219,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_rejects_unsupported_resource_route",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_validating_admission_policy_denies_create",
         group: TestGroup::General,
     },
@@ -1579,6 +1583,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeapiserver_watches_an_uncommon_builtin_resource" => {
             bootstrap::nodeapiserver_watches_an_uncommon_builtin_resource(context).await
+        },
+        "test_nodeapiserver_rejects_unsupported_resource_route" => {
+            bootstrap::nodeapiserver_rejects_unsupported_resource_route(context).await
         },
         "test_nodeapiserver_validating_admission_policy_denies_create" => {
             bootstrap::nodeapiserver_validating_admission_policy_denies_create(context).await
