@@ -68,6 +68,9 @@ pub enum PolicyOutcome {
     /// match result. Real upstream's own `Evaluation: EvalError` at the
     /// `matchConditions` stage.
     MatchConditionsError { errors: Vec<String> },
+    /// A composed `spec.variables` expression failed after the policy's
+    /// resource and match-condition gates passed.
+    VariableError { error: String },
     /// The policy applied and its `spec.validations` were evaluated —
     /// one [`Decision`] per rule, same shape
     /// [`policy_validations::evaluate_validations`] already returns.
@@ -103,7 +106,7 @@ impl PolicyOutcome {
     /// what that binding's own `validationActions` said. [`validation_actions_deny`]
     /// is the separate, real primitive for that half.
     pub fn is_denial(&self) -> bool {
-        self.denies() || matches!(self, PolicyOutcome::MatchConditionsError { .. })
+        self.denies() || matches!(self, PolicyOutcome::MatchConditionsError { .. } | PolicyOutcome::VariableError { .. })
     }
 
     /// The real message a caller should report for a denial — the first
@@ -115,6 +118,7 @@ impl PolicyOutcome {
         match self {
             PolicyOutcome::NotApplicable => None,
             PolicyOutcome::MatchConditionsError { errors } => Some(errors.join("; ")),
+            PolicyOutcome::VariableError { error } => Some(error.clone()),
             PolicyOutcome::Decided(decisions) => decisions.iter().find(|d| d.action == policy_validations::Action::Deny).and_then(|d| d.message.clone()),
         }
     }
@@ -185,14 +189,61 @@ pub fn evaluate_with_validation_vars(
     match_vars: &[(&'static str, &Value)],
     validation_vars: &[(&'static str, &Value)],
 ) -> PolicyOutcome {
+    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars) {
+        return outcome;
+    }
+    PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, validation_vars, policy.failure_policy))
+}
+
+/// Evaluate a policy after composing its declared variables. Variables are
+/// deliberately composed only after resource and match-condition filtering,
+/// matching the API contract that `matchConditions` cannot reference them.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_with_composed_variables(
+    policy: &PolicyDefinition,
+    operation: &str,
+    group: &str,
+    version: &str,
+    resource: &str,
+    subresource: &str,
+    namespace_labels: &BTreeMap<String, String>,
+    object_labels: &BTreeMap<String, String>,
+    match_vars: &[(&'static str, &Value)],
+    validation_vars: &[(&'static str, &Value)],
+    variables: &[policy_matching::Variable<'_>],
+) -> PolicyOutcome {
+    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars) {
+        return outcome;
+    }
+    let composed = match policy_matching::compose_variables(variables, validation_vars) {
+        Ok(value) => value,
+        Err(_error) if policy.failure_policy == FailurePolicy::Ignore => return PolicyOutcome::NotApplicable,
+        Err(error) => return PolicyOutcome::VariableError { error },
+    };
+    let mut validation_vars = validation_vars.to_vec();
+    validation_vars.push(("variables", &composed));
+    PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, &validation_vars, policy.failure_policy))
+}
+
+fn match_policy(
+    policy: &PolicyDefinition,
+    operation: &str,
+    group: &str,
+    version: &str,
+    resource: &str,
+    subresource: &str,
+    namespace_labels: &BTreeMap<String, String>,
+    object_labels: &BTreeMap<String, String>,
+    match_vars: &[(&'static str, &Value)],
+) -> Result<(), PolicyOutcome> {
     if !policy_matching::matches_resource_rules(policy.resource_rules, policy.exclude_resource_rules, operation, group, version, resource, subresource) {
-        return PolicyOutcome::NotApplicable;
+        return Err(PolicyOutcome::NotApplicable);
     }
     if !policy_matching::matches_label_selector(policy.namespace_selector, namespace_labels) {
-        return PolicyOutcome::NotApplicable;
+        return Err(PolicyOutcome::NotApplicable);
     }
     if !policy_matching::matches_label_selector(policy.object_selector, object_labels) {
-        return PolicyOutcome::NotApplicable;
+        return Err(PolicyOutcome::NotApplicable);
     }
     if !policy.match_conditions.is_empty() {
         match match_conditions::match_conditions(policy.match_conditions, match_vars, policy.failure_policy) {
@@ -201,11 +252,11 @@ pub fn evaluate_with_validation_vars(
             // "skip this policy" outcome are both "this policy has nothing
             // to say about this request" from the caller's point of view —
             // matches `MatchResult::matches()`'s own real collapsing.
-            MatchResult::DoesNotMatch { .. } | MatchResult::Ignored { .. } => return PolicyOutcome::NotApplicable,
-            MatchResult::Error { errors } => return PolicyOutcome::MatchConditionsError { errors },
+            MatchResult::DoesNotMatch { .. } | MatchResult::Ignored { .. } => return Err(PolicyOutcome::NotApplicable),
+            MatchResult::Error { errors } => return Err(PolicyOutcome::MatchConditionsError { errors }),
         }
     }
-    PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, validation_vars, policy.failure_policy))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -349,6 +400,35 @@ mod tests {
         let conditions = [MatchCondition { name: "namespace-is-default", expression: "namespaceObject.metadata.name == 'default'" }];
         let policy = PolicyDefinition { match_conditions: &conditions, ..policy };
         assert!(matches!(evaluate_with_validation_vars(&policy, "CREATE", "", "v1", "pods", "", &labels(&[]), &labels(&[]), match_vars, validation_vars), PolicyOutcome::MatchConditionsError { .. }));
+    }
+
+    #[test]
+    fn composed_variables_feed_validations_after_match_conditions() {
+        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &[""], api_versions: &["v1"], resources: &["pods"] }];
+        let validations = [Validation { expression: "variables.minimum == 5", message: Some("minimum must be five"), reason: None, message_expression: None }];
+        let policy = base_policy(&rules, &validations);
+        let object = json!({"spec": {"replicas": 3}});
+        let request = json!({"operation": "CREATE"});
+        let match_vars = policy_matching::build_eval_vars(Some(&object), None, &request, None);
+        let validation_vars = policy_matching::build_eval_vars_with_namespace(Some(&object), None, &request, None, None);
+        let variables = [
+            policy_matching::Variable { name: "replicas", expression: "object.spec.replicas" },
+            policy_matching::Variable { name: "minimum", expression: "variables.replicas + 2u" },
+        ];
+        let outcome = evaluate_with_composed_variables(&policy, "CREATE", "", "v1", "pods", "", &labels(&[]), &labels(&[]), &match_vars, &validation_vars, &variables);
+        assert_eq!(outcome, PolicyOutcome::Decided(vec![Decision { action: Action::Admit, is_error: false, message: None, reason: None }]));
+    }
+
+    #[test]
+    fn variable_composition_is_skipped_when_a_match_condition_excludes_the_request() {
+        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &[""], api_versions: &["v1"], resources: &["pods"] }];
+        let conditions = [MatchCondition { name: "never", expression: "false" }];
+        let policy = PolicyDefinition { match_conditions: &conditions, ..base_policy(&rules, &[]) };
+        let request = json!({"operation": "CREATE"});
+        let match_vars = policy_matching::build_eval_vars(None, None, &request, None);
+        let validation_vars = policy_matching::build_eval_vars_with_namespace(None, None, &request, None, None);
+        let variables = [policy_matching::Variable { name: "broken", expression: "this is not valid cel (((" }];
+        assert_eq!(evaluate_with_composed_variables(&policy, "CREATE", "", "v1", "pods", "", &labels(&[]), &labels(&[]), &match_vars, &validation_vars, &variables), PolicyOutcome::NotApplicable);
     }
 
     #[test]

@@ -123,7 +123,7 @@ pub async fn validate(
                     validations: &decoded.validations,
                     failure_policy: decoded.failure_policy,
                 };
-                let outcome = validating_admission_policy::evaluate_with_validation_vars(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars);
+                let outcome = validating_admission_policy::evaluate_with_composed_variables(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars, &decoded.variables);
                 match outcome {
                     validating_admission_policy::PolicyOutcome::MatchConditionsError { errors } => {
                         record_failure(&mut result, policy_name, binding, &actions, errors.join("; "), None);
@@ -136,6 +136,9 @@ pub async fn validate(
                             let message = decision.message.unwrap_or_else(|| format!("failed validation at index {expression_index}"));
                             record_failure(&mut result, policy_name, binding, &actions, message, Some(expression_index));
                         }
+                    }
+                    validating_admission_policy::PolicyOutcome::VariableError { error } => {
+                        record_failure(&mut result, policy_name, binding, &actions, error, None);
                     }
                     validating_admission_policy::PolicyOutcome::NotApplicable => {}
                 }
