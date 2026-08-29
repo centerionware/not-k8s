@@ -1400,12 +1400,20 @@ decoder/matcher/CEL evaluator is reused; named and selector-based
 `paramRef` objects are resolved through generic REST storage, and
 Warn/Audit actions are not emitted yet.
 
+`MutatingAdmissionPolicy` and `MutatingAdmissionPolicyBinding` are now
+loaded from storage before validating admission. Matching bindings can apply
+multiple JSON Patch operations or an apply configuration in order, including
+parameter and selector matching, with the policy's `failurePolicy` honored.
+The current CEL adapter accepts JSON-shaped mutation results; typed
+`JSONPatch{}`/`Object{}` declarations and the additional `namespaceObject`,
+`variables`, and `authorizer` bindings remain explicit follow-up work.
+
 **Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
 persisted usage counter (above), a
 generic plugin-chain/registry abstraction (today `server::listener`
 hand-calls each plugin directly, not through
 any dispatch table), mutating/validating webhooks, and
-MutatingAdmissionPolicy. The ValidatingAdmissionPolicy path uses the
+the remaining typed-CEL/variable surface of MutatingAdmissionPolicy. The ValidatingAdmissionPolicy path uses the
 existing per-expression deadline and the shared request-side CEL budget;
 interpreter-level fuel accounting remains a follow-up hardening item.
 
