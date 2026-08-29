@@ -28,18 +28,10 @@
 //! called: once per event actually encoded and written to a watch
 //! client's connection (`server::listener::encode_watch_event`), not per
 //! event this build merely considered and filtered out by a selector.
-//! **`apiserver_current_inflight_requests` is deliberately NOT
-//! ported**, checked and rejected rather than skipped by omission: its
-//! real semantics (`metrics.go`'s own doc comment: "Maximal number of
-//! currently used inflight request limit... in last second") measure
-//! utilization of real upstream's own APF concurrency-limiting semaphore
-//! (`request_kind`: `mutating`/`readonly`), sampled once per second by
-//! its own ticker — not a plain "requests currently being handled"
-//! count. The full upstream fair-queuing/seat-borrowing implementation
-//! remains a separate refinement, so this metric is still skipped rather
-//! than approximated from raw in-flight request counts. The request gate
-//! does enforce finite ordinary and mutating budgets, but it does not yet
-//! expose the upstream metric's sampled seat-utilization semantics.
+//! `apiserver_current_inflight_requests` is also exposed for the two
+//! request kinds (`readonly` and `mutating`). It measures seats held by
+//! this build's APF gate while a request is being handled, rather than
+//! counting long-running requests that deliberately bypass that gate.
 //! `apiserver_response_sizes` (real upstream's own exponential-bucket
 //! histogram, `compbasemetrics.ExponentialBuckets(1000, 10.0, 7)` — 1KB
 //! to 1GB, confirmed directly) is ported too, from `http_body::Body::
@@ -65,6 +57,46 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static INFLIGHT_READONLY: AtomicUsize = AtomicUsize::new(0);
+static INFLIGHT_MUTATING: AtomicUsize = AtomicUsize::new(0);
+
+/// A request's APF seat accounting. Dropping it at the same scope as the
+/// limiter permit keeps the gauge aligned with the actual bounded request
+/// budget, including early-return responses.
+pub struct InFlightGuard {
+    mutating: bool,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        let counter = if self.mutating { &INFLIGHT_MUTATING } else { &INFLIGHT_READONLY };
+        counter.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Begins accounting one request that successfully acquired an APF seat.
+/// Exempt and long-running requests do not acquire a seat and must not call
+/// this function.
+pub fn begin_inflight(mutating: bool) -> InFlightGuard {
+    let counter = if mutating { &INFLIGHT_MUTATING } else { &INFLIGHT_READONLY };
+    counter.fetch_add(1, Ordering::AcqRel);
+    InFlightGuard { mutating }
+}
+
+fn render_inflight_counts(readonly: usize, mutating: usize) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# HELP apiserver_current_inflight_requests Maximum number of currently used inflight request seats.");
+    let _ = writeln!(out, "# TYPE apiserver_current_inflight_requests gauge");
+    let _ = writeln!(out, "apiserver_current_inflight_requests{{request_kind=\"mutating\"}} {mutating}");
+    let _ = writeln!(out, "apiserver_current_inflight_requests{{request_kind=\"readonly\"}} {readonly}");
+    out
+}
+
+fn render_inflight() -> String {
+    render_inflight_counts(INFLIGHT_READONLY.load(Ordering::Acquire), INFLIGHT_MUTATING.load(Ordering::Acquire))
+}
 
 /// `(verb, resource, code)` — deliberately not `String` per axis to keep
 /// the map's own comparisons cheap; interned nowhere, just cloned into
@@ -310,7 +342,11 @@ pub fn render() -> String {
     let watch_event_snapshot: Vec<(WatchEventKey, u64)> = watch_event_counters.iter().map(|(k, &v)| (k.clone(), v)).collect();
     drop(watch_event_counters);
 
-    render_counts(&counter_snapshot) + &render_histograms(&histogram_snapshot) + &render_response_sizes(&response_size_snapshot) + &render_watch_event_counts(&watch_event_snapshot)
+    render_counts(&counter_snapshot)
+        + &render_histograms(&histogram_snapshot)
+        + &render_response_sizes(&response_size_snapshot)
+        + &render_watch_event_counts(&watch_event_snapshot)
+        + &render_inflight()
 }
 
 #[cfg(test)]
@@ -430,5 +466,23 @@ mod tests {
         let text = render();
         assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"a-size-resource-unique-to-this-test\",le=\"1000\"} 0"));
         assert!(text.contains("apiserver_response_sizes_bucket{verb=\"get\",resource=\"a-size-resource-unique-to-this-test\",le=\"10000\"} 1"));
+    }
+
+    #[test]
+    fn render_inflight_counts_uses_the_upstream_request_kind_labels() {
+        let text = render_inflight_counts(2, 1);
+        assert!(text.contains("# TYPE apiserver_current_inflight_requests gauge"));
+        assert!(text.contains("apiserver_current_inflight_requests{request_kind=\"mutating\"} 1"));
+        assert!(text.contains("apiserver_current_inflight_requests{request_kind=\"readonly\"} 2"));
+    }
+
+    #[test]
+    fn inflight_guard_decrements_the_matching_kind() {
+        let before = INFLIGHT_READONLY.load(Ordering::Acquire);
+        {
+            let _guard = begin_inflight(false);
+            assert_eq!(INFLIGHT_READONLY.load(Ordering::Acquire), before + 1);
+        }
+        assert_eq!(INFLIGHT_READONLY.load(Ordering::Acquire), before);
     }
 }
