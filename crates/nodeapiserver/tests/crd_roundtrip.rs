@@ -165,9 +165,44 @@ fn conversion_crd(webhook_url: &str) -> serde_json::Value {
     })
 }
 
+fn storage_validation_crd(webhook_url: &str) -> serde_json::Value {
+    json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": "strictconvertedwidgets.example.com"},
+        "spec": {
+            "group": "example.com",
+            "scope": "Namespaced",
+            "names": {"plural": "strictconvertedwidgets", "singular": "strictconvertedwidget", "kind": "StrictConvertedWidget", "listKind": "StrictConvertedWidgetList"},
+            "conversion": {
+                "strategy": "Webhook",
+                "webhook": {
+                    "conversionReviewVersions": ["v1"],
+                    "clientConfig": {"url": webhook_url}
+                }
+            },
+            "versions": [
+                {
+                    "name": "v1",
+                    "served": true,
+                    "storage": true,
+                    "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object", "required": ["storageOnly"], "properties": {"storageOnly": {"type": "string"}}}}}}
+                },
+                {
+                    "name": "v1beta1",
+                    "served": true,
+                    "storage": false,
+                    "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object", "required": ["value"], "properties": {"value": {"type": "string"}}}}}}
+                }
+            ]
+        }
+    })
+}
+
 fn spawn_conversion_webhook(
     listener: TcpListener,
     expected_versions: Vec<&'static str>,
+    invalid_storage_value: bool,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         for expected_version in expected_versions {
@@ -214,6 +249,9 @@ fn spawn_conversion_webhook(
             let mut converted = payload["request"]["objects"][0].clone();
             converted["apiVersion"] = json!(format!("example.com/{expected_version}"));
             converted["spec"]["convertedVersion"] = json!(expected_version);
+            if invalid_storage_value && expected_version == "v1" {
+                converted["spec"]["storageOnly"] = json!(42);
+            }
             let response = json!({
                 "apiVersion": "apiextensions.k8s.io/v1",
                 "kind": "ConversionReview",
@@ -248,7 +286,7 @@ async fn conversion_webhook_round_trips_cr_objects_between_served_versions() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind conversion webhook listener");
     let webhook_url = format!("http://{}/convert", listener.local_addr().expect("conversion webhook listener address"));
-    let webhook_task = spawn_conversion_webhook(listener, vec!["v1", "v1beta1", "v1beta1", "v1beta1", "v1beta1"]);
+    let webhook_task = spawn_conversion_webhook(listener, vec!["v1", "v1beta1", "v1beta1", "v1beta1", "v1beta1"], false);
     let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23807).await;
 
     rest::create(
@@ -346,6 +384,60 @@ async fn conversion_webhook_round_trips_cr_objects_between_served_versions() {
     tokio::time::timeout(Duration::from_secs(5), webhook_task)
         .await
         .expect("conversion webhook should receive all expected requests")
+        .expect("conversion webhook task must not fail");
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn conversion_output_is_checked_against_the_storage_version_schema() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary found and building one on demand failed");
+        return;
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind conversion webhook listener");
+    let webhook_url = format!("http://{}/convert", listener.local_addr().expect("conversion webhook listener address"));
+    let webhook_task = spawn_conversion_webhook(listener, vec!["v1"], true);
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23808).await;
+
+    rest::create(
+        &mut storage,
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        &storage_validation_crd(&webhook_url),
+    )
+    .await
+    .expect("rest::create(CRD) must not itself error");
+
+    let object = json!({
+        "apiVersion": "example.com/v1beta1",
+        "kind": "StrictConvertedWidget",
+        "metadata": {"name": "strict-widget", "namespace": "default"},
+        "spec": {"value": "hello"},
+    });
+    let result = rest::create(&mut storage, "example.com", "v1beta1", "strictconvertedwidgets", Some("default"), &object)
+        .await
+        .expect("rest::create(StrictConvertedWidget) must not itself error");
+    match result {
+        rest::CreateOutcome::Invalid(violations) => assert!(violations.iter().any(|violation| violation.contains("spec.storageOnly") && violation.contains("expected type")), "unexpected violations: {violations:?}"),
+        other => panic!("expected storage-schema validation failure, got {other:?}"),
+    }
+
+    assert_eq!(
+        rest::get(&mut storage, None, "example.com", "v1beta1", "strictconvertedwidgets", Some("default"), "strict-widget")
+            .await
+            .expect("rest::get must not error"),
+        rest::GetOutcome::ObjectNotFound,
+        "an invalid conversion result must not be persisted",
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), webhook_task)
+        .await
+        .expect("conversion webhook should receive the expected request")
         .expect("conversion webhook task must not fail");
 
     let _ = child.kill().await;

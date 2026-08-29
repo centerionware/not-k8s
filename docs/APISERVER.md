@@ -52,7 +52,7 @@ explanation of each boundary.
 | H. Authentication | **in progress** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and static-token file reload are integrated; remaining authentication-file reload and some upstream diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
-| K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, and REST/watch conversion webhooks are integrated; full storage-version schema revalidation remains. |
+| K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, and shuffle-sharded queues are present; seat borrowing and sampled inflight semantics remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
@@ -1674,8 +1674,9 @@ resolution, TLS, and CA-bundle handling. CRD objects are converted to the
 declared storage version before writes and back to the requested served
 version for `GET`/`LIST`, watches, and write responses; the focused
 `tests/crd_roundtrip.rs` test proves this against a real nodestore and a
-local conversion webhook. Full storage-version schema revalidation remains
-an explicit follow-up limitation.
+local conversion webhook. Converted objects are pruned and checked against
+the storage version's structural schema before persistence, so a webhook
+cannot bypass storage-version required/type/constraint validation.
 
 **Status-subresource schema handling is real now** — for an established CRD
 version that declares `subresources.status`, both `update_status` and
