@@ -64,6 +64,14 @@ fn systemd_service_available(name: &str) -> bool {
         })
 }
 
+fn crd_is_established(crd: &CustomResourceDefinition) -> bool {
+    crd.status.as_ref().is_some_and(|status| {
+        status.conditions.as_ref().is_some_and(|conditions| {
+            conditions.iter().any(|condition| condition.type_ == "Established" && condition.status == "True")
+        })
+    })
+}
+
 struct NodeapiserverAuthenticationOverride {
     drop_in: PathBuf,
     token_file: PathBuf,
@@ -900,6 +908,169 @@ pub(super) async fn nodeapiserver_watches_an_uncommon_builtin_resource(context: 
     }
     .await;
     let _ = priority_classes.delete(&name, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn nodeapiserver_recreates_a_dynamic_watch_cache(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("dynamic watch-cache lifecycle is a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let group = format!("nodeapiserver-cache-{suffix}.test");
+    let crd_name = format!("widgets.{group}");
+    let crds: Api<CustomResourceDefinition> = Api::all(context.client.clone());
+    let widgets: Api<DynamicObject> = Api::all_with(
+        context.client.clone(),
+        &ApiResource::from_gvk(&GroupVersionKind::gvk(&group, "v1", "Widget")),
+    );
+    let crd: CustomResourceDefinition = serde_json::from_value(json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": crd_name},
+        "spec": {
+            "group": group,
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "listKind": "WidgetList"
+            },
+            "scope": "Cluster",
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "schema": {"openAPIV3Schema": {
+                    "type": "object",
+                    "properties": {"spec": {"type": "object"}}
+                }}
+            }]
+        }
+    }))?;
+
+    let first_name = format!("first-{suffix}");
+    let second_name = format!("second-{suffix}");
+    let result = async {
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("creating the dynamic watch-cache CRD")?;
+        context
+            .wait_until("dynamic watch-cache CRD to become established", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move {
+                    Ok(crds
+                        .get_opt(&crd_name)
+                        .await?
+                        .is_some_and(|crd| crd_is_established(&crd)))
+                }
+            })
+            .await?;
+
+        {
+            let watch = widgets.watch(&WatchParams::default().timeout(30), "0").await?;
+            futures::pin_mut!(watch);
+            let object: DynamicObject = serde_json::from_value(json!({
+                "apiVersion": format!("{group}/v1"),
+                "kind": "Widget",
+                "metadata": {"name": first_name}
+            }))?;
+            widgets
+                .create(&PostParams::default(), &object)
+                .await
+                .context("creating the first CRD-backed watch object")?;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut observed = false;
+            while Instant::now() < deadline {
+                let event = tokio::time::timeout(Duration::from_secs(1), watch.next()).await;
+                let Ok(Some(event)) = event else { continue };
+                match event? {
+                    WatchEvent::Added(object) | WatchEvent::Modified(object)
+                        if object.metadata.name.as_deref() == Some(first_name.as_str()) =>
+                    {
+                        observed = true;
+                        break;
+                    }
+                    WatchEvent::Error(status) => anyhow::bail!("first dynamic watch returned an error: {status:?}"),
+                    _ => {}
+                }
+            }
+            anyhow::ensure!(observed, "nodeapiserver did not deliver the first CRD-backed watch event");
+        }
+
+        crds.delete(&crd_name, &DeleteParams::default()).await?;
+        context
+            .wait_until("dynamic watch-cache CRD to be deleted", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move { Ok(crds.get_opt(&crd_name).await?.is_none()) }
+            })
+            .await?;
+
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("recreating the dynamic watch-cache CRD")?;
+        context
+            .wait_until("recreated dynamic watch-cache CRD to become established", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move {
+                    Ok(crds
+                        .get_opt(&crd_name)
+                        .await?
+                        .is_some_and(|crd| crd_is_established(&crd)))
+                }
+            })
+            .await?;
+
+        let watch_deadline = Instant::now() + Duration::from_secs(30);
+        let watch = loop {
+            match widgets.watch(&WatchParams::default().timeout(30), "0").await {
+                Ok(watch) => break watch,
+                Err(KubeError::Api(error)) if error.code == 404 && Instant::now() < watch_deadline => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        futures::pin_mut!(watch);
+        let object: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": second_name}
+        }))?;
+        widgets
+            .create(&PostParams::default(), &object)
+            .await
+            .context("creating the recreated CRD-backed watch object")?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut observed = false;
+        while Instant::now() < deadline {
+            let event = tokio::time::timeout(Duration::from_secs(1), watch.next()).await;
+            let Ok(Some(event)) = event else { continue };
+            match event? {
+                WatchEvent::Added(object) | WatchEvent::Modified(object)
+                    if object.metadata.name.as_deref() == Some(second_name.as_str()) =>
+                {
+                    observed = true;
+                    break;
+                }
+                WatchEvent::Error(status) => anyhow::bail!("recreated dynamic watch returned an error: {status:?}"),
+                _ => {}
+            }
+        }
+        anyhow::ensure!(observed, "nodeapiserver did not deliver a watch event after CRD recreation");
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = widgets.delete(&first_name, &DeleteParams::default()).await;
+    let _ = widgets.delete(&second_name, &DeleteParams::default()).await;
+    let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
     result
 }
 
