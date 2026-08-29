@@ -21,7 +21,7 @@ use secrecy::SecretString;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,83 @@ fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
     command
         .output()
         .with_context(|| format!("running {program}"))
+}
+
+fn run_privileged(program: &str, args: &[&str]) -> Result<()> {
+    let output = run_privileged_output(program, args)?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn systemd_service_available(name: &str) -> bool {
+    Command::new("systemctl")
+        .args(["show", name, "--property=LoadState", "--value"])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "loaded"
+        })
+}
+
+struct NodeapiserverAuthenticationOverride {
+    drop_in: PathBuf,
+    token_file: PathBuf,
+}
+
+impl NodeapiserverAuthenticationOverride {
+    fn install() -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; authentication checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let token_file = std::env::temp_dir().join(format!("nodeapiserver-e2e-token-{suffix}.csv"));
+        fs::write(
+            &token_file,
+            "nodeapiserver-e2e-token,nodeapiserver-e2e-user,nodeapiserver-e2e-uid,\"system:bootstrappers,system:nodes\"\n",
+        )
+        .with_context(|| format!("writing {}", token_file.display()))?;
+
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-e2e-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-e2e-{suffix}.conf"));
+        let contents = format!(
+            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=0\nEnvironment=NODEAPISERVER_TOKEN_AUTH_FILE={}\n",
+            token_file.display()
+        );
+        fs::write(&local_drop_in, contents)
+            .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in, token_file };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged(
+            "install",
+            &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
+        )?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverAuthenticationOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = fs::remove_file(&self.token_file);
+    }
 }
 
 /// This check is selected by the external-CNI workflow mode. A normal
@@ -442,6 +519,106 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
             && openapi_v2["paths"].as_object().is_some_and(|paths| !paths.is_empty())
             && openapi_v2["definitions"].as_object().is_some_and(|definitions| !definitions.is_empty()),
         "nodeapiserver OpenAPI v2 response was not a populated Swagger document"
+    );
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "authentication-mode checks are only exercised against nodeapiserver",
+        ));
+    }
+    if Command::new("curl").arg("--version").output().is_err() {
+        return Err(skip_test("curl is required for unauthenticated HTTPS checks"));
+    }
+
+    let _override = NodeapiserverAuthenticationOverride::install()?;
+    context
+        .wait_until(
+            "nodeapiserver to become active after authentication configuration",
+            Duration::from_secs(60),
+            || async {
+                Ok(Command::new("systemctl")
+                    .args(["is-active", "--quiet", "nodeapiserver.service"])
+                    .status()
+                    .is_ok_and(|status| status.success()))
+            },
+        )
+        .await?;
+
+    context
+        .wait_until(
+            "nodeapiserver to answer requests after authentication configuration",
+            Duration::from_secs(60),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "2",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "https://127.0.0.1:6443/healthz",
+                    ])
+                    .output();
+                Ok(output.is_ok_and(|output| {
+                    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() != "000"
+                }))
+            },
+        )
+        .await?;
+
+    let anonymous = Command::new("curl")
+        .args([
+            "-k",
+            "-sS",
+            "--max-time",
+            "10",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "https://127.0.0.1:6443/healthz",
+        ])
+        .output()
+        .context("checking disabled anonymous authentication")?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&anonymous.stdout).trim() == "401",
+        "anonymous nodeapiserver request was not rejected: {}",
+        String::from_utf8_lossy(&anonymous.stdout)
+    );
+
+    let authenticated = Command::new("curl")
+        .args([
+            "-k",
+            "-sS",
+            "--max-time",
+            "10",
+            "-H",
+            "Authorization: Bearer nodeapiserver-e2e-token",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            r#"{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}"#,
+            "-w",
+            "\n%{http_code}",
+            "https://127.0.0.1:6443/apis/authentication.k8s.io/v1/selfsubjectreviews",
+        ])
+        .output()
+        .context("checking static token authentication")?;
+    let authenticated_body = String::from_utf8_lossy(&authenticated.stdout);
+    anyhow::ensure!(
+        authenticated.status.success()
+            && authenticated_body.lines().last() == Some("201")
+            && authenticated_body.contains("nodeapiserver-e2e-user")
+            && authenticated_body.contains("nodeapiserver-e2e-uid"),
+        "static token did not authenticate and populate SelfSubjectReview: {}",
+        authenticated_body
     );
     Ok(())
 }

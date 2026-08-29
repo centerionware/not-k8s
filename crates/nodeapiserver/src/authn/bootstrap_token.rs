@@ -93,6 +93,7 @@ impl Authenticator {
             identity: Identity {
                 name: entry.username.clone(),
                 groups: entry.groups.clone(),
+                uid: Some(entry.uid.clone()),
                 credential_id: (String::new(), Vec::new()),
             },
             uid: entry.uid.clone(),
@@ -157,6 +158,7 @@ mod tests {
             vec!["system:bootstrappers".to_string(), "devs".to_string()]
         );
         assert_eq!(result.uid, "uid-1");
+        assert_eq!(result.identity.uid.as_deref(), Some("uid-1"));
     }
 
     #[test]

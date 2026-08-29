@@ -13,13 +13,15 @@
 
 use serde_json::Value;
 
-/// Real upstream's own `UserInfo` shape. `uid`/`extra` are always empty
-/// here — this crate's only identity source (`authn::x509`) has neither
-/// (a client cert carries no UID, and `extra` is real upstream's own
-/// authenticator-specific side-channel data, e.g. impersonation headers,
-/// none of which this crate's x509 path produces).
-pub fn build_status(username: &str, groups: &[String]) -> Value {
-    serde_json::json!({"userInfo": {"username": username, "groups": groups}})
+/// Real upstream's own `UserInfo` shape. `extra` remains empty because this
+/// crate does not implement impersonation headers or another authenticator-
+/// specific side channel, but authenticators that know a UID preserve it.
+pub fn build_status(username: &str, uid: Option<&str>, groups: &[String]) -> Value {
+    let mut user_info = serde_json::json!({"username": username, "groups": groups});
+    if let Some(uid) = uid {
+        user_info["uid"] = serde_json::json!(uid);
+    }
+    serde_json::json!({"userInfo": user_info})
 }
 
 #[cfg(test)]
@@ -29,13 +31,19 @@ mod tests {
 
     #[test]
     fn build_status_reflects_username_and_groups() {
-        let status = build_status("alice", &["devs".to_string(), "system:authenticated".to_string()]);
+        let status = build_status("alice", None, &["devs".to_string(), "system:authenticated".to_string()]);
         assert_eq!(status, json!({"userInfo": {"username": "alice", "groups": ["devs", "system:authenticated"]}}));
     }
 
     #[test]
     fn build_status_handles_no_groups() {
-        let status = build_status("system:anonymous", &[]);
+        let status = build_status("system:anonymous", None, &[]);
         assert_eq!(status["userInfo"]["groups"], json!([]));
+    }
+
+    #[test]
+    fn build_status_preserves_an_authenticator_uid() {
+        let status = build_status("bootstrap-user", Some("uid-1"), &[]);
+        assert_eq!(status["userInfo"]["uid"], json!("uid-1"));
     }
 }
