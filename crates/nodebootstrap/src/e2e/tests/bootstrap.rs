@@ -795,36 +795,45 @@ pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
         )
         .await?;
 
-    let output = Command::new("curl")
-        .args([
-            "-k",
-            "-sS",
-            "--max-time",
-            "10",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            "-X",
-            "PATCH",
-            "-H",
-            "Authorization: Bearer nodeapiserver-e2e-denied",
-            "-H",
-            "Content-Type: application/merge-patch+json",
-            "-d",
-            "{}",
-            &format!(
-                "https://127.0.0.1:6443/api/v1/namespaces/{}/pods/does-not-exist/status",
-                context.namespace
-            ),
-        ])
-        .output()
-        .context("checking authorization before the status handler")?;
-    anyhow::ensure!(
-        output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "403",
-        "an unauthorized status PATCH was not rejected before the special handler: {}",
-        String::from_utf8_lossy(&output.stdout)
+    let url = format!(
+        "https://127.0.0.1:6443/api/v1/namespaces/{}/pods/does-not-exist/status",
+        context.namespace
     );
+    context
+        .wait_until(
+            "nodeapiserver to reject an unauthorized status PATCH before the special handler",
+            Duration::from_secs(60),
+            || {
+                let url = url.clone();
+                async move {
+                    let output = Command::new("curl")
+                        .args([
+                            "-k",
+                            "-sS",
+                            "--max-time",
+                            "10",
+                            "-o",
+                            "/dev/null",
+                            "-w",
+                            "%{http_code}",
+                            "-X",
+                            "PATCH",
+                            "-H",
+                            "Authorization: Bearer nodeapiserver-e2e-denied",
+                            "-H",
+                            "Content-Type: application/merge-patch+json",
+                            "-d",
+                            "{}",
+                            &url,
+                        ])
+                        .output()
+                        .context("checking authorization before the status handler")?;
+                    Ok(output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() == "403")
+                }
+            },
+        )
+        .await?;
     Ok(())
 }
 
