@@ -27,7 +27,7 @@ pub fn to_version(group: &str, version: &str, kind: &str, mut object: Value) -> 
     } else {
         format!("{group}/{version}")
     };
-    let source_api_version = map.get("apiVersion").and_then(Value::as_str).map(str::to_string);
+    let source_api_version = object.get("apiVersion").and_then(Value::as_str).map(str::to_string);
     if let Some(source_api_version) = source_api_version.as_deref() {
         let source_version = source_api_version.rsplit_once('/').map_or(source_api_version, |(_, version)| version);
         if group == "autoscaling" && kind == "HorizontalPodAutoscaler" {
