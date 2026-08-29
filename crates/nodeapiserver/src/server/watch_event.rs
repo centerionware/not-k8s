@@ -144,6 +144,94 @@ pub fn to_watch_event_json(event: &WatchEvent, kind: &str, api_version: &str, st
     }
 }
 
+/// Async watch encoder for a CRD with a conversion webhook. The watch cache
+/// retains the storage-version object, so a watch requested through another
+/// served version must call the webhook before the event is sent. Built-in
+/// resources and storage-version CRD watches keep using the synchronous
+/// encoder above and therefore never pay for a conversion client.
+pub async fn to_watch_event_json_with_conversion(
+    event: &WatchEvent,
+    kind: &str,
+    api_version: &str,
+    mut storage: Option<&mut StorageClient>,
+    group: &str,
+    resource: &str,
+    conversion_webhook: Option<&crate::apiextensions::registry::ConversionWebhook>,
+) -> Option<Result<Value, Error>> {
+    let event_type = event_type_str(event.kind);
+    match event.kind {
+        EventKind::Added | EventKind::Modified => {
+            let mut object = match decode_event_value(event, &event.value, storage.as_deref(), group, resource) {
+                Ok(object) => object,
+                Err(error) => return Some(Err(error)),
+            };
+            object = match convert_event_object_with_conversion(object, kind, api_version, group, storage, conversion_webhook).await {
+                Ok(object) => object,
+                Err(error) => return Some(Err(error)),
+            };
+            stamp_type_metadata(&mut object, kind, api_version);
+            stamp_resource_version(&mut object, event.revision);
+            Some(Ok(json!({"type": event_type, "object": object})))
+        }
+        EventKind::Bookmark => Some(Ok(json!({
+            "type": event_type,
+            "object": {
+                "kind": kind,
+                "apiVersion": api_version,
+                "metadata": {"resourceVersion": event.revision.to_string()},
+            },
+        }))),
+        EventKind::Deleted => {
+            if event.value.is_empty() {
+                None
+            } else {
+                match decode_event_value(event, &event.value, storage.as_deref(), group, resource) {
+                    Ok(object) => match convert_event_object_with_conversion(object, kind, api_version, group, storage, conversion_webhook).await {
+                        Ok(mut object) => {
+                            stamp_type_metadata(&mut object, kind, api_version);
+                            stamp_resource_version(&mut object, event.revision);
+                            Some(Ok(json!({"type": event_type, "object": object})))
+                        }
+                        Err(error) => Some(Err(error)),
+                    },
+                    Err(error) => Some(Err(error)),
+                }
+            }
+        }
+    }
+}
+
+async fn convert_event_object_with_conversion(
+    object: Value,
+    kind: &str,
+    api_version: &str,
+    group: &str,
+    storage: Option<&mut StorageClient>,
+    conversion_webhook: Option<&crate::apiextensions::registry::ConversionWebhook>,
+) -> Result<Value, Error> {
+    let requested_version = api_version.rsplit_once('/').map_or(api_version, |(_, version)| version);
+    let object = if let Some(conversion_webhook) = conversion_webhook {
+        let source_version = object
+            .get("apiVersion")
+            .and_then(Value::as_str)
+            .map(|api_version| api_version.rsplit_once('/').map_or(api_version, |(_, version)| version));
+        if source_version == Some(requested_version) {
+            object
+        } else {
+            let Some(storage) = storage else {
+                return Err(Error::InvalidProtobufRequest("CRD watch conversion requires a storage connection".to_string()));
+            };
+            let mut objects = crate::apiextensions::conversion::convert(storage, group, conversion_webhook, requested_version, vec![object])
+                .await
+                .map_err(|error| Error::InvalidProtobufRequest(error.to_string()))?;
+            objects.pop().ok_or_else(|| Error::InvalidProtobufRequest("conversion webhook returned no object".to_string()))?
+        }
+    } else {
+        object
+    };
+    Ok(crate::scheme::conversion::to_version(group, requested_version, kind, object))
+}
+
 fn convert_event_object(object: Value, kind: &str, api_version: &str, group: &str) -> Value {
     let requested_version = api_version.rsplit_once('/').map_or(api_version, |(_, version)| version);
     crate::scheme::conversion::to_version(group, requested_version, kind, object)

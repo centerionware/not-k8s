@@ -18,6 +18,16 @@
 
 use serde_json::Value;
 
+/// The conversion webhook configuration attached to a served CRD. The
+/// storage version is where objects are kept; the webhook is called only
+/// when a request or response crosses that version boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversionWebhook {
+    pub storage_version: String,
+    pub client_config: Value,
+    pub review_versions: Vec<String>,
+}
+
 /// What a stored, `Established` CRD resolves `(group, version, resource)`
 /// to — everything `server::rest`'s generic verb dispatch needs that it
 /// would otherwise get from the static `resolve_kind`/`schema_for_gvk`
@@ -46,6 +56,8 @@ pub struct CrdResource {
     /// fields of its own to configure (an empty object `{}` is the only
     /// valid non-absent value).
     pub has_status_subresource: bool,
+    /// Present when this CRD declares `spec.conversion.strategy: Webhook`.
+    pub conversion_webhook: Option<ConversionWebhook>,
 }
 
 /// Real upstream's own `Established` condition
@@ -96,7 +108,36 @@ pub fn resolve(crd: &Value, group: &str, version: &str, resource: &str) -> Optio
     let namespaced = crd.pointer("/spec/scope").and_then(Value::as_str) == Some("Namespaced");
     let open_api_schema = matched_version.pointer("/schema/openAPIV3Schema").cloned();
     let has_status_subresource = matched_version.pointer("/subresources/status").is_some();
-    Some(CrdResource { kind, namespaced, open_api_schema, has_status_subresource })
+    let conversion_webhook = conversion_webhook(crd);
+    Some(CrdResource { kind, namespaced, open_api_schema, has_status_subresource, conversion_webhook })
+}
+
+fn conversion_webhook(crd: &Value) -> Option<ConversionWebhook> {
+    let storage_version = crd
+        .pointer("/spec/versions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|version| version.get("storage").and_then(Value::as_bool) == Some(true))
+        .and_then(|version| version.get("name"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let conversion = crd.get("spec")?.get("conversion")?;
+    if conversion.get("strategy").and_then(Value::as_str) != Some("Webhook") {
+        return None;
+    }
+    let webhook = conversion.get("webhook")?;
+    let client_config = webhook.get("clientConfig")?.clone();
+    let review_versions = webhook
+        .get("conversionReviewVersions")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if review_versions.is_empty() {
+        return None;
+    }
+    Some(ConversionWebhook { storage_version, client_config, review_versions })
 }
 
 /// Scans every CRD in `crds` for one that resolves `(group, version,
@@ -219,6 +260,23 @@ mod tests {
         crd["spec"]["scope"] = json!("Cluster");
         let resolved = resolve(&crd, "example.com", "v1", "widgets").expect("should resolve");
         assert!(!resolved.namespaced);
+    }
+
+    #[test]
+    fn resolves_a_crd_conversion_webhook_and_storage_version() {
+        let mut crd = established_crd();
+        crd["spec"]["conversion"] = json!({
+            "strategy": "Webhook",
+            "webhook": {
+                "conversionReviewVersions": ["v1"],
+                "clientConfig": {"url": "https://converter.example/convert"}
+            }
+        });
+        let resolved = resolve(&crd, "example.com", "v1", "widgets").expect("should resolve");
+        let conversion = resolved.conversion_webhook.expect("webhook conversion should be retained");
+        assert_eq!(conversion.storage_version, "v1");
+        assert_eq!(conversion.review_versions, ["v1"]);
+        assert_eq!(conversion.client_config["url"], "https://converter.example/convert");
     }
 
     #[test]
