@@ -29,7 +29,7 @@
 //! client's connection (`server::listener::encode_watch_event`), not per
 //! event this build merely considered and filtered out by a selector.
 //! `apiserver_current_inflight_requests` is also exposed for the two
-//! request kinds (`readonly` and `mutating`). It measures seats held by
+//! request kinds (`readOnly` and `mutating`). It measures seats held by
 //! this build's APF gate while a request is being handled, rather than
 //! counting long-running requests that deliberately bypass that gate.
 //! `apiserver_response_sizes` (real upstream's own exponential-bucket
@@ -106,7 +106,7 @@ fn render_inflight_counts(readonly: usize, mutating: usize) -> String {
     );
     let _ = writeln!(
         out,
-        "apiserver_current_inflight_requests{{request_kind=\"readonly\"}} {readonly}"
+        "apiserver_current_inflight_requests{{request_kind=\"readOnly\"}} {readonly}"
     );
     out
 }
@@ -493,7 +493,7 @@ mod tests {
         let text = render_inflight_counts(2, 1);
         assert!(text.contains("# TYPE apiserver_current_inflight_requests gauge"));
         assert!(text.contains("apiserver_current_inflight_requests{request_kind=\"mutating\"} 1"));
-        assert!(text.contains("apiserver_current_inflight_requests{request_kind=\"readonly\"} 2"));
+        assert!(text.contains("apiserver_current_inflight_requests{request_kind=\"readOnly\"} 2"));
     }
 
     #[test]

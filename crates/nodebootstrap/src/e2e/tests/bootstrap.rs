@@ -979,7 +979,7 @@ pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext)
     anyhow::ensure!(
         metrics.contains("# TYPE apiserver_current_inflight_requests gauge")
             && metrics.contains("apiserver_current_inflight_requests{request_kind=\"mutating\"}")
-            && metrics.contains("apiserver_current_inflight_requests{request_kind=\"readonly\"}"),
+            && metrics.contains("apiserver_current_inflight_requests{request_kind=\"readOnly\"}"),
         "nodeapiserver did not expose both inflight request kinds: {metrics}"
     );
     Ok(())

@@ -2247,7 +2247,7 @@ recorded from `http_body::Body::size_hint().exact()` — not recorded for
 incremented once per event actually encoded and written to a client) are
 now ported too — see `server::metrics`'s own module doc for the exact
 scope. `apiserver_current_inflight_requests` is now exposed with the
-upstream `request_kind` labels (`readonly`/`mutating`) and tracks requests
+upstream `request_kind` labels (`readOnly`/`mutating`) and tracks requests
 holding this build's bounded APF seat; exempt and long-running requests
 that bypass the gate are not counted. **APF
 (FlowSchema/PriorityLevelConfiguration queueing) now has a bounded request
