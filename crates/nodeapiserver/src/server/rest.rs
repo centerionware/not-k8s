@@ -214,8 +214,6 @@ struct ResolvedResource {
     /// Requests are validated against their served version before conversion;
     /// converted objects must also satisfy this schema before persistence.
     storage_open_api_schema: Option<Value>,
-    /// The matched CRD version's server-side printer columns.
-    additional_printer_columns: Vec<Value>,
     /// Only ever meaningfully `true` for a CRD (`schema: None`) whose
     /// matched version declares `subresources.status` — always `true`
     /// for a static built-in, since this crate doesn't model per-type
@@ -243,11 +241,11 @@ struct ResolvedResource {
 /// of this function ever listing CRDs to resolve a request for CRDs.
 async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<ResolvedResource>, Error> {
     if let Some(kind) = resolve_kind(group, version, resource) {
-        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, storage_open_api_schema: None, additional_printer_columns: Vec::new(), has_status_subresource: true, conversion_webhook: None }));
+        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, storage_open_api_schema: None, has_status_subresource: true, conversion_webhook: None }));
     }
     Ok(resolve_crd(storage, group, version, resource)
         .await?
-        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, storage_open_api_schema: r.storage_open_api_schema, additional_printer_columns: r.additional_printer_columns, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
+        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, storage_open_api_schema: r.storage_open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
 }
 
 async fn convert_to_storage_version(
@@ -2903,7 +2901,6 @@ mod tests {
             schema: Some(schema),
             open_api_schema: None,
             storage_open_api_schema: None,
-            additional_printer_columns: Vec::new(),
             has_status_subresource: true,
             conversion_webhook: None,
         };
@@ -2921,7 +2918,6 @@ mod tests {
             schema: None,
             open_api_schema: None,
             storage_open_api_schema: None,
-            additional_printer_columns: Vec::new(),
             has_status_subresource: true,
             conversion_webhook: None,
         };
