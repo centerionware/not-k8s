@@ -1001,6 +1001,7 @@ pub async fn create_with_options(storage: &mut StorageClient, group: &str, versi
     // multiplication yet).
     if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
         violations.extend(apiextensions::cel_validations::validate_crd_cel_costs(body));
+        violations.extend(apiextensions::cel_validations::validate_crd_cel_types(body));
     }
     if !violations.is_empty() {
         return Ok(CreateOutcome::Invalid(violations));
@@ -1358,6 +1359,7 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
     // CRD branch runs.
     if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
         violations.extend(apiextensions::cel_validations::validate_crd_cel_costs(body));
+        violations.extend(apiextensions::cel_validations::validate_crd_cel_types(body));
     }
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));

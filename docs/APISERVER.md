@@ -8,7 +8,7 @@
 | C — Storage over nodestore | in progress | 5/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 6/8 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 6/6 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `1e66262` on
+This snapshot is checked against `origin/nodeapiserver` at `f4553a6` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -859,6 +859,18 @@ only structural (presence + kind), not the rest of real validation
 (formats, enums — verified absent from the vendored specs entirely —
 cross-field consistency, numeric ranges — all hand-written Go upstream, no
 shortcut).
+
+`cel_ext::type_check` now supplies the schema-aware CEL acceptance step that
+the runtime `cel` crate does not provide: `self`/`oldSelf` are resolved against
+the rule's own schema scope, undeclared structural fields and obvious
+operator/member-function overload mismatches are rejected, and a validation
+rule must have a boolean result. Root `apiVersion`/`kind`/selected metadata
+fields are exposed as Kubernetes does even when a CRD schema omits them;
+dynamic or preserved-unknown schema sections remain permissive. The checker
+is wired into CRD `CREATE`/`UPDATE` alongside syntax and static-cost checks.
+It is intentionally a schema/type phase, not a replacement for runtime
+evaluation: CEL overloads that remain dynamic at compile time still get the
+existing runtime error behavior.
 
 The first format checks now exist: `scheme::name_format::is_dns1123_label`/
 `is_dns1123_subdomain`/`is_dns1035_label` — faithful character-class
@@ -2191,13 +2203,11 @@ used*:
    preserves those selector values on the opaque check but has no
    object-selection phase, so they do not alter its boolean decision. The Rust
    `regex` engine covers the RE2-compatible patterns used by Kubernetes, while
-   this crate's type-checker-free CEL layer reports overload misuse at runtime
-   rather than at compile time.
-   Type-checking a rule against its declared schema at
-   CRD-acceptance time (catching a rule that references a field the
-   schema doesn't have, or compares incompatible types) is also still not
-   started — named honestly as a later phase rather than silently out of
-   scope.
+   this crate's runtime CEL layer still reports overload misuse for dynamic
+   values at evaluation time, while the schema-aware acceptance checker
+   rejects the statically obvious cases before the CRD is stored. The
+   remaining CEL gap is full upstream type-environment parity for every
+   extension overload and schema feature.
 
 **L. Aggregation layer** — **all four phases done.**
 `k8s.io/kube-aggregator`'s own `APIService` mechanism

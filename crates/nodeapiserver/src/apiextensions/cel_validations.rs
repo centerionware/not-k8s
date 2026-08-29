@@ -33,6 +33,7 @@
 
 use crate::cel_ext::budget::{check_rule_cost, RuleCostError};
 use crate::cel_ext::decl_type;
+use crate::cel_ext::type_check::{check_root_rule, check_rule, TypeError};
 use serde_json::Value;
 
 /// One `x-kubernetes-validations` rule whose real cost exceeds budget —
@@ -55,6 +56,48 @@ pub fn validate_schema_cel_costs(schema: &Value) -> Vec<CelCostViolation> {
     let mut out = Vec::new();
     walk(schema, "", &mut out);
     out
+}
+
+/// One schema-scoped CEL rule that cannot be type-checked against the
+/// structural schema at that location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CelTypeViolation {
+    pub path: String,
+    pub rule_index: usize,
+    pub error: TypeError,
+}
+
+/// Run the schema-aware part of Kubernetes' CRD CEL type checker. Syntax
+/// errors are already reported by [`validate_schema_cel_costs`], so this
+/// function returns only semantic type errors and avoids duplicate messages
+/// for one malformed rule.
+pub fn validate_schema_cel_types(schema: &Value) -> Vec<CelTypeViolation> {
+    let mut out = Vec::new();
+    walk_types(schema, "", &mut out);
+    out
+}
+
+fn walk_types(schema: &Value, path: &str, out: &mut Vec<CelTypeViolation>) {
+    if let Some(rules) = schema.get("x-kubernetes-validations").and_then(Value::as_array) {
+        for (i, rule) in rules.iter().enumerate() {
+            let Some(rule_str) = rule.get("rule").and_then(Value::as_str) else { continue };
+            let errors = if path.is_empty() { check_root_rule(schema, rule_str) } else { check_rule(schema, rule_str) };
+            for error in errors.into_iter().filter(|error| !matches!(error, TypeError::Compile(_))) {
+                out.push(CelTypeViolation { path: path.to_string(), rule_index: i, error });
+            }
+        }
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        for (name, prop_schema) in properties {
+            walk_types(prop_schema, &join_path(path, name), out);
+        }
+    }
+    if let Some(items) = schema.get("items") {
+        walk_types(items, &format!("{path}[*]"), out);
+    }
+    if let Some(additional) = schema.get("additionalProperties").filter(|value| value.is_object()) {
+        walk_types(additional, &format!("{path}[*]"), out);
+    }
 }
 
 fn walk(schema: &Value, path: &str, out: &mut Vec<CelCostViolation>) {
@@ -129,6 +172,24 @@ pub fn validate_crd_cel_costs(crd: &Value) -> Vec<String> {
     out
 }
 
+/// Validate the CEL types in every served CRD version and format the
+/// findings for the generic CRD `Invalid` response.
+pub fn validate_crd_cel_types(crd: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(versions) = crd.pointer("/spec/versions").and_then(Value::as_array) else {
+        return out;
+    };
+    for version in versions {
+        let version_name = version.get("name").and_then(Value::as_str).unwrap_or("");
+        let Some(schema) = version.pointer("/schema/openAPIV3Schema") else { continue };
+        for violation in validate_schema_cel_types(schema) {
+            let field = if violation.path.is_empty() { String::new() } else { format!(".{}", violation.path) };
+            out.push(format!("spec.versions[{version_name}].schema.openAPIV3Schema{field}.x-kubernetes-validations[{}].rule: {}", violation.rule_index, violation.error));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +200,43 @@ mod tests {
     fn a_schema_with_no_rules_at_all_has_no_violations() {
         let schema = json!({"type": "object", "properties": {"name": {"type": "string"}}});
         assert!(validate_schema_cel_costs(&schema).is_empty());
+    }
+
+    #[test]
+    fn an_undeclared_field_is_rejected_by_the_schema_type_check() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "x-kubernetes-validations": [{"rule": "self.missing == 'x'"}],
+        });
+        let violations = validate_schema_cel_types(&schema);
+        assert!(violations.iter().any(|violation| matches!(&violation.error, TypeError::UnknownField { field, .. } if field == "missing")));
+    }
+
+    #[test]
+    fn a_non_boolean_rule_is_rejected_at_crd_acceptance_time() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "x-kubernetes-validations": [{"rule": "self.name"}],
+        });
+        let violations = validate_schema_cel_types(&schema);
+        assert!(violations.iter().any(|violation| matches!(violation.error, TypeError::NonBoolean(_))));
+    }
+
+    #[test]
+    fn a_nested_rule_is_checked_against_its_own_schema_scope() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "properties": {"replicas": {"type": "integer"}},
+                    "x-kubernetes-validations": [{"rule": "self.replicas > 0"}],
+                },
+            },
+        });
+        assert!(validate_schema_cel_types(&schema).is_empty());
     }
 
     #[test]
