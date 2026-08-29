@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `f341b0d` on
+This snapshot is checked against `origin/nodeapiserver` at `0365c5f` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1493,8 +1493,10 @@ loaded from storage before validating admission. Matching bindings can apply
 multiple JSON Patch operations or an apply configuration in order, including
 parameter and selector matching, with the policy's `failurePolicy` honored.
 The current CEL adapter accepts JSON-shaped mutation results; typed
-`JSONPatch{}`/`Object{}` declarations and the additional `namespaceObject`,
-`variables`, and `authorizer` bindings remain explicit follow-up work.
+`JSONPatch{}`/`Object{}` declarations and the additional `authorizer` binding
+remain explicit follow-up work. Composed `spec.variables` are evaluated in
+declaration order and exposed to validation and mutation expressions through
+the `variables` object; match conditions remain evaluated before composition.
 Each matching policy chain is evaluated once per write; the e2e coverage uses
 a non-idempotent finalizer append to guard against duplicate dispatch.
 
@@ -2093,12 +2095,12 @@ used*:
    live rather than assumed: a dedicated test binds `serde_json::
    Value::Null` through `cel_ext::eval_bool_with_vars` and confirms an
    expression like `oldObject == null` actually evaluates rather than
-   erroring on an undefined variable. **Named, honest gap**: real
-   upstream's own two other real variables — `variables` (composed
-   `spec.variables`) and `authorizer` — are not bound; no rule this crate can
-   currently evaluate references them. `namespaceObject` is now supplied to
+   erroring on an undefined variable. `namespaceObject` is now supplied to
    validation expressions while remaining unavailable to `matchConditions`,
-   matching upstream's variable scope.
+   matching upstream's variable scope. Composed `spec.variables` are now
+   evaluated in declaration order after the match gates and exposed through
+   the `variables` object to validation and mutation expressions; a later
+   declaration cannot reference an earlier declaration's future value.
 
    **The decision side is now complete**: `PolicyOutcome::is_denial`
    (folds `MatchConditionsError` back into a real denial, unlike
@@ -2114,8 +2116,7 @@ used*:
    The storage-backed adapter is wired into `server::listener` after
    authorization and before persistence. Parameter references support named
    and label-selected parameters, including `parameterNotFoundAction`;
-   The additional `variables` and `authorizer` CEL bindings remain explicit
-   gaps.
+   The additional `authorizer` CEL binding remains an explicit gap.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
