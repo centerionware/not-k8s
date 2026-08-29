@@ -8,7 +8,7 @@
 | C — Storage over nodestore | in progress | 5/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 6/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 6/6 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `ed72a1a` on
+This snapshot is checked against `origin/nodeapiserver` at `1b68b5c` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -949,7 +949,13 @@ precision on the (unrealistic) values that would overflow that. Built as
 the prerequisite `plugin/pkg/admission/limitranger`/`resourcequota` both
 need for real min/max/ratio comparisons — **now wired into both**
 (this paragraph was stale about that; see Group J's own section for
-each plugin's current real scope).
+each plugin's current real scope). The parser also backs the opaque
+`kubernetes.Quantity` CEL value: `quantity()` now constructs one, and
+`isInteger`, `asInteger`, `asApproximateFloat`, `sign`, `add`, `sub`,
+`isLessThan`, `isGreaterThan`, and `compareTo` are registered with the
+same runtime semantics as upstream's quantity library. The Rust CEL
+runtime has no static type checker, so overload misuse is reported as a
+runtime function error rather than rejected during compilation.
 
 **G. Patch + Server-Side Apply** — **in progress**. `patch::json_patch`/
 `patch::merge_patch` wrap the `json-patch` crate for RFC 6902/7386 —
@@ -2156,23 +2162,21 @@ used*:
    incorrect answer specifically for a duration-typed empty sum, not just
    cosmetic).
 
-   **`kubernetes.quantity` also started**: `cel_ext::kubernetes_quantity::
-   is_quantity`/`is_quantity_binding` is `isQuantity(<string>)`, real
+   **`kubernetes.quantity` is now complete for its declared runtime surface**:
+   `cel_ext::kubernetes_quantity::is_quantity`/`is_quantity_binding` is
+   `isQuantity(<string>)`, real
    upstream's own `k8s.io/apiserver/pkg/cel/library/quantity.go`, fetched
    and read directly — `isQuantity(s)` is real upstream's own real
    definition (`true` iff `quantity(s)` wouldn't itself error), so this
    reuses `scheme::quantity::Quantity::parse` — Group G's own already-
    landed quantity port, the same parser `admission::limit_ranger`'s
    min/max/ratio comparisons are already built on — rather than a second,
-   potentially-diverging parser. **Deliberately not attempted this
-   session**: the real `quantity(<string>) <Quantity>` constructor and its
-   opaque `Quantity` CEL type's own member functions (`isInteger`/
-   `asInteger`/`asApproximateFloat`/`sign`/`add`/`sub`/`isLessThan`/
-   `isGreaterThan`/`compareTo`) — registering a genuine opaque CEL value
-   (`cel::Value::Opaque`, the `cel::objects::Opaque` trait) is a real,
-   bigger, riskier lift than `kubernetes_lists`' own member-call bindings
-   needed, and deserves its own dedicated session rather than a rushed
-   first attempt bundled in here.
+   potentially-diverging parser. `quantity(<string>)` now returns a genuine
+   opaque `kubernetes.Quantity` value, with `isInteger`/`asInteger`/
+   `asApproximateFloat`/`sign`/`add`/`sub`/`isLessThan`/`isGreaterThan`/
+   `compareTo` implemented against that same exact parser-backed value.
+   Because this Rust CEL layer has no static type checker, overload misuse is
+   reported as a runtime function error rather than rejected during compile.
 
    Real upstream's own separate `ip`/`cidr`/`url`/`semver`/`format`/
    `regex`/`authz` libraries remain separate, not-yet-started work.
