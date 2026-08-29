@@ -5,7 +5,9 @@
 //! `validator.Validate`'s own real shape (fetched and read directly,
 //! cited in `policy_validations`'s own doc comment): first decide whether
 //! this policy even applies to the request at all (`spec.matchConstraints`,
-//! then `spec.matchConditions`), and only then run `spec.validations`.
+//! then `spec.matchConditions`), and only then run `spec.validations`. The
+//! `evaluate_with_validation_vars` entry point keeps the upstream distinction
+//! that `namespaceObject` is available to validations but not match conditions.
 //!
 //! This module owns no I/O and no CRUD — see this module's own
 //! [`PolicyDefinition`] doc comment for what a real caller still has to
@@ -154,6 +156,35 @@ pub fn evaluate(
     object_labels: &BTreeMap<String, String>,
     vars: &[(&'static str, &Value)],
 ) -> PolicyOutcome {
+    evaluate_with_validation_vars(
+        policy,
+        operation,
+        group,
+        version,
+        resource,
+        subresource,
+        namespace_labels,
+        object_labels,
+        vars,
+        vars,
+    )
+}
+
+/// Evaluate a policy with the real distinction between variables available
+/// to `matchConditions` and variables available to `validations`.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_with_validation_vars(
+    policy: &PolicyDefinition,
+    operation: &str,
+    group: &str,
+    version: &str,
+    resource: &str,
+    subresource: &str,
+    namespace_labels: &BTreeMap<String, String>,
+    object_labels: &BTreeMap<String, String>,
+    match_vars: &[(&'static str, &Value)],
+    validation_vars: &[(&'static str, &Value)],
+) -> PolicyOutcome {
     if !policy_matching::matches_resource_rules(policy.resource_rules, policy.exclude_resource_rules, operation, group, version, resource, subresource) {
         return PolicyOutcome::NotApplicable;
     }
@@ -164,7 +195,7 @@ pub fn evaluate(
         return PolicyOutcome::NotApplicable;
     }
     if !policy.match_conditions.is_empty() {
-        match match_conditions::match_conditions(policy.match_conditions, vars, policy.failure_policy) {
+        match match_conditions::match_conditions(policy.match_conditions, match_vars, policy.failure_policy) {
             MatchResult::Matches => {}
             // A real `false` result and real upstream's own `Ignore`-policy
             // "skip this policy" outcome are both "this policy has nothing
@@ -174,7 +205,7 @@ pub fn evaluate(
             MatchResult::Error { errors } => return PolicyOutcome::MatchConditionsError { errors },
         }
     }
-    PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, vars, policy.failure_policy))
+    PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, validation_vars, policy.failure_policy))
 }
 
 #[cfg(test)]
@@ -292,6 +323,32 @@ mod tests {
         assert!(!PolicyOutcome::NotApplicable.is_denial());
         let admit = PolicyOutcome::Decided(vec![Decision { action: policy_validations::Action::Admit, is_error: false, message: None, reason: None }]);
         assert!(!admit.is_denial());
+    }
+
+    #[test]
+    fn namespace_object_is_available_to_validations_but_not_match_conditions() {
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let validations = [Validation { expression: "namespaceObject.metadata.name == 'default'", message: None, reason: None, message_expression: None }];
+        let conditions = [MatchCondition { name: "request-is-create", expression: "request.operation == 'CREATE'" }];
+        let policy = PolicyDefinition {
+            resource_rules: &rules,
+            exclude_resource_rules: &[],
+            namespace_selector: None,
+            object_selector: None,
+            match_conditions: &conditions,
+            validations: &validations,
+            failure_policy: FailurePolicy::Fail,
+        };
+        let request = json!({"operation": "CREATE"});
+        let namespace = json!({"metadata": {"name": "default"}});
+        let match_vars = &[("request", &request)];
+        let validation_vars = &[("request", &request), ("namespaceObject", &namespace)];
+        let outcome = evaluate_with_validation_vars(&policy, "CREATE", "", "v1", "pods", "", &labels(&[]), &labels(&[]), match_vars, validation_vars);
+        assert_eq!(outcome, PolicyOutcome::Decided(vec![Decision { action: Action::Admit, is_error: false, message: None, reason: None }]));
+
+        let conditions = [MatchCondition { name: "namespace-is-default", expression: "namespaceObject.metadata.name == 'default'" }];
+        let policy = PolicyDefinition { match_conditions: &conditions, ..policy };
+        assert!(matches!(evaluate_with_validation_vars(&policy, "CREATE", "", "v1", "pods", "", &labels(&[]), &labels(&[]), match_vars, validation_vars), PolicyOutcome::MatchConditionsError { .. }));
     }
 
     #[test]

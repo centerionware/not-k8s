@@ -54,12 +54,15 @@ pub async fn validate(
         return Ok(result);
     }
 
-    let namespace_labels = if namespace.is_empty() {
-        BTreeMap::new()
+    let (namespace_object, namespace_labels) = if namespace.is_empty() {
+        (None, BTreeMap::new())
     } else {
         match rest::get(storage, None, "", "v1", "namespaces", None, namespace).await {
-            Ok(rest::GetOutcome::Found(object)) => crate::cacher::selector::object_labels(&object),
-            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => BTreeMap::new(),
+            Ok(rest::GetOutcome::Found(object)) => {
+                let labels = crate::cacher::selector::object_labels(&object);
+                (Some(object), labels)
+            }
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => (None, BTreeMap::new()),
             Err(error) => return Err(format!("looking up namespace labels for ValidatingAdmissionPolicy: {error}")),
         }
     };
@@ -109,7 +112,8 @@ pub async fn validate(
                 }
             };
             for params in parameter_values {
-                let vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
+                let match_vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
+                let validation_vars = policy_matching::build_eval_vars_with_namespace(object, old_object, &request, params.as_ref(), namespace_object.as_ref());
                 let definition = validating_admission_policy::PolicyDefinition {
                     resource_rules: &resource_rules,
                     exclude_resource_rules: &exclude_resource_rules,
@@ -119,7 +123,7 @@ pub async fn validate(
                     validations: &decoded.validations,
                     failure_policy: decoded.failure_policy,
                 };
-                let outcome = validating_admission_policy::evaluate(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &vars);
+                let outcome = validating_admission_policy::evaluate_with_validation_vars(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars);
                 match outcome {
                     validating_admission_policy::PolicyOutcome::MatchConditionsError { errors } => {
                         record_failure(&mut result, policy_name, binding, &actions, errors.join("; "), None);

@@ -56,16 +56,13 @@
 //!    CEL `null` (not an absent variable) when the caller has none —
 //!    real upstream's own real behavior, verified live by binding
 //!    `Value::Null` through the exact same generic
-//!    `cel_ext::eval_bool_with_vars` this whole arc already uses. **Named,
-//!    honest gap**: `namespaceObject`/`variables`/`authorizer` — real
-//!    upstream's own three other real variables — are not bound; see this
-//!    function's own doc comment.
+//!    `cel_ext::eval_bool_with_vars` this whole arc already uses.
 //!
 //! The storage-backed `policy_enforcement` adapter calls this module from
 //! `server::listener` for real `ValidatingAdmissionPolicy` requests. This
 //! module remains deliberately pure: policy CRUD and `spec.paramRef`
 //! resolution belong to that adapter, while the named gaps here remain
-//! `Rule.Scope`, `kind`, `userInfo`, `namespaceObject`, `variables`, and
+//! `Rule.Scope`, `kind`, `userInfo`, `variables`, and
 //! `authorizer`.
 
 use crate::cacher::selector::{self, Operator, Requirement};
@@ -257,14 +254,29 @@ const NULL: Value = Value::Null;
 /// null` is real, valid, and meant to evaluate `true` on `CREATE`, not
 /// fail with an undefined-variable error.
 ///
-/// **Named, honest gap**: real upstream's own additional real variables —
-/// `namespaceObject` (`spec.validations` only, not `matchConditions`),
-/// `variables` (composed `spec.variables`), and `authorizer` (a
-/// CEL-callable authorization check) — are not bound here. No rule this
-/// crate can currently evaluate references them; real support is
-/// separate, not-yet-started work.
+/// `namespaceObject` is intentionally separate: it is available to
+/// `spec.validations`, but not to `spec.matchConditions`, so callers that
+/// evaluate both stages must use [`build_eval_vars`] for the match stage and
+/// [`build_eval_vars_with_namespace`] for the validation stage. `variables`
+/// (composed `spec.variables`) and `authorizer` (a CEL-callable authorization
+/// check) remain unbound.
 pub fn build_eval_vars<'a>(object: Option<&'a Value>, old_object: Option<&'a Value>, request: &'a Value, params: Option<&'a Value>) -> Vec<(&'static str, &'a Value)> {
-    vec![("object", object.unwrap_or(&NULL)), ("oldObject", old_object.unwrap_or(&NULL)), ("request", request), ("params", params.unwrap_or(&NULL))]
+    vec![
+        ("object", object.unwrap_or(&NULL)),
+        ("oldObject", old_object.unwrap_or(&NULL)),
+        ("request", request),
+        ("params", params.unwrap_or(&NULL)),
+    ]
+}
+
+pub fn build_eval_vars_with_namespace<'a>(object: Option<&'a Value>, old_object: Option<&'a Value>, request: &'a Value, params: Option<&'a Value>, namespace_object: Option<&'a Value>) -> Vec<(&'static str, &'a Value)> {
+    vec![
+        ("object", object.unwrap_or(&NULL)),
+        ("oldObject", old_object.unwrap_or(&NULL)),
+        ("request", request),
+        ("params", params.unwrap_or(&NULL)),
+        ("namespaceObject", namespace_object.unwrap_or(&NULL)),
+    ]
 }
 
 #[cfg(test)]
@@ -441,5 +453,14 @@ mod tests {
         let vars = build_eval_vars(Some(&object), None, &request, None);
         assert_eq!(crate::cel_ext::eval_bool_with_vars("oldObject == null", &vars).unwrap(), true);
         assert_eq!(crate::cel_ext::eval_bool_with_vars("object.replicas == 1", &vars).unwrap(), true);
+    }
+
+    #[test]
+    fn build_eval_vars_with_namespace_binds_the_namespace_object() {
+        let object = json!({"name": "pod"});
+        let request = json!({"operation": "CREATE"});
+        let namespace = json!({"metadata": {"name": "default"}});
+        let vars = build_eval_vars_with_namespace(Some(&object), None, &request, None, Some(&namespace));
+        assert_eq!(crate::cel_ext::eval_bool_with_vars("namespaceObject.metadata.name == 'default'", &vars).unwrap(), true);
     }
 }

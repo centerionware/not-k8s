@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `3d859be` on
+This snapshot is checked against `origin/nodeapiserver` at `f341b0d` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -2094,10 +2094,11 @@ used*:
    Value::Null` through `cel_ext::eval_bool_with_vars` and confirms an
    expression like `oldObject == null` actually evaluates rather than
    erroring on an undefined variable. **Named, honest gap**: real
-   upstream's own three other real variables — `namespaceObject`
-   (`spec.validations` only), `variables` (composed `spec.variables`),
-   and `authorizer` — are not bound; no rule this crate can currently
-   evaluate references them.
+   upstream's own two other real variables — `variables` (composed
+   `spec.variables`) and `authorizer` — are not bound; no rule this crate can
+   currently evaluate references them. `namespaceObject` is now supplied to
+   validation expressions while remaining unavailable to `matchConditions`,
+   matching upstream's variable scope.
 
    **The decision side is now complete**: `PolicyOutcome::is_denial`
    (folds `MatchConditionsError` back into a real denial, unlike
@@ -2113,8 +2114,8 @@ used*:
    The storage-backed adapter is wired into `server::listener` after
    authorization and before persistence. Parameter references support named
    and label-selected parameters, including `parameterNotFoundAction`;
-   The additional `namespaceObject`, `variables`, and `authorizer` CEL
-   bindings remain explicit gaps.
+   The additional `variables` and `authorizer` CEL bindings remain explicit
+   gaps.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
