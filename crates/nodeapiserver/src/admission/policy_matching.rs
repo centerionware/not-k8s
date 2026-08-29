@@ -57,13 +57,16 @@
 //!    real upstream's own real behavior, verified live by binding
 //!    `Value::Null` through the exact same generic
 //!    `cel_ext::eval_bool_with_vars` this whole arc already uses.
+//! 5. [`compose_variables`] — the real `spec.variables` composition
+//!    contract: evaluate declarations in order, expose prior results under
+//!    `variables`, and keep the result as a JSON object that can be bound to
+//!    later validation or mutation expressions.
 //!
 //! The storage-backed `policy_enforcement` adapter calls this module from
 //! `server::listener` for real `ValidatingAdmissionPolicy` requests. This
 //! module remains deliberately pure: policy CRUD and `spec.paramRef`
 //! resolution belong to that adapter, while the named gaps here remain
-//! `Rule.Scope`, `kind`, `userInfo`, `variables`, and
-//! `authorizer`.
+//! `Rule.Scope`, `kind`, `userInfo`, and `authorizer`.
 
 use crate::cacher::selector::{self, Operator, Requirement};
 use serde_json::{json, Value};
@@ -202,6 +205,15 @@ pub struct RequestVariable<'a> {
     pub dry_run: bool,
 }
 
+/// One real `ValidatingAdmissionPolicySpec.variables` entry. Variables are
+/// evaluated in declaration order; an expression may read only entries that
+/// precede it through the `variables` object.
+#[derive(Debug, Clone, Copy)]
+pub struct Variable<'a> {
+    pub name: &'a str,
+    pub expression: &'a str,
+}
+
 /// Real upstream's own `CreateAdmissionRequest`'s JSON shape — the CEL
 /// `request` variable a `ValidatingAdmissionPolicy`/webhook `matchCondition`
 /// or `validations` rule binds. `kind`/`requestKind` are always emitted
@@ -257,9 +269,9 @@ const NULL: Value = Value::Null;
 /// `namespaceObject` is intentionally separate: it is available to
 /// `spec.validations`, but not to `spec.matchConditions`, so callers that
 /// evaluate both stages must use [`build_eval_vars`] for the match stage and
-/// [`build_eval_vars_with_namespace`] for the validation stage. `variables`
-/// (composed `spec.variables`) and `authorizer` (a CEL-callable authorization
-/// check) remain unbound.
+/// [`build_eval_vars_with_namespace`] for the validation stage. The composed
+/// `spec.variables` map is added by [`compose_variables`] after matching.
+/// `authorizer` (a CEL-callable authorization check) remains unbound.
 pub fn build_eval_vars<'a>(object: Option<&'a Value>, old_object: Option<&'a Value>, request: &'a Value, params: Option<&'a Value>) -> Vec<(&'static str, &'a Value)> {
     vec![
         ("object", object.unwrap_or(&NULL)),
@@ -277,6 +289,24 @@ pub fn build_eval_vars_with_namespace<'a>(object: Option<&'a Value>, old_object:
         ("params", params.unwrap_or(&NULL)),
         ("namespaceObject", namespace_object.unwrap_or(&NULL)),
     ]
+}
+
+/// Evaluate a policy's composed variables in their declared order and return
+/// the resulting `variables` object. Each expression sees the request
+/// variables plus a snapshot containing only earlier composed variables,
+/// matching the API contract that later declarations cannot be referenced.
+/// The existing request-side CEL deadline also bounds each composition step.
+pub fn compose_variables(variables: &[Variable<'_>], base_vars: &[(&'static str, &Value)]) -> Result<Value, String> {
+    let mut values = serde_json::Map::new();
+    for variable in variables {
+        let available = Value::Object(values.clone());
+        let mut eval_vars = base_vars.to_vec();
+        eval_vars.push(("variables", &available));
+        let value = crate::cel_ext::eval_json_with_vars_and_deadline(variable.expression, &eval_vars, std::time::Duration::from_millis(100))
+            .map_err(|error| format!("composing policy variable {:?}: {error}", variable.name))?;
+        values.insert(variable.name.to_string(), value);
+    }
+    Ok(Value::Object(values))
 }
 
 #[cfg(test)]
@@ -462,5 +492,30 @@ mod tests {
         let namespace = json!({"metadata": {"name": "default"}});
         let vars = build_eval_vars_with_namespace(Some(&object), None, &request, None, Some(&namespace));
         assert_eq!(crate::cel_ext::eval_bool_with_vars("namespaceObject.metadata.name == 'default'", &vars).unwrap(), true);
+    }
+
+    #[test]
+    fn composed_variables_are_available_in_declaration_order() {
+        let object = json!({"spec": {"replicas": 3}});
+        let request = json!({"operation": "CREATE"});
+        let variables = [
+            Variable { name: "replicas", expression: "object.spec.replicas" },
+            Variable { name: "minimum", expression: "variables.replicas + 2u" },
+        ];
+        let base = build_eval_vars(Some(&object), None, &request, None);
+        let composed = compose_variables(&variables, &base).unwrap();
+        assert_eq!(composed["replicas"], json!(3));
+        assert_eq!(composed["minimum"], json!(5));
+    }
+
+    #[test]
+    fn composed_variables_cannot_reference_a_later_declaration() {
+        let request = json!({"operation": "CREATE"});
+        let variables = [
+            Variable { name: "first", expression: "variables.second" },
+            Variable { name: "second", expression: "1" },
+        ];
+        let base = build_eval_vars(None, None, &request, None);
+        assert!(compose_variables(&variables, &base).is_err());
     }
 }
