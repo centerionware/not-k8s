@@ -13,13 +13,13 @@
 //! response headers on every request — see that module's own doc comment
 //! for exactly what's covered.
 //!
-//! `limiter` — the request admission gate: bounded FIFO concurrency for
-//! ordinary requests, with exempt priority levels and long-running streams
-//! excluded from the finite request budget. An immediately available seat
-//! is acquired without consuming the configured waiting-queue allowance.
-//! The full upstream shuffle-sharded per-flow queue and seat-borrowing
-//! algorithm remain separate refinements; this gate still enforces finite
-//! request and mutating-request budgets.
+//! `limiter` — the request admission gate: bounded concurrency for ordinary
+//! requests, with exempt priority levels and long-running streams excluded
+//! from the finite request budget. Selected limited levels receive their
+//! own nominal-share concurrency cap and queue/reject policy before the
+//! global request and mutating-request budgets are applied. The full
+//! upstream shuffle-sharded per-flow queue and seat-borrowing algorithm
+//! remain separate refinements.
 //!
 //! Status: in progress (Group M — see docs/APISERVER.md).
 

@@ -3,22 +3,21 @@
 //! pair governs a request, the storage-backed half `flow_schema`'s own
 //! module doc comment named as not yet built.
 //!
-//! **Still no concurrency-limiting/queuing** — real upstream's own
-//! fair-queuing/seat-borrowing algorithm remains unstarted, named
-//! honestly. What this *does* do, matching real upstream's own observable
-//! behavior even before any limiting exists: label every response with
-//! which `FlowSchema`/`PriorityLevelConfiguration` would have governed it,
-//! via the same real response headers upstream sets
+//! The request gate receives the selected limited level's nominal
+//! concurrency shares, aggregate share total, queue length, and reject
+//! policy. The full upstream shuffle-sharded fair queue and seat borrowing
+//! remain separate refinements. This module still labels every response with
+//! the selected pair through the same real response headers upstream sets
 //! (`k8s.io/api/flowcontrol/v1/types.go`'s own
 //! `ResponseHeaderMatchedFlowSchemaUID`/
 //! `ResponseHeaderMatchedPriorityLevelConfigurationUID` constants —
 //! `"X-Kubernetes-PF-FlowSchema-UID"`/`"X-Kubernetes-PF-PriorityLevel-UID"`,
-//! fetched and read directly). Every request still runs at full priority,
-//! never queued or rejected by this.
+//! fetched and read directly).
 
 use crate::flowcontrol::flow_schema::{select_flow_schema, RequestDigest};
 use crate::server::rest::{self, GetOutcome, ListOutcome};
 use crate::storage::client::StorageClient;
+use serde_json::Value;
 
 const GROUP: &str = "flowcontrol.apiserver.k8s.io";
 const VERSION: &str = "v1";
@@ -31,7 +30,21 @@ pub struct Selected {
     pub flow_schema_uid: String,
     pub priority_level_uid: String,
     pub exempt: bool,
+    pub priority_level: PriorityLevelConfig,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriorityLevelConfig {
+    pub uid: String,
+    pub exempt: bool,
+    pub nominal_concurrency_shares: usize,
+    pub total_nominal_concurrency_shares: usize,
+    pub queue_length_limit: usize,
+    pub reject: bool,
+}
+
+const DEFAULT_NOMINAL_CONCURRENCY_SHARES: usize = 30;
+const DEFAULT_QUEUE_LENGTH_LIMIT: usize = 50;
 
 /// Lists every real `FlowSchema`, selects the one that governs this
 /// request (`flow_schema::select_flow_schema`'s own real precedence/
@@ -50,6 +63,16 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     let flow_schema_uid = selected["metadata"]["uid"].as_str()?.to_string();
     let pl_name = selected["spec"]["priorityLevelConfiguration"]["name"].as_str()?;
 
+    let priority_levels = match rest::list(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, "", "", 0, "").await {
+        Ok(ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
+        _ => return None,
+    };
+    let total_nominal_concurrency_shares = priority_levels
+        .iter()
+        .filter(|level| level["spec"]["type"].as_str().unwrap_or("Limited") == "Limited")
+        .map(nominal_concurrency_shares)
+        .sum::<usize>()
+        .max(1);
     let priority_level = match rest::get(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, pl_name).await {
         Ok(GetOutcome::Found(obj)) => obj,
         _ => return None,
@@ -57,7 +80,36 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     let priority_level_uid = priority_level["metadata"]["uid"].as_str()?.to_string();
 
     let exempt = priority_level["spec"]["type"].as_str() == Some("Exempt");
-    Some(Selected { flow_schema_uid, priority_level_uid, exempt })
+    let priority_level = if exempt {
+        PriorityLevelConfig {
+            uid: priority_level_uid.clone(),
+            exempt: true,
+            nominal_concurrency_shares: 0,
+            total_nominal_concurrency_shares,
+            queue_length_limit: 0,
+            reject: false,
+        }
+    } else {
+        PriorityLevelConfig {
+            uid: priority_level_uid.clone(),
+            exempt: false,
+            nominal_concurrency_shares: nominal_concurrency_shares(&priority_level),
+            total_nominal_concurrency_shares,
+            queue_length_limit: priority_level["spec"]["limited"]["limitResponse"]["queuing"]["queueLengthLimit"]
+                .as_u64()
+                .map(|value| value as usize)
+                .unwrap_or(DEFAULT_QUEUE_LENGTH_LIMIT),
+            reject: priority_level["spec"]["limited"]["limitResponse"]["type"].as_str() == Some("Reject"),
+        }
+    };
+    Some(Selected { flow_schema_uid, priority_level_uid, exempt, priority_level })
+}
+
+fn nominal_concurrency_shares(priority_level: &Value) -> usize {
+    priority_level["spec"]["limited"]["nominalConcurrencyShares"]
+        .as_u64()
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_NOMINAL_CONCURRENCY_SHARES)
 }
 
 #[cfg(test)]

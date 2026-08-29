@@ -211,6 +211,7 @@ impl Authenticator {
                 groups: vec![
                     "system:serviceaccounts".to_string(),
                     format!("system:serviceaccounts:{namespace}"),
+                    "system:authenticated".to_string(),
                 ],
                 uid: Some(uid.clone()),
                 credential_id: (String::new(), Vec::new()),
@@ -328,6 +329,14 @@ mod tests {
             "system:serviceaccount:kube-system:coredns"
         );
         assert_eq!(authenticated.service_account_uid, "sa-uid");
+        assert_eq!(
+            authenticated.identity.groups,
+            vec![
+                "system:serviceaccounts".to_string(),
+                "system:serviceaccounts:kube-system".to_string(),
+                "system:authenticated".to_string(),
+            ]
+        );
         assert!(issued.expiration_timestamp.contains('T'));
     }
 

@@ -623,6 +623,113 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("API Priority and Fairness is a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let priority_name = format!("nodeapiserver-e2e-{suffix}");
+    let flow_name = format!("nodeapiserver-e2e-{suffix}");
+    let priority = json!({
+        "apiVersion": "flowcontrol.apiserver.k8s.io/v1",
+        "kind": "PriorityLevelConfiguration",
+        "metadata": {"name": priority_name},
+        "spec": {
+            "type": "Limited",
+            "limited": {
+                "nominalConcurrencyShares": 1,
+                "limitResponse": {
+                    "type": "Reject",
+                    "queuing": {"queues": 1, "handSize": 1, "queueLengthLimit": 1}
+                }
+            }
+        }
+    });
+    let flow = json!({
+        "apiVersion": "flowcontrol.apiserver.k8s.io/v1",
+        "kind": "FlowSchema",
+        "metadata": {"name": flow_name},
+        "spec": {
+            "matchingPrecedence": 1,
+            "priorityLevelConfiguration": {"name": priority_name},
+            "rules": [{
+                "subjects": [{"kind": "Group", "group": {"name": "system:authenticated"}}],
+                "nonResourceRules": [{"verbs": ["get"], "nonResourceURLs": ["/version"]}]
+            }]
+        }
+    });
+    let priority_request = Request::builder()
+        .method("POST")
+        .uri("/apis/flowcontrol.apiserver.k8s.io/v1/prioritylevelconfigurations")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&priority)?)?;
+    let priority: Value = context
+        .client
+        .request(priority_request)
+        .await
+        .context("creating the e2e PriorityLevelConfiguration")?;
+    let flow_request = Request::builder()
+        .method("POST")
+        .uri("/apis/flowcontrol.apiserver.k8s.io/v1/flowschemas")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&flow)?)?;
+    let flow: Value = context
+        .client
+        .request(flow_request)
+        .await
+        .context("creating the e2e FlowSchema")?;
+
+    let result = async {
+        let token_request = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/v1/namespaces/{}/serviceaccounts/default/token",
+                context.namespace
+            ))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&json!({
+                "apiVersion": "authentication.k8s.io/v1",
+                "kind": "TokenRequest",
+                "spec": {"expirationSeconds": 600}
+            }))?)?;
+        let token: TokenRequest = context.client.request(token_request).await?;
+        let token = token.status.context("TokenRequest response had no status")?.token;
+        let endpoint = format!("{}/version", cfg.apiserver_server().trim_end_matches('/'));
+        let output = Command::new("curl")
+            .args([
+                "-k", "-sS", "--max-time", "10", "-D", "-", "-o", "/dev/null",
+                "-H", &format!("Authorization: Bearer {token}"), &endpoint,
+            ])
+            .output()
+            .context("calling nodeapiserver to inspect APF response headers")?;
+        anyhow::ensure!(output.status.success(), "APF header request failed: {}", String::from_utf8_lossy(&output.stderr));
+        let headers = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        let flow_uid = flow.pointer("/metadata/uid").and_then(Value::as_str).context("FlowSchema response had no UID")?;
+        let priority_uid = priority.pointer("/metadata/uid").and_then(Value::as_str).context("PriorityLevelConfiguration response had no UID")?;
+        anyhow::ensure!(
+            headers.contains(&format!("x-kubernetes-pf-flowschema-uid: {flow_uid}").to_ascii_lowercase()),
+            "APF response did not identify the selected FlowSchema: {headers}"
+        );
+        anyhow::ensure!(
+            headers.contains(&format!("x-kubernetes-pf-prioritylevel-uid: {priority_uid}").to_ascii_lowercase()),
+            "APF response did not identify the selected PriorityLevelConfiguration: {headers}"
+        );
+        Ok(())
+    }
+    .await;
+
+    for (method, uri) in [
+        ("DELETE", format!("/apis/flowcontrol.apiserver.k8s.io/v1/flowschemas/{flow_name}")),
+        ("DELETE", format!("/apis/flowcontrol.apiserver.k8s.io/v1/prioritylevelconfigurations/{priority_name}")),
+    ] {
+        let request = Request::builder().method(method).uri(uri).body(Vec::new())?;
+        let _ = context.client.request::<Value>(request).await;
+    }
+    result
+}
+
 pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

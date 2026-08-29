@@ -4,17 +4,10 @@
 //! `apihelpers.FlowSchemaSequence` (`pkg/util/apihelpers/helpers.go`),
 //! release-1.34, fetched and read directly.
 //!
-//! **Pure matching primitive only — not yet wired anywhere**, the same
-//! "land the primitive, wire it later" split `authz::rbac`/
-//! `authz::subject` (rule matching landed before storage resolution and
-//! listener wiring) and `admission::resource_quota` (evaluators landed
-//! before being called from a real request) already established in this
-//! crate: nothing here fetches real `FlowSchema`/`PriorityLevelConfiguration`
-//! objects from storage, and no request is actually queued, rejected, or
-//! rate-limited by this yet — that's the concurrency-limiting half of
-//! APF, a genuinely separate and larger piece of work (real upstream's
-//! own fair-queuing/seat-borrowing algorithm), named honestly as not
-//! started.
+//! This module remains the pure matching half. Storage resolution and the
+//! request gate live in the sibling `resolve` and `limiter` modules; the
+//! full upstream shuffle-sharded fair queue and seat-borrowing algorithm
+//! remain separate refinements.
 //!
 //! # What's ported
 //!
@@ -258,6 +251,20 @@ mod tests {
         assert!(matches_subject(&d, &json!({"kind": "Group", "group": {"name": "system:authenticated"}})));
         assert!(matches_subject(&d, &json!({"kind": "Group", "group": {"name": "*"}})));
         assert!(!matches_subject(&d, &json!({"kind": "Group", "group": {"name": "system:masters"}})));
+    }
+
+    #[test]
+    fn matches_subject_group_uses_the_v1_object_shape() {
+        let groups = vec!["system:authenticated".to_string()];
+        let d = digest("alice", &groups, "get", "pods");
+        assert!(matches_subject(&d, &json!({
+            "kind": "Group",
+            "group": {"name": "system:authenticated"},
+        })));
+        assert!(!matches_subject(&d, &json!({
+            "kind": "Group",
+            "group": "system:authenticated",
+        })));
     }
 
     #[test]

@@ -2181,11 +2181,16 @@ incremented once per event actually encoded and written to a client) are
 now ported too — see `server::metrics`'s own module doc for the exact
 scope. **`apiserver_current_inflight_requests` is deliberately NOT
 ported**, checked and rejected rather than skipped by omission: its real
-semantics measure utilization of real upstream's own APF
-concurrency-limiting semaphore, which this build doesn't have yet —
-faking it from a plain in-flight count would misrepresent what a real
-Prometheus dashboard reader expects it to mean. **APF (FlowSchema/PriorityLevelConfiguration queueing) is
-started**: `flowcontrol::flow_schema` ports real upstream's own
+semantics measure the sampled utilization of real upstream's own APF
+concurrency limits, not a plain in-flight count. **APF
+(FlowSchema/PriorityLevelConfiguration queueing) now has a bounded request
+gate**: in addition to the global ordinary and mutating budgets, selected
+limited priority levels enforce nominal-share concurrency caps and their
+`Reject`/queue-length policy, while exempt levels and long-running streams
+remain outside the finite budgets. **The full upstream shuffle-sharded fair
+queue, seat borrowing, distinguisher handling, and the sampled
+`apiserver_current_inflight_requests` metric remain separate refinements.**
+`flowcontrol::flow_schema` ports real upstream's own
 `FlowSchema` matching (`pkg/util/flowcontrol/rule.go`, fetched and read
 directly) — `matches_flow_schema`/`matches_policy_rule`/`matches_subject`
 (all three real subject kinds, `User`/`Group`/`ServiceAccount`,
@@ -2207,9 +2212,8 @@ response headers (`k8s.io/api/flowcontrol/v1/types.go`'s own
 `ResponseHeaderMatchedPriorityLevelConfigurationUID` constants, fetched
 and read directly) on every response that reaches a storage connection.
 Fails open (no header) on resolution failure, while the listener still
-applies its bounded ordinary/mutating request budgets. The full upstream
-shuffle-sharded fair queue, seat borrowing, and `distinguisherMethod`
-computation remain separate refinements, as do the two mandatory
+applies its bounded ordinary/mutating request budgets. The
+`distinguisherMethod` computation remains a separate refinement, as do the two mandatory
 bootstrap `FlowSchema`s real upstream always synthesizes (Group O's job).
 
 **N. Streaming and proxy subresources** — **`pods/log` is a genuine live
