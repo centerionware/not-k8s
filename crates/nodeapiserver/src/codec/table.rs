@@ -834,7 +834,7 @@ mod tests {
             "status": {"readyReplicas": 2, "updatedReplicas": 2, "availableReplicas": 2}
         });
         let table = convert_to_table_for_resource("apps", "v1", "deployments", &deployment);
-        assert_eq!(table["rows"][0]["cells"], json!(["web", "2/3", 2, 2, "<unknown>", "sidecar,web", "busybox:1.36,nginx:1.27", "app=web"]));
+        assert_eq!(table["rows"][0]["cells"], json!(["web", "2/3", 2, 2, "<unknown>", "web,sidecar", "nginx:1.27,busybox:1.36", "app=web"]));
 
         let replica_set = json!({
             "metadata": {"name": "web-abc"},
