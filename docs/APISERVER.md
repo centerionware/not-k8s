@@ -11,7 +11,7 @@
 | F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | in progress | 6/7 |
-| I — Authorization | in progress | 4/6 |
+| I — Authorization | in progress | 5/6 |
 | J — Admission | in progress | 5/8 |
 | K — CustomResourceDefinitions | in progress | 6/7 |
 | L — Aggregation | done for current scope | 4/4 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `574e00fd` on
+This snapshot is checked against `origin/nodeapiserver` at `ed40277d` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1133,10 +1133,14 @@ checks for pods, Secrets, ConfigMaps, PVCs, PVs, ServiceAccount token
 requests, ResourceClaims, and VolumeAttachments. It runs before RBAC on
 the nodeapiserver target, so a broad legacy `system:node` binding cannot
 bypass those object-specific checks. The remaining authorization gap is
-webhook authorization. An optional `NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL`
-delegates each parsed request to an external
-`authorization.k8s.io/v1` `SubjectAccessReview` authorizer; denials return
-`403`, and webhook failures fail closed with `503`. PKI primitives
+webhook compatibility hardening. An optional
+`NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL` delegates each parsed request to
+an external `authorization.k8s.io/v1` `SubjectAccessReview` authorizer and
+preserves its three decisions: `Allow` short-circuits the local Node/RBAC
+chain, `Deny` returns `403`, and `NoOpinion` falls through to the next local
+authorizer. Transport and malformed-response failures fail closed with
+`503`; webhook retry, caching, and the remaining upstream diagnostic details
+are still outside the current scope. PKI primitives
 (`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
 group.
