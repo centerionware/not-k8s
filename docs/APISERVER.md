@@ -2,27 +2,22 @@
 
 | GROUPNAME | STATUS | COMPLETED |
 | --- | --- | --- |
-| Phase 0 — prerequisites | in progress | 0/2 completed |
-| A — Vendoring + build-time codegen | done | 5/5 completed |
-| B — Wire formats | in progress | 5/7 completed |
-| C — Storage over nodestore | in progress | 5/7 completed |
-| D — Watch cache | done for current scope | 7/7 completed |
-| E — Generic server, handler chain, and REST | in progress | 8/10 completed |
-| F — Scheme, conversion, defaulting, and validation | in progress | 5/8 completed |
-| G — Patch and Server-Side Apply | in progress | 4/6 completed |
-| H — Authentication | done for supported paths | 6/7 completed |
-| I — Authorization | in progress | 4/6 completed |
-| J — Admission | in progress | 5/8 completed |
-| K — CustomResourceDefinitions | in progress | 6/7 completed |
-| L — Aggregation | done for current scope | 4/4 completed |
-| M — APF, audit, and observability | in progress | 4/8 completed |
-| N — Streaming and proxy subresources | in progress | 3/5 completed |
-| O — Cluster bootstrap | in progress | 2/5 completed |
-
-The `COMPLETED` values are high-level tracked milestones from each delivery
-group, not individual API endpoints. They are updated as slices land; a
-group can remain **in progress** after its current implementation count rises
-when a newly identified compatibility boundary is added to its scope.
+| Phase 0 — prerequisites | in progress | 0/2 |
+| A — Vendoring + build-time codegen | done | 5/5 |
+| B — Wire formats | in progress | 5/7 |
+| C — Storage over nodestore | in progress | 5/7 |
+| D — Watch cache | done for current scope | 7/7 |
+| E — Generic server, handler chain, and REST | in progress | 8/10 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
+| G — Patch and Server-Side Apply | in progress | 4/6 |
+| H — Authentication | done for supported paths | 6/7 |
+| I — Authorization | in progress | 4/6 |
+| J — Admission | in progress | 5/8 |
+| K — CustomResourceDefinitions | in progress | 6/7 |
+| L — Aggregation | done for current scope | 4/4 |
+| M — APF, audit, and observability | in progress | 4/8 |
+| N — Streaming and proxy subresources | in progress | 3/5 |
+| O — Cluster bootstrap | in progress | 2/5 |
 
 kube-apiserver's job: the one thing every other component in this project
 talks to — REST + watch over every built-in and CRD-defined resource, backed
