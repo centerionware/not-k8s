@@ -122,6 +122,21 @@ impl ConcurrencyLimiter {
         priority: Option<&PriorityLevelConfig>,
         flow_distinguisher: &str,
     ) -> Result<Option<Permit>, Error> {
+        self.acquire_with_priorities(info, query, priority, &[], flow_distinguisher).await
+    }
+
+    /// Acquire seats using the complete set of configured priority levels.
+    /// The ordinary wrapper above remains useful for callers that do not have
+    /// storage-backed APF configuration; the listener uses this form so an
+    /// idle level's lendable seats can be considered for a busy level.
+    pub async fn acquire_with_priorities(
+        &self,
+        info: &RequestInfo,
+        query: &str,
+        priority: Option<&PriorityLevelConfig>,
+        priorities: &[PriorityLevelConfig],
+        flow_distinguisher: &str,
+    ) -> Result<Option<Permit>, Error> {
         if priority.is_some_and(|level| level.exempt) || is_long_running(info, query) {
             return Ok(None);
         }
@@ -141,7 +156,7 @@ impl ConcurrencyLimiter {
             None
         };
         let priority = match priority {
-            Some(level) => Some(acquire_priority(&self.priority_states, level, flow_distinguisher, self.max_requests).await?),
+            Some(level) => Some(acquire_priority(&self.priority_states, level, priorities, flow_distinguisher, self.max_requests).await?),
             None => None,
         };
         Ok(Some(Permit {
@@ -155,14 +170,11 @@ impl ConcurrencyLimiter {
 async fn acquire_priority(
     states: &Arc<Mutex<HashMap<String, Arc<PriorityState>>>>,
     config: &PriorityLevelConfig,
+    priorities: &[PriorityLevelConfig],
     flow_distinguisher: &str,
     max_global_seats: usize,
 ) -> Result<PriorityLease, Error> {
-    let limit = config
-        .nominal_concurrency_shares
-        .saturating_mul(max_global_seats)
-        .div_ceil(config.total_nominal_concurrency_shares)
-        .max(1);
+    let limit = nominal_concurrency_limit(config, max_global_seats);
     let state = {
         let mut states = states.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let queue_count = config.queues.max(1);
@@ -181,12 +193,12 @@ async fn acquire_priority(
             })
             .clone()
     };
-    state.max_concurrency.store(limit, Ordering::Release);
     state.queue_length_limit.store(if config.reject { 0 } else { config.queue_length_limit }, Ordering::Release);
     state.hand_size.store(config.hand_size.max(1).min(state.queues.len()), Ordering::Release);
     let queue = select_queue(&state, flow_distinguisher);
 
     loop {
+        state.max_concurrency.store(effective_priority_limit(states, config, priorities, max_global_seats), Ordering::Release);
         if try_claim(&state, &queue) {
             return Ok(PriorityLease { state, queue });
         }
@@ -204,6 +216,48 @@ async fn acquire_priority(
         notified.await;
         drop(guard);
     }
+}
+
+fn effective_priority_limit(
+    states: &Arc<Mutex<HashMap<String, Arc<PriorityState>>>>,
+    config: &PriorityLevelConfig,
+    priorities: &[PriorityLevelConfig],
+    max_global_seats: usize,
+) -> usize {
+    let nominal = nominal_concurrency_limit(config, max_global_seats);
+    let borrowed = {
+        let states = states.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        priorities
+            .iter()
+            .filter(|peer| peer.uid != config.uid)
+            .map(|peer| {
+                let peer_nominal = nominal_concurrency_limit(peer, max_global_seats);
+                let peer_active = states
+                    .get(&peer.uid)
+                    .map(|state| state.active.load(Ordering::Acquire))
+                    .unwrap_or(0);
+                let lendable = round_percent(peer_nominal, peer.lendable_percent);
+                lendable.min(peer_nominal.saturating_sub(peer_active))
+            })
+            .sum::<usize>()
+    };
+    let borrowing_limit = config
+        .borrowing_limit_percent
+        .map(|percent| round_percent(nominal, percent))
+        .unwrap_or(usize::MAX);
+    nominal.saturating_add(borrowed.min(borrowing_limit))
+}
+
+fn nominal_concurrency_limit(config: &PriorityLevelConfig, max_global_seats: usize) -> usize {
+    config
+        .nominal_concurrency_shares
+        .saturating_mul(max_global_seats)
+        .div_ceil(config.total_nominal_concurrency_shares)
+        .max(1)
+}
+
+fn round_percent(value: usize, percent: usize) -> usize {
+    value.saturating_mul(percent).saturating_add(50) / 100
 }
 
 fn new_priority_state(config: &PriorityLevelConfig, limit: usize) -> PriorityState {
@@ -501,5 +555,46 @@ mod tests {
         assert_eq!(limiter.priority_states.lock().unwrap().len(), 1);
         drop(first);
         assert!(waiter.await.unwrap().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_limited_level_can_borrow_idle_lendable_seats() {
+        let limiter = ConcurrencyLimiter::new(2, 2, 2);
+        let lender = PriorityLevelConfig {
+            uid: "lender".to_string(),
+            exempt: false,
+            nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
+            queues: 1,
+            hand_size: 1,
+            queue_length_limit: 2,
+            lendable_percent: 100,
+            borrowing_limit_percent: None,
+            reject: false,
+        };
+        let borrower = PriorityLevelConfig {
+            uid: "borrower".to_string(),
+            exempt: false,
+            nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
+            queues: 1,
+            hand_size: 1,
+            queue_length_limit: 2,
+            lendable_percent: 0,
+            borrowing_limit_percent: None,
+            reject: false,
+        };
+        let priorities = vec![lender, borrower.clone()];
+        let first = limiter
+            .acquire_with_priorities(&request("get"), "", Some(&borrower), &priorities, "borrower")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = limiter
+            .acquire_with_priorities(&request("get"), "", Some(&borrower), &priorities, "borrower")
+            .await
+            .unwrap()
+            .unwrap();
+        drop((first, second));
     }
 }

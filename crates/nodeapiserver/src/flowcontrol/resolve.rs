@@ -31,6 +31,7 @@ pub struct Selected {
     pub flow_distinguisher: String,
     pub exempt: bool,
     pub priority_level: PriorityLevelConfig,
+    pub priority_levels: Vec<PriorityLevelConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,11 +71,11 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     let flow_distinguisher = flow_distinguisher(selected, digest);
     let pl_name = selected["spec"]["priorityLevelConfiguration"]["name"].as_str()?;
 
-    let priority_levels = match rest::list(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, "", "", 0, "").await {
+    let priority_level_objects = match rest::list(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
         _ => return None,
     };
-    let total_nominal_concurrency_shares = priority_levels
+    let total_nominal_concurrency_shares = priority_level_objects
         .iter()
         .filter(|level| level["spec"]["type"].as_str().unwrap_or("Limited") == "Limited")
         .map(nominal_concurrency_shares)
@@ -88,7 +89,19 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
 
     let priority_level = priority_level_config(&priority_level, priority_level_uid.clone(), total_nominal_concurrency_shares);
     let exempt = priority_level.exempt;
-    Some(Selected { flow_schema_uid, priority_level_uid, flow_distinguisher, exempt, priority_level })
+    let mut priority_levels = priority_level_objects
+        .iter()
+        .filter_map(|object| {
+            let uid = object["metadata"]["uid"].as_str()?.to_string();
+            Some(priority_level_config(object, uid, total_nominal_concurrency_shares))
+        })
+        .collect::<Vec<_>>();
+    if let Some(level) = priority_levels.iter_mut().find(|level| level.uid == priority_level.uid) {
+        *level = priority_level.clone();
+    } else {
+        priority_levels.push(priority_level.clone());
+    }
+    Some(Selected { flow_schema_uid, priority_level_uid, flow_distinguisher, exempt, priority_level, priority_levels })
 }
 
 fn priority_level_config(priority_level: &Value, uid: String, total_nominal_concurrency_shares: usize) -> PriorityLevelConfig {
