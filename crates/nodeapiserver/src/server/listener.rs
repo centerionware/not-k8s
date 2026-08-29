@@ -1812,12 +1812,12 @@ async fn handle(
                 Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.resourceVersion is required for an update")))
             }
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
-            // `rest::update_status` never itself returns these three --
-            // it runs no structural validation and never checks a body
-            // namespace (see its own doc comment), and
-            // `UnsupportedPatchType` is `rest::patch`-only. Kept
-            // exhaustive rather than `unreachable!()`.
-            Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::Invalid(_)) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            // `rest::update_status` never itself returns these two -- it
+            // does not check a body namespace, and `UnsupportedPatchType`
+            // is `rest::patch`-only. Keep the match exhaustive rather than
+            // turning a future implementation change into a panic.
+            Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
             }
             Err(e) => {
