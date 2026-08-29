@@ -2357,6 +2357,185 @@ pub(super) async fn nodeapiserver_honors_webhook_match_conditions(
     result
 }
 
+pub(super) async fn nodeapiserver_honors_webhook_side_effects_on_dry_run(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "admission webhook checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("binding the e2e admission webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_calls = calls.clone();
+    let server_stopping = stopping.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_webhook_connection(stream, &server_calls);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let suffix = std::process::id();
+    let rejecting_configuration_name = format!("nodeapiserver-webhook-side-effects-{suffix}");
+    let allowing_configuration_name = format!("nodeapiserver-webhook-none-on-dry-run-{suffix}");
+    let rejecting_name = format!("nodeapiserver-dry-run-rejected-{suffix}");
+    let allowing_name = format!("nodeapiserver-dry-run-allowed-{suffix}");
+    let configuration = |name: &str, webhook_name: &str, side_effects: &str| {
+        json!({
+            "apiVersion": "admissionregistration.k8s.io/v1",
+            "kind": "ValidatingWebhookConfiguration",
+            "metadata": {"name": name},
+            "webhooks": [{
+                "name": webhook_name,
+                "admissionReviewVersions": ["v1"],
+                "sideEffects": side_effects,
+                "failurePolicy": "Fail",
+                "timeoutSeconds": 5,
+                "clientConfig": {"url": format!("http://{}", address)},
+                "rules": [{
+                    "operations": ["CREATE"],
+                    "apiGroups": [""],
+                    "apiVersions": ["v1"],
+                    "resources": ["configmaps"],
+                    "scope": "Namespaced"
+                }]
+            }]
+        })
+    };
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let rejecting_configuration = configuration(
+        &rejecting_configuration_name,
+        "side-effects.nodeapiserver.test",
+        "Some",
+    );
+    let allowing_configuration = configuration(
+        &allowing_configuration_name,
+        "none-on-dry-run.nodeapiserver.test",
+        "NoneOnDryRun",
+    );
+    let create_configuration = |configuration: Value| async move {
+        context
+            .client
+            .request::<Value>(
+                Request::builder()
+                    .method("POST")
+                    .uri("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_vec(&configuration)?)?,
+            )
+            .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    };
+    let delete_configuration_request = |name: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/{name}"
+            ))
+            .body(Vec::new())
+    };
+    let result = async {
+        create_configuration(rejecting_configuration).await?;
+        let mut dry_run_params = PostParams::default();
+        dry_run_params.dry_run = true;
+        match configmaps
+            .create(
+                &dry_run_params,
+                &ConfigMap {
+                    metadata: kube::core::ObjectMeta {
+                        name: Some(rejecting_name.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Err(KubeError::Api(error)) => anyhow::ensure!(
+                error.code == 400,
+                "dry-run with sideEffects=Some returned the wrong status: {error}"
+            ),
+            Err(error) => anyhow::bail!(
+                "dry-run with sideEffects=Some returned a non-API error: {error}"
+            ),
+            Ok(object) => anyhow::bail!(
+                "dry-run with sideEffects=Some unexpectedly succeeded: {object:?}"
+            ),
+        }
+        anyhow::ensure!(
+            calls.load(Ordering::SeqCst) == 0,
+            "a side-effecting webhook was invoked for a dry-run request"
+        );
+
+        context
+            .client
+            .request::<Value>(delete_configuration_request(&rejecting_configuration_name)?)
+            .await
+            .context("deleting the sideEffects=Some webhook configuration")?;
+        create_configuration(allowing_configuration).await?;
+        let created = configmaps
+            .create(
+                &dry_run_params,
+                &ConfigMap {
+                    metadata: kube::core::ObjectMeta {
+                        name: Some(allowing_name.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("dry-running a ConfigMap against sideEffects=NoneOnDryRun")?;
+        anyhow::ensure!(
+            created.metadata.name.as_deref() == Some(allowing_name.as_str()),
+            "NoneOnDryRun webhook returned the wrong object: {created:?}"
+        );
+        context
+            .wait_until("NoneOnDryRun webhook invocation", Duration::from_secs(30), || {
+                let calls = calls.clone();
+                async move { Ok(calls.load(Ordering::SeqCst) == 1) }
+            })
+            .await?;
+        match configmaps.get(&allowing_name).await {
+            Err(KubeError::Api(error)) if error.code == 404 => {}
+            Err(error) => anyhow::bail!(
+                "NoneOnDryRun ConfigMap lookup returned an unexpected error: {error}"
+            ),
+            Ok(object) => anyhow::bail!(
+                "NoneOnDryRun dry-run ConfigMap was persisted: {object:?}"
+            ),
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = configmaps.delete(&rejecting_name, &DeleteParams::default()).await;
+    let _ = configmaps.delete(&allowing_name, &DeleteParams::default()).await;
+    for name in [&rejecting_configuration_name, &allowing_configuration_name] {
+        if let Ok(request) = delete_configuration_request(name) {
+            let _ = context.client.request::<Value>(request).await;
+        }
+    }
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    result
+}
+
 pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
     context: &E2eContext,
 ) -> Result<()> {

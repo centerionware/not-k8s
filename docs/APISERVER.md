@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | in progress | 6/7 |
 | I — Authorization | in progress | 5/6 |
-| J — Admission | in progress | 5/8 |
+| J — Admission | in progress | 6/8 |
 | K — CustomResourceDefinitions | in progress | 6/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 4/8 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `ed40277d` on
+This snapshot is checked against `origin/nodeapiserver` at `42775fdd` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1474,6 +1474,12 @@ parameter and selector matching, with the policy's `failurePolicy` honored.
 The current CEL adapter accepts JSON-shaped mutation results; typed
 `JSONPatch{}`/`Object{}` declarations and the additional `namespaceObject`,
 `variables`, and `authorizer` bindings remain explicit follow-up work.
+
+Configured mutating and validating webhooks are also invoked for matching
+create, update, and delete requests. Dry-run requests are rejected with a
+`400` when a matching webhook omits `sideEffects` or declares `Unknown`/
+`Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
+AdmissionReview path.
 
 **Not yet landed**: every other built-in plugin, a generic
 plugin-chain/registry abstraction (today `server::listener` hand-calls each
