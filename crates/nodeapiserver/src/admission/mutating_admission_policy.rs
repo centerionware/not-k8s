@@ -177,6 +177,9 @@ pub async fn mutate(
                             errors.join("; ")
                         ))
                     }
+                    PolicyOutcome::VariableError { error } => {
+                        return Err(format!("MutatingAdmissionPolicy {policy_name:?}: {error}"))
+                    }
                     PolicyOutcome::Decided(_) => {}
                 }
 
