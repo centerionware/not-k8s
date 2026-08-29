@@ -219,6 +219,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_writes_audit_log",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rejects_unsupported_field_selector",
         group: TestGroup::General,
     },
@@ -1536,6 +1540,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_scheduler_schedules_a_pod_an_http_extender_approves"
             | "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart"
             | "test_nodeapiserver_authentication_modes"
+            | "test_nodeapiserver_writes_audit_log"
             | "test_client_certificate_authentication_works"
             | "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host"
             | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
@@ -1612,6 +1617,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_authorizes_before_special_handlers" => {
             bootstrap::nodeapiserver_authorizes_before_special_handlers(context).await
         }
+        "test_nodeapiserver_writes_audit_log" => bootstrap::nodeapiserver_writes_audit_log(context).await,
         "test_nodeapiserver_rejects_unsupported_field_selector" => {
             bootstrap::nodeapiserver_rejects_unsupported_field_selector(context).await
         }
