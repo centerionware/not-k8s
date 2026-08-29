@@ -25,7 +25,7 @@
 //! **Pure target-resolution only, same "land the primitive, wire it
 //! later" split this whole arc uses** — nothing here makes an HTTP
 //! request or reads live Service data itself; the caller (`server::
-//! listener`, not yet wired) already has the backing Service's own
+//! listener`) already has the backing Service's own
 //! decoded document via `server::rest::get`. TLS trust for the actual
 //! dial (`spec.caBundle`/`.insecureSkipTLSVerify`, a real *per-
 //! APIService* `rustls::ClientConfig` — genuinely different from
