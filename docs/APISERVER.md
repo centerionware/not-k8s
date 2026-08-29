@@ -7,7 +7,7 @@
 | B — Wire formats | in progress | 6/7 |
 | C — Storage over nodestore | in progress | 5/7 |
 | D — Watch cache | done for current scope | 7/7 |
-| E — Generic server, handler chain, and REST | in progress | 9/10 |
+| E — Generic server, handler chain, and REST | in progress | 10/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | in progress | 6/7 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `623ad2eb` on
+This snapshot is checked against `origin/nodeapiserver` at `79b76f8` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -598,12 +598,14 @@ a collision-resistant suffix before validation and persistence.
 `server::rest::delete` (single-object `DELETE`) is real too: it reads the
 object, honors `resourceVersion`/`uid` preconditions from
 `metav1.DeleteOptions.Preconditions`, and removes it with an MVCC-guarded
-transaction so a concurrent update cannot invalidate the check. It returns
-the deleted object, matching real upstream's synchronous-delete shape.
+transaction so a concurrent update cannot invalidate the check. Objects with
+finalizers are marked with `metadata.deletionTimestamp` instead; they remain
+visible until the last finalizer is removed, at which point the removal is
+also MVCC-guarded. It returns the deleted or terminating object, matching
+real upstream's synchronous-delete shape.
 Named honestly as the current scope: no `propagationPolicy`
 (Foreground/Background/Orphan — no owner-reference garbage collector
-exists to orphan from or cascade through in the first place), no
-finalizer handling — an unconditional delete-if-present.
+exists to orphan from or cascade through in the first place).
 
 `server::rest::update` (`PUT`) is real optimistic concurrency, not a
 blind overwrite: reads the current object first, requires the

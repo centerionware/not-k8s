@@ -106,8 +106,9 @@
 //! preconditions (`metav1.DeleteOptions.Preconditions`), and uses an MVCC
 //! compare with `DeleteRange` so a concurrent update cannot invalidate the
 //! check. It returns the deleted object, matching real upstream's own
-//! synchronous delete response. `propagationPolicy` and finalizer handling
-//! remain out of scope.
+//! synchronous delete response. Finalizers are honored: a delete marks an
+//! object with `deletionTimestamp` and the object is removed when its last
+//! finalizer is cleared. `propagationPolicy` remains out of scope.
 //!
 //! `update` is real optimistic concurrency, not a blind overwrite: reads
 //! the current object first, requires the submitted body's own
@@ -1407,6 +1408,41 @@ async fn persist_update(
 
     object = crate::scheme::conversion::to_version(group, version, kind, object);
 
+    // Removing the last finalizer from an object already marked for deletion
+    // completes the deletion. This mirrors the generic registry's
+    // ShouldDeleteDuringUpdate path: the update is accepted, but the object
+    // is removed atomically instead of being written back as a live object.
+    if has_deletion_timestamp(existing_object) && !has_finalizers(&object) {
+        if dry_run {
+            return Ok(UpdateOutcome::Updated(object));
+        }
+        let compare = pb::Compare {
+            key: key.clone().into_bytes(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(existing_kv.mod_revision)),
+            range_end: Vec::new(),
+        };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestDeleteRange(pb::DeleteRangeRequest {
+                    key: key.into_bytes(),
+                    prev_kv: true,
+                    ..Default::default()
+                })),
+            }],
+            failure: vec![],
+        };
+        let response = storage.txn(txn).await?;
+        if !response.succeeded {
+            return Ok(UpdateOutcome::Conflict);
+        }
+        let revision = response.header.map(|header| header.revision).unwrap_or(0);
+        set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        return Ok(UpdateOutcome::Updated(object));
+    }
+
     if dry_run {
         return Ok(UpdateOutcome::Updated(object));
     }
@@ -2187,6 +2223,19 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
     metadata[field] = value;
 }
 
+fn has_finalizers(object: &Value) -> bool {
+    object
+        .pointer("/metadata/finalizers")
+        .and_then(Value::as_array)
+        .is_some_and(|finalizers| !finalizers.is_empty())
+}
+
+fn has_deletion_timestamp(object: &Value) -> bool {
+    object
+        .pointer("/metadata/deletionTimestamp")
+        .is_some_and(|timestamp| !timestamp.is_null())
+}
+
 /// Allocates the short suffix used by the API server for generateName.
 fn generate_name(prefix: &str) -> String {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
@@ -2235,8 +2284,9 @@ pub struct DeletePreconditions {
 }
 
 /// Deletes a single object with optional `DeleteOptions` preconditions and
-/// `dryRun=All`. The read and delete are joined by an MVCC compare so a
-/// concurrent update cannot make a validated delete remove a newer object.
+/// `dryRun=All`. The read and delete/termination marker are joined by an
+/// MVCC compare so a concurrent update cannot make a validated delete remove
+/// or mark a newer object.
 pub async fn delete_with_options(
     storage: &mut StorageClient,
     group: &str,
@@ -2247,9 +2297,9 @@ pub async fn delete_with_options(
     preconditions: Option<&DeletePreconditions>,
     dry_run: bool,
 ) -> Result<DeleteOutcome, Error> {
-    if resolve_resource(storage, group, version, resource).await?.is_none() {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(DeleteOutcome::UnknownResource);
-    }
+    };
     let key = keys::object_key(group, resource, namespace, name);
     let current = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
     let Some(prev) = current.kvs.into_iter().next() else {
@@ -2271,7 +2321,54 @@ pub async fn delete_with_options(
         }
     }
     let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
-    let object = crate::scheme::conversion::to_version(group, version, &kind, object);
+    let mut object = crate::scheme::conversion::to_version(group, version, &kind, object);
+
+    // A delete request against an object with finalizers is a graceful
+    // deletion request, not an immediate storage delete. This is the
+    // generic registry behavior that lets controllers observe the
+    // deletionTimestamp and remove their own finalizer before the object is
+    // physically removed.
+    if has_finalizers(&object) {
+        if has_deletion_timestamp(&object) {
+            return Ok(DeleteOutcome::Deleted(object));
+        }
+        set_metadata_field(&mut object, "deletionTimestamp", Value::String(now_rfc3339()));
+        if dry_run {
+            return Ok(DeleteOutcome::Deleted(object));
+        }
+        let object_bytes = match resolved.schema {
+            Some(schema) => protobuf::encode_message(schema, &object)?,
+            None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
+        };
+        let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+        let envelope = encrypt_for_storage(storage, group, resource, key.as_bytes(), &protobuf::wrap_unknown(&api_version, &kind, &object_bytes))?;
+        let compare = pb::Compare {
+            key: key.clone().into_bytes(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(prev.mod_revision)),
+            range_end: Vec::new(),
+        };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestPut(pb::PutRequest {
+                    key: key.clone().into_bytes(),
+                    value: envelope,
+                    ..Default::default()
+                })),
+            }],
+            failure: vec![],
+        };
+        let response = storage.txn(txn).await?;
+        if !response.succeeded {
+            return Ok(DeleteOutcome::PreconditionFailed);
+        }
+        let revision = response.header.map(|header| header.revision).unwrap_or(0);
+        set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        return Ok(DeleteOutcome::Deleted(object));
+    }
+
     if dry_run {
         return Ok(DeleteOutcome::Deleted(object));
     }
