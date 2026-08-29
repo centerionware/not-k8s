@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn api_resources_include_discoverable_subresources() {
         let core_v1 = api_resources_by_group_version()
-            .get(("", "v1"))
+            .get(&("", "v1"))
             .expect("core/v1 should have discovered resources");
         let pod_log = core_v1
             .iter()
@@ -345,7 +345,7 @@ mod tests {
         assert!(pod_exec.verbs.contains(&"connect"));
 
         let apps_v1 = api_resources_by_group_version()
-            .get(("apps", "v1"))
+            .get(&("apps", "v1"))
             .expect("apps/v1 should have discovered resources");
         let deployment_scale = apps_v1
             .iter()
