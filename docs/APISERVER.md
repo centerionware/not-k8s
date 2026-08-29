@@ -1593,10 +1593,16 @@ uniqueness, and standard scalar formats are enforced by
 CRD's `x-kubernetes-validations` CEL mechanism — runtime evaluation now has
 a shared request-side budget, while interpreter-level fuel accounting
 remains a real DoS-hardening limitation. **Not yet landed, named honestly**:
-conversion webhooks. Pruning/
-validation on the `status` subresource write itself (`update_status`/
-`patch_status` keep the same "no structural checks on status" scope real
-upstream's own generic status strategy has for built-ins too).
+conversion webhooks.
+
+**Status-subresource schema handling is real now** — for an established CRD
+version that declares `subresources.status`, both `update_status` and
+`patch_status` apply that version's `properties.status` schema before
+persistence. Unknown status fields are pruned, and required/type/schema-local
+constraints return a real `422`; built-in status paths remain the generic
+untyped path because their per-kind status strategies are not represented by
+the dynamic CRD schema walker. The behavior is covered by the live
+`test_nodeapiserver_validates_crd_status_subresource` e2e check.
 
 **`cel_ext` — the CEL cost budget, a real design pass (2026-08-21).** The
 static estimator and request-side runtime budget now protect
