@@ -2557,6 +2557,15 @@ async fn handle(
         };
     }
 
+    // WATCH is dispatched below the CRUD block, so retain this negotiated
+    // representation before the request body can be consumed by a mutating
+    // request.
+    let wants_partial_metadata = req
+        .headers()
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .and_then(negotiation::negotiate)
+        .is_some_and(|accepted| accepted.wants_partial_object_metadata());
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
@@ -2568,7 +2577,6 @@ async fn handle(
         // after `req` may already be gone.
         let accepted = req.headers().get("accept").and_then(|v| v.to_str().ok()).and_then(negotiation::negotiate);
         let wants_table = accepted.as_ref().is_some_and(|a| a.wants_table());
-        let wants_partial_metadata = accepted.as_ref().is_some_and(|a| a.wants_partial_object_metadata());
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
