@@ -97,6 +97,8 @@
 //! normalization, comparison, and component accessors.
 //! `kubernetes_regex` provides upstream's `find` and `findAll` substring
 //! helpers, including the optional match limit.
+//! `kubernetes_format` provides named DNS, label, URI, UUID, byte, date, and
+//! datetime validators through native CEL optional values.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -127,6 +129,7 @@ pub mod cost_walk;
 pub mod decl_type;
 pub mod authorizer;
 pub mod kubernetes_cidr;
+pub mod kubernetes_format;
 pub mod kubernetes_ip;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
@@ -262,6 +265,21 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("patch", kubernetes_semver::patch_binding);
     ctx.add_function("find", kubernetes_regex::find_binding);
     ctx.add_function("findAll", kubernetes_regex::find_all_binding);
+    ctx.add_function("format.named", kubernetes_format::named_binding);
+    ctx.add_function("validate", kubernetes_format::validate_binding);
+    ctx.add_function("format.dns1123Label", kubernetes_format::dns1123_label_binding);
+    ctx.add_function("format.dns1123Subdomain", kubernetes_format::dns1123_subdomain_binding);
+    ctx.add_function("format.dns1035Label", kubernetes_format::dns1035_label_binding);
+    ctx.add_function("format.qualifiedName", kubernetes_format::qualified_name_binding);
+    ctx.add_function("format.dns1123LabelPrefix", kubernetes_format::dns1123_label_prefix_binding);
+    ctx.add_function("format.dns1123SubdomainPrefix", kubernetes_format::dns1123_subdomain_prefix_binding);
+    ctx.add_function("format.dns1035LabelPrefix", kubernetes_format::dns1035_label_prefix_binding);
+    ctx.add_function("format.labelValue", kubernetes_format::label_value_binding);
+    ctx.add_function("format.uri", kubernetes_format::uri_binding);
+    ctx.add_function("format.uuid", kubernetes_format::uuid_binding);
+    ctx.add_function("format.byte", kubernetes_format::byte_binding);
+    ctx.add_function("format.date", kubernetes_format::date_binding);
+    ctx.add_function("format.datetime", kubernetes_format::datetime_binding);
     ctx.add_function("string", string_binding);
     authorizer::register(ctx);
 }
@@ -702,6 +720,10 @@ mod tests {
         assert_eq!(eval_bool_with_vars("'abc 123 def 456'.find('[0-9]+') == '123'", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("'123 abc 456'.findAll('[0-9]+')[1] == '456'", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("'123 abc 456'.findAll('[0-9]+', 1).size() == 1", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("format.dns1123Label().validate('valid-name').hasValue() == false", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("format.dns1123Label().validate('-invalid').hasValue()", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("format.named('uuid').value().validate('123e4567-e89b-12d3-a456-426614174000').hasValue() == false", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("format.date().validate('2021-01-01').hasValue() == false", &[]).unwrap(), true);
     }
 
     #[test]
