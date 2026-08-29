@@ -83,11 +83,28 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
             result.insert(key.clone(), merged);
         }
     }
-    for (key, order) in patch_map.iter().filter_map(|(key, value)| key.strip_prefix("$setElementOrder/").map(|field| (field, value))) {
-        let Some(existing) = result.get(key).and_then(Value::as_array).map(|existing| existing.to_vec()) else { continue };
-        let Some(field_schema) = properties.and_then(|p| p.get(key)) else { continue };
-        let Some(merge_key) = merge_keys(field_schema).first().copied() else { continue };
-        result.insert(key.to_string(), Value::Array(reorder_list(&existing, order, merge_key)));
+    for (key, order) in patch_map.iter().filter_map(|(key, value)| {
+        key.strip_prefix("$setElementOrder/")
+            .map(|field| (field, value))
+    }) {
+        let Some(existing) = result
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|existing| existing.to_vec())
+        else {
+            continue;
+        };
+        let Some(field_schema) = properties.and_then(|p| p.get(key)) else {
+            continue;
+        };
+        let keys = merge_keys(field_schema);
+        if keys.is_empty() {
+            continue;
+        }
+        result.insert(
+            key.to_string(),
+            Value::Array(reorder_list(&existing, order, &keys)),
+        );
     }
     Value::Object(result)
 }
@@ -104,18 +121,33 @@ fn apply_primitive_list_deletes(result: &mut serde_json::Map<String, Value>, pat
     }
 }
 
-fn reorder_list(existing: &[Value], order: &Value, merge_key: &str) -> Vec<Value> {
-    let Some(order) = order.as_array() else { return existing.to_vec() };
+fn reorder_list(existing: &[Value], order: &Value, merge_keys: &[&str]) -> Vec<Value> {
+    let Some(order) = order.as_array() else {
+        return existing.to_vec();
+    };
     let mut remaining = existing.to_vec();
     let mut ordered = Vec::with_capacity(existing.len());
     for requested in order {
-        let Some(value) = requested.get(merge_key) else { continue };
-        if let Some(index) = remaining.iter().position(|item| item.get(merge_key) == Some(value)) {
+        if let Some(index) = remaining
+            .iter()
+            .position(|item| same_key_values(item, requested, merge_keys))
+        {
             ordered.push(remaining.remove(index));
         }
     }
     ordered.extend(remaining);
     ordered
+}
+
+fn same_key_values(left: &Value, right: &Value, keys: &[&str]) -> bool {
+    let (Some(left), Some(right)) = (left.as_object(), right.as_object()) else {
+        return false;
+    };
+    keys.iter()
+        .all(|key| match (left.get(*key), right.get(*key)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        })
 }
 
 /// True when `field_schema` names `x-kubernetes-list-type: "map"` with a
@@ -312,5 +344,31 @@ mod tests {
         let merged = apply(&schema, &original, &patch);
         assert_eq!(merged["args"], json!(["--one"]));
         assert_eq!(merged["ports"], json!([{"name": "metrics"}, {"name": "http"}]));
+    }
+
+    #[test]
+    fn runtime_element_order_uses_all_composite_list_map_keys() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "mounts": {
+                    "type": "array",
+                    "x-kubernetes-list-type": "map",
+                    "x-kubernetes-list-map-keys": ["container", "path"],
+                    "items": {"type": "object"},
+                },
+            },
+        });
+        let original = json!({"mounts": [
+            {"container": "app", "path": "/data"},
+            {"container": "app", "path": "/cache"},
+        ]});
+        let patch = json!({"$setElementOrder/mounts": [
+            {"container": "app", "path": "/cache"},
+            {"container": "app", "path": "/data"},
+        ]});
+        let merged = apply(&schema, &original, &patch);
+        assert_eq!(merged["mounts"][0]["path"], "/cache");
+        assert_eq!(merged["mounts"][1]["path"], "/data");
     }
 }
