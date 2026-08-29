@@ -139,7 +139,9 @@ pub fn encode_message(message: &str, value: &Value) -> Result<Vec<u8>> {
 /// struct embedding). The core/v1 `Volume.volumeSource`,
 /// `PersistentVolumeSpec.persistentVolumeSource`, and
 /// `EphemeralContainer.ephemeralContainerCommon` fields have the same
-/// flattened JSON shape. Found live: `ValidatingAdmissionPolicy`'s own
+/// flattened JSON shape, as do the core/v1 `LocalObjectReference` fields
+/// in config-map and secret sources/selectors. Found live:
+/// `ValidatingAdmissionPolicy`'s own
 /// `spec.matchConstraints.resourceRules[]` round-tripped through a real
 /// `nodestore` as entirely empty objects (every field but
 /// `resourceNames` silently dropped) until this was special-cased —
@@ -161,6 +163,14 @@ fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
             | ("io.k8s.api.core.v1.Volume", "volumeSource")
             | ("io.k8s.api.core.v1.PersistentVolumeSpec", "persistentVolumeSource")
             | ("io.k8s.api.core.v1.EphemeralContainer", "ephemeralContainerCommon")
+            | ("io.k8s.api.core.v1.ConfigMapEnvSource", "localObjectReference")
+            | ("io.k8s.api.core.v1.ConfigMapKeySelector", "localObjectReference")
+            | ("io.k8s.api.core.v1.ConfigMapProjection", "localObjectReference")
+            | ("io.k8s.api.core.v1.ConfigMapVolumeSource", "localObjectReference")
+            | ("io.k8s.api.core.v1.SecretEnvSource", "localObjectReference")
+            | ("io.k8s.api.core.v1.SecretKeySelector", "localObjectReference")
+            | ("io.k8s.api.core.v1.SecretProjection", "localObjectReference")
+            | ("io.k8s.api.core.v1.SecretVolumeSource", "localObjectReference")
     )
 }
 
