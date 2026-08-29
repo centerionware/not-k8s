@@ -8,25 +8,17 @@
 //! accepted, real upstream's own `422`-shaped `Forbidden` field error
 //! (`"estimated rule cost ... exceeds budget by a factor of ..."`).
 //!
-//! # Named, honest scope — what real upstream additionally does that
-//! this doesn't yet
-//!
-//! Real upstream's own comparison isn't against the rule's raw
-//! [`super::cost::CostEstimate`] alone — it's `cr.MaxCost *
-//! cardinalityCost.MaxCardinality`, real upstream's own accounting for
-//! a rule *nested* under an array/map schema potentially running once
-//! per element/entry, not just once (`getExpressionCost`, confirmed
-//! directly). This crate has no `CELSchemaContext`/`MaxCardinality`
-//! tracking yet — that's real, separate, not-yet-started work (it needs
-//! propagating a real "how many times could the enclosing structure
-//! repeat this node" number down the whole schema tree, distinct from
-//! [`super::decl_type::DeclType::max_elements`], which only bounds *one*
-//! node's own element count, not the product of every ancestor's own
-//! bound). This module's own [`check_rule_cost`] compares a rule's raw,
-//! single-evaluation cost only — a real, useful check on its own (it
-//! still catches a rule that's simply too expensive to run even once),
-//! just not yet the full real picture for a rule nested deep inside a
-//! large repeating structure.
+//! Real upstream's own comparison is not against the rule's raw
+//! [`super::cost::CostEstimate`] alone — it is `cr.MaxCost *
+//! cardinalityCost.MaxCardinality`, accounting for a rule *nested* under
+//! an array/map schema potentially running once per element/entry, not
+//! just once (`getExpressionCost`, confirmed directly). The recursive
+//! CRD validation path now propagates that enclosing repetition bound;
+//! [`check_rule_cost`] remains the convenient single-evaluation form,
+//! while [`check_rule_cost_with_cardinality`] applies the effective
+//! cardinality multiplier. The multiplier is distinct from
+//! [`super::decl_type::DeclType::max_elements`], which bounds one node's
+//! own element count rather than the product of every repeating ancestor.
 //!
 //! Also not ported: real upstream's own static `ast.OutputType() !=
 //! cel.BoolType` rejection — this crate's parser has no type checker,
@@ -34,10 +26,9 @@
 //! discovered at runtime ([`super::eval_bool`]'s own `Error::NotBool`),
 //! not rejected at CRD-acceptance time the way real upstream can.
 //!
-//! **Not yet wired into any real CRD-acceptance request path** — this
-//! module is the pure decision primitive itself; finding where in
-//! `apiextensions`'s own CRD-establishing flow to call it from is
-//! separate, not-yet-started work.
+//! The decision primitive is wired into the CRD-acceptance request path by
+//! [`crate::apiextensions::cel_validations`], including the propagated
+//! cardinality for nested rules.
 
 use super::cost::CostEstimate;
 use super::cost_walk::Coster;
@@ -75,8 +66,20 @@ pub enum RuleCostError {
 /// own `CELSchemaContext.TypeInfo()` caching, mirrored here by simply
 /// taking it as a parameter instead of recomputing it per call).
 pub fn check_rule_cost(root: &DeclType, rule: &str) -> Result<CostEstimate, RuleCostError> {
+    check_rule_cost_with_cardinality(root, rule, 1)
+}
+
+/// Check one rule after accounting for the maximum number of enclosing
+/// array elements or map entries that can cause it to be evaluated.
+///
+/// This is the `cr.MaxCost * cardinalityCost.MaxCardinality` part of
+/// upstream's CRD static validation. A value of `0` is meaningful: a rule
+/// below an explicitly empty collection cannot be evaluated. Saturating
+/// arithmetic preserves the conservative result for very large products.
+pub fn check_rule_cost_with_cardinality(root: &DeclType, rule: &str, cardinality: u64) -> Result<CostEstimate, RuleCostError> {
     let program = cel::Program::compile(rule).map_err(|e| RuleCostError::Compile(e.to_string()))?;
-    let cost = Coster::new(Some(root)).cost(program.expression());
+    let raw_cost = Coster::new(Some(root)).cost(program.expression());
+    let cost = CostEstimate { min: raw_cost.min.saturating_mul(cardinality), max: raw_cost.max.saturating_mul(cardinality) };
     if cost.max > STATIC_ESTIMATED_COST_LIMIT {
         return Err(RuleCostError::TooExpensive { estimated_cost: cost.max, limit: STATIC_ESTIMATED_COST_LIMIT });
     }
@@ -135,6 +138,15 @@ mod tests {
             panic!("expected TooExpensive, got {err:?}");
         };
         assert_eq!(limit, STATIC_ESTIMATED_COST_LIMIT);
+        assert!(estimated_cost > limit);
+    }
+
+    #[test]
+    fn enclosing_collection_cardinality_is_applied_after_the_rule_cost() {
+        let result = check_rule_cost_with_cardinality(&root(), "self.name.matches('a+')", 100_000_000);
+        let Err(RuleCostError::TooExpensive { estimated_cost, limit }) = result else {
+            panic!("expected cardinality-adjusted rule to exceed the budget, got {result:?}");
+        };
         assert!(estimated_cost > limit);
     }
 }
