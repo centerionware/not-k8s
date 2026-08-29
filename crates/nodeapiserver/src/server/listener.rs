@@ -1303,7 +1303,7 @@ async fn authenticate_request(
 
 async fn handle(
     req: Request<Incoming>,
-    storage: Option<StorageClient>,
+    mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
@@ -1620,7 +1620,7 @@ async fn handle(
             };
         }
 
-        let Some(mut client) = storage else {
+        let Some(client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         let kind_of_patch = match content_type.as_deref() {
