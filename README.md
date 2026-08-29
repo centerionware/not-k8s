@@ -18,6 +18,12 @@ Some profiling results:
 both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/latest),
 [ARM phone](https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone).
 
+## Running enkates stack on KVM on my phone with 2GB of ram.
+
+
+![image](https://raw.githubusercontent.com/centerionware/not-k8s/refs/heads/profiling-results/Screenshot_20260828-105055.png)
+
+
 ## Get started
 
 It's going to be something like
