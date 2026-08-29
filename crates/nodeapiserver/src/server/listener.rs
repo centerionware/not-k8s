@@ -681,21 +681,20 @@ pub async fn run(cfg: Config) {
         }
     };
     let cert = match cert_result {
-        Ok(c) => c,
+        Ok(c) => Arc::new(c),
         Err(e) => {
             warn!(error = ?e, "failed to load/generate the TLS certificate; the REST/watch listener will not run");
             return;
         }
     };
 
-    // Group H, first slice: client certificate authentication, offered
-    // but not required (see server::tls's own doc comment). Best-effort
-    // like everything else here — a misconfigured/unreadable CA file
-    // disables client-cert auth for this run rather than stopping the
-    // listener, since `client_ca_file` being set at all is optional in
-    // the first place.
+    // Group H: client certificate authentication is offered but not
+    // required (see server::tls's own doc comment). The CA bundle is
+    // reloadable, so a valid replacement applies to new connections without
+    // restarting the listener. A misconfigured initial file still disables
+    // client-cert auth for this run rather than stopping the listener.
     let client_ca = match &cfg.client_ca_file {
-        Some(path) => match super::tls::load_client_ca(path) {
+        Some(path) => match super::tls::ReloadableClientCa::from_file(path) {
             Ok(store) => Some(store),
             Err(e) => {
                 warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_CLIENT_CA_FILE; client certificate authentication is disabled for this run");
@@ -710,7 +709,7 @@ pub async fn run(cfg: Config) {
     // projected pod tokens and nodelet's TokenReview fallback work before
     // RBAC enforcement is enabled.
     let service_account_authenticator = match &cfg.service_account_signing_key_file {
-        Some(path) => match crate::authn::service_account::Authenticator::from_pem(path, cfg.service_account_issuer.clone()) {
+        Some(path) => match crate::authn::service_account::ReloadableAuthenticator::from_pem(path, cfg.service_account_issuer.clone()) {
             Ok(authenticator) => Some(Arc::new(authenticator)),
             Err(e) => {
                 warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE; the REST/watch listener will not run");
@@ -818,15 +817,6 @@ pub async fn run(cfg: Config) {
         },
         None => None,
     };
-
-    let server_config = match cert.server_config(client_ca.as_ref()) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = ?e, "failed to build TLS server config; the REST/watch listener will not run");
-            return;
-        }
-    };
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
     // Group C: load and validate `EncryptionConfiguration` *before*
     // connecting to nodestore — a misconfigured file is a real, loud
@@ -977,7 +967,8 @@ pub async fn run(cfg: Config) {
                 continue;
             }
         };
-        let acceptor = acceptor.clone();
+        let cert = cert.clone();
+        let client_ca = client_ca.clone();
         let storage = storage.clone();
         let cache_registry = cache_registry.clone();
         let kubelet_tls = kubelet_tls.clone();
@@ -989,6 +980,15 @@ pub async fn run(cfg: Config) {
         let audit_sink = audit_sink.clone();
         let audit_policy = audit_policy.clone();
         tokio::spawn(async move {
+            let client_ca_store = client_ca.as_ref().map(super::tls::ReloadableClientCa::current);
+            let server_config = match cert.server_config(client_ca_store.as_ref()) {
+                Ok(config) => config,
+                Err(error) => {
+                    warn!(%peer, error = ?error, "listener: failed to build the TLS server config for the connection");
+                    return;
+                }
+            };
+            let acceptor = TlsAcceptor::from(Arc::new(server_config));
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -1411,7 +1411,7 @@ async fn handle_with_audit(
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
     bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
-    service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
+    service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
     concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
@@ -1613,7 +1613,7 @@ async fn authenticate_request(
     req: &Request<Incoming>,
     client_cert_identity: Option<crate::authn::x509::Identity>,
     bootstrap_token_authenticator: Option<&crate::authn::bootstrap_token::ReloadableAuthenticator>,
-    service_account_authenticator: Option<&crate::authn::service_account::Authenticator>,
+    service_account_authenticator: Option<&crate::authn::service_account::ReloadableAuthenticator>,
     oidc_authenticator: Option<&crate::authn::oidc::Authenticator>,
     anonymous_auth: bool,
 ) -> std::result::Result<Option<crate::authn::x509::Identity>, &'static str> {
@@ -1656,7 +1656,7 @@ async fn handle(
     mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
-    service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
+    service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     enforce_rbac: bool,
     authorization_webhook_allowed: bool,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,

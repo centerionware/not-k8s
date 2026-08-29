@@ -6,6 +6,10 @@
 //! identity and the apiserver verifies the signature, issuer, audience, and
 //! lifetime on every request. The TokenRequest handler remains responsible
 //! for looking up the ServiceAccount and its current UID before minting one.
+//!
+//! `ReloadableAuthenticator` refreshes the signing key after an atomic file
+//! replacement or edit, retaining the last valid key if a rotation is
+//! temporarily malformed.
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -16,8 +20,9 @@ use p256::ecdsa::{
 };
 use p256::pkcs8::DecodePrivateKey;
 use serde_json::{json, Value};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 const JWT_HEADER: &str = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9";
 const DEFAULT_EXPIRATION_SECONDS: i64 = 3600;
@@ -27,6 +32,28 @@ const MIN_EXPIRATION_SECONDS: i64 = 600;
 pub struct Authenticator {
     signing_key: Arc<SigningKey>,
     issuer: String,
+}
+
+/// A ServiceAccount authenticator that notices an atomically replaced or
+/// edited signing-key file on the next authentication or TokenRequest. A
+/// malformed replacement retains the last valid key, matching the static
+/// token authenticator's safe rotation behavior.
+#[derive(Clone)]
+pub struct ReloadableAuthenticator {
+    path: PathBuf,
+    issuer: String,
+    state: Arc<RwLock<ReloadState>>,
+}
+
+struct ReloadState {
+    fingerprint: FileFingerprint,
+    authenticator: Authenticator,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +248,88 @@ impl Authenticator {
     }
 }
 
+impl ReloadableAuthenticator {
+    /// Load a ServiceAccount signing key and retain the last valid key across
+    /// malformed rotations. The issuer remains fixed for the process, just
+    /// as it is for the non-reloadable authenticator.
+    pub fn from_pem(path: &Path, issuer: impl Into<String>) -> Result<Self> {
+        let issuer = issuer.into();
+        let authenticator = Authenticator::from_pem(path, issuer.clone())?;
+        let fingerprint = file_fingerprint(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            issuer,
+            state: Arc::new(RwLock::new(ReloadState {
+                fingerprint,
+                authenticator,
+            })),
+        })
+    }
+
+    /// Mint a token using the latest valid signing key.
+    pub fn issue_token(
+        &self,
+        namespace: &str,
+        service_account: &str,
+        service_account_uid: &str,
+        request: &TokenRequestSpec,
+    ) -> Result<IssuedToken> {
+        self.refresh_if_needed();
+        let state = self
+            .state
+            .read()
+            .map_err(|_| anyhow::anyhow!("ServiceAccount authenticator state is poisoned"))?;
+        state
+            .authenticator
+            .issue_token(namespace, service_account, service_account_uid, request)
+    }
+
+    /// Authenticate against the latest valid signing key.
+    pub fn authenticate(&self, token: &str) -> Option<AuthenticatedToken> {
+        self.refresh_if_needed();
+        let state = self.state.read().ok()?;
+        state.authenticator.authenticate(token)
+    }
+
+    fn refresh_if_needed(&self) {
+        let Ok(fingerprint) = file_fingerprint(&self.path) else {
+            return;
+        };
+        let needs_reload = self
+            .state
+            .read()
+            .map(|state| state.fingerprint != fingerprint)
+            .unwrap_or(false);
+        if !needs_reload {
+            return;
+        }
+
+        let authenticator = match Authenticator::from_pem(&self.path, self.issuer.clone()) {
+            Ok(authenticator) => authenticator,
+            Err(error) => {
+                if let Ok(mut state) = self.state.write() {
+                    state.fingerprint = fingerprint;
+                }
+                tracing::warn!(path = %self.path.display(), error = ?error, "ServiceAccount signing key changed but could not be reloaded; retaining the last valid key");
+                return;
+            }
+        };
+        if let Ok(mut state) = self.state.write() {
+            state.fingerprint = fingerprint;
+            state.authenticator = authenticator;
+        }
+    }
+}
+
+fn file_fingerprint(path: &Path) -> Result<FileFingerprint> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("reading ServiceAccount signing key metadata {}", path.display()))?;
+    Ok(FileFingerprint {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
 fn decode_segment(segment: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(segment)
@@ -376,5 +485,40 @@ mod tests {
             }
         });
         assert!(parse_token_request(&body).is_err());
+    }
+
+    #[test]
+    fn reloadable_authenticator_rotates_keys_and_retains_the_last_valid_key() {
+        let key = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let pem = key.to_pkcs8_pem(Default::default()).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), pem.as_bytes()).unwrap();
+        let authenticator = ReloadableAuthenticator::from_pem(
+            file.path(),
+            "https://kubernetes.default.svc.cluster.local",
+        )
+        .unwrap();
+        let request = TokenRequestSpec {
+            audiences: Vec::new(),
+            expiration_seconds: Some(600),
+            bound_pod: None,
+        };
+        let old_token = authenticator
+            .issue_token("default", "default", "sa-uid", &request)
+            .unwrap()
+            .token;
+
+        let replacement = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+        let replacement_pem = replacement.to_pkcs8_pem(Default::default()).unwrap();
+        std::fs::write(file.path(), replacement_pem.as_bytes()).unwrap();
+        let new_token = authenticator
+            .issue_token("default", "default", "sa-uid", &request)
+            .unwrap()
+            .token;
+        assert!(authenticator.authenticate(&old_token).is_none());
+        assert!(authenticator.authenticate(&new_token).is_some());
+
+        std::fs::write(file.path(), "not a private key").unwrap();
+        assert!(authenticator.authenticate(&new_token).is_some());
     }
 }
