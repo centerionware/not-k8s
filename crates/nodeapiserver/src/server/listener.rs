@@ -2054,9 +2054,9 @@ async fn handle(
         && info.verb == "create"
         && info.subresource.is_empty()
     {
-        let Some(client) = storage else {
+        if storage.is_none() {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-        };
+        }
         let body_bytes = match read_body_bytes(req).await {
             Ok(b) => b,
             Err(e) => {
