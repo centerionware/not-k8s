@@ -2,20 +2,43 @@
 //! token CSV format.
 //!
 //! Each non-empty line contains `token,user,uid,"group1,group2"`. The file
-//! is loaded once when the listener starts, matching the apiserver's
-//! `--token-auth-file` startup configuration. The UID is retained on the
-//! authenticated result for callers that need it; [`Identity`] predates
+//! is loaded when the listener starts and refreshed when the file changes,
+//! matching the apiserver's `--token-auth-file` contract. The UID is retained
+//! on the authenticated result for callers that need it; [`Identity`] predates
 //! token authentication and has no general UID field, so it is not folded
 //! into the username or groups.
 
 use crate::authn::x509::Identity;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 #[derive(Clone, Debug)]
 pub struct Authenticator {
     tokens: HashMap<String, Entry>,
+}
+
+/// A token-file authenticator that refreshes a replaced or edited file while
+/// retaining the last valid table if a reload is temporarily unreadable or
+/// malformed.
+#[derive(Clone, Debug)]
+pub struct ReloadableAuthenticator {
+    path: PathBuf,
+    state: Arc<RwLock<ReloadState>>,
+}
+
+#[derive(Debug)]
+struct ReloadState {
+    fingerprint: FileFingerprint,
+    authenticator: Authenticator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +124,66 @@ impl Authenticator {
     }
 }
 
+impl ReloadableAuthenticator {
+    /// Load a token file and retain its initial fingerprint for later reloads.
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let authenticator = Authenticator::from_file(path)?;
+        let fingerprint = file_fingerprint(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            state: Arc::new(RwLock::new(ReloadState {
+                fingerprint,
+                authenticator,
+            })),
+        })
+    }
+
+    /// Authenticate against the latest valid file contents.
+    pub fn authenticate(&self, token: &str) -> Option<AuthenticatedToken> {
+        self.refresh_if_needed();
+        let state = self.state.read().ok()?;
+        state.authenticator.authenticate(token)
+    }
+
+    fn refresh_if_needed(&self) {
+        let Ok(fingerprint) = file_fingerprint(&self.path) else {
+            return;
+        };
+        let needs_reload = self
+            .state
+            .read()
+            .map(|state| state.fingerprint != fingerprint)
+            .unwrap_or(false);
+        if !needs_reload {
+            return;
+        }
+
+        let authenticator = match Authenticator::from_file(&self.path) {
+            Ok(authenticator) => authenticator,
+            Err(error) => {
+                if let Ok(mut state) = self.state.write() {
+                    state.fingerprint = fingerprint;
+                }
+                tracing::warn!(path = %self.path.display(), error, "token authentication file changed but could not be reloaded; retaining the last valid contents");
+                return;
+            }
+        };
+        if let Ok(mut state) = self.state.write() {
+            state.fingerprint = fingerprint;
+            state.authenticator = authenticator;
+        }
+    }
+}
+
+fn file_fingerprint(path: &Path) -> Result<FileFingerprint, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("reading {}: {error}", path.display()))?;
+    Ok(FileFingerprint {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
 fn parse_csv_line(line: &str) -> Result<Vec<String>, String> {
     let mut fields = Vec::new();
     let mut field = String::new();
@@ -181,5 +264,27 @@ mod tests {
         assert!(Authenticator::from_file(file.path())
             .unwrap_err()
             .contains("duplicate token"));
+    }
+
+    #[test]
+    fn reloads_a_changed_token_file_without_restarting() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file.as_file(), "old-token,old-user,uid-1,").unwrap();
+        let auth = ReloadableAuthenticator::from_file(file.path()).unwrap();
+        assert_eq!(auth.authenticate("old-token").unwrap().identity.name, "old-user");
+
+        std::fs::write(file.path(), "new-token,new-user,uid-2,group\n").unwrap();
+        assert_eq!(auth.authenticate("old-token"), None);
+        assert_eq!(auth.authenticate("new-token").unwrap().identity.name, "new-user");
+    }
+
+    #[test]
+    fn keeps_the_last_valid_table_when_a_reload_is_malformed() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file.as_file(), "token,user,uid,").unwrap();
+        let auth = ReloadableAuthenticator::from_file(file.path()).unwrap();
+
+        std::fs::write(file.path(), "malformed\n").unwrap();
+        assert_eq!(auth.authenticate("token").unwrap().identity.name, "user");
     }
 }

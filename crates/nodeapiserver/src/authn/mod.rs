@@ -3,9 +3,9 @@
 //! TokenReview, bootstrap tokens, anonymous.
 //!
 //! `bootstrap_token` — loads the standard `--token-auth-file` CSV format
-//! into an in-memory bearer-token authenticator. The listener loads it once
-//! at startup from `NODEAPISERVER_TOKEN_AUTH_FILE`, matching the static-file
-//! lifecycle of upstream's token authenticator.
+//! into an in-memory bearer-token authenticator. The listener refreshes it
+//! after file changes from `NODEAPISERVER_TOKEN_AUTH_FILE`, retaining the
+//! last valid table during a malformed or unreadable rotation.
 //!
 //! `x509` — the first real slice: derives a [`x509::Identity`] from a
 //! client certificate's Subject, the same `CommonName`-as-username/
@@ -40,15 +40,10 @@
 //! listener fetches the issuer metadata and JWKS at startup, verifies signed
 //! tokens locally, and refreshes keys once when a rotated key is encountered.
 //!
-//! `bootstrap_token` — loads the standard `--token-auth-file` CSV format
-//! into an in-memory bearer-token authenticator. The listener loads it once
-//! at startup from `NODEAPISERVER_TOKEN_AUTH_FILE`, matching the static-file
-//! lifecycle of upstream's token authenticator.
-//!
 //! Bootstrap tokens and the compatible boolean anonymous-authentication
 //! switch are wired through the listener. Structured anonymous-authentication
-//! conditions and live reload of authentication files remain outside this
-//! slice.
+//! conditions and reload of the remaining authentication files remain outside
+//! this slice.
 //!
 //! Status: the supported x509, ServiceAccount, OIDC, static-token, and
 //! anonymous-authentication paths are implemented; see docs/APISERVER.md for
