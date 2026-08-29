@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use futures::AsyncBufReadExt;
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
     let uid = Command::new("id")
@@ -964,7 +965,7 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
     result
 }
 
-pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext) -> Result<()> {
+pub(super) async fn nodeapiserver_exposes_inflight_metrics(_context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
         return Err(skip_test("inflight metrics are a nodeapiserver-only check"));
@@ -2259,6 +2260,68 @@ pub(super) async fn nodeapiserver_serves_partial_object_metadata(
         "PartialObjectMetadataList contained a full object: {list}"
     );
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_watches_partial_object_metadata(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "PartialObjectMetadata watch checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-partial-watch-{}", std::process::id());
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let accept = "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1, application/json";
+    let watch_request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/namespaces/{}/configmaps?watch=true&resourceVersion=0&timeoutSeconds=30&fieldSelector=metadata.name%3D{}",
+            context.namespace, name
+        ))
+        .header("Accept", accept)
+        .body(Vec::new())?;
+    let mut stream = context
+        .client
+        .request_stream(watch_request)
+        .await
+        .context("starting a PartialObjectMetadata watch")?;
+
+    let configmap: ConfigMap = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": name}
+    }))?;
+    let result = async {
+        configmaps
+            .create(&PostParams::default(), &configmap)
+            .await
+            .context("creating the PartialObjectMetadata watch fixture")?;
+
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(30), stream.read_line(&mut line))
+            .await
+            .context("waiting for the PartialObjectMetadata watch event")??;
+        let event: Value = serde_json::from_str(&line).context("decoding the PartialObjectMetadata watch event")?;
+        anyhow::ensure!(event.get("type").and_then(|value| value.as_str()) == Some("ADDED"), "unexpected watch event: {event}");
+        let object = event.get("object").context("watch event had no object")?;
+        anyhow::ensure!(
+            object.get("apiVersion").and_then(|value| value.as_str()) == Some("meta.k8s.io/v1")
+                && object.get("kind").and_then(|value| value.as_str()) == Some("PartialObjectMetadata"),
+            "watch returned the wrong PartialObjectMetadata shape: {event}"
+        );
+        anyhow::ensure!(
+            object.pointer("/metadata/name").and_then(|value| value.as_str()) == Some(name.as_str())
+                && object.get("data").is_none(),
+            "watch returned more than object metadata: {event}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let _ = configmaps.delete(&name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn nodeapiserver_honors_generate_name(context: &E2eContext) -> Result<()> {
