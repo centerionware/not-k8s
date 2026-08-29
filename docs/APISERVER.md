@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `79b76f8` on
+This snapshot is checked against `origin/nodeapiserver` at `be1454b` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1163,6 +1163,12 @@ Group I's RBAC, this plugin needs no operator-provisioned bootstrap data,
 so there's no "could lock every request out" risk to gate behind a config
 flag; it runs on every `CREATE`/`UPDATE`/`DELETE` today.
 
+`admission::chain::MutatingRegistry` now owns the ordered pure-mutator stage:
+`DefaultTolerationSeconds` runs before ServiceAccount-name defaulting, and
+new pure mutators can be registered without another direct listener call.
+Storage-backed admission steps remain explicit because their I/O and failure
+policy need request-specific handling.
+
 `admission::default_toleration_seconds` is this crate's first **mutating**
 plugin — a faithful port of real upstream's own `DefaultTolerationSeconds`
 (`plugin/pkg/admission/defaulttolerationseconds/admission.go`, fetched and
@@ -1484,9 +1490,8 @@ selected object). Dry-run requests are rejected with a
 `Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
 AdmissionReview path.
 
-**Not yet landed**: every other built-in plugin, a generic
-plugin-chain/registry abstraction (today `server::listener` hand-calls each
-plugin directly, not through any dispatch table), the remaining typed-CEL /
+**Not yet landed**: every other built-in plugin, a complete registry covering
+storage-backed mutators and validators, the remaining typed-CEL /
 variable surface of MutatingAdmissionPolicy, and interpreter-level fuel
 accounting. The ValidatingAdmissionPolicy path uses the existing
 per-expression deadline and shared request-side CEL budget. Admission

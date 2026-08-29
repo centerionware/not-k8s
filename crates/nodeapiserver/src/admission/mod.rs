@@ -3,10 +3,9 @@
 //! `PodSecurity`, ...) plus mutating/validating webhooks and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy ahead of every
 //! write. **Seven built-in plugins are now landed and wired** (listed
-//! below) — but still no generic `Interface`/registry abstraction to run
-//! them through: `server::listener` hand-calls each by name in a fixed
-//! order (see this module's own "not yet landed" note below for why
-//! that's a deliberate order, not an oversight).
+//! below). Pure mutators run through [`chain::MutatingRegistry`]; the
+//! storage-backed mutators and validators still need a broader async
+//! registry because their I/O and failure-policy behavior is request-specific.
 //!
 //! `attributes` — the minimal `(operation, group, resource, namespace,
 //! name)` tuple a plugin decides against, a real-upstream-`Attributes`
@@ -96,18 +95,19 @@
 //! ignores the operator/values the same way real upstream's own
 //! `podMatchesScopeFunc` switch does; PVCs, services, and the generic
 //! evaluator only match an *unscoped* quota (matching each
-//! evaluator's own real behavior). No persisted `status.used` counter
-//! (recomputed live from a fresh `Pod` list every time instead — see that
-//! module's own doc comment for the one real concurrency-race consequence
-//! this carries that a persisted counter with real upstream's own
-//! optimistic-lock retry wouldn't). Reuses `limit_ranger`'s own
+//! evaluator's own real behavior). `status.used` is persisted after an
+//! admitted create, while admission-time usage is still recomputed live
+//! from a fresh object list (see that module's own doc comment for the one
+//! real concurrency-race consequence this carries). Reuses `limit_ranger`'s own
 //! `pod_requests`/`pod_limits` for the aggregation, since real upstream's
 //! quota usage function calls the exact same underlying helper.
 //!
 //! All seven plugins are **wired into `server::listener`, unconditionally**
-//! — none needs operator-provisioned bootstrap data (unlike Group I's
-//! RBAC), so there's no "could lock every request out" risk to gate
-//! behind a config flag.
+//! — pure mutators are invoked through `chain::MutatingRegistry`, while
+//! storage-backed stages remain in the listener until their async registry
+//! adapter lands. None needs operator-provisioned bootstrap data (unlike
+//! Group I's RBAC), so there's no "could lock every request out" risk to
+//! gate behind a config flag.
 //!
 //! `match_conditions` — real upstream's own `matchconditions.Matcher`
 //! (the real CEL-based pre-filter shared by both mutating/validating
@@ -181,10 +181,8 @@
 //! remains an explicit gap.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin, `ResourceQuota`'s own non-pod evaluators/scope
-//! matching/persisted usage counter (above), a generic plugin-chain/
-//! registry abstraction to run more than one plugin without
-//! `server::listener` hand-calling each by name, mutating/validating
+//! other built-in plugin, a complete async plugin-chain/registry covering
+//! storage-backed mutators and validators, mutating/validating
 //! admission webhooks themselves, `MutatingAdmissionPolicy` itself as
 //! actual enforcement, and Warn/Audit reporting — every real decision primitive
 //! `server::listener` would need now exists
@@ -194,6 +192,7 @@
 //! is_denial`/`validation_actions_deny` are the real enforcement-decision
 
 pub mod attributes;
+pub mod chain;
 pub mod default_storage_class;
 pub mod default_toleration_seconds;
 pub mod limit_ranger;
