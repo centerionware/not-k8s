@@ -35,13 +35,102 @@ use serde_json::Value;
 const GROUP: &str = "rbac.authorization.k8s.io";
 const VERSION: &str = "v1";
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub rules: Vec<PolicyRule>,
     /// Non-fatal — every rule that *could* be resolved is still in
     /// `rules`, matching upstream's own additive posture (see this
     /// module's own doc comment).
     pub errors: Vec<String>,
+}
+
+/// A request-local, read-only snapshot of the RBAC objects needed by CEL's
+/// `authorizer` library. CEL calls are synchronous, so the admission path
+/// loads this snapshot before evaluation and the check functions resolve
+/// subjects and roles from it without doing I/O in the interpreter.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    cluster_role_bindings: Vec<Value>,
+    cluster_roles: Vec<Value>,
+    role_bindings: Vec<Value>,
+    roles: Vec<Value>,
+}
+
+/// Load the RBAC objects used by [`Snapshot::rules_for`]. A failure to list
+/// any part of the snapshot is returned to the caller instead of silently
+/// turning an authorization error into an allow.
+pub async fn load_snapshot(storage: &mut StorageClient) -> Result<Snapshot, String> {
+    Ok(Snapshot {
+        cluster_role_bindings: snapshot_list(storage, "clusterrolebindings", None).await?,
+        cluster_roles: snapshot_list(storage, "clusterroles", None).await?,
+        role_bindings: snapshot_list(storage, "rolebindings", None).await?,
+        roles: snapshot_list(storage, "roles", None).await?,
+    })
+}
+
+async fn snapshot_list(storage: &mut StorageClient, resource: &str, namespace: Option<&str>) -> Result<Vec<Value>, String> {
+    match rest::list(storage, None, GROUP, VERSION, resource, namespace, "", "", 0, "").await {
+        Ok(ListOutcome::Found(list)) => Ok(list.get("items").and_then(Value::as_array).cloned().unwrap_or_default()),
+        Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => Err(format!("{resource} is unknown to this build")),
+        Err(error) => Err(format!("listing {resource}: {error}")),
+    }
+}
+
+impl Snapshot {
+    /// Resolve all rules applying to a principal in a namespace using only
+    /// this snapshot. The matching and role-reference rules are the same as
+    /// [`rules_for`], but no network or storage calls are possible here.
+    pub fn rules_for(&self, user_name: &str, user_groups: &[String], namespace: &str) -> Resolved {
+        let mut resolved = Resolved::default();
+        for binding in &self.cluster_role_bindings {
+            accumulate_snapshot_binding(self, binding, user_name, user_groups, "", &mut resolved);
+        }
+        if !namespace.is_empty() {
+            for binding in &self.role_bindings {
+                if binding_namespace(binding) == namespace {
+                    accumulate_snapshot_binding(self, binding, user_name, user_groups, namespace, &mut resolved);
+                }
+            }
+        }
+        resolved
+    }
+}
+
+fn binding_namespace(binding: &Value) -> &str {
+    binding.get("metadata").and_then(|metadata| metadata.get("namespace")).and_then(Value::as_str).unwrap_or("")
+}
+
+fn accumulate_snapshot_binding(snapshot: &Snapshot, binding: &Value, user_name: &str, user_groups: &[String], binding_namespace: &str, resolved: &mut Resolved) {
+    let subjects = parse_subjects(binding);
+    if first_applicable_subject(user_name, user_groups, &subjects, binding_namespace).is_none() {
+        return;
+    }
+
+    let Some(role_ref) = binding.get("roleRef") else {
+        resolved.errors.push("binding has no roleRef".to_string());
+        return;
+    };
+    let kind = role_ref.get("kind").and_then(Value::as_str).unwrap_or("");
+    let name = role_ref.get("name").and_then(Value::as_str).unwrap_or("");
+    let role = match kind {
+        "Role" => snapshot
+            .roles
+            .iter()
+            .find(|role| binding_namespace(role) == binding_namespace && object_name(role) == name),
+        "ClusterRole" => snapshot.cluster_roles.iter().find(|role| object_name(role) == name),
+        other => {
+            resolved.errors.push(format!("unsupported roleRef kind {other:?}"));
+            return;
+        }
+    };
+    match role {
+        Some(role) => resolved.rules.extend(parse_policy_rules(role)),
+        None => resolved.errors.push(format!("{kind} {name:?} referenced by a binding was not found")),
+    }
+}
+
+fn object_name(object: &Value) -> &str {
+    object.get("metadata").and_then(|metadata| metadata.get("name")).and_then(Value::as_str).unwrap_or("")
 }
 
 /// `VisitRulesFor`: every `PolicyRule` that applies to `user_name`/
@@ -212,5 +301,36 @@ mod tests {
     #[test]
     fn parse_policy_rules_on_a_role_with_no_rules_field_is_empty() {
         assert_eq!(parse_policy_rules(&json!({})), vec![]);
+    }
+
+    #[test]
+    fn a_snapshot_resolves_namespaced_roles_without_storage_calls() {
+        let snapshot = Snapshot {
+            cluster_role_bindings: vec![json!({
+                "subjects": [{"kind": "User", "name": "alice"}],
+                "roleRef": {"kind": "ClusterRole", "name": "reader"},
+            })],
+            cluster_roles: vec![json!({
+                "metadata": {"name": "reader"},
+                "rules": [{"verbs": ["get"], "apiGroups": ["apps"], "resources": ["deployments"]}],
+            })],
+            role_bindings: vec![json!({
+                "metadata": {"namespace": "team-a"},
+                "subjects": [{"kind": "User", "name": "alice"}],
+                "roleRef": {"kind": "Role", "name": "writer"},
+            })],
+            roles: vec![json!({
+                "metadata": {"namespace": "team-a", "name": "writer"},
+                "rules": [{"verbs": ["update"], "apiGroups": ["apps"], "resources": ["deployments"]}],
+            })],
+        };
+
+        let resolved = snapshot.rules_for("alice", &[], "team-a");
+        assert_eq!(resolved.errors, Vec::<String>::new());
+        assert_eq!(resolved.rules.len(), 2);
+        assert!(crate::authz::rbac::rules_allow(
+            &crate::authz::rbac::RequestAttributes { is_resource_request: true, verb: "update", api_group: "apps", resource: "deployments", subresource: "", name: "", path: "" },
+            &resolved.rules,
+        ));
     }
 }

@@ -43,6 +43,7 @@ pub async fn validate(
     object: Option<&Value>,
     old_object: Option<&Value>,
     dry_run: bool,
+    identity: Option<&crate::authn::x509::Identity>,
 ) -> Result<ValidationOutcome, String> {
     let mut result = ValidationOutcome::default();
     let policies = list_items(storage, "validatingadmissionpolicies", None).await?;
@@ -53,6 +54,28 @@ pub async fn validate(
     if bindings.is_empty() {
         return Ok(result);
     }
+
+    let authorizer = if policies.iter().any(policy_uses_authorizer) {
+        let snapshot = std::sync::Arc::new(crate::authz::resolve::load_snapshot(storage).await?);
+        let (user_name, user_groups) = identity
+            .map(|identity| (identity.name.clone(), identity.groups.clone()))
+            .unwrap_or_else(|| ("system:anonymous".to_string(), vec!["system:unauthenticated".to_string()]));
+        Some(crate::cel_ext::authorizer::value(crate::cel_ext::authorizer::AuthorizationContext::from_snapshot(
+            snapshot,
+            user_name,
+            user_groups,
+            crate::cel_ext::authorizer::RequestResource {
+                group: group.to_string(),
+                resource: resource.to_string(),
+                subresource: subresource.to_string(),
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                path: String::new(),
+            },
+        )))
+    } else {
+        None
+    };
 
     let (namespace_object, namespace_labels) = if namespace.is_empty() {
         (None, BTreeMap::new())
@@ -112,8 +135,14 @@ pub async fn validate(
                 }
             };
             for params in parameter_values {
-                let match_vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
-                let validation_vars = policy_matching::build_eval_vars_with_namespace(object, old_object, &request, params.as_ref(), namespace_object.as_ref());
+                let mut match_vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
+                if let Some(authorizer) = authorizer.as_ref() {
+                    match_vars.push(("authorizer", authorizer));
+                }
+                let mut validation_vars = policy_matching::build_eval_vars_with_namespace(object, old_object, &request, params.as_ref(), namespace_object.as_ref());
+                if let Some(authorizer) = authorizer.as_ref() {
+                    validation_vars.push(("authorizer", authorizer));
+                }
                 let definition = validating_admission_policy::PolicyDefinition {
                     resource_rules: &resource_rules,
                     exclude_resource_rules: &exclude_resource_rules,
@@ -146,6 +175,18 @@ pub async fn validate(
         }
     }
     Ok(result)
+}
+
+fn policy_uses_authorizer(policy: &Value) -> bool {
+    let Some(spec) = policy.get("spec") else { return false };
+    ["matchConditions", "validations", "variables"].into_iter().any(|field| {
+        spec.get(field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("expression").and_then(Value::as_str))
+            .any(|expression| expression.contains("authorizer"))
+    })
 }
 
 fn record_failure(result: &mut ValidationOutcome, policy_name: &str, binding: &Value, actions: &[&str], message: String, expression_index: Option<usize>) {

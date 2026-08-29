@@ -116,6 +116,7 @@ pub mod budget;
 pub mod cost;
 pub mod cost_walk;
 pub mod decl_type;
+pub mod authorizer;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
 pub mod path;
@@ -196,7 +197,7 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
 /// [`Context`] — called by every real entry point below so a rule can
 /// use them regardless of which variable-naming convention it's
 /// evaluated through.
-fn register_kubernetes_extensions(ctx: &mut Context) {
+pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("isSorted", kubernetes_lists::is_sorted_binding);
     ctx.add_function("min", kubernetes_lists::min_binding);
     ctx.add_function("max", kubernetes_lists::max_binding);
@@ -205,6 +206,7 @@ fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("sum", kubernetes_lists::sum_binding);
     ctx.add_function("includes", kubernetes_lists::includes_binding);
     ctx.add_function("isQuantity", kubernetes_quantity::is_quantity_binding);
+    authorizer::register(ctx);
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {

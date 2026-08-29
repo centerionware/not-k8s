@@ -66,7 +66,8 @@
 //! `server::listener` for real `ValidatingAdmissionPolicy` requests. This
 //! module remains deliberately pure: policy CRUD and `spec.paramRef`
 //! resolution belong to that adapter, while the named gaps here remain
-//! `Rule.Scope`, `kind`, `userInfo`, and `authorizer`.
+//! `Rule.Scope`, `kind`, and `userInfo`. The adapter binds the Kubernetes
+//! `authorizer` CEL library from a request-local RBAC snapshot.
 
 use crate::cacher::selector::{self, Operator, Requirement};
 use serde_json::{json, Value};
@@ -271,7 +272,8 @@ const NULL: Value = Value::Null;
 /// evaluate both stages must use [`build_eval_vars`] for the match stage and
 /// [`build_eval_vars_with_namespace`] for the validation stage. The composed
 /// `spec.variables` map is added by [`compose_variables`] after matching.
-/// `authorizer` (a CEL-callable authorization check) remains unbound.
+/// The storage-backed adapter adds the CEL `authorizer` value after this
+/// base set has been assembled.
 pub fn build_eval_vars<'a>(object: Option<&'a Value>, old_object: Option<&'a Value>, request: &'a Value, params: Option<&'a Value>) -> Vec<(&'static str, &'a Value)> {
     vec![
         ("object", object.unwrap_or(&NULL)),
