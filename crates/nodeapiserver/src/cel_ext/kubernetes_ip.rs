@@ -23,7 +23,7 @@ impl Opaque for IpValue {
     }
 }
 
-fn opaque(address: IpAddr) -> Value {
+pub(crate) fn opaque_address(address: IpAddr) -> Value {
     Value::Opaque(Arc::new(IpValue(address)))
 }
 
@@ -34,11 +34,15 @@ fn address_ref(value: &Value) -> Option<IpAddr> {
     }
 }
 
+pub(crate) fn address_from_value(value: &Value) -> Option<IpAddr> {
+    address_ref(value)
+}
+
 fn invalid_receiver(ftx: &FunctionContext, operation: &str) -> ExecutionError {
     ftx.error(format!("{operation}() requires a Kubernetes IP"))
 }
 
-fn parse_address(raw: &str) -> Result<IpAddr, String> {
+pub(crate) fn parse_address(raw: &str) -> Result<IpAddr, String> {
     let address = raw.parse::<IpAddr>().map_err(|error| {
         format!("IP Address {raw:?} parse error during conversion from string: {error}")
     })?;
@@ -51,9 +55,12 @@ fn parse_address(raw: &str) -> Result<IpAddr, String> {
     Ok(address)
 }
 
-pub fn ip_binding(ftx: &FunctionContext, raw: Arc<String>) -> Result<Value, ExecutionError> {
+pub(crate) fn from_value(ftx: &FunctionContext, value: Value) -> Result<Value, ExecutionError> {
+    let Value::String(raw) = value else {
+        return Err(ftx.error("ip() requires a string"));
+    };
     parse_address(&raw)
-        .map(opaque)
+        .map(opaque_address)
         .map_err(|error| ftx.error(error))
 }
 
