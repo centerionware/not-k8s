@@ -1141,6 +1141,113 @@ pub(super) async fn nodeapiserver_enforces_crd_schema_constraints(context: &E2eC
     result
 }
 
+pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("MutatingAdmissionPolicy enforcement is a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let policy_name = format!("nodeapiserver-map-{suffix}");
+    let binding_name = format!("nodeapiserver-map-binding-{suffix}");
+    let object_name = format!("nodeapiserver-map-object-{suffix}");
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+
+    let policy = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1alpha1",
+        "kind": "MutatingAdmissionPolicy",
+        "metadata": {"name": policy_name},
+        "spec": {
+            "matchConstraints": {
+                "resourceRules": [{
+                    "apiGroups": [""],
+                    "apiVersions": ["v1"],
+                    "operations": ["CREATE"],
+                    "resources": ["configmaps"]
+                }]
+            },
+            "mutations": [{
+                "patchType": "JSONPatch",
+                "jsonPatch": {
+                    "expression": "[{\"op\": \"add\", \"path\": \"/metadata/labels/nodeapiserver-mutated\", \"value\": \"true\"}]"
+                }
+            }]
+        }
+    });
+    let create_policy = Request::builder()
+        .method("POST")
+        .uri("/apis/admissionregistration.k8s.io/v1alpha1/mutatingadmissionpolicies")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&policy)?)?;
+    context
+        .client
+        .request::<Value>(create_policy)
+        .await
+        .context("creating the e2e MutatingAdmissionPolicy")?;
+
+    let binding = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1alpha1",
+        "kind": "MutatingAdmissionPolicyBinding",
+        "metadata": {"name": binding_name},
+        "spec": {"policyName": policy_name}
+    });
+    let create_binding = Request::builder()
+        .method("POST")
+        .uri("/apis/admissionregistration.k8s.io/v1alpha1/mutatingadmissionpolicybindings")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&binding)?)?;
+    context
+        .client
+        .request::<Value>(create_binding)
+        .await
+        .context("creating the e2e MutatingAdmissionPolicyBinding")?;
+
+    let result = async {
+        let created = configmaps
+            .create(
+                &PostParams::default(),
+                &ConfigMap {
+                    metadata: kube::api::ObjectMeta {
+                        name: Some(object_name.clone()),
+                        labels: Some(BTreeMap::new()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the MutatingAdmissionPolicy probe ConfigMap")?;
+        anyhow::ensure!(
+            created
+                .metadata
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("nodeapiserver-mutated"))
+                .map(String::as_str)
+                == Some("true"),
+            "MutatingAdmissionPolicy did not add the expected label: {:?}",
+            created.metadata.labels
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = configmaps.delete(&object_name, &DeleteParams::default()).await;
+    for (resource, name) in [
+        ("mutatingadmissionpolicybindings", binding_name),
+        ("mutatingadmissionpolicies", policy_name),
+    ] {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/apis/admissionregistration.k8s.io/v1alpha1/{resource}/{name}"))
+            .body(Vec::new())?;
+        let _ = context.client.request::<Value>(request).await;
+    }
+    result
+}
+
 pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
     context: &E2eContext,
 ) -> Result<()> {

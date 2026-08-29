@@ -198,6 +198,7 @@ pub mod default_storage_class;
 pub mod default_toleration_seconds;
 pub mod limit_ranger;
 pub mod match_conditions;
+pub mod mutating_admission_policy;
 pub mod namespace_lifecycle;
 pub mod pod_security;
 pub mod policy_decode;

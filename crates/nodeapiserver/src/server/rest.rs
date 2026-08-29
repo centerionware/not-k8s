@@ -148,6 +148,8 @@ pub enum Error {
     Encryption(#[from] crate::storage::encryption::Error),
     #[error("invalid protobuf request: {0}")]
     InvalidProtobufRequest(String),
+    #[error("the requested resource is not served")]
+    UnknownResource,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1225,6 +1227,27 @@ pub fn default_patch_kind(is_crd: bool) -> PatchKind {
 /// response rather than reporting a media-type error.
 pub async fn default_patch_kind_for_request(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<PatchKind>, Error> {
     Ok(resolve_resource(storage, group, version, resource).await?.map(|resolved| default_patch_kind(resolved.schema.is_none())))
+}
+
+/// Apply a CEL `MutatingAdmissionPolicy` apply configuration to an admission
+/// object. Apply configurations use the same strategic-merge rules as the
+/// server's strategic-merge PATCH path; built-ins use their generated schema
+/// and CRDs use their runtime OpenAPI schema. A resource without either
+/// schema falls back to JSON merge semantics, which preserves the generic
+/// server's behavior for schema-less resources.
+pub async fn apply_admission_configuration(storage: &mut StorageClient, group: &str, version: &str, resource: &str, existing: &Value, configuration: &Value) -> Result<Value, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Err(Error::UnknownResource);
+    };
+    Ok(match (resolved.schema, resolved.open_api_schema.as_ref()) {
+        (Some(schema), _) => crate::patch::strategic_merge::apply(schema, existing, configuration),
+        (None, Some(schema)) => apiextensions::schema_strategic_merge::apply(schema, existing, configuration),
+        (None, None) => {
+            let mut object = existing.clone();
+            crate::patch::merge_patch::apply(&mut object, configuration);
+            object
+        }
+    })
 }
 
 /// The context [`patch_prepare`] hands back to [`patch_persist`] once a
