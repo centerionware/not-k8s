@@ -7,7 +7,7 @@
 | B — Wire formats | in progress | 5/7 |
 | C — Storage over nodestore | in progress | 5/7 |
 | D — Watch cache | done for current scope | 7/7 |
-| E — Generic server, handler chain, and REST | in progress | 8/10 |
+| E — Generic server, handler chain, and REST | in progress | 9/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | done for supported paths | 6/7 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `4ff9e91f` on
+This snapshot is checked against `origin/nodeapiserver` at `5356bafe` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -742,6 +742,14 @@ document derived from the same vendored resource schemas and paths as
 `/openapi/v3`; the nodeapiserver target e2e check verifies it is populated.
 The throwaway e2e rig described above should land as part of this group,
 not after it.
+
+The scheduler's core `pods/binding` subresource is also live: a
+`POST /api/v1/namespaces/{namespace}/pods/{name}/binding` validates the
+Binding target and optional UID/resourceVersion preconditions, atomically
+sets `spec.nodeName`, merges binding labels/annotations, and records the
+`PodScheduled=True` condition. This is the REST operation the replacement
+scheduler uses instead of a full Pod update, and it has a nodeapiserver-only
+e2e check.
 
 `GET` and `LIST` also honor a positive `resourceVersion` by reading a
 consistent nodestore MVCC snapshot. These requests bypass the live watch

@@ -1533,8 +1533,9 @@ async fn handle(
     // to the collection URL), single-object DELETE (`delete`, name
     // required — no name means `deletecollection`, now real too — see its
     // own dedicated branch below), and UPDATE (`update`, name
-    // required — a PUT). No subresource (not
-    // handled yet — see `rest`'s own doc comment). Everything else still
+    // required — a PUT). The scheduler's core `pods/binding` subresource
+    // is handled separately below; the remaining subresources still
+    // fall through (see `rest`'s own doc comment). Everything else still
     // falls through to the RequestInfo echo below. `storage` is only
     // ever consumed once (moved into `client` here), which is why all
     // five verbs share this one `if let` rather than each checking it
@@ -1553,6 +1554,60 @@ async fn handle(
     // cache — see that branch's own doc comment), and produces a
     // streaming response rather than one JSON document.
     let is_watch = info.is_resource_request && info.verb == "watch" && info.subresource.is_empty();
+
+    // The scheduler binds a pending Pod through the real core
+    // `pods/binding` subresource rather than replacing the whole Pod. This
+    // must run before generic CRUD dispatch: `Binding` contains only the
+    // selected Node and optional binding preconditions, while the REST
+    // operation itself atomically updates the stored Pod.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.api_version == "v1"
+        && info.resource == "pods"
+        && info.subresource == "binding"
+        && info.verb == "create"
+        && !info.name.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        if info.namespace.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "Pod binding requires a namespace")));
+        }
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "reading the Pod binding request failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(body) => body,
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+        };
+        return match rest::bind_pod(&mut client, &info.namespace, &info.name, &body).await {
+            Ok(rest::BindOutcome::Bound) => Ok(json_response(
+                StatusCode::CREATED,
+                &serde_json::json!({
+                    "kind": "Status",
+                    "apiVersion": "v1",
+                    "metadata": {},
+                    "status": "Success",
+                    "code": 201,
+                }),
+            )),
+            Ok(rest::BindOutcome::UnknownResource) | Ok(rest::BindOutcome::ObjectNotFound) => {
+                Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)))
+            }
+            Ok(rest::BindOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&path_str))),
+            Ok(rest::BindOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::bind_pod failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+
     // `PATCH` is handled in its own branch, not folded into the five-verb
     // block below: its request body is a patch document, not a
     // full/partial object, and which of `rest::patch`'s three real patch
