@@ -2424,6 +2424,7 @@ async fn handle(
                 None,
                 Some(item),
                 false,
+                identity.as_ref(),
             )
             .await
             {
@@ -3349,7 +3350,7 @@ async fn handle(
                 } else {
                     None
                 };
-                match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), old_object.as_ref(), dry_run).await {
+                match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), old_object.as_ref(), dry_run, identity.as_ref()).await {
                     Ok(outcome) => {
                         record_admission_outcome(admission_metadata.as_ref(), &outcome);
                         if let Some(message) = outcome.denial {

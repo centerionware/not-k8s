@@ -116,6 +116,7 @@ pub mod budget;
 pub mod cost;
 pub mod cost_walk;
 pub mod decl_type;
+pub mod authorizer;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
 pub mod path;
@@ -196,7 +197,7 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
 /// [`Context`] — called by every real entry point below so a rule can
 /// use them regardless of which variable-naming convention it's
 /// evaluated through.
-fn register_kubernetes_extensions(ctx: &mut Context) {
+pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("isSorted", kubernetes_lists::is_sorted_binding);
     ctx.add_function("min", kubernetes_lists::min_binding);
     ctx.add_function("max", kubernetes_lists::max_binding);
@@ -205,6 +206,7 @@ fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("sum", kubernetes_lists::sum_binding);
     ctx.add_function("includes", kubernetes_lists::includes_binding);
     ctx.add_function("isQuantity", kubernetes_quantity::is_quantity_binding);
+    authorizer::register(ctx);
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
@@ -213,6 +215,24 @@ pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Resul
     register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
+    }
+    match program.execute(&ctx)? {
+        CelValue::Bool(b) => Ok(b),
+        other => Err(Error::NotBool(other)),
+    }
+}
+
+/// Evaluate a boolean expression with ordinary JSON variables plus one or
+/// more native CEL values, such as the opaque Kubernetes `authorizer`.
+pub fn eval_bool_with_vars_and_cel_vars(expr: &str, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, CelValue)]) -> Result<bool, Error> {
+    let program = Program::compile(expr)?;
+    let mut ctx = Context::default();
+    register_kubernetes_extensions(&mut ctx);
+    for (name, value) in vars.iter().copied() {
+        ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
+    }
+    for (name, value) in cel_vars.iter().cloned() {
+        ctx.add_variable(name, value).map_err(|_| Error::Bind { name })?;
     }
     match program.execute(&ctx)? {
         CelValue::Bool(b) => Ok(b),
@@ -275,6 +295,20 @@ pub fn eval_bool_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Valu
     rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
 }
 
+/// Evaluate a boolean expression with JSON and native CEL variables under
+/// the same request-side deadline as [`eval_bool_with_vars_and_deadline`].
+pub fn eval_bool_with_vars_and_cel_vars_and_deadline(expr: &str, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, CelValue)], deadline: std::time::Duration) -> Result<bool, Error> {
+    let expr = expr.to_string();
+    let owned_vars: Vec<(&'static str, Value)> = vars.iter().map(|(name, value)| (*name, (*value).clone())).collect();
+    let owned_cel_vars: Vec<(&'static str, CelValue)> = cel_vars.iter().map(|(name, value)| (*name, value.clone())).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<(&'static str, &Value)> = owned_vars.iter().map(|(name, value)| (*name, value)).collect();
+        let _ = tx.send(eval_bool_with_vars_and_cel_vars(&expr, &borrowed, &owned_cel_vars));
+    });
+    rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
+}
+
 /// Real upstream's own `messageExpression`/`auditAnnotations[].
 /// valueExpression` shape: same compile-bind-execute sequence as
 /// [`eval_bool_with_vars`], except the CEL expression must evaluate to a
@@ -328,6 +362,24 @@ pub fn eval_json_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Resul
         .map_err(|error| Error::Serialize(error.to_string()))
 }
 
+/// Evaluate a JSON-shaped expression with ordinary JSON variables plus
+/// native CEL values such as the opaque Kubernetes `authorizer`.
+pub fn eval_json_with_vars_and_cel_vars(expr: &str, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, CelValue)]) -> Result<Value, Error> {
+    let program = Program::compile(expr)?;
+    let mut ctx = Context::default();
+    register_kubernetes_extensions(&mut ctx);
+    for (name, value) in vars.iter().copied() {
+        ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
+    }
+    for (name, value) in cel_vars.iter().cloned() {
+        ctx.add_variable(name, value).map_err(|_| Error::Bind { name })?;
+    }
+    program
+        .execute(&ctx)?
+        .json()
+        .map_err(|error| Error::Serialize(error.to_string()))
+}
+
 /// Evaluate [`eval_json_with_vars`] under the same wall-clock deadline used
 /// by the boolean and string admission CEL helpers.
 pub fn eval_json_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Value)], deadline: std::time::Duration) -> Result<Value, Error> {
@@ -337,6 +389,20 @@ pub fn eval_json_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Valu
     std::thread::spawn(move || {
         let borrowed: Vec<(&'static str, &Value)> = owned_vars.iter().map(|(name, value)| (*name, value)).collect();
         let _ = tx.send(eval_json_with_vars(&expr, &borrowed));
+    });
+    rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
+}
+
+/// Evaluate a JSON-shaped expression with JSON and native CEL variables
+/// under the same request-side deadline used by the other CEL helpers.
+pub fn eval_json_with_vars_and_cel_vars_and_deadline(expr: &str, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, CelValue)], deadline: std::time::Duration) -> Result<Value, Error> {
+    let expr = expr.to_string();
+    let owned_vars: Vec<(&'static str, Value)> = vars.iter().map(|(name, value)| (*name, (*value).clone())).collect();
+    let owned_cel_vars: Vec<(&'static str, CelValue)> = cel_vars.iter().map(|(name, value)| (*name, value.clone())).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let borrowed: Vec<(&'static str, &Value)> = owned_vars.iter().map(|(name, value)| (*name, value)).collect();
+        let _ = tx.send(eval_json_with_vars_and_cel_vars(&expr, &borrowed, &owned_cel_vars));
     });
     rx.recv_timeout(deadline).unwrap_or(Err(Error::DeadlineExceeded))
 }
