@@ -35,12 +35,12 @@
 //! sort order — lowest `matchingPrecedence` wins (defaulting to real
 //! upstream's own `1000` when unset), ties broken by lexicographically
 //! smaller `name`.
+//! [`flow_distinguisher`]: the supported `ByUser` and `ByNamespace` methods
+//! used to isolate limited priority-level state by request flow.
 //!
 //! # Not ported
 //!
-//! The `distinguisherMethod`/flow-distinguisher computation (used only
-//! for per-flow fairness once queuing exists, not for matching) and the
-//! two mandatory bootstrap objects real upstream always synthesizes
+//! The two mandatory bootstrap objects real upstream always synthesizes
 //! (`exempt`/`catch-all` `FlowSchema`s) — this crate provisions no
 //! bootstrap config objects of its own yet (Group O's job).
 
@@ -49,6 +49,7 @@ use serde_json::Value;
 /// The subset of a request's identity/shape `FlowSchema` matching needs
 /// — real upstream's own `RequestDigest` (`user.Info` + `*request.RequestInfo`),
 /// narrowed to just the fields matching actually reads.
+#[derive(Clone, Copy)]
 pub struct RequestDigest<'a> {
     pub user_name: &'a str,
     pub user_groups: &'a [String],
@@ -225,6 +226,18 @@ pub fn select_flow_schema<'a>(flow_schemas: &'a [Value], digest: &RequestDigest)
     flow_schemas.iter().filter(|fs| matches_flow_schema(digest, fs)).min_by(|a, b| if flow_schema_less(a, b) { std::cmp::Ordering::Less } else if flow_schema_less(b, a) { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal })
 }
 
+/// Compute the flow distinguisher for a selected `FlowSchema`, following
+/// upstream's `FlowDistinguisherMethod` rules. A missing method, an unknown
+/// method, a non-resource request, or a cluster-scoped request all use the
+/// empty distinguisher.
+pub fn flow_distinguisher(flow_schema: &Value, digest: &RequestDigest<'_>) -> String {
+    match flow_schema.pointer("/spec/distinguisherMethod/type").and_then(Value::as_str) {
+        Some("ByUser") => digest.user_name.to_string(),
+        Some("ByNamespace") if digest.is_resource_request && !digest.namespace.is_empty() => digest.namespace.to_string(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,5 +393,27 @@ mod tests {
         }]}})];
         let d = digest("someone-else", &[], "get", "pods");
         assert!(select_flow_schema(&schemas, &d).is_none());
+    }
+
+    #[test]
+    fn flow_distinguisher_uses_user_or_namespace_when_configured() {
+        let d = digest("alice", &[], "get", "pods");
+        assert_eq!(flow_distinguisher(&json!({"spec": {"distinguisherMethod": {"type": "ByUser"}}}), &d), "alice");
+        assert_eq!(flow_distinguisher(&json!({"spec": {"distinguisherMethod": {"type": "ByNamespace"}}}), &d), "default");
+    }
+
+    #[test]
+    fn flow_distinguisher_is_empty_for_disabled_or_unscoped_requests() {
+        let d = digest("alice", &[], "get", "pods");
+        assert_eq!(flow_distinguisher(&json!({"spec": {}}), &d), "");
+
+        let mut cluster_request = d;
+        cluster_request.namespace = "";
+        assert_eq!(flow_distinguisher(&json!({"spec": {"distinguisherMethod": {"type": "ByNamespace"}}}), &cluster_request), "");
+
+        let mut non_resource = d;
+        non_resource.is_resource_request = false;
+        non_resource.path = "/healthz";
+        assert_eq!(flow_distinguisher(&json!({"spec": {"distinguisherMethod": {"type": "ByNamespace"}}}), &non_resource), "");
     }
 }
