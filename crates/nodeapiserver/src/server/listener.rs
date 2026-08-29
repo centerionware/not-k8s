@@ -3177,6 +3177,16 @@ async fn handle(
         // not-yet-served case in this handler.
     }
 
+    // A resource-shaped request that reached this point targeted a verb or
+    // subresource this server does not serve. Returning the request-info
+    // echo with HTTP 200 makes kubectl treat an unsupported route as a
+    // successful API response. Real kube-apiserver returns a Kubernetes
+    // NotFound status for an unknown subresource, so keep the bring-up echo
+    // limited to non-resource requests.
+    if info.is_resource_request {
+        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+    }
+
     // Surfaced for real observability (this is the only response shape
     // that ever includes it today), not consulted for any access-control
     // decision anywhere yet — there is no authorization (Group I) to
