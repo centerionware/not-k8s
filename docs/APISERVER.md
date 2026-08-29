@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | in progress | 6/7 |
 | I — Authorization | in progress | 5/6 |
-| J — Admission | in progress | 6/8 |
+| J — Admission | in progress | 7/8 |
 | K — CustomResourceDefinitions | in progress | 6/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 4/8 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `42775fdd` on
+This snapshot is checked against `origin/nodeapiserver` at `d436294d` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -718,14 +718,12 @@ read directly): lists every match via the same `label_selector`/
 name via `rest::delete`, ignoring one that's already gone (matching real
 upstream's own `!apierrors.IsNotFound(err)` guard — a concurrent delete
 of the same object isn't a collection-delete failure), and returns the
-pre-deletion `List`, real upstream's own response shape. **Named, honest
-simplifications**: real upstream deletes with a worker pool and paginates
+pre-deletion `List`, real upstream's own response shape. Each matched object
+now passes configured admission before deletion, matching upstream's
+per-object delete validation callback. **Named, honest simplifications**:
+real upstream deletes with a worker pool and paginates
 the list internally; this port deletes sequentially and lists in one
-shot (this crate's own `list` doesn't paginate either yet). **Still
-doesn't run Group J admission**, a small gap in practice:
-`namespace_lifecycle`'s own immortal-namespace check needs a `name`,
-which a collection delete never has, and `LimitRanger`'s only
-`Update`-shaped check is a PVC *minimum*, which deleting can't violate.
+shot (this crate's own `list` doesn't paginate either yet).
 
 **Every real, generic REST verb this build knows about is now wired
 in** — `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/`PATCH`/`DELETECOLLECTION`,
@@ -1476,7 +1474,8 @@ The current CEL adapter accepts JSON-shaped mutation results; typed
 `variables`, and `authorizer` bindings remain explicit follow-up work.
 
 Configured mutating and validating webhooks are also invoked for matching
-create, update, and delete requests. Dry-run requests are rejected with a
+create, update, delete, and deletecollection requests (the latter once per
+selected object). Dry-run requests are rejected with a
 `400` when a matching webhook omits `sideEffects` or declares `Unknown`/
 `Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
 AdmissionReview path.

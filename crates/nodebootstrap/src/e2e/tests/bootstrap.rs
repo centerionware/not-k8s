@@ -2536,6 +2536,141 @@ pub(super) async fn nodeapiserver_honors_webhook_side_effects_on_dry_run(
     result
 }
 
+pub(super) async fn nodeapiserver_runs_webhook_for_delete_collection(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "admission webhook checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("binding the e2e admission webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_calls = calls.clone();
+    let server_stopping = stopping.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_webhook_connection(stream, &server_calls);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let suffix = std::process::id();
+    let configuration_name = format!("nodeapiserver-webhook-deletecollection-{suffix}");
+    let label_key = "nodeapiserver-delete-collection";
+    let label_value = "true";
+    let first_name = format!("nodeapiserver-delete-collection-first-{suffix}");
+    let second_name = format!("nodeapiserver-delete-collection-second-{suffix}");
+    let configuration = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingWebhookConfiguration",
+        "metadata": {"name": configuration_name},
+        "webhooks": [{
+            "name": "delete-collection.nodeapiserver.test",
+            "admissionReviewVersions": ["v1"],
+            "sideEffects": "None",
+            "failurePolicy": "Fail",
+            "timeoutSeconds": 5,
+            "clientConfig": {"url": format!("http://{}", address)},
+            "rules": [{
+                "operations": ["DELETE"],
+                "apiGroups": [""],
+                "apiVersions": ["v1"],
+                "resources": ["configmaps"],
+                "scope": "Namespaced"
+            }],
+            "matchConditions": [{
+                "name": "delete-object-is-null",
+                "expression": "object == null"
+            }]
+        }]
+    });
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let result = async {
+        context
+            .client
+            .request::<Value>(
+                Request::builder()
+                    .method("POST")
+                    .uri("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_vec(&configuration)?)?,
+            )
+            .await
+            .context("creating the deletecollection webhook configuration")?;
+        for name in [&first_name, &second_name] {
+            configmaps
+                .create(
+                    &PostParams::default(),
+                    &ConfigMap {
+                        metadata: kube::core::ObjectMeta {
+                            name: Some(name.clone()),
+                            labels: Some(BTreeMap::from([(
+                                label_key.to_string(),
+                                label_value.to_string(),
+                            )])),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )
+                .await
+                .with_context(|| format!("creating deletecollection ConfigMap {name}"))?;
+        }
+        configmaps
+            .delete_collection(
+                &DeleteParams::default(),
+                &ListParams::default().labels(&format!("{label_key}={label_value}")),
+            )
+            .await
+            .context("deleting ConfigMaps through deletecollection")?;
+        context
+            .wait_until("deletecollection webhook invocations", Duration::from_secs(30), || {
+                let calls = calls.clone();
+                async move { Ok(calls.load(Ordering::SeqCst) == 2) }
+            })
+            .await?;
+        anyhow::ensure!(
+            configmaps
+                .list(&ListParams::default().labels(&format!("{label_key}={label_value}")))
+                .await?
+                .items
+                .is_empty(),
+            "deletecollection left matching ConfigMaps behind"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = configmaps.delete(&first_name, &DeleteParams::default()).await;
+    let _ = configmaps.delete(&second_name, &DeleteParams::default()).await;
+    if let Ok(request) = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/{configuration_name}"
+        ))
+        .body(Vec::new())
+    {
+        let _ = context.client.request::<Value>(request).await;
+    }
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    result
+}
+
 pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
     context: &E2eContext,
 ) -> Result<()> {
