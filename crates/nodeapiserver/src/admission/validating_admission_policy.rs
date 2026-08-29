@@ -119,18 +119,23 @@ impl PolicyOutcome {
 }
 
 /// Real upstream's own `ValidatingAdmissionPolicyBinding.spec.
-/// validationActions` gate: a real validation/`matchConditions` failure
-/// only actually rejects the request if the binding's own declared
-/// actions include `"Deny"` — `"Warn"`/`"Audit"` alone report the failure
-/// without blocking it. **Named, honest gap**: this crate has no real
-/// `Warn`/`Audit` reporting of its own yet (no HTTP warning-header
-/// plumbing, no audit-event pipeline wired to this — Group M's own
-/// still-started audit work); a caller using this today can only really
-/// act on `Deny`, so a validation failure under `Warn`-only or
-/// `Audit`-only actions is, for now, indistinguishable from one that
-/// never happened at all.
+/// validationActions` gate: a validation/`matchConditions` failure only
+/// actually rejects the request if the binding's own declared actions include
+/// `"Deny"` — `"Warn"`/`"Audit"` alone report the failure without blocking it.
 pub fn validation_actions_deny(actions: &[&str]) -> bool {
     actions.iter().any(|a| *a == "Deny")
+}
+
+pub fn validation_actions_warn(actions: &[&str]) -> bool {
+    actions.iter().any(|a| *a == "Warn")
+}
+
+pub fn validation_actions_audit(actions: &[&str]) -> bool {
+    actions.iter().any(|a| *a == "Audit")
+}
+
+pub fn validation_actions_report(actions: &[&str]) -> bool {
+    validation_actions_deny(actions) || validation_actions_warn(actions) || validation_actions_audit(actions)
 }
 
 /// Real upstream's own real order: `matchConstraints` (resource rules,
@@ -318,5 +323,14 @@ mod tests {
         assert!(!validation_actions_deny(&["Warn"]));
         assert!(!validation_actions_deny(&["Audit"]));
         assert!(!validation_actions_deny(&[]));
+    }
+
+    #[test]
+    fn validation_actions_report_preserves_warn_and_audit_only_bindings() {
+        assert!(validation_actions_warn(&["Warn"]));
+        assert!(validation_actions_audit(&["Audit"]));
+        assert!(validation_actions_report(&["Warn"]));
+        assert!(validation_actions_report(&["Audit"]));
+        assert!(!validation_actions_report(&[]));
     }
 }
