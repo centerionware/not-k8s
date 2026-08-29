@@ -2231,9 +2231,11 @@ its one logged event is stamped `ResponseComplete` right as the stream
 request (the far less invasive place to add this than threading an
 audit context out through `handle`'s own many early returns), building
 and logging one real event per request once the response status is
-known. Every request is unconditionally logged at `Metadata` level —
-real upstream's own policy-driven per-rule level selection isn't
-modeled. **The sink is this crate's own `tracing` output**
+known. Requests are logged at `Metadata` level by default —
+`NODEAPISERVER_AUDIT_POLICY_FILE` now applies upstream-shaped first-match
+rules, including `None` suppression and `omitStages` for the emitted
+`ResponseComplete` event; request/response body levels remain metadata-only
+until body capture is added. **The sink is this crate's own `tracing` output**
 (`target: "nodeapiserver::audit"`, one JSON line per request) and an
 optional append-only JSON-lines file selected by
 `NODEAPISERVER_AUDIT_LOG_PATH`. Rotation and webhook delivery remain

@@ -801,6 +801,19 @@ pub async fn run(cfg: Config) {
         },
         None => None,
     };
+    let audit_policy = match cfg.audit_policy_file.as_deref() {
+        Some(path) => match crate::audit::policy::AuditPolicy::from_file(path) {
+            Ok(policy) => {
+                info!(path = %path.display(), "nodeapiserver: loaded audit policy");
+                Some(Arc::new(policy))
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error, "failed to load NODEAPISERVER_AUDIT_POLICY_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
 
     let server_config = match cert.server_config(client_ca.as_ref()) {
         Ok(c) => c,
@@ -970,6 +983,7 @@ pub async fn run(cfg: Config) {
         let authorization_webhook = authorization_webhook.clone();
         let concurrency_limiter = concurrency_limiter.clone();
         let audit_sink = audit_sink.clone();
+        let audit_policy = audit_policy.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
@@ -987,7 +1001,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), audit_sink.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1398,6 +1412,7 @@ async fn handle_with_audit(
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
     concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
     audit_sink: Option<Arc<crate::audit::sink::AuditSink>>,
+    audit_policy: Option<Arc<crate::audit::policy::AuditPolicy>>,
     anonymous_auth: bool,
     enforce_rbac: bool,
     peer: SocketAddr,
@@ -1413,6 +1428,14 @@ async fn handle_with_audit(
     };
     let audit_identity = identity.clone();
     let request_info = path::parse(&method, &path_str, &query);
+    let audit_user = audit_identity.as_ref().map(|identity| identity.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+    let audit_groups = audit_identity
+        .as_ref()
+        .map(|identity| identity.groups.clone())
+        .unwrap_or_else(|| vec![UNAUTHENTICATED_GROUP.to_string()]);
+    let audit_response_complete = audit_policy
+        .as_ref()
+        .map_or(true, |policy| policy.should_emit_response_complete(&request_info, audit_user, &audit_groups));
     let mut authorization_webhook_allowed = false;
     if let Some(authorizer) = authorization_webhook {
         match authorizer.authorize(&request_info, identity.as_ref()).await {
@@ -1488,7 +1511,9 @@ async fn handle_with_audit(
 
     if let Ok(resp) = &mut response {
         let status = resp.status().as_u16();
-        log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref());
+        if audit_response_complete {
+            log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref());
+        }
         // Group M: `/metrics`'s own request counter (`server::metrics`) —
         // recorded from the exact same parsed `RequestInfo` the audit
         // event above already builds, so a non-resource request (a
