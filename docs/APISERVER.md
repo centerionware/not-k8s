@@ -2313,7 +2313,10 @@ response headers (`k8s.io/api/flowcontrol/v1/types.go`'s own
 and read directly) on every response that reaches a storage connection.
 Fails open (no header) on resolution failure, while the listener still
 applies its bounded ordinary/mutating request budgets. The
-`distinguisherMethod` computation remains a separate refinement, as do the two mandatory
+`distinguisherMethod` now computes upstream-compatible `ByUser` and
+`ByNamespace` keys, and limited-level state is isolated by the selected
+`(PriorityLevelConfiguration, flow distinguisher)` pair. The full upstream
+shuffle-sharded queue and seat borrowing remain separate refinements, as do the two mandatory
 bootstrap `FlowSchema`s real upstream always synthesizes (Group O's job).
 
 **N. Streaming and proxy subresources** — **`pods/log` is a genuine live
