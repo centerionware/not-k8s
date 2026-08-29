@@ -337,7 +337,11 @@ fn matches_webhook(
     request["requestKind"]["kind"] = kind;
     request["userInfo"] = user_info(identity);
     let old_object = old_object.cloned().unwrap_or(Value::Null);
-    let vars = [("object", object), ("oldObject", &old_object), ("request", &request)];
+    let vars = [
+        ("object", object),
+        ("oldObject", &old_object),
+        ("request", &request),
+    ];
     let failure_policy = if webhook.get("failurePolicy").and_then(Value::as_str) == Some("Ignore") {
         crate::admission::match_conditions::FailurePolicy::Ignore
     } else {
