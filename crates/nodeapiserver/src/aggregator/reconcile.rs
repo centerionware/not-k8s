@@ -1,4 +1,4 @@
-//! Group L Phase 2's real remaining gap: a live loop that periodically
+//! Group L Phase 2's live loop: periodically
 //! re-checks every stored, non-local `APIService`'s backing Service/
 //! `EndpointSlice`/discovery-endpoint health and writes the resulting
 //! `Available` condition to `status.conditions` — real upstream's own
