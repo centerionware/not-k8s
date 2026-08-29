@@ -22,6 +22,9 @@
 //! (`apiextensions.k8s.io/v1`) schema; `apiVersion`/`kind`/`metadata` are
 //! hard-coded as always preserved at the object's own top level, standing
 //! in for real upstream's schema-completion step that auto-injects them.
+//! Schema-local enum, range, length, pattern, uniqueness, and standard
+//! scalar-format constraints are enforced by `schema_validation` too;
+//! cross-field consistency remains the CRD's CEL responsibility.
 //!
 //! `schema_strategic_merge` — the runtime-schema sibling of
 //! `crate::patch::strategic_merge`: a list field merges by key when its
