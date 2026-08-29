@@ -156,6 +156,10 @@ regex = "1"
 # workspace already carries this version transitively; declaring it directly
 # makes the URL value implementation's dependency explicit.
 url = "2"
+# Group K: semantic-version parsing for Kubernetes' Semver CEL library. This
+# version is already present in the workspace lockfile through the release
+# tooling, so this is only an explicit direct dependency.
+semver = "1"
 
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and

@@ -1758,6 +1758,7 @@ dependencies = [
  "ring",
  "reqwest",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1771,8 +1772,8 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "url",
+ "uuid",
  "webpki-roots",
  "x509-parser",
 ]
