@@ -1893,7 +1893,14 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
 
         let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
             (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
-            (None, Some(schema)) => apiextensions::schema_validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+            (None, Some(schema)) => {
+                let mut violations = apiextensions::schema_validation::validate_required(schema, &object)
+                    .into_iter()
+                    .map(|m| format!("{}: Required value", m.path))
+                    .collect();
+                violations.extend(apiextensions::schema_validation::validate_constraints(schema, &object));
+                violations
+            }
             (None, None) => Vec::new(),
         };
         match (schema, open_api_schema.as_ref()) {
@@ -1910,6 +1917,12 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             (None, Some(schema)) => apiextensions::schema_defaults::apply_defaults(schema, &object),
             (None, None) => object,
         };
+        if let Some(schema) = &open_api_schema {
+            let rule_violations = apiextensions::cel_evaluate::validate_object(schema, &object, None);
+            if !rule_violations.is_empty() {
+                return Ok(ApplyPrepareOutcome::Invalid(rule_violations.into_iter().map(|v| v.to_string()).collect()));
+            }
+        }
 
         return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
     };
@@ -1946,7 +1959,14 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
 
     let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
         (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
-        (None, Some(schema)) => apiextensions::schema_validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+        (None, Some(schema)) => {
+            let mut violations = apiextensions::schema_validation::validate_required(schema, &object)
+                .into_iter()
+                .map(|m| format!("{}: Required value", m.path))
+                .collect();
+            violations.extend(apiextensions::schema_validation::validate_constraints(schema, &object));
+            violations
+        }
         (None, None) => Vec::new(),
     };
     match (schema, open_api_schema.as_ref()) {
@@ -1963,6 +1983,12 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         (None, Some(schema)) => apiextensions::schema_defaults::apply_defaults(schema, &object),
         (None, None) => object,
     };
+    if let Some(schema) = &open_api_schema {
+        let rule_violations = apiextensions::cel_evaluate::validate_object(schema, &object, Some(&live));
+        if !rule_violations.is_empty() {
+            return Ok(ApplyPrepareOutcome::Invalid(rule_violations.into_iter().map(|v| v.to_string()).collect()));
+        }
+    }
 
     Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
 }
