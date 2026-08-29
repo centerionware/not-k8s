@@ -769,7 +769,7 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
         return Err(skip_test("curl is required for unauthenticated HTTPS checks"));
     }
 
-    let _override = NodeapiserverAuthenticationOverride::install()?;
+    let auth_override = NodeapiserverAuthenticationOverride::install()?;
     context
         .wait_until(
             "nodeapiserver to become active after authentication configuration",
@@ -788,7 +788,7 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
             "nodeapiserver to answer requests after authentication configuration",
             Duration::from_secs(60),
             || async {
-                let output = Command::new("curl")
+                let Ok(output) = Command::new("curl")
                     .args([
                         "-k",
                         "-sS",
@@ -854,6 +854,67 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
             && authenticated_body.contains("nodeapiserver-e2e-uid"),
         "static token did not authenticate and populate SelfSubjectReview: {}",
         authenticated_body
+    );
+
+    fs::write(
+        &auth_override.token_file,
+        "nodeapiserver-e2e-rotated,nodeapiserver-e2e-rotated-user,nodeapiserver-e2e-rotated-uid,\n",
+    )
+    .with_context(|| format!("rotating {}", auth_override.token_file.display()))?;
+    context
+        .wait_until(
+            "nodeapiserver to reload its static token file",
+            Duration::from_secs(30),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "10",
+                        "-H",
+                        "Authorization: Bearer nodeapiserver-e2e-rotated",
+                        "-H",
+                        "Content-Type: application/json",
+                        "-d",
+                        r#"{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}"#,
+                        "-w",
+                        "\n%{http_code}",
+                        "https://127.0.0.1:6443/apis/authentication.k8s.io/v1/selfsubjectreviews",
+                    ])
+                    .output()
+                else {
+                    return Ok(false);
+                };
+                let body = String::from_utf8_lossy(&output.stdout);
+                Ok(output.status.success()
+                    && body.lines().last() == Some("201")
+                    && body.contains("nodeapiserver-e2e-rotated-user"))
+            },
+        )
+        .await?;
+
+    let old_token = Command::new("curl")
+        .args([
+            "-k",
+            "-sS",
+            "--max-time",
+            "10",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-H",
+            "Authorization: Bearer nodeapiserver-e2e-token",
+            "https://127.0.0.1:6443/healthz",
+        ])
+        .output()
+        .context("checking that the old static token was removed after reload")?;
+    anyhow::ensure!(
+        old_token.status.success()
+            && String::from_utf8_lossy(&old_token.stdout).trim() == "401",
+        "old static token remained valid after reload: {}",
+        String::from_utf8_lossy(&old_token.stdout)
     );
     Ok(())
 }
