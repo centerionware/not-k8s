@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `70d8417` on
+This snapshot is checked against `origin/nodeapiserver` at `28c23d7` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -43,7 +43,7 @@ explanation of each boundary.
 | --- | --- | --- |
 | Phase 0 prerequisites | **done** | The workspace uses `k8s-openapi` v1_34 and the related dependency migration is integrated. |
 | A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
-| B. Wire formats | **in progress** | Generic protobuf/JSON/YAML, Table, and partial-object support are integrated; per-resource printer behavior and remaining wire edge cases remain. |
+| B. Wire formats | **in progress** | Generic protobuf/JSON/YAML, Table, partial-object support, and the core Pod printer are integrated; remaining per-resource printers and wire edge cases remain. |
 | C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; remaining provider compatibility is open. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
@@ -196,17 +196,18 @@ one row per item for a List-shaped input, `ResourceVersion`/`Continue`/
 `RemainingItemCount` carried through from the List's own metadata. Named
 honestly: real kube-apiserver's much larger *per-type* printer set
 (Pod's `READY`/`STATUS`/`RESTARTS` columns, computed from container
-statuses — hand-written Go, `pkg/printers/internalversion`) isn't
-started — every resource this build serves gets the generic table today,
+statuses — hand-written Go, `pkg/printers/internalversion`) is only partly
+started — resources without a registered printer get the generic table,
 same as a fresh CRD does in real kube-apiserver until it earns its own
-printer. **Now actually wired into `GET`/`LIST`** (`server::listener`
+printer. The core Pod printer now supplies the standard status and
+wide-mode columns. **Now actually wired into `GET`/`LIST`** (`server::listener`
 checks `Accepted::wants_table()` from the request's own `Accept` header
 and runs the response through `convert_to_table` when set) — a real gap
 found this session: the converter had been landed and correctly
 documented for a while, but nothing in `server/` ever called it, so a
 real `kubectl get pods` against a live nodeapiserver got raw JSON
 instead of the columnar `Table` output every `kubectl get` actually
-negotiates by default. Not yet done: any per-type printer. The standard
+negotiates by default. The standard
 `meta.k8s.io/v1` `PartialObjectMetadata` and `PartialObjectMetadataList`
 representations are now served for negotiated `GET`, `LIST`, and `WATCH`
 responses; per-resource printer behavior remains separate work.

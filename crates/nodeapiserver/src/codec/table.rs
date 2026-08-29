@@ -19,7 +19,8 @@
 //! genuinely bespoke Go per Kind, nothing here derives it from data) and a
 //! **generic default converter** every type without one of those falls
 //! back to — most visibly, every CRD, since a CRD has no compiled-in Go
-//! printer at all. This module is a faithful port of only that second one
+//! printer at all. This module faithfully ports that generic converter and
+//! the core Pod printer; other per-type printers remain separate work.
 //! (`k8s.io/apiserver/pkg/registry/rest/table.go`'s `defaultTableConvertor`,
 //! fetched and read directly, not reconstructed from memory): exactly two
 //! columns, `Name` and `Created At`, cells `[metadata.name,
@@ -28,9 +29,9 @@
 //! the raw RFC3339 timestamp into the `AGE` column's relative display;
 //! the server only ever sends the absolute timestamp). Per-type printers
 //! are real, separate, much larger hand-written work, not implied by this
-//! module's completeness — every resource this build serves gets the
+//! module's completeness — resources without a registered printer get the
 //! generic table today, matching what a fresh CRD gets in real
-//! kube-apiserver, until a specific type earns its own printer.
+//! kube-apiserver, until another specific type earns its own printer.
 //!
 //! Descriptions on the two column definitions are copied verbatim from the
 //! vendored `ObjectMeta.name`/`ObjectMeta.creationTimestamp` property
@@ -84,6 +85,189 @@ pub fn convert_to_table(object: &Value) -> Value {
     }
 
     table
+}
+
+/// Converts a resource using the built-in printer for the small set of
+/// resource types this crate has verified. Resources without a printer keep
+/// the generic default-table behavior, including all CRD-defined resources.
+pub fn convert_to_table_for_resource(group: &str, version: &str, resource: &str, object: &Value) -> Value {
+    if group.is_empty() && version == "v1" && resource == "pods" {
+        return convert_pod_to_table(object);
+    }
+    convert_to_table(object)
+}
+
+const POD_READY_DESCRIPTION: &str = "The aggregate readiness state of this pod for accepting traffic.";
+const POD_STATUS_DESCRIPTION: &str = "The aggregate status of the containers in this pod.";
+const POD_RESTARTS_DESCRIPTION: &str = "The number of times the containers in this pod have been restarted and when the last container in this pod has restarted.";
+
+fn convert_pod_to_table(object: &Value) -> Value {
+    let items = list_items(object);
+    let rows: Vec<Value> = match &items {
+        Some(items) => items.iter().map(|item| pod_row(item)).collect(),
+        None => vec![pod_row(object)],
+    };
+    let mut table = json!({
+        "kind": "Table",
+        "apiVersion": "meta.k8s.io/v1",
+        "columnDefinitions": [
+            {"name": "Name", "type": "string", "format": "name", "description": NAME_DESCRIPTION, "priority": 0},
+            {"name": "Ready", "type": "string", "description": POD_READY_DESCRIPTION, "priority": 0},
+            {"name": "Status", "type": "string", "description": POD_STATUS_DESCRIPTION, "priority": 0},
+            {"name": "Restarts", "type": "string", "description": POD_RESTARTS_DESCRIPTION, "priority": 0},
+            {"name": "Age", "type": "string", "description": CREATED_AT_DESCRIPTION, "priority": 0},
+            {"name": "IP", "type": "string", "description": "The pod's IP address.", "priority": 1},
+            {"name": "Node", "type": "string", "description": "The node this pod is assigned to.", "priority": 1},
+            {"name": "Nominated Node", "type": "string", "description": "The node nominated for this pod.", "priority": 1},
+            {"name": "Readiness Gates", "type": "string", "description": "The number of readiness gates satisfied by this pod.", "priority": 1},
+        ],
+        "rows": rows,
+    });
+    copy_list_metadata(&mut table, object, items.is_some());
+    table
+}
+
+fn pod_row(pod: &Value) -> Value {
+    let (ready, total) = pod_ready_counts(pod);
+    let (status, restarts) = pod_status_and_restarts(pod);
+    let ip = pod.pointer("/status/podIPs/0/ip").and_then(Value::as_str).unwrap_or("<none>");
+    let node = pod.pointer("/spec/nodeName").and_then(Value::as_str).unwrap_or("<none>");
+    let nominated_node = pod.pointer("/status/nominatedNodeName").and_then(Value::as_str).unwrap_or("<none>");
+    let readiness_gates = pod_readiness_gates(pod);
+    json!({
+        "cells": [
+            pod.pointer("/metadata/name").cloned().unwrap_or(Value::Null),
+            format!("{ready}/{total}"),
+            status,
+            restarts.to_string(),
+            relative_age(pod.pointer("/metadata/creationTimestamp").and_then(Value::as_str)),
+            ip,
+            node,
+            nominated_node,
+            readiness_gates,
+        ],
+        "object": pod,
+    })
+}
+
+fn pod_ready_counts(pod: &Value) -> (usize, usize) {
+    let total = pod.pointer("/spec/containers").and_then(Value::as_array).map_or(0, Vec::len);
+    let ready = pod
+        .pointer("/status/containerStatuses")
+        .and_then(Value::as_array)
+        .map(|statuses| statuses.iter().filter(|status| status.get("ready").and_then(Value::as_bool).unwrap_or(false)).count())
+        .unwrap_or(0);
+    (ready.min(total), total)
+}
+
+fn pod_status_and_restarts(pod: &Value) -> (String, i64) {
+    let phase = pod.pointer("/status/phase").and_then(Value::as_str).unwrap_or("");
+    let mut status = pod.pointer("/status/reason").and_then(Value::as_str).unwrap_or(phase).to_string();
+    let mut restarts = 0;
+    let mut initializing = false;
+    if let Some(init_statuses) = pod.pointer("/status/initContainerStatuses").and_then(Value::as_array) {
+        let init_total = pod.pointer("/spec/initContainers").and_then(Value::as_array).map_or(0, Vec::len);
+        for (index, container) in init_statuses.iter().enumerate() {
+            restarts += container.get("restartCount").and_then(Value::as_i64).unwrap_or(0);
+            let terminated = container.pointer("/state/terminated");
+            if terminated.and_then(|value| value.get("exitCode")).and_then(Value::as_i64) == Some(0) {
+                continue;
+            }
+            if let Some(reason) = container.pointer("/state/waiting/reason").and_then(Value::as_str).filter(|reason| !reason.is_empty() && *reason != "PodInitializing") {
+                status = format!("Init:{reason}");
+            } else if let Some(reason) = terminated.and_then(|value| value.get("reason")).and_then(Value::as_str).filter(|reason| !reason.is_empty()) {
+                status = format!("Init:{reason}");
+            } else if let Some(exit_code) = terminated.and_then(|value| value.get("exitCode")).and_then(Value::as_i64) {
+                status = format!("Init:ExitCode:{exit_code}");
+            } else {
+                status = format!("Init:{index}/{init_total}");
+            }
+            initializing = true;
+            break;
+        }
+    }
+    if !initializing {
+        if let Some(container_statuses) = pod.pointer("/status/containerStatuses").and_then(Value::as_array) {
+            for container in container_statuses {
+                restarts += container.get("restartCount").and_then(Value::as_i64).unwrap_or(0);
+                if let Some(reason) = container.pointer("/state/waiting/reason").and_then(Value::as_str).filter(|reason| !reason.is_empty()) {
+                    status = reason.to_string();
+                } else if let Some(reason) = container.pointer("/state/terminated/reason").and_then(Value::as_str).filter(|reason| !reason.is_empty()) {
+                    status = reason.to_string();
+                } else if let Some(exit_code) = container.pointer("/state/terminated/exitCode").and_then(Value::as_i64) {
+                    status = if exit_code == 0 { "Completed".to_string() } else { format!("ExitCode:{exit_code}") };
+                }
+            }
+        }
+        let has_running = pod
+            .pointer("/status/containerStatuses")
+            .and_then(Value::as_array)
+            .is_some_and(|statuses| statuses.iter().any(|status| status.pointer("/state/running").is_some()));
+        if has_running && status == "Completed" {
+            status = if pod_ready_condition_true(pod) { "Running" } else { "NotReady" }.to_string();
+        }
+    }
+    if pod.get("metadata").and_then(|metadata| metadata.get("deletionTimestamp")).is_some() && phase != "Succeeded" && phase != "Failed" {
+        status = "Terminating".to_string();
+    }
+    if status.is_empty() {
+        status = "Unknown".to_string();
+    }
+    (status, restarts)
+}
+
+fn pod_ready_condition_true(pod: &Value) -> bool {
+    pod.pointer("/status/conditions")
+        .and_then(Value::as_array)
+        .is_some_and(|conditions| conditions.iter().any(|condition| condition.get("type").and_then(Value::as_str) == Some("Ready") && condition.get("status").and_then(Value::as_str) == Some("True")))
+}
+
+fn pod_readiness_gates(pod: &Value) -> String {
+    let Some(gates) = pod.pointer("/spec/readinessGates").and_then(Value::as_array) else { return "<none>".to_string() };
+    if gates.is_empty() {
+        return "<none>".to_string();
+    }
+    let true_count = gates.iter().filter(|gate| {
+        let gate_type = gate.get("conditionType").and_then(Value::as_str);
+        pod.pointer("/status/conditions").and_then(Value::as_array).is_some_and(|conditions| conditions.iter().any(|condition| condition.get("type").and_then(Value::as_str) == gate_type && condition.get("status").and_then(Value::as_str) == Some("True")))
+    }).count();
+    format!("{true_count}/{}", gates.len())
+}
+
+fn relative_age(timestamp: Option<&str>) -> String {
+    let Some(timestamp) = timestamp else { return "<unknown>".to_string() };
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) else { return "<unknown>".to_string() };
+    let seconds = (chrono::Utc::now() - parsed.with_timezone(&chrono::Utc)).num_seconds().max(0);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else if seconds < 2_592_000 {
+        format!("{}d", seconds / 86_400)
+    } else if seconds < 31_536_000 {
+        format!("{}mo", seconds / 2_592_000)
+    } else {
+        format!("{}y", seconds / 31_536_000)
+    }
+}
+
+fn copy_list_metadata(table: &mut Value, object: &Value, is_list: bool) {
+    if !is_list {
+        return;
+    }
+    if let Some(list_meta) = object.get("metadata").and_then(Value::as_object) {
+        let mut table_meta = serde_json::Map::new();
+        for key in ["resourceVersion", "continue", "remainingItemCount"] {
+            if let Some(value) = list_meta.get(key) {
+                table_meta.insert(key.to_string(), value.clone());
+            }
+        }
+        if !table_meta.is_empty() {
+            table["metadata"] = Value::Object(table_meta);
+        }
+    }
 }
 
 /// `Some(items)` if `object` is List-shaped (has an `items` array — the
@@ -179,5 +363,65 @@ mod tests {
         let pod = json!({"metadata": {"name": "web-1"}});
         let table = convert_to_table(&pod);
         assert_eq!(table["rows"][0]["cells"], json!(["web-1", Value::Null]));
+    }
+
+    #[test]
+    fn the_pod_printer_emits_kubectl_status_columns() {
+        let pod = json!({
+            "metadata": {"name": "web-1"},
+            "spec": {"containers": [{"name": "web"}]},
+            "status": {
+                "phase": "Running",
+                "podIPs": [{"ip": "10.42.0.8"}],
+                "containerStatuses": [{
+                    "name": "web",
+                    "ready": true,
+                    "restartCount": 2,
+                    "state": {"running": {}}
+                }],
+                "conditions": [{"type": "Ready", "status": "True"}]
+            }
+        });
+        let table = convert_to_table_for_resource("", "v1", "pods", &pod);
+        let columns = table["columnDefinitions"].as_array().unwrap();
+        assert_eq!(columns.iter().map(|column| column["name"].as_str().unwrap()).collect::<Vec<_>>(), vec![
+            "Name", "Ready", "Status", "Restarts", "Age", "IP", "Node", "Nominated Node", "Readiness Gates"
+        ]);
+        let cells = table["rows"][0]["cells"].as_array().unwrap();
+        assert_eq!(&cells[..5], &json!(["web-1", "1/1", "Running", "2", "<unknown>"]).as_array().unwrap()[..]);
+        assert_eq!(&cells[5..], &json!(["10.42.0.8", "<none>", "<none>", "<none>"]).as_array().unwrap()[..]);
+        assert_eq!(table["rows"][0]["object"], pod);
+    }
+
+    #[test]
+    fn the_pod_printer_reports_initialization_and_waiting_reasons() {
+        let pod = json!({
+            "metadata": {"name": "web-1"},
+            "spec": {
+                "initContainers": [{"name": "setup"}],
+                "containers": [{"name": "web"}]
+            },
+            "status": {
+                "phase": "Pending",
+                "initContainerStatuses": [{
+                    "name": "setup",
+                    "restartCount": 1,
+                    "state": {"waiting": {"reason": "CrashLoopBackOff"}}
+                }]
+            }
+        });
+        let table = convert_to_table_for_resource("", "v1", "pods", &pod);
+        assert_eq!(table["rows"][0]["cells"][1], "0/1");
+        assert_eq!(table["rows"][0]["cells"][2], "Init:CrashLoopBackOff");
+        assert_eq!(table["rows"][0]["cells"][3], "1");
+    }
+
+    #[test]
+    fn only_pods_use_the_builtin_printer() {
+        let object = json!({"metadata": {"name": "x"}});
+        let table = convert_to_table_for_resource("example.com", "v1", "pods", &object);
+        assert_eq!(table["columnDefinitions"].as_array().unwrap().len(), 2);
+        let table = convert_to_table_for_resource("", "v1", "services", &object);
+        assert_eq!(table["columnDefinitions"].as_array().unwrap().len(), 2);
     }
 }

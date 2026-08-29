@@ -3382,7 +3382,7 @@ async fn handle(
                 match rest::get_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, resource_version_query(&query)).await {
                     Ok(rest::GetOutcome::Found(object)) => {
                         let body = if wants_table {
-                            crate::codec::table::convert_to_table(&object)
+                            crate::codec::table::convert_to_table_for_resource(&info.api_group, &info.api_version, &info.resource, &object)
                         } else if wants_partial_metadata {
                             crate::codec::partial_metadata::object(&object)
                         } else {
@@ -3412,7 +3412,7 @@ async fn handle(
                 match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table {
-                            crate::codec::table::convert_to_table(&list)
+                            crate::codec::table::convert_to_table_for_resource(&info.api_group, &info.api_version, &info.resource, &list)
                         } else if wants_partial_metadata {
                             crate::codec::partial_metadata::list(&list)
                         } else {
