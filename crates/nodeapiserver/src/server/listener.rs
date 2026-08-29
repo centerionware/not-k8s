@@ -579,11 +579,11 @@ pub async fn run(cfg: Config) {
     };
 
     // Group H: the upstream-compatible static token file is optional. A
-    // malformed file disables the listener rather than leaving a partially
-    // loaded token table in place; accepting only part of an operator's
-    // authentication configuration would be surprising and unsafe.
+    // malformed initial file disables the listener rather than leaving a
+    // partially loaded token table in place; later malformed rotations are
+    // handled by ReloadableAuthenticator, which retains the last valid table.
     let bootstrap_token_authenticator = match &cfg.bootstrap_token_file {
-        Some(path) => match crate::authn::bootstrap_token::Authenticator::from_file(path) {
+        Some(path) => match crate::authn::bootstrap_token::ReloadableAuthenticator::from_file(path) {
             Ok(authenticator) => Some(Arc::new(authenticator)),
             Err(error) => {
                 warn!(path = %path.display(), error, "failed to load NODEAPISERVER_TOKEN_AUTH_FILE; the REST/watch listener will not run");
@@ -1238,7 +1238,7 @@ async fn handle_with_audit(
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
-    bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::Authenticator>>,
+    bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
@@ -1417,7 +1417,7 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
 async fn authenticate_request(
     req: &Request<Incoming>,
     client_cert_identity: Option<crate::authn::x509::Identity>,
-    bootstrap_token_authenticator: Option<&crate::authn::bootstrap_token::Authenticator>,
+    bootstrap_token_authenticator: Option<&crate::authn::bootstrap_token::ReloadableAuthenticator>,
     service_account_authenticator: Option<&crate::authn::service_account::Authenticator>,
     oidc_authenticator: Option<&crate::authn::oidc::Authenticator>,
     anonymous_auth: bool,
