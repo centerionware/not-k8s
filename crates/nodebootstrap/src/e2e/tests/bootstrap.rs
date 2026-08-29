@@ -110,6 +110,47 @@ impl NodeapiserverAuthenticationOverride {
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
         Ok(guard)
     }
+
+    fn install_rbac() -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; authorization checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let token_file = std::env::temp_dir().join(format!("nodeapiserver-e2e-rbac-{suffix}.csv"));
+        fs::write(
+            &token_file,
+            "nodeapiserver-e2e-denied,nodeapiserver-e2e-denied,nodeapiserver-e2e-denied,\n",
+        )
+        .with_context(|| format!("writing {}", token_file.display()))?;
+
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-e2e-rbac-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-e2e-rbac-{suffix}.conf"));
+        let contents = format!(
+            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=0\nEnvironment=NODEAPISERVER_ENFORCE_RBAC=1\nEnvironment=NODEAPISERVER_TOKEN_AUTH_FILE={}\n",
+            token_file.display()
+        );
+        fs::write(&local_drop_in, contents)
+            .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in, token_file };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged(
+            "install",
+            &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
+        )?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
 }
 
 impl Drop for NodeapiserverAuthenticationOverride {
@@ -728,6 +769,72 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
         let _ = context.client.request::<Value>(request).await;
     }
     result
+}
+
+pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "authorization-order checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let _override = NodeapiserverAuthenticationOverride::install_rbac()?;
+    context
+        .wait_until(
+            "nodeapiserver to become active after RBAC configuration",
+            Duration::from_secs(60),
+            || async {
+                Ok(Command::new("systemctl")
+                    .args(["is-active", "--quiet", "nodeapiserver.service"])
+                    .status()
+                    .is_ok_and(|status| status.success()))
+            },
+        )
+        .await?;
+
+    let url = format!(
+        "https://127.0.0.1:6443/api/v1/namespaces/{}/pods/does-not-exist/status",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "nodeapiserver to reject an unauthorized status PATCH before the special handler",
+            Duration::from_secs(60),
+            || {
+                let url = url.clone();
+                async move {
+                    let output = Command::new("curl")
+                        .args([
+                            "-k",
+                            "-sS",
+                            "--max-time",
+                            "10",
+                            "-o",
+                            "/dev/null",
+                            "-w",
+                            "%{http_code}",
+                            "-X",
+                            "PATCH",
+                            "-H",
+                            "Authorization: Bearer nodeapiserver-e2e-denied",
+                            "-H",
+                            "Content-Type: application/merge-patch+json",
+                            "-d",
+                            "{}",
+                            &url,
+                        ])
+                        .output()
+                        .context("checking authorization before the status handler")?;
+                    Ok(output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() == "403")
+                }
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E2eContext) -> Result<()> {

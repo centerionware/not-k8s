@@ -207,6 +207,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_authorizes_before_special_handlers",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rejects_unsupported_field_selector",
         group: TestGroup::General,
     },
@@ -1570,6 +1574,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeapiserver_apf_labels_requests" => {
             bootstrap::nodeapiserver_apf_labels_requests(context).await
+        }
+        "test_nodeapiserver_authorizes_before_special_handlers" => {
+            bootstrap::nodeapiserver_authorizes_before_special_handlers(context).await
         }
         "test_nodeapiserver_rejects_unsupported_field_selector" => {
             bootstrap::nodeapiserver_rejects_unsupported_field_selector(context).await
