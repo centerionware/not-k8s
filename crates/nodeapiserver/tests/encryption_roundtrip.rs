@@ -188,7 +188,7 @@ async fn secrets_are_encrypted_and_stale_values_rotate_on_read() {
     // and confirm they're genuinely ciphertext, not the plaintext
     // protobuf envelope `decode_stored_object` itself would recognize.
     let key_bytes = nodeapiserver::storage::keys::object_key("", "secrets", Some("default"), "test-secret").into_bytes();
-    let raw = storage.range(RangeRequest { key: key_bytes, ..Default::default() }).await.expect("raw Range must succeed").kvs;
+    let raw = storage.range(RangeRequest { key: key_bytes.clone(), ..Default::default() }).await.expect("raw Range must succeed").kvs;
     assert_eq!(raw.len(), 1, "the object must exist at its real etcd key");
     let raw_value = &raw[0].value;
     assert!(
