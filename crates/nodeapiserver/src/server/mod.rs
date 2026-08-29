@@ -58,12 +58,10 @@
 //! what's necessarily approximate (`goVersion`/`compiler` for a Rust
 //! binary).
 //! `watch_event` — converts one `cacher::store::WatchEvent` into the real
-//! `metav1.WatchEvent` wire shape (`{"type": ..., "object": ...}`) a
-//! `WATCH` response streams. **Pure conversion only — not yet wired into
-//! an actual streaming HTTP response**; see that module's own doc
-//! comment for exactly what's in and out of scope, including a named,
-//! honest gap around `Deleted` events (Group D's own cache doesn't
-//! retain a deleted object's last known value).
+//! `metav1.WatchEvent` wire shape (`{"type": ..., "object": ...}`) used by
+//! the live `WATCH` response stream. The cache still does not retain a
+//! deleted object's last known value, so deleted-event payload fidelity is
+//! a named, honest limitation.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the path grammar,
 //! a real TLS listener proving the grammar and transport work together,
