@@ -17,9 +17,9 @@
 //! `APIResource` entry: `singularName` (not present anywhere in the
 //! vendored spec — real kube-apiserver derives it from Go type reflection,
 //! which this crate has no equivalent of), `shortNames`, `categories` (same
-//! reason), and subresources (`pods/status`, `pods/log`, ... — a named,
-//! separate skip in the parser itself, not a completeness claim by this
-//! module).
+//! reason). Subresources (`pods/status`, `pods/log`, ...) are emitted as
+//! their own `APIResource` entries from the generated table, including
+//! connect verbs where the OpenAPI paths advertise them.
 //!
 //! `serverAddressByClientCIDRs` is left empty in every document here —
 //! real kube-apiserver populates it from the request's own observed
@@ -449,10 +449,8 @@ fn api_resource_discovery_value(group: &str, version: &str, r: &codegen::api_res
         "scope": if r.namespaced { "Namespaced" } else { "Cluster" },
         "singularResource": r.kind.to_lowercase(),
         "verbs": verbs,
-        // shortNames/categories/subresources: same named, deliberate gap
-        // as api_resource_list() above — not present anywhere in the
-        // vendored spec (shortNames/categories) or a separate, named skip
-        // in the discovery parser itself (subresources).
+        // shortNames/categories are not present in the vendored spec and
+        // therefore remain absent from this generated discovery shape.
     })
 }
 

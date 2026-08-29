@@ -460,10 +460,12 @@ tells `/api/v1/namespaces` (list `Namespace` objects) apart from
 `/api/v1/namespaces/{namespace}/pods` (list `Pod`s in a namespace) by the
 real path-parameter name the vendored spec uses (`{name}` vs.
 `{namespace}`), not by string-matching "namespaces" as a special case.
-Named, deliberate skips (the parser's own doc comment): subresources
-(`pods/status`, `pods/log`, ...) and the deprecated `/watch/`-prefixed
-path family. `singularName` uses real kube-apiserver's own RESTMapper
-default (lowercased kind) since no per-type override table is vendored;
+The parser still skips only the deprecated `/watch/`-prefixed path family.
+Subresources are emitted as their own discoverable entries (`pods/status`,
+`pods/log`, `pods/exec`, and the other single-item subresource paths), with
+the advertised `connect` verb retained for streaming subresources.
+`singularName` uses real kube-apiserver's own RESTMapper default (lowercased
+kind) since no per-type override table is vendored;
 `shortNames`/`categories` aren't emitted at all (not present anywhere in
 the vendored spec). **Now wired into the listener's actual routing**:
 `server::listener`'s `route_discovery` (pure, unit-tested apart from the

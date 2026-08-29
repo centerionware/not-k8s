@@ -325,6 +325,36 @@ mod tests {
         assert!(!namespaces.namespaced, "Namespace itself is cluster-scoped, not namespaced");
     }
 
+    #[test]
+    fn api_resources_include_discoverable_subresources() {
+        let core_v1 = api_resources_by_group_version()
+            .get(("", "v1"))
+            .expect("core/v1 should have discovered resources");
+        let pod_log = core_v1
+            .iter()
+            .find(|r| r.resource == "pods/log")
+            .expect("pods/log should be discoverable");
+        assert_eq!(pod_log.kind, "Pod");
+        assert!(pod_log.namespaced);
+        assert!(pod_log.verbs.contains(&"get"));
+
+        let pod_exec = core_v1
+            .iter()
+            .find(|r| r.resource == "pods/exec")
+            .expect("pods/exec should be discoverable");
+        assert!(pod_exec.verbs.contains(&"connect"));
+
+        let apps_v1 = api_resources_by_group_version()
+            .get(("apps", "v1"))
+            .expect("apps/v1 should have discovered resources");
+        let deployment_scale = apps_v1
+            .iter()
+            .find(|r| r.resource == "deployments/scale")
+            .expect("deployments/scale should be discoverable");
+        assert_eq!(deployment_scale.kind, "Scale");
+        assert!(deployment_scale.namespaced);
+    }
+
     /// A subresource path (`pods/{name}/status`) must not produce its own
     /// bogus top-level resource entry (e.g. a "status" resource) — it's a
     /// named, deliberate skip (see `build/discovery_parse.rs`'s own doc),

@@ -24,14 +24,12 @@
 //!   whenever `"list"` is present instead, since every real REST storage
 //!   supporting list also supports watching that same route.
 //! - Subresources (`.../pods/{name}/status`, `/log`, `/exec`, `/proxy`,
-//!   ...) — skipped for this slice. A subresource needs its own
-//!   `APIResource` entry with `name: "pods/status"` in real discovery;
-//!   that's real, separate follow-up work, not implied by this parser's
-//!   completeness.
-//! - `connect` actions (proxy/exec/attach/portforward) — only ever appear
-//!   on subresource paths in the vendored set, so they're already
-//!   filtered out by the subresource skip above; not treated as a
-//!   verb on the parent resource.
+//!   ...) — included as their own `APIResource` entries with names such as
+//!   `pods/status`, matching real discovery. Paths with an additional
+//!   wildcard tail (for example `pods/{name}/proxy/{path}`) remain skipped.
+//! - `connect` actions (proxy/exec/attach/portforward) — retained on the
+//!   corresponding subresource entry. They are never added to the parent
+//!   resource because the resource key includes the subresource suffix.
 //!
 //! # The `{namespace}` vs `{name}` disambiguation
 //!
@@ -79,9 +77,8 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
 
         for (path_str, path_obj) in paths {
             let Some((namespaced, resource_segs)) = classify_path(path_str) else { continue };
-            // Both the collection-path and single-item-path shapes
-            // contribute verbs to the same resource entry — this parser
-            // doesn't need to distinguish which shape a given path was.
+            // Collection, single-item, and single-item-subresource paths
+            // contribute verbs to the same resource entry.
             let Some(resource) = resource_shape(resource_segs) else { continue };
 
             let Some(verb_blocks) = path_obj.as_object() else { continue };
@@ -156,6 +153,13 @@ fn resource_shape(segs: Vec<&str>) -> Option<String> {
     match segs.as_slice() {
         [resource] if !resource.starts_with('{') => Some(resource.to_string()),
         [resource, name] if !resource.starts_with('{') && *name == "{name}" => Some(resource.to_string()),
+        [resource, name, subresource]
+            if !resource.starts_with('{')
+                && *name == "{name}"
+                && !subresource.starts_with('{') =>
+        {
+            Some(format!("{resource}/{subresource}"))
+        }
         _ => None,
     }
 }
@@ -170,11 +174,10 @@ fn normalize_verb(action: &str) -> Option<&'static str> {
         "delete" => Some("delete"),
         "deletecollection" => Some("deletecollection"),
         "watch" => Some("watch"),
+        "connect" => Some("connect"),
         // "watchlist" only ever appears on the already-skipped deprecated
-        // /watch/ path family; "connect" only on already-skipped
-        // subresource paths. Neither should reach here against the real
-        // vendored data, but fail closed (skip the verb) rather than
-        // guessing at an unrecognized action.
+        // /watch/ path family. Fail closed rather than guessing at an
+        // unrecognized action.
         _ => None,
     }
 }
