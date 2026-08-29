@@ -136,7 +136,10 @@ pub fn encode_message(message: &str, value: &Value) -> Result<Vec<u8>> {
 /// `RuleWithOperations.rule`, both in
 /// `vendor/protos/k8s.io/api/admissionregistration/v1/generated.proto`,
 /// matching real upstream's own `k8s.io/api/admissionregistration/v1/types.go`
-/// struct embedding). Found live: `ValidatingAdmissionPolicy`'s own
+/// struct embedding). The core/v1 `Volume.volumeSource`,
+/// `PersistentVolumeSpec.persistentVolumeSource`, and
+/// `EphemeralContainer.ephemeralContainerCommon` fields have the same
+/// flattened JSON shape. Found live: `ValidatingAdmissionPolicy`'s own
 /// `spec.matchConstraints.resourceRules[]` round-tripped through a real
 /// `nodestore` as entirely empty objects (every field but
 /// `resourceNames` silently dropped) until this was special-cased —
@@ -155,6 +158,9 @@ fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
             | ("io.k8s.api.admissionregistration.v1beta1.NamedRuleWithOperations", "ruleWithOperations")
             | ("io.k8s.api.admissionregistration.v1alpha1.NamedRuleWithOperations", "ruleWithOperations")
             | ("io.k8s.api.admissionregistration.v1.RuleWithOperations", "rule")
+            | ("io.k8s.api.core.v1.Volume", "volumeSource")
+            | ("io.k8s.api.core.v1.PersistentVolumeSpec", "persistentVolumeSource")
+            | ("io.k8s.api.core.v1.EphemeralContainer", "ephemeralContainerCommon")
     )
 }
 
@@ -944,6 +950,21 @@ mod tests {
         let value = json!({
             "metadata": {"name": "my-config"},
             "webhooks": [{"name": "my-webhook.example.com"}],
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn pod_volume_round_trips_its_flattened_volume_source() {
+        let message = "io.k8s.api.core.v1.Volume";
+        let value = json!({
+            "name": "config-volume",
+            "configMap": {
+                "name": "coredns",
+                "items": [{"key": "Corefile", "path": "Corefile"}],
+            },
         });
         let encoded = encode_message(message, &value).unwrap();
         let decoded = decode_message(message, &encoded).unwrap();
