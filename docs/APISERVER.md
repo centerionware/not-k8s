@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `d436294d` on
+This snapshot is checked against `origin/nodeapiserver` at `623ad2eb` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1472,6 +1472,8 @@ parameter and selector matching, with the policy's `failurePolicy` honored.
 The current CEL adapter accepts JSON-shaped mutation results; typed
 `JSONPatch{}`/`Object{}` declarations and the additional `namespaceObject`,
 `variables`, and `authorizer` bindings remain explicit follow-up work.
+Each matching policy chain is evaluated once per write; the e2e coverage uses
+a non-idempotent finalizer append to guard against duplicate dispatch.
 
 Configured mutating and validating webhooks are also invoked for matching
 create, update, delete, and deletecollection requests (the latter once per

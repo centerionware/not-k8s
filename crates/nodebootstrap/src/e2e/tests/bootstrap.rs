@@ -1858,7 +1858,7 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
             "mutations": [{
                 "patchType": "JSONPatch",
                 "jsonPatch": {
-                    "expression": "[{\"op\": \"add\", \"path\": \"/metadata/labels/nodeapiserver-mutated\", \"value\": \"true\"}]"
+                    "expression": "[{\"op\": \"add\", \"path\": \"/metadata/finalizers/-\", \"value\": \"nodeapiserver.test\"}]"
                 }
             }]
         }
@@ -1899,6 +1899,7 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
                     metadata: kube::api::ObjectMeta {
                         name: Some(object_name.clone()),
                         labels: Some(BTreeMap::new()),
+                        finalizers: Some(Vec::new()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -1906,16 +1907,11 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
             )
             .await
             .context("creating the MutatingAdmissionPolicy probe ConfigMap")?;
+        let finalizers = created.metadata.finalizers.as_deref().unwrap_or(&[]);
         anyhow::ensure!(
-            created
-                .metadata
-                .labels
-                .as_ref()
-                .and_then(|labels| labels.get("nodeapiserver-mutated"))
-                .map(String::as_str)
-                == Some("true"),
-            "MutatingAdmissionPolicy did not add the expected label: {:?}",
-            created.metadata.labels
+            finalizers.len() == 1 && finalizers[0] == "nodeapiserver.test",
+            "MutatingAdmissionPolicy was not applied exactly once: {:?}",
+            finalizers
         );
         Ok::<(), anyhow::Error>(())
     }
