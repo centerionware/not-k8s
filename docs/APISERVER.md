@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 6/6 |
-| J — Admission | in progress | 7/8 |
+| J — Admission | in progress | 8/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 5/8 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `168fb7d` on
+This snapshot is checked against `origin/nodeapiserver` at `35c02dc` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -2023,17 +2023,16 @@ used*:
    plugin/webhook/predicates/rules/rules.go`, fetched and read directly)
    for `resourceRules`/`excludeResourceRules` (a request matches when it
    matches any `resourceRules` entry and no `excludeResourceRules` entry;
-   `Rule.Scope` is a named, honest gap — not matched, since this crate's
-   admission call sites don't carry a reliable namespaced-vs-cluster
-   signal yet), `metav1.LabelSelectorAsSelector`'s own conversion for
+   `Rule.Scope` is matched against the served resource's discovered
+   namespaced-vs-cluster scope), `metav1.LabelSelectorAsSelector`'s own
+   conversion for
    `namespaceSelector`/`objectSelector` (reusing `cacher::selector`'s
    already-landed label matcher rather than reimplementing it), and
    `CreateAdmissionRequest`'s own JSON shape
    (`k8s.io/apiserver/pkg/admission/plugin/cel/condition.go`, fetched and
-   read directly) for the `request` variable — `kind`'s own `kind` field
-   and `userInfo` are named, honest gaps there too (`Attributes` carries
-   `resource`, not the object's `Kind` string, and no real authenticated
-   identity is threaded down to the admission layer yet).
+   read directly) for the `request` variable — `kind`/`requestKind` come
+   from the submitted or old object, and `userInfo` comes from the
+   authenticated request identity.
 
    **The actual `spec.validations[]` Admit/Deny decision is also now
    landed**: `admission::policy_validations` — real upstream's own
@@ -2119,8 +2118,9 @@ used*:
    expressions from a request-local RBAC snapshot. Its fluent
    `group`/`resource`/`namespace`/`name`/`check`/`allowed` chain,
    `requestResource`, non-resource `path` checks, and service-account
-   principal switching are covered by focused tests. The remaining policy
-   matching gaps are `Rule.Scope`, `request.kind`, and `request.userInfo`.
+   principal switching are covered by focused tests. ResourceRule scope and
+   the request's kind/userInfo fields are populated from discovery and the
+   authenticated admission request.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read

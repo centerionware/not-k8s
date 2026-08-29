@@ -189,7 +189,7 @@ pub fn evaluate_with_validation_vars(
     match_vars: &[(&'static str, &Value)],
     validation_vars: &[(&'static str, &Value)],
 ) -> PolicyOutcome {
-    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, &[]) {
+    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, None, &[]) {
         return outcome;
     }
     PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, validation_vars, policy.failure_policy))
@@ -232,7 +232,28 @@ pub fn evaluate_with_composed_cel_vars(
     variables: &[policy_matching::Variable<'_>],
     cel_vars: &[(&'static str, cel::Value)],
 ) -> PolicyOutcome {
-    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, cel_vars) {
+    evaluate_with_composed_cel_vars_and_scope(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, validation_vars, variables, None, cel_vars)
+}
+
+/// [`evaluate_with_composed_cel_vars`] with the resolved namespacedness of
+/// the requested resource, used to enforce `NamedRuleWithOperations.scope`.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_with_composed_cel_vars_and_scope(
+    policy: &PolicyDefinition,
+    operation: &str,
+    group: &str,
+    version: &str,
+    resource: &str,
+    subresource: &str,
+    namespace_labels: &BTreeMap<String, String>,
+    object_labels: &BTreeMap<String, String>,
+    match_vars: &[(&'static str, &Value)],
+    validation_vars: &[(&'static str, &Value)],
+    variables: &[policy_matching::Variable<'_>],
+    namespaced: Option<bool>,
+    cel_vars: &[(&'static str, cel::Value)],
+) -> PolicyOutcome {
+    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, namespaced, cel_vars) {
         return outcome;
     }
     let composed = match policy_matching::compose_variables_with_cel_vars(variables, validation_vars, cel_vars) {
@@ -255,9 +276,10 @@ fn match_policy(
     namespace_labels: &BTreeMap<String, String>,
     object_labels: &BTreeMap<String, String>,
     match_vars: &[(&'static str, &Value)],
+    namespaced: Option<bool>,
     cel_vars: &[(&'static str, cel::Value)],
 ) -> Result<(), PolicyOutcome> {
-    if !policy_matching::matches_resource_rules(policy.resource_rules, policy.exclude_resource_rules, operation, group, version, resource, subresource) {
+    if !policy_matching::matches_resource_rules_with_scope(policy.resource_rules, policy.exclude_resource_rules, operation, group, version, resource, subresource, namespaced) {
         return Err(PolicyOutcome::NotApplicable);
     }
     if !policy_matching::matches_label_selector(policy.namespace_selector, namespace_labels) {
@@ -296,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_request_outside_the_resource_rules_is_not_applicable() {
-        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"] }];
+        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"], scope: "*" }];
         let validations = [Validation { expression: "true", message: None, reason: None, message_expression: None }];
         let policy = base_policy(&rules, &validations);
         let object = json!({});
@@ -306,7 +328,7 @@ mod tests {
 
     #[test]
     fn a_namespace_selector_mismatch_is_not_applicable_even_when_resource_rules_match() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         let validations = [Validation { expression: "false", message: None, reason: None, message_expression: None }];
         let mut policy = base_policy(&rules, &validations);
         let sel = json!({"matchLabels": {"env": "prod"}});
@@ -318,7 +340,7 @@ mod tests {
 
     #[test]
     fn an_object_selector_mismatch_is_not_applicable() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         let validations = [Validation { expression: "false", message: None, reason: None, message_expression: None }];
         let mut policy = base_policy(&rules, &validations);
         let sel = json!({"matchLabels": {"tier": "frontend"}});
@@ -330,7 +352,7 @@ mod tests {
 
     #[test]
     fn a_false_match_condition_makes_the_whole_policy_not_applicable_before_validations_ever_run() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         // If this validation ran, it would deny -- proving matchConditions
         // really did short-circuit before it.
         let validations = [Validation { expression: "false", message: None, reason: None, message_expression: None }];
@@ -344,7 +366,7 @@ mod tests {
 
     #[test]
     fn a_match_condition_evaluation_error_with_fail_policy_is_surfaced_distinctly() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         let validations: [Validation; 0] = [];
         let mut policy = base_policy(&rules, &validations);
         let conditions = [MatchCondition { name: "broken", expression: "this is not valid cel(((" }];
@@ -357,7 +379,7 @@ mod tests {
 
     #[test]
     fn matching_and_passing_every_validation_admits() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         let validations = [Validation { expression: "object.replicas > 0", message: None, reason: None, message_expression: None }];
         let policy = base_policy(&rules, &validations);
         let object = json!({"replicas": 3});
@@ -371,7 +393,7 @@ mod tests {
 
     #[test]
     fn matching_and_failing_a_validation_denies() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         let validations = [Validation { expression: "object.replicas > 0", message: Some("replicas must be positive"), reason: None, message_expression: None }];
         let policy = base_policy(&rules, &validations);
         let object = json!({"replicas": 0});
@@ -399,7 +421,7 @@ mod tests {
 
     #[test]
     fn namespace_object_is_available_to_validations_but_not_match_conditions() {
-        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
+        let rules = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
         let validations = [Validation { expression: "namespaceObject.metadata.name == 'default'", message: None, reason: None, message_expression: None }];
         let conditions = [MatchCondition { name: "request-is-create", expression: "request.operation == 'CREATE'" }];
         let policy = PolicyDefinition {
@@ -425,7 +447,7 @@ mod tests {
 
     #[test]
     fn composed_variables_feed_validations_after_match_conditions() {
-        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &[""], api_versions: &["v1"], resources: &["pods"] }];
+        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &[""], api_versions: &["v1"], resources: &["pods"], scope: "*" }];
         let validations = [Validation { expression: "variables.minimum == 5", message: Some("minimum must be five"), reason: None, message_expression: None }];
         let policy = base_policy(&rules, &validations);
         let object = json!({"spec": {"replicas": 3}});
@@ -442,7 +464,7 @@ mod tests {
 
     #[test]
     fn variable_composition_is_skipped_when_a_match_condition_excludes_the_request() {
-        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &[""], api_versions: &["v1"], resources: &["pods"] }];
+        let rules = [ResourceRule { operations: &["CREATE"], api_groups: &[""], api_versions: &["v1"], resources: &["pods"], scope: "*" }];
         let conditions = [MatchCondition { name: "never", expression: "false" }];
         let policy = PolicyDefinition { match_conditions: &conditions, ..base_policy(&rules, &[]) };
         let request = json!({"operation": "CREATE"});

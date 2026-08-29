@@ -19,12 +19,10 @@
 //!    directly), the same `NamedRuleWithOperations`
 //!    shape both webhooks and `ValidatingAdmissionPolicy` share for
 //!    `resourceRules`/`excludeResourceRules`. **Named, honest gap**: real
-//!    upstream's own `Rule.Scope` (`Namespaced`/`Cluster`/`*`) is not
-//!    matched here — this crate's admission call sites don't carry a
-//!    reliable "is this resource namespaced" signal alongside `Attributes`
-//!    yet (`super::attributes`'s own doc comment names the same "don't
-//!    build ahead of a real need" posture), so every rule is treated as if
-//!    `scope` were `*` regardless of what the policy actually declared.
+//!    upstream's own `Rule.Scope` (`Namespaced`/`Cluster`/`*`) is matched
+//!    when the storage-backed adapter supplies the discovered resource scope.
+//!    The pure compatibility wrapper remains scope-agnostic when its caller
+//!    has no discovery context.
 //! 2. [`label_selector_requirements`] / [`matches_label_selector`] — real
 //!    upstream's own `metav1.LabelSelectorAsSelector`
 //!    (`k8s.io/apimachinery/pkg/apis/meta/v1/helpers.go`): converts a real
@@ -42,13 +40,8 @@
 //!    `match_conditions`'s own doc comment named as still not built. Scoped
 //!    to the fields this crate can honestly populate from
 //!    [`super::attributes::Attributes`] today: **not populated** —
-//!    `requestKind`/`kind`'s own `kind` field (`Attributes` carries
-//!    `resource`, not the object's `Kind` string) and `userInfo` (this
-//!    crate's admission call sites don't thread a real authenticated
-//!    identity down to the admission layer yet, `authn`'s own module is
-//!    wired at the handler-chain level above admission) — both named here
-//!    rather than silently defaulted to a value that would look real but
-//!    isn't.
+//!    `requestKind`/`kind` and `userInfo` are populated by the storage-backed
+//!    adapter from the submitted/old object and authenticated identity.
 //! 4. [`build_eval_vars`] — the real `object`/`oldObject`/`request`/
 //!    `params` variable set `match_conditions`/`policy_validations` both
 //!    expect their own `vars` slice to already carry, assembled from
@@ -65,8 +58,7 @@
 //! The storage-backed `policy_enforcement` adapter calls this module from
 //! `server::listener` for real `ValidatingAdmissionPolicy` requests. This
 //! module remains deliberately pure: policy CRUD and `spec.paramRef`
-//! resolution belong to that adapter, while the named gaps here remain
-//! `Rule.Scope`, `kind`, and `userInfo`. The adapter binds the Kubernetes
+//! resolution belong to that adapter. The adapter binds the Kubernetes
 //! `authorizer` CEL library from a request-local RBAC snapshot.
 
 use crate::cacher::selector::{self, Operator, Requirement};
@@ -78,7 +70,7 @@ use std::collections::BTreeMap;
 /// real upstream's own `"resource"`/`"resource/subresource"`/`"*"`/`"*/*"`
 /// grammar (`split_resource` below).
 ///
-/// Two lifetimes, not one: `'a` is how long the four slices themselves
+/// Two lifetimes, not one: `'a` is how long the four string-array slices
 /// live, `'b` is how long the `&str` data they point at lives — deliberately
 /// decoupled so `admission::policy_decode`'s own `DecodedResourceRule` can
 /// hand out a `ResourceRule` borrowing its *own* backing `Vec<&'b str>`
@@ -94,13 +86,35 @@ pub struct ResourceRule<'a, 'b> {
     pub api_groups: &'a [&'b str],
     pub api_versions: &'a [&'b str],
     pub resources: &'a [&'b str],
+    /// `Namespaced`, `Cluster`, or `*`, matching the API's
+    /// `NamedRuleWithOperations.scope` field.
+    pub scope: &'b str,
 }
 
-/// Real upstream's own `Matcher.Matches` minus the `scope()` check (see
-/// this module's own doc comment) — every one of `operation()`/`group()`/
-/// `version()`/`resource()` must hold.
+/// Real upstream's own `Matcher.Matches` — every one of
+/// `operation()`/`group()`/`version()`/`resource()` and, when supplied,
+/// `scope()` must hold.
 pub fn resource_rule_matches(rule: &ResourceRule, operation: &str, group: &str, version: &str, resource: &str, subresource: &str) -> bool {
-    wildcard_matches(rule.operations, operation) && wildcard_matches(rule.api_groups, group) && wildcard_matches(rule.api_versions, version) && resource_matches(rule.resources, resource, subresource)
+    resource_rule_matches_with_scope(rule, operation, group, version, resource, subresource, None)
+}
+
+/// [`resource_rule_matches`] with the resource's discovered namespacedness.
+/// `None` preserves the pure helper's historical scope-agnostic behavior.
+pub fn resource_rule_matches_with_scope(rule: &ResourceRule, operation: &str, group: &str, version: &str, resource: &str, subresource: &str, namespaced: Option<bool>) -> bool {
+    wildcard_matches(rule.operations, operation)
+        && wildcard_matches(rule.api_groups, group)
+        && wildcard_matches(rule.api_versions, version)
+        && resource_matches(rule.resources, resource, subresource)
+        && scope_matches(rule.scope, namespaced)
+}
+
+fn scope_matches(scope: &str, namespaced: Option<bool>) -> bool {
+    match scope {
+        "*" => true,
+        "Namespaced" => namespaced == Some(true),
+        "Cluster" => namespaced == Some(false),
+        _ => false,
+    }
 }
 
 fn wildcard_matches(values: &[&str], actual: &str) -> bool {
@@ -137,8 +151,13 @@ fn split_resource(r: &str) -> (&str, &str) {
 /// time; this function makes the same "no rules, no match" call rather
 /// than treating absence as "match everything").
 pub fn matches_resource_rules(resource_rules: &[ResourceRule], exclude_rules: &[ResourceRule], operation: &str, group: &str, version: &str, resource: &str, subresource: &str) -> bool {
-    let included = resource_rules.iter().any(|r| resource_rule_matches(r, operation, group, version, resource, subresource));
-    included && !exclude_rules.iter().any(|r| resource_rule_matches(r, operation, group, version, resource, subresource))
+    matches_resource_rules_with_scope(resource_rules, exclude_rules, operation, group, version, resource, subresource, None)
+}
+
+/// [`matches_resource_rules`] with the resolved resource scope.
+pub fn matches_resource_rules_with_scope(resource_rules: &[ResourceRule], exclude_rules: &[ResourceRule], operation: &str, group: &str, version: &str, resource: &str, subresource: &str, namespaced: Option<bool>) -> bool {
+    let included = resource_rules.iter().any(|r| resource_rule_matches_with_scope(r, operation, group, version, resource, subresource, namespaced));
+    included && !exclude_rules.iter().any(|r| resource_rule_matches_with_scope(r, operation, group, version, resource, subresource, namespaced))
 }
 
 /// Real upstream's own `metav1.LabelSelectorAsSelector`: `matchLabels`
@@ -190,9 +209,18 @@ pub fn matches_label_selector(selector: Option<&Value>, labels: &BTreeMap<String
     }
 }
 
-/// The fields of real upstream's own `admission.Attributes` this crate can
-/// honestly populate today — see this module's own doc comment for what's
-/// named as not yet real (`kind`, `userInfo`).
+/// The request identity portion of real upstream's own `user.Info` shape.
+/// Slices borrow the authenticated identity for the duration of request
+/// construction; no identity data is retained after the CEL value is built.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestUserInfo<'a> {
+    pub username: &'a str,
+    pub uid: Option<&'a str>,
+    pub groups: &'a [String],
+}
+
+/// The fields of real upstream's own `admission.Attributes` used to build a
+/// CEL `request` value.
 #[derive(Debug, Clone, Copy)]
 pub struct RequestVariable<'a> {
     pub uid: &'a str,
@@ -204,6 +232,8 @@ pub struct RequestVariable<'a> {
     pub name: &'a str,
     pub operation: &'a str,
     pub dry_run: bool,
+    pub kind: &'a str,
+    pub user_info: Option<RequestUserInfo<'a>>,
 }
 
 /// One real `ValidatingAdmissionPolicySpec.variables` entry. Variables are
@@ -217,15 +247,19 @@ pub struct Variable<'a> {
 
 /// Real upstream's own `CreateAdmissionRequest`'s JSON shape — the CEL
 /// `request` variable a `ValidatingAdmissionPolicy`/webhook `matchCondition`
-/// or `validations` rule binds. `kind`/`requestKind` are always emitted
-/// with an empty `kind` field (see this module's own doc comment); the same
+/// or `validations` rule binds. `kind`/`requestKind` carry the submitted
+/// object's kind; the same
 /// `resource`/`requestResource` are used for both `resource`/`requestResource`
 /// since this crate has no notion yet of a request resource differing from
 /// the resolved resource (real upstream's own distinction only matters
 /// once CRD conversion is in play).
 pub fn build_request_object(r: &RequestVariable) -> Value {
-    let gvk = json!({"group": r.group, "version": r.version, "kind": ""});
+    let gvk = json!({"group": r.group, "version": r.version, "kind": r.kind});
     let gvr = json!({"group": r.group, "version": r.version, "resource": r.resource});
+    let user_info = match r.user_info {
+        Some(user) => json!({"username": user.username, "uid": user.uid, "groups": user.groups, "extra": {}}),
+        None => json!({"username": "system:anonymous", "groups": ["system:unauthenticated"], "extra": {}}),
+    };
     json!({
         "uid": r.uid,
         "kind": gvk,
@@ -237,7 +271,7 @@ pub fn build_request_object(r: &RequestVariable) -> Value {
         "name": r.name,
         "namespace": r.namespace,
         "operation": r.operation,
-        "userInfo": {},
+        "userInfo": user_info,
         "dryRun": r.dry_run,
     })
 }
@@ -326,39 +360,48 @@ mod tests {
 
     #[test]
     fn a_rule_matching_every_field_exactly_matches() {
-        let rule = ResourceRule { operations: &["CREATE"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"] };
+        let rule = ResourceRule { operations: &["CREATE"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"], scope: "*" };
         assert!(resource_rule_matches(&rule, "CREATE", "apps", "v1", "deployments", ""));
     }
 
     #[test]
+    fn a_rule_scope_matches_the_discovered_resource_scope() {
+        let namespaced = ResourceRule { operations: &["*"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"], scope: "Namespaced" };
+        let cluster = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["v1"], resources: &["nodes"], scope: "Cluster" };
+        assert!(resource_rule_matches_with_scope(&namespaced, "CREATE", "apps", "v1", "deployments", "", Some(true)));
+        assert!(!resource_rule_matches_with_scope(&namespaced, "CREATE", "apps", "v1", "deployments", "", Some(false)));
+        assert!(resource_rule_matches_with_scope(&cluster, "GET", "", "v1", "nodes", "", Some(false)));
+    }
+
+    #[test]
     fn a_wildcard_operation_matches_any_real_operation() {
-        let rule = ResourceRule { operations: &["*"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"] };
+        let rule = ResourceRule { operations: &["*"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"], scope: "*" };
         assert!(resource_rule_matches(&rule, "DELETE", "apps", "v1", "deployments", ""));
     }
 
     #[test]
     fn an_operation_not_listed_does_not_match() {
-        let rule = ResourceRule { operations: &["CREATE"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"] };
+        let rule = ResourceRule { operations: &["CREATE"], api_groups: &["apps"], api_versions: &["v1"], resources: &["deployments"], scope: "*" };
         assert!(!resource_rule_matches(&rule, "UPDATE", "apps", "v1", "deployments", ""));
     }
 
     #[test]
     fn wildcard_group_and_version_match_anything() {
-        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods"] };
+        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods"], scope: "*" };
         assert!(resource_rule_matches(&rule, "CREATE", "", "v1", "pods", ""));
         assert!(resource_rule_matches(&rule, "CREATE", "apps", "v1beta1", "pods", ""));
     }
 
     #[test]
     fn a_bare_resource_entry_matches_only_the_top_level_resource_no_subresource() {
-        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods"] };
+        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods"], scope: "*" };
         assert!(resource_rule_matches(&rule, "CREATE", "", "v1", "pods", ""));
         assert!(!resource_rule_matches(&rule, "CREATE", "", "v1", "pods", "status"));
     }
 
     #[test]
     fn an_explicit_subresource_entry_matches_only_that_subresource() {
-        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods/status"] };
+        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods/status"], scope: "*" };
         assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", "status"));
         assert!(!resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", ""));
         assert!(!resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", "scale"));
@@ -366,7 +409,7 @@ mod tests {
 
     #[test]
     fn a_wildcard_subresource_entry_matches_any_subresource_and_the_bare_resource_too() {
-        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods/*"] };
+        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["pods/*"], scope: "*" };
         assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", "status"));
         assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", "scale"));
         assert!(resource_rule_matches(&rule, "UPDATE", "", "v1", "pods", ""), "real upstream's own resource() draws no exception for the bare resource — \"*\" matches subresource==\"\" like any other value");
@@ -374,15 +417,15 @@ mod tests {
 
     #[test]
     fn double_wildcard_matches_any_resource_any_subresource_bare_included() {
-        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*/*"] };
+        let rule = ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*/*"], scope: "*" };
         assert!(resource_rule_matches(&rule, "UPDATE", "apps", "v1", "deployments", "status"));
         assert!(resource_rule_matches(&rule, "UPDATE", "apps", "v1", "deployments", ""));
     }
 
     #[test]
     fn included_by_resource_rules_but_also_excluded_does_not_match() {
-        let include = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"] }];
-        let exclude = [ResourceRule { operations: &["*"], api_groups: &[""], api_versions: &["v1"], resources: &["configmaps"] }];
+        let include = [ResourceRule { operations: &["*"], api_groups: &["*"], api_versions: &["*"], resources: &["*"], scope: "*" }];
+        let exclude = [ResourceRule { operations: &["*"], api_groups: &[""], api_versions: &["v1"], resources: &["configmaps"], scope: "*" }];
         assert!(matches_resource_rules(&include, &exclude, "CREATE", "apps", "v1", "deployments", ""));
         assert!(!matches_resource_rules(&include, &exclude, "CREATE", "", "v1", "configmaps", ""));
     }
@@ -437,7 +480,7 @@ mod tests {
 
     #[test]
     fn build_request_object_carries_the_real_operation_and_identity_fields() {
-        let r = RequestVariable { uid: "abc-123", group: "apps", version: "v1", resource: "deployments", subresource: "", namespace: "default", name: "web", operation: "CREATE", dry_run: false };
+        let r = RequestVariable { uid: "abc-123", group: "apps", version: "v1", resource: "deployments", subresource: "", namespace: "default", name: "web", operation: "CREATE", dry_run: false, kind: "Deployment", user_info: None };
         let obj = build_request_object(&r);
         assert_eq!(obj["uid"], json!("abc-123"));
         assert_eq!(obj["operation"], json!("CREATE"));
@@ -449,10 +492,32 @@ mod tests {
 
     #[test]
     fn build_request_object_carries_the_real_subresource_on_both_shapes() {
-        let r = RequestVariable { uid: "x", group: "", version: "v1", resource: "pods", subresource: "status", namespace: "default", name: "p", operation: "UPDATE", dry_run: false };
+        let r = RequestVariable { uid: "x", group: "", version: "v1", resource: "pods", subresource: "status", namespace: "default", name: "p", operation: "UPDATE", dry_run: false, kind: "Pod", user_info: None };
         let obj = build_request_object(&r);
         assert_eq!(obj["subResource"], json!("status"));
         assert_eq!(obj["requestSubResource"], json!("status"));
+    }
+
+    #[test]
+    fn build_request_object_carries_kind_and_authenticated_user_info() {
+        let groups = vec!["developers".to_string()];
+        let r = RequestVariable {
+            uid: "request-id",
+            group: "apps",
+            version: "v1",
+            resource: "deployments",
+            subresource: "",
+            namespace: "default",
+            name: "web",
+            operation: "CREATE",
+            dry_run: false,
+            kind: "Deployment",
+            user_info: Some(RequestUserInfo { username: "alice", uid: Some("user-id"), groups: &groups }),
+        };
+        let obj = build_request_object(&r);
+        assert_eq!(obj["kind"]["kind"], json!("Deployment"));
+        assert_eq!(obj["requestKind"]["kind"], json!("Deployment"));
+        assert_eq!(obj["userInfo"], json!({"username": "alice", "uid": "user-id", "groups": ["developers"], "extra": {}}));
     }
 
     #[test]
