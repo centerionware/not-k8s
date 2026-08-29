@@ -76,6 +76,8 @@ pub async fn mutate(
         name,
         operation,
         dry_run,
+        kind: object.get("kind").and_then(Value::as_str).unwrap_or(""),
+        user_info: None,
     });
 
     let mut object = object;
