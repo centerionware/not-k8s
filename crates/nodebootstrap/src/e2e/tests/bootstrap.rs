@@ -800,10 +800,12 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
                         "%{http_code}",
                         "https://127.0.0.1:6443/healthz",
                     ])
-                    .output();
-                Ok(output.is_ok_and(|output| {
-                    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() != "000"
-                }))
+                    .output()
+                else {
+                    return Ok(false);
+                };
+                Ok(output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() != "000")
             },
         )
         .await?;
@@ -866,7 +868,7 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
             "nodeapiserver to reload its static token file",
             Duration::from_secs(30),
             || async {
-                let output = Command::new("curl")
+                let Ok(output) = Command::new("curl")
                     .args([
                         "-k",
                         "-sS",
