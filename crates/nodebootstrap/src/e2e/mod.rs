@@ -219,6 +219,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_patch_dry_run",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_authorizes_before_special_handlers",
         group: TestGroup::General,
     },
@@ -256,6 +260,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_nodeapiserver_validates_crd_status_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_webhook_match_conditions",
         group: TestGroup::General,
     },
     TestCase {
@@ -1609,6 +1617,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_exposes_inflight_metrics" => {
             bootstrap::nodeapiserver_exposes_inflight_metrics(context).await
         }
+        "test_nodeapiserver_honors_patch_dry_run" => bootstrap::nodeapiserver_honors_patch_dry_run(context).await,
         "test_nodeapiserver_authorizes_before_special_handlers" => {
             bootstrap::nodeapiserver_authorizes_before_special_handlers(context).await
         }
@@ -1636,6 +1645,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_validates_crd_status_subresource" => {
             bootstrap::nodeapiserver_validates_crd_status_subresource(context).await
+        },
+        "test_nodeapiserver_honors_webhook_match_conditions" => {
+            bootstrap::nodeapiserver_honors_webhook_match_conditions(context).await
         },
         "test_nodeapiserver_honors_resource_version_snapshot" => {
             bootstrap::nodeapiserver_honors_resource_version_snapshot(context).await
