@@ -17,9 +17,9 @@
 //! `APIResource` entry: `singularName` (not present anywhere in the
 //! vendored spec — real kube-apiserver derives it from Go type reflection,
 //! which this crate has no equivalent of), `shortNames`, `categories` (same
-//! reason), and subresources (`pods/status`, `pods/log`, ... — a named,
-//! separate skip in the parser itself, not a completeness claim by this
-//! module).
+//! reason). Subresources (`pods/status`, `pods/log`, ...) are emitted as
+//! their own `APIResource` entries from the generated table, including
+//! connect verbs where the OpenAPI paths advertise them.
 //!
 //! `serverAddressByClientCIDRs` is left empty in every document here —
 //! real kube-apiserver populates it from the request's own observed
@@ -231,7 +231,7 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
         .map(|r| {
             let mut verbs: Vec<&str> = r.verbs.to_vec();
             verbs.sort_unstable();
-            json!({
+            let mut value = json!({
                 "name": r.resource,
                 // Real kube-apiserver's own RESTMapper default when a type
                 // doesn't declare an explicit singular form — this crate
@@ -241,7 +241,12 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
                 "namespaced": r.namespaced,
                 "kind": r.kind,
                 "verbs": verbs,
-            })
+            });
+            if r.response_group != group || r.response_version != version {
+                value["group"] = json!(r.response_group);
+                value["version"] = json!(r.response_version);
+            }
+            value
         })
         .collect();
     Some(json!({
@@ -274,7 +279,12 @@ pub fn api_resource_list_with_crds(group: &str, version: &str, crds: &[Discovera
                 .map(|r| {
                     let mut verbs: Vec<&str> = r.verbs.to_vec();
                     verbs.sort_unstable();
-                    json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": verbs})
+                    let mut value = json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": verbs});
+                    if r.response_group != group || r.response_version != version {
+                        value["group"] = json!(r.response_group);
+                        value["version"] = json!(r.response_version);
+                    }
+                    value
                 })
                 .collect()
         })
@@ -349,7 +359,7 @@ fn group_discovery_value(group: &str) -> Value {
             let resources = codegen::api_resources_by_group_version().get(&(group, *version));
             let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
             sorted.sort_by_key(|r| r.resource);
-            let resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(group, version, r)).collect();
+            let resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
             json!({
                 "version": version,
                 "resources": resource_values,
@@ -411,7 +421,7 @@ fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], a
             let resources = codegen::api_resources_by_group_version().get(&(group, version.as_str()));
             let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
             sorted.sort_by_key(|r| r.resource);
-            let mut resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(group, version, r)).collect();
+            let mut resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
             resource_values.extend(crds.iter().filter(|r| r.group == group && &r.version == version).map(crd_resource_discovery_value));
             json!({
                 "version": version,
@@ -440,19 +450,17 @@ fn crd_resource_discovery_value(r: &DiscoverableResource) -> Value {
     })
 }
 
-fn api_resource_discovery_value(group: &str, version: &str, r: &codegen::api_resources::ApiResource) -> Value {
+fn api_resource_discovery_value(r: &codegen::api_resources::ApiResource) -> Value {
     let mut verbs: Vec<&str> = r.verbs.to_vec();
     verbs.sort_unstable();
     json!({
         "resource": r.resource,
-        "responseKind": {"group": group, "version": version, "kind": r.kind},
+        "responseKind": {"group": r.response_group, "version": r.response_version, "kind": r.kind},
         "scope": if r.namespaced { "Namespaced" } else { "Cluster" },
         "singularResource": r.kind.to_lowercase(),
         "verbs": verbs,
-        // shortNames/categories/subresources: same named, deliberate gap
-        // as api_resource_list() above — not present anywhere in the
-        // vendored spec (shortNames/categories) or a separate, named skip
-        // in the discovery parser itself (subresources).
+        // shortNames/categories are not present in the vendored spec and
+        // therefore remain absent from this generated discovery shape.
     })
 }
 

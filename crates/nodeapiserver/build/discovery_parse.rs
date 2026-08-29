@@ -24,14 +24,12 @@
 //!   whenever `"list"` is present instead, since every real REST storage
 //!   supporting list also supports watching that same route.
 //! - Subresources (`.../pods/{name}/status`, `/log`, `/exec`, `/proxy`,
-//!   ...) — skipped for this slice. A subresource needs its own
-//!   `APIResource` entry with `name: "pods/status"` in real discovery;
-//!   that's real, separate follow-up work, not implied by this parser's
-//!   completeness.
-//! - `connect` actions (proxy/exec/attach/portforward) — only ever appear
-//!   on subresource paths in the vendored set, so they're already
-//!   filtered out by the subresource skip above; not treated as a
-//!   verb on the parent resource.
+//!   ...) — included as their own `APIResource` entries with names such as
+//!   `pods/status`, matching real discovery. Paths with an additional
+//!   wildcard tail (for example `pods/{name}/proxy/{path}`) remain skipped.
+//! - `connect` actions (proxy/exec/attach/portforward) — retained on the
+//!   corresponding subresource entry. They are never added to the parent
+//!   resource because the resource key includes the subresource suffix.
 //!
 //! # The `{namespace}` vs `{name}` disambiguation
 //!
@@ -54,6 +52,8 @@ use std::path::Path;
 pub struct ResourceEntry {
     pub group: String,
     pub version: String,
+    pub response_group: String,
+    pub response_version: String,
     pub resource: String,
     pub kind: String,
     pub namespaced: bool,
@@ -61,8 +61,12 @@ pub struct ResourceEntry {
 }
 
 pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
-    // (group, version, resource) -> (kind, namespaced-any, verbs)
-    let mut acc: BTreeMap<(String, String, String), (String, bool, BTreeSet<String>)> = BTreeMap::new();
+    // (API group, version, resource) -> (response group, response version,
+    // kind, namespaced-any, verbs). A subresource can use a response GVK
+    // from another group/version (for example apps/v1 deployments/scale
+    // returns autoscaling/v1 Scale) while remaining in its parent resource
+    // list.
+    let mut acc: BTreeMap<(String, String, String), (String, String, String, bool, BTreeSet<String>)> = BTreeMap::new();
 
     let mut files: Vec<_> = std::fs::read_dir(root)
         .unwrap_or_else(|e| panic!("reading {}: {e}", root.display()))
@@ -78,10 +82,9 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
         let Some(paths) = doc.get("paths").and_then(Value::as_object) else { continue };
 
         for (path_str, path_obj) in paths {
-            let Some((namespaced, resource_segs)) = classify_path(path_str) else { continue };
-            // Both the collection-path and single-item-path shapes
-            // contribute verbs to the same resource entry — this parser
-            // doesn't need to distinguish which shape a given path was.
+            let Some((group, version, namespaced, resource_segs)) = classify_path(path_str) else { continue };
+            // Collection, single-item, and single-item-subresource paths
+            // contribute verbs to the same resource entry.
             let Some(resource) = resource_shape(resource_segs) else { continue };
 
             let Some(verb_blocks) = path_obj.as_object() else { continue };
@@ -89,7 +92,7 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
                 let Some(action) = verb_obj.get("x-kubernetes-action").and_then(Value::as_str) else { continue };
                 let Some(verb) = normalize_verb(action) else { continue };
                 let Some(gvk) = verb_obj.get("x-kubernetes-group-version-kind") else { continue };
-                let (Some(group), Some(version), Some(kind)) = (
+                let (Some(gvk_group), Some(gvk_version), Some(kind)) = (
                     gvk.get("group").and_then(Value::as_str),
                     gvk.get("version").and_then(Value::as_str),
                     gvk.get("kind").and_then(Value::as_str),
@@ -99,15 +102,15 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
 
                 let entry = acc
                     .entry((group.to_string(), version.to_string(), resource.to_string()))
-                    .or_insert_with(|| (kind.to_string(), false, BTreeSet::new()));
-                entry.1 |= namespaced;
-                entry.2.insert(verb.to_string());
+                    .or_insert_with(|| (gvk_group.to_string(), gvk_version.to_string(), kind.to_string(), false, BTreeSet::new()));
+                entry.3 |= namespaced;
+                entry.4.insert(verb.to_string());
             }
         }
     }
 
     acc.into_iter()
-        .map(|((group, version, resource), (kind, namespaced, mut verbs))| {
+        .map(|((group, version, resource), (response_group, response_version, kind, namespaced, mut verbs))| {
             // "watch" never appears on the modern GET-collection route's
             // own x-kubernetes-action (confirmed against the vendored
             // spec directly: that route's action is "list"; "watch" only
@@ -123,28 +126,37 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
             if verbs.contains("list") {
                 verbs.insert("watch".to_string());
             }
-            ResourceEntry { group, version, resource, kind, namespaced, verbs: verbs.into_iter().collect() }
+            ResourceEntry {
+                group,
+                version,
+                response_group,
+                response_version,
+                resource,
+                kind,
+                namespaced,
+                verbs: verbs.into_iter().collect(),
+            }
         })
         .collect()
 }
 
-/// Splits a path into `(namespaced, remaining_segments)`, or `None` to
+/// Splits a path into `(group, version, namespaced, remaining_segments)`, or `None` to
 /// skip it entirely (root document paths, the deprecated `/watch/` family,
 /// or anything not under `/api`/`/apis`).
-fn classify_path(path_str: &str) -> Option<(bool, Vec<&str>)> {
+fn classify_path(path_str: &str) -> Option<(&str, &str, bool, Vec<&str>)> {
     let segs: Vec<&str> = path_str.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
-    let rest: &[&str] = match segs.first().copied() {
-        Some("api") => &segs[2.min(segs.len())..], // "api", version
-        Some("apis") => &segs[3.min(segs.len())..], // "apis", group, version
+    let (group, version, rest): (&str, &str, &[&str]) = match segs.as_slice() {
+        ["api", version, rest @ ..] => ("", version, rest),
+        ["apis", group, version, rest @ ..] => (group, version, rest),
         _ => return None,
     };
     if rest.is_empty() || rest[0] == "watch" {
         return None;
     }
     if rest[0] == "namespaces" && rest.get(1) == Some(&"{namespace}") {
-        Some((true, rest[2..].to_vec()))
+        Some((group, version, true, rest[2..].to_vec()))
     } else {
-        Some((false, rest.to_vec()))
+        Some((group, version, false, rest.to_vec()))
     }
 }
 
@@ -156,6 +168,13 @@ fn resource_shape(segs: Vec<&str>) -> Option<String> {
     match segs.as_slice() {
         [resource] if !resource.starts_with('{') => Some(resource.to_string()),
         [resource, name] if !resource.starts_with('{') && *name == "{name}" => Some(resource.to_string()),
+        [resource, name, subresource]
+            if !resource.starts_with('{')
+                && *name == "{name}"
+                && !subresource.starts_with('{') =>
+        {
+            Some(format!("{resource}/{subresource}"))
+        }
         _ => None,
     }
 }
@@ -170,11 +189,10 @@ fn normalize_verb(action: &str) -> Option<&'static str> {
         "delete" => Some("delete"),
         "deletecollection" => Some("deletecollection"),
         "watch" => Some("watch"),
+        "connect" => Some("connect"),
         // "watchlist" only ever appears on the already-skipped deprecated
-        // /watch/ path family; "connect" only on already-skipped
-        // subresource paths. Neither should reach here against the real
-        // vendored data, but fail closed (skip the verb) rather than
-        // guessing at an unrecognized action.
+        // /watch/ path family. Fail closed rather than guessing at an
+        // unrecognized action.
         _ => None,
     }
 }
@@ -187,6 +205,8 @@ pub fn render(entries: &[ResourceEntry]) -> String {
     out.push_str("pub struct ApiResource {\n");
     out.push_str("    pub group: &'static str,\n");
     out.push_str("    pub version: &'static str,\n");
+    out.push_str("    pub response_group: &'static str,\n");
+    out.push_str("    pub response_version: &'static str,\n");
     out.push_str("    pub resource: &'static str,\n");
     out.push_str("    pub kind: &'static str,\n");
     out.push_str("    pub namespaced: bool,\n");
@@ -197,9 +217,11 @@ pub fn render(entries: &[ResourceEntry]) -> String {
     for e in &sorted {
         let verbs: Vec<String> = e.verbs.iter().map(|v| format!("{v:?}")).collect();
         out.push_str(&format!(
-            "    ApiResource {{ group: {:?}, version: {:?}, resource: {:?}, kind: {:?}, namespaced: {}, verbs: &[{}] }},\n",
+            "    ApiResource {{ group: {:?}, version: {:?}, response_group: {:?}, response_version: {:?}, resource: {:?}, kind: {:?}, namespaced: {}, verbs: &[{}] }},\n",
             e.group,
             e.version,
+            e.response_group,
+            e.response_version,
             e.resource,
             e.kind,
             e.namespaced,
