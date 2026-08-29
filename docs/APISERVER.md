@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `391ed35` on
+This snapshot is checked against `origin/nodeapiserver` at `5f23283` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -2178,14 +2178,17 @@ used*:
    Because this Rust CEL layer has no static type checker, overload misuse is
    reported as a runtime function error rather than rejected during compile.
 
-   **The remaining named CEL libraries are now narrowed to `format` and
-   `authz`**: `kubernetes.regex` is wired with upstream's `find` and
-   `findAll` member functions, including the optional non-negative match
-   limit and the real empty-string/empty-list no-match results. Invalid
-   patterns surface as CEL execution errors. The Rust `regex` engine is the
-   runtime implementation; it covers the RE2-compatible patterns used by
-   Kubernetes, while this crate's type-checker-free CEL layer reports
-   overload misuse at runtime rather than at compile time.
+   **The remaining named CEL library is now `authz`**: `kubernetes.regex` is
+   wired with upstream's `find` and `findAll` member functions, including the
+   optional non-negative match limit and the real empty-string/empty-list
+   no-match results. Invalid patterns surface as CEL execution errors. The
+   `kubernetes.format` library is also wired with native optional values,
+   named DNS/label/qualified-name, URI, UUID, byte, date, and datetime
+   validators. Valid input returns optional.none; invalid input returns the
+   upstream-shaped list of validation messages. The Rust `regex` engine covers
+   the RE2-compatible patterns used by Kubernetes, while this crate's
+   type-checker-free CEL layer reports overload misuse at runtime rather than
+   at compile time.
    Type-checking a rule against its declared schema at
    CRD-acceptance time (catching a rule that references a field the
    schema doesn't have, or compares incompatible types) is also still not
