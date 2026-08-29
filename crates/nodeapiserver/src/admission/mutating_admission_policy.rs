@@ -79,6 +79,9 @@ pub async fn mutate(
     });
 
     let mut object = object;
+    let old_labels = old_object
+        .map(crate::cacher::selector::object_labels)
+        .unwrap_or_default();
     for policy in &policies {
         let Some(policy_name) = object_name_ref(policy) else {
             continue;
@@ -91,7 +94,11 @@ pub async fn mutate(
             resource_rules: &resource_rules,
             exclude_resource_rules: &exclude_resource_rules,
             namespace_selector: decoded.namespace_selector,
-            object_selector: decoded.object_selector,
+            // The upstream object selector matches when either the new or
+            // old object matches.  The pure evaluator accepts one label map,
+            // so perform that two-object rule here and leave it out of the
+            // borrowed definition below.
+            object_selector: None,
             match_conditions: &decoded.match_conditions,
             validations: &validations,
             failure_policy: decoded.failure_policy,
@@ -110,6 +117,7 @@ pub async fn mutate(
                 subresource,
                 &namespace_labels,
                 &crate::cacher::selector::object_labels(&object),
+                &old_labels,
             ) {
                 continue;
             }
@@ -139,6 +147,12 @@ pub async fn mutate(
 
             for params in parameter_values {
                 let labels = crate::cacher::selector::object_labels(&object);
+                if !decoded.object_selector.map_or(true, |selector| {
+                    policy_matching::matches_label_selector(Some(selector), &labels)
+                        || policy_matching::matches_label_selector(Some(selector), &old_labels)
+                }) {
+                    continue;
+                }
                 let vars = policy_matching::build_eval_vars(
                     Some(&object),
                     old_object,
@@ -323,6 +337,7 @@ fn binding_matches(
     subresource: &str,
     namespace_labels: &BTreeMap<String, String>,
     object_labels: &BTreeMap<String, String>,
+    old_object_labels: &BTreeMap<String, String>,
 ) -> bool {
     let Some(match_resources) = binding.pointer("/spec/matchResources") else {
         return true;
@@ -347,7 +362,8 @@ fn binding_matches(
     include
         && !excluded
         && selector_matches(match_resources.get("namespaceSelector"), namespace_labels)
-        && selector_matches(match_resources.get("objectSelector"), object_labels)
+        && (selector_matches(match_resources.get("objectSelector"), object_labels)
+            || selector_matches(match_resources.get("objectSelector"), old_object_labels))
 }
 
 fn raw_rule_matches(
@@ -523,6 +539,7 @@ mod tests {
             "configmaps",
             "",
             &BTreeMap::new(),
+            &BTreeMap::new(),
             &BTreeMap::new()
         ));
     }
@@ -538,6 +555,7 @@ mod tests {
             "deployments",
             "status",
             &BTreeMap::new(),
+            &BTreeMap::new(),
             &BTreeMap::new()
         ));
         assert!(!binding_matches(
@@ -549,6 +567,32 @@ mod tests {
             "",
             &BTreeMap::new(),
             &BTreeMap::new()
+        ));
+    }
+
+    #[test]
+    fn object_selector_matches_either_side_of_an_update() {
+        let binding = json!({
+            "spec": {
+                "matchResources": {
+                    "objectSelector": {"matchLabels": {"managed": "yes"}}
+                }
+            }
+        });
+        let new_labels = BTreeMap::new();
+        let old_labels = [("managed".to_string(), "yes".to_string())]
+            .into_iter()
+            .collect();
+        assert!(binding_matches(
+            &binding,
+            "UPDATE",
+            "",
+            "v1",
+            "configmaps",
+            "",
+            &BTreeMap::new(),
+            &new_labels,
+            &old_labels,
         ));
     }
 
