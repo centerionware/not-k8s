@@ -959,6 +959,32 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
     result
 }
 
+pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("inflight metrics are a nodeapiserver-only check"));
+    }
+
+    let endpoint = format!("{}/metrics", cfg.apiserver_server().trim_end_matches('/'));
+    let output = Command::new("curl")
+        .args(["-k", "-sS", "--max-time", "10", &endpoint])
+        .output()
+        .context("reading nodeapiserver inflight metrics")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "nodeapiserver metrics request failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metrics = String::from_utf8_lossy(&output.stdout);
+    anyhow::ensure!(
+        metrics.contains("# TYPE apiserver_current_inflight_requests gauge")
+            && metrics.contains("apiserver_current_inflight_requests{request_kind=\"mutating\"}")
+            && metrics.contains("apiserver_current_inflight_requests{request_kind=\"readonly\"}"),
+        "nodeapiserver did not expose both inflight request kinds: {metrics}"
+    );
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
     context: &E2eContext,
 ) -> Result<()> {
