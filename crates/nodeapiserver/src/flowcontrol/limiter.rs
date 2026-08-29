@@ -181,7 +181,9 @@ async fn acquire_priority(
         }
         if try_claim(&state) {
             guard.disarm();
-            return Ok(PriorityLease { state });
+            let lease_state = state.clone();
+            drop(notified);
+            return Ok(PriorityLease { state: lease_state });
         }
         notified.await;
         drop(guard);
