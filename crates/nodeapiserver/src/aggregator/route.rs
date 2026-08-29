@@ -1,4 +1,4 @@
-//! Phase 4's remaining live-wiring half: finds the one stored, non-local
+//! Phase 3's live-wiring half: finds the one stored, non-local
 //! `APIService` (if any) that claims a given `(group, version)` — the
 //! real question `server::listener` has to answer before it can decide
 //! whether a request belongs to this build's own local dispatch or to an

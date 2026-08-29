@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `28c23d7` on
+This snapshot is checked against `origin/nodeapiserver` at `c8cedb7` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -54,7 +54,7 @@ explanation of each boundary.
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, and REST/watch conversion webhooks are integrated; full storage-version schema revalidation remains. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
-| M. APF/audit/observability | **in progress** | Audit, health, metrics, and bounded APF plumbing are present; full fair queueing, seat borrowing, distinguishers, and sampled inflight semantics remain. |
+| M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, and flow distinguishers are present; full fair queueing, seat borrowing, and sampled inflight semantics remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The existing nodebootstrap path can select and install nodeapiserver; nodebootstrap's own bootstrap features are tracked separately. |
 

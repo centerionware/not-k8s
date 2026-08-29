@@ -38,10 +38,9 @@
 //! `apiextensions::registry::resolve_in` already makes for CRDs);
 //! `server::listener::aggregate_proxy` is the dispatch glue — fetches the
 //! backing Service/`EndpointSlice`s, runs the exact same
-//! `availability::preflight_check` fresh on every request (this build
-//! still has no reconciliation loop caching the resulting condition —
-//! Phase 2's remaining gap, below — so this is a real, honest substitute:
-//! slower than reading an already-computed condition, never wrong),
+//! `availability::preflight_check` fresh on every request when a positive
+//! cached condition still needs backing Service data to resolve the dial
+//! target (a deliberate freshness check),
 //! resolves the dial target (`proxy_target::resolve`), builds this
 //! backend's own TLS trust (`client_tls::build_client_config` — real
 //! `spec.caBundle`/`.insecureSkipTLSVerify` semantics, `webpki-roots` for
@@ -59,8 +58,8 @@
 //! **Phase 3 done, including live resource enumeration.**
 //! `aggregator::route::discoverable_group_versions` lists every stored,
 //! non-local `APIService`, runs the same real pre-flight check
-//! `aggregate_proxy` runs before a dial (fresh every call, same
-//! Phase-2-gap reasoning as `aggregate_proxy` itself), and returns the
+//! `aggregate_proxy` runs before a dial (fresh every call, since the
+//! backing endpoint may change independently), and returns the
 //! `(group, version)` pairs that currently pass; `server::discovery::
 //! merged_group_version_map` takes this as a third merge input alongside
 //! the static table and Group K's CRD-sourced one, wired into `/apis`/
@@ -77,14 +76,6 @@
 //! api-resources`/`kubectl get <aggregated-resource>` now both work
 //! against a real aggregated backend, the same as `kubectl
 //! api-versions` already did.
-//!
-//! **Phase 2's remaining gap**: no live reconciliation loop yet that
-//! actually watches `APIService`/Service/EndpointSlice objects and writes
-//! `status.conditions` back — `aggregate_proxy` runs the same pre-flight
-//! logic per-request instead (see above), a real working substitute, not
-//! a stub, but real upstream's own `status.conditions` on a fetched
-//! `APIService` document still won't reflect live availability the way a
-//! real cluster's `kubectl get apiservices` output would.
 //!
 //! **Real build-order correction, found while scoping Phases 3/4**:
 //! `docs/APISERVER.md`'s own Group L section explains why Phase 4 (this
