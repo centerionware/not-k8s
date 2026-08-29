@@ -134,6 +134,10 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
     };
 
     let manifest_url = cert_manager_manifest_url();
+    let nodeapiserver_target = matches!(
+        crate::config::Config::from_env()?.target,
+        crate::config::Target::NodeApiserver
+    );
     let issuer_name = format!("nodebootstrap-e2e-issuer-{}", std::process::id());
     let certificate_name = "nodebootstrap-e2e-certificate";
     let secret_name = "nodebootstrap-e2e-tls";
@@ -257,19 +261,22 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
             applied_issuer.data.pointer("/spec/selfSigned").is_some(),
             "server-side apply did not preserve the CRD-backed ClusterIssuer spec"
         );
-        anyhow::ensure!(
-            applied_issuer
-                .data
-                .pointer("/metadata/managedFields")
-                .and_then(Value::as_array)
-                .is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        entry.get("manager").and_then(Value::as_str) == Some("nodebootstrap-e2e")
-                            && entry.get("operation").and_then(Value::as_str) == Some("Apply")
-                    })
-                }),
-            "server-side apply did not record the CRD field manager"
-        );
+        if nodeapiserver_target {
+            anyhow::ensure!(
+                applied_issuer
+                    .data
+                    .pointer("/metadata/managedFields")
+                    .and_then(Value::as_array)
+                    .is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            entry.get("manager").and_then(Value::as_str)
+                                == Some("nodebootstrap-e2e")
+                                && entry.get("operation").and_then(Value::as_str) == Some("Apply")
+                        })
+                    }),
+                "nodeapiserver server-side apply did not record the CRD field manager"
+            );
+        }
 
         let owner = configmaps
             .create(
