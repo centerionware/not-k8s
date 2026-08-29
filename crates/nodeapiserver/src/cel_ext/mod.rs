@@ -87,6 +87,8 @@
 //! quantity` library (`.../library/quantity.go`), including its opaque
 //! `Quantity` value, constructor, scalar conversions, arithmetic, and
 //! comparison member functions.
+//! `kubernetes_ip` is the corresponding strict IP parser and classifier
+//! surface from upstream's `kubernetes.net.ip` library.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -118,6 +120,7 @@ pub mod decl_type;
 pub mod authorizer;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
+pub mod kubernetes_ip;
 pub mod path;
 
 use cel::{Context, Program, Value as CelValue};
@@ -213,6 +216,16 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("isLessThan", kubernetes_quantity::is_less_than_binding);
     ctx.add_function("isGreaterThan", kubernetes_quantity::is_greater_than_binding);
     ctx.add_function("compareTo", kubernetes_quantity::compare_to_binding);
+    ctx.add_function("ip", kubernetes_ip::ip_binding);
+    ctx.add_function("ip.isCanonical", kubernetes_ip::is_canonical_binding);
+    ctx.add_function("isIP", kubernetes_ip::is_ip_binding);
+    ctx.add_function("family", kubernetes_ip::family_binding);
+    ctx.add_function("isUnspecified", kubernetes_ip::is_unspecified_binding);
+    ctx.add_function("isLoopback", kubernetes_ip::is_loopback_binding);
+    ctx.add_function("isLinkLocalMulticast", kubernetes_ip::is_link_local_multicast_binding);
+    ctx.add_function("isLinkLocalUnicast", kubernetes_ip::is_link_local_unicast_binding);
+    ctx.add_function("isGlobalUnicast", kubernetes_ip::is_global_unicast_binding);
+    ctx.add_function("string", kubernetes_ip::string_binding);
     authorizer::register(ctx);
 }
 
@@ -596,6 +609,17 @@ mod tests {
         assert_eq!(eval_bool_with_vars("quantity('50Mi').isGreaterThan(quantity('50M'))", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("quantity('50M').isLessThan(quantity('100M'))", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("quantity('50k').asApproximateFloat() == 50000.0", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isIP('127.0.0.1')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isIP('::ffff:192.0.2.1')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("ip('127.0.0.1').family() == 4", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip('::1').family() == 6", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip('0.0.0.0').isUnspecified()", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip('224.0.0.1').isLinkLocalMulticast()", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip('169.254.169.254').isLinkLocalUnicast()", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip('192.168.0.1').isGlobalUnicast()", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip('2001:DB8::ABCD').string() == '2001:db8::abcd'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip.isCanonical('2001:db8::abcd')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("ip.isCanonical('2001:DB8::ABCD')", &[]).unwrap(), false);
     }
 
     #[test]
