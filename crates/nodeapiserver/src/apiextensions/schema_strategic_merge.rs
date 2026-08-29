@@ -24,6 +24,18 @@
 
 use serde_json::Value;
 
+fn schema_property<'a>(schema: &'a Value, name: &str) -> Option<&'a Value> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get(name))
+        .or_else(|| {
+            schema
+                .get("additionalProperties")
+                .filter(|value| value.is_object())
+        })
+}
+
 /// Applies a strategic merge patch to `original`, shaped like `schema` —
 /// see this module's own doc comment for the semantics.
 pub fn apply(schema: &Value, original: &Value, patch: &Value) -> Value {
@@ -44,7 +56,6 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
         _ => {}
     }
 
-    let properties = schema.get("properties").and_then(Value::as_object);
     let mut result = orig_map.clone();
     apply_primitive_list_deletes(&mut result, patch_map);
     for (key, patch_value) in patch_map {
@@ -56,7 +67,7 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
             continue;
         }
 
-        let field_schema = properties.and_then(|p| p.get(key));
+        let field_schema = schema_property(schema, key);
         let existing = result.get(key).cloned();
 
         let merged = match (existing, patch_value) {
@@ -66,12 +77,11 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
                 Value::Array(merge_list(field_schema.expect("checked by is_merge_list"), &orig_list, patch_list))
             }
             (Some(orig_value @ Value::Object(_)), Value::Object(_)) => {
-                // Recurse using *this field's own* schema when the
-                // parent names it in `properties`; an unrecognized field
-                // (e.g. the parent used a schema-shaped
-                // `additionalProperties` instead) merges generically —
-                // same fallback reasoning the compiled implementation's
-                // own doc comment gives for an unknown `ref_schema`.
+                // Recurse using this field's own schema. For a map with
+                // schema-shaped `additionalProperties`, that schema is the
+                // value shape and therefore remains available for nested
+                // list merge decisions. An entirely unknown field still
+                // uses the generic fallback.
                 let empty = Value::Null;
                 merge(field_schema.unwrap_or(&empty), &orig_value, patch_value)
             }
@@ -83,11 +93,28 @@ fn merge(schema: &Value, original: &Value, patch: &Value) -> Value {
             result.insert(key.clone(), merged);
         }
     }
-    for (key, order) in patch_map.iter().filter_map(|(key, value)| key.strip_prefix("$setElementOrder/").map(|field| (field, value))) {
-        let Some(existing) = result.get(key).and_then(Value::as_array).map(|existing| existing.to_vec()) else { continue };
-        let Some(field_schema) = properties.and_then(|p| p.get(key)) else { continue };
-        let Some(merge_key) = merge_keys(field_schema).first().copied() else { continue };
-        result.insert(key.to_string(), Value::Array(reorder_list(&existing, order, merge_key)));
+    for (key, order) in patch_map.iter().filter_map(|(key, value)| {
+        key.strip_prefix("$setElementOrder/")
+            .map(|field| (field, value))
+    }) {
+        let Some(existing) = result
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|existing| existing.to_vec())
+        else {
+            continue;
+        };
+        let Some(field_schema) = schema_property(schema, key) else {
+            continue;
+        };
+        let keys = merge_keys(field_schema);
+        if keys.is_empty() {
+            continue;
+        }
+        result.insert(
+            key.to_string(),
+            Value::Array(reorder_list(&existing, order, &keys)),
+        );
     }
     Value::Object(result)
 }
@@ -104,18 +131,33 @@ fn apply_primitive_list_deletes(result: &mut serde_json::Map<String, Value>, pat
     }
 }
 
-fn reorder_list(existing: &[Value], order: &Value, merge_key: &str) -> Vec<Value> {
-    let Some(order) = order.as_array() else { return existing.to_vec() };
+fn reorder_list(existing: &[Value], order: &Value, merge_keys: &[&str]) -> Vec<Value> {
+    let Some(order) = order.as_array() else {
+        return existing.to_vec();
+    };
     let mut remaining = existing.to_vec();
     let mut ordered = Vec::with_capacity(existing.len());
     for requested in order {
-        let Some(value) = requested.get(merge_key) else { continue };
-        if let Some(index) = remaining.iter().position(|item| item.get(merge_key) == Some(value)) {
+        if let Some(index) = remaining
+            .iter()
+            .position(|item| same_key_values(item, requested, merge_keys))
+        {
             ordered.push(remaining.remove(index));
         }
     }
     ordered.extend(remaining);
     ordered
+}
+
+fn same_key_values(left: &Value, right: &Value, keys: &[&str]) -> bool {
+    let (Some(left), Some(right)) = (left.as_object(), right.as_object()) else {
+        return false;
+    };
+    keys.iter()
+        .all(|key| match (left.get(*key), right.get(*key)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        })
 }
 
 /// True when `field_schema` names `x-kubernetes-list-type: "map"` with a
@@ -312,5 +354,64 @@ mod tests {
         let merged = apply(&schema, &original, &patch);
         assert_eq!(merged["args"], json!(["--one"]));
         assert_eq!(merged["ports"], json!([{"name": "metrics"}, {"name": "http"}]));
+    }
+
+    #[test]
+    fn runtime_element_order_uses_all_composite_list_map_keys() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "mounts": {
+                    "type": "array",
+                    "x-kubernetes-list-type": "map",
+                    "x-kubernetes-list-map-keys": ["container", "path"],
+                    "items": {"type": "object"},
+                },
+            },
+        });
+        let original = json!({"mounts": [
+            {"container": "app", "path": "/data"},
+            {"container": "app", "path": "/cache"},
+        ]});
+        let patch = json!({"$setElementOrder/mounts": [
+            {"container": "app", "path": "/cache"},
+            {"container": "app", "path": "/data"},
+        ]});
+        let merged = apply(&schema, &original, &patch);
+        assert_eq!(merged["mounts"][0]["path"], "/cache");
+        assert_eq!(merged["mounts"][1]["path"], "/data");
+    }
+
+    #[test]
+    fn nested_list_merge_uses_the_schema_of_additional_properties_values() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "ports": {
+                                "type": "array",
+                                "x-kubernetes-list-type": "map",
+                                "x-kubernetes-list-map-keys": ["name"],
+                                "items": {"type": "object"},
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        let original = json!({"data": {"one": {"ports": [
+            {"name": "http", "port": 80},
+            {"name": "metrics", "port": 9090},
+        ]}}});
+        let patch = json!({"data": {"one": {"ports": [
+            {"name": "http", "port": 8080},
+        ]}}});
+        let merged = apply(&schema, &original, &patch);
+        assert_eq!(merged["data"]["one"]["ports"].as_array().unwrap().len(), 2);
+        assert_eq!(merged["data"]["one"]["ports"][0]["port"], 8080);
     }
 }

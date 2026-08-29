@@ -215,8 +215,12 @@ async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, hyper::Error
 }
 
 fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxedBody> {
+    json_response_with_content_type(status, value, "application/json")
+}
+
+fn json_response_with_content_type(status: StatusCode, value: &serde_json::Value, content_type: &str) -> Response<BoxedBody> {
     let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-    Response::builder().status(status).header("Content-Type", "application/json").body(body_from_bytes(bytes)).unwrap()
+    Response::builder().status(status).header("Content-Type", content_type).body(body_from_bytes(bytes)).unwrap()
 }
 
 /// Real upstream's own `resourceVersion` query parameter for a `watch`
@@ -884,6 +888,16 @@ fn wants_aggregated_discovery(accept_header: Option<&str>) -> bool {
     accepted.as_kind.as_deref() == Some("APIGroupDiscoveryList") && accepted.as_group.as_deref() == Some("apidiscovery.k8s.io") && accepted.as_version.as_deref() == Some("v2")
 }
 
+const AGGREGATED_DISCOVERY_CONTENT_TYPE: &str = "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList";
+
+fn discovery_content_type(parts: &[String], accept_header: Option<&str>) -> &'static str {
+    if parts.len() == 1 && matches!(parts.first().map(String::as_str), Some("api") | Some("apis")) && wants_aggregated_discovery(accept_header) {
+        AGGREGATED_DISCOVERY_CONTENT_TYPE
+    } else {
+        "application/json"
+    }
+}
+
 /// Pure and unit-tested (unlike `handle`, which needs a live TLS
 /// connection to exercise at all): `parts` is the already-split, prefix-
 /// intact path (`["api", "v1"]`, `["apis", "apps", "v1"]`, ...) from
@@ -1509,7 +1523,7 @@ async fn handle(
             (Vec::new(), Vec::new())
         };
         match route_discovery(&parts, accept_header, &crds, &aggregated) {
-            DiscoveryRoute::Found(doc) => return Ok(json_response(StatusCode::OK, &doc)),
+            DiscoveryRoute::Found(doc) => return Ok(json_response_with_content_type(StatusCode::OK, &doc, discovery_content_type(&parts, accept_header))),
             DiscoveryRoute::FoundRaw(bytes) => {
                 return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body_from_bytes(bytes.to_vec())).unwrap());
             }
@@ -1693,9 +1707,8 @@ async fn handle(
         // `namespace_lifecycle` and `LimitRanger` admission can run
         // against the real candidate object in between, matching the
         // three-patch-kind branch's own coverage exactly. **Named,
-        // honest scope remaining** (`rest::server_side_apply`'s own doc
-        // comment): no CRD support yet — create-on-apply against a
-        // built-in resource is real and landed.
+        // The runtime-schema CRD path is handled by the same orchestration;
+        // schema-less legacy CRD records remain a defensive 501 outcome.
         if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -1753,6 +1766,9 @@ async fn handle(
             let (mut candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
                 Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => {
+                    return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply requires a usable structural schema")));
+                }
                 Ok(rest::ApplyPrepareOutcome::Conflict(conflicts)) => return Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
                 Ok(rest::ApplyPrepareOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
                 Ok(rest::ApplyPrepareOutcome::NoOp(object)) => return Ok(json_response(StatusCode::OK, &object)),
@@ -1827,6 +1843,9 @@ async fn handle(
                 Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyOutcome::UnsupportedForCrd) => {
+                    Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply requires a usable structural schema")))
+                }
                 Ok(rest::ApplyOutcome::Conflict(conflicts)) => Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
                 Ok(rest::ApplyOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
                 Err(e) => {
@@ -3253,6 +3272,9 @@ async fn handle(
                     }
                     Ok(rest::CreateOutcome::AlreadyExists) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
                     Ok(rest::CreateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    Ok(rest::CreateOutcome::UnsupportedForCrd) => {
+                        return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "this resource has no usable structural schema")));
+                    }
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "rest::create failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -3784,6 +3806,8 @@ mod tests {
         let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
         assert_eq!(doc["items"][0]["metadata"]["name"], "");
+        assert_eq!(discovery_content_type(&parts("/api"), Some(accept)), AGGREGATED_DISCOVERY_CONTENT_TYPE);
+        assert_eq!(discovery_content_type(&parts("/api/v1"), Some(accept)), "application/json");
     }
 
     #[test]

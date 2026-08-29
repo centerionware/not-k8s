@@ -39,12 +39,11 @@
 //! claiming, then runs `update()` for real conflict detection against
 //! every other manager.
 //!
-//! **Not yet landed**: the real `managedFields` wire format
-//! (`ManagedFieldsEntry`, `metadata.managedFields[]` — this module works
-//! entirely in terms of `BTreeMap<String, Set>`, not that wire shape) and
-//! `server::rest`/`application/apply-patch+yaml` wiring to actually reach
-//! `apply()` from a real request — both real, separate, not-yet-started
-//! work. Also not ported: upstream's own `IgnoreFilter`/`IgnoredFields`
+//! The real `managedFields` wire format and
+//! `server::rest`/`application/apply-patch+yaml` wiring now live in
+//! `patch::managed_fields` and `server::rest`; this module still operates
+//! on `BTreeMap<String, Set>`. Also not ported: upstream's own
+//! `IgnoreFilter`/`IgnoredFields`
 //! (server-managed field exclusion, e.g. `status`) and
 //! `reconcileManagedFieldsWithSchemaChanges` (schema atomic<->granular
 //! migration bookkeeping) — both real, both named as separate
