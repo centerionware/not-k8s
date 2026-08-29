@@ -706,11 +706,11 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
         let flow_uid = flow.pointer("/metadata/uid").and_then(Value::as_str).context("FlowSchema response had no UID")?;
         let priority_uid = priority.pointer("/metadata/uid").and_then(Value::as_str).context("PriorityLevelConfiguration response had no UID")?;
         anyhow::ensure!(
-            headers.contains(&format!("x-kubernetes-pf-flowschema-uid: {flow_uid}".to_ascii_lowercase())),
+            headers.contains(&format!("x-kubernetes-pf-flowschema-uid: {flow_uid}").to_ascii_lowercase()),
             "APF response did not identify the selected FlowSchema: {headers}"
         );
         anyhow::ensure!(
-            headers.contains(&format!("x-kubernetes-pf-priority-level-uid: {priority_uid}".to_ascii_lowercase())),
+            headers.contains(&format!("x-kubernetes-pf-priority-level-uid: {priority_uid}").to_ascii_lowercase()),
             "APF response did not identify the selected PriorityLevelConfiguration: {headers}"
         );
         Ok(())
