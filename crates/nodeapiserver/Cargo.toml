@@ -152,6 +152,10 @@ cel = { version = "0.14", features = ["json", "structs"] }
 # Runtime CRD `pattern` constraints use the same Rust regex engine as the
 # CEL dependency already brings into the lockfile.
 regex = "1"
+# Group K: URL parsing for the Kubernetes URL CEL extension library. The
+# workspace already carries this version transitively; declaring it directly
+# makes the URL value implementation's dependency explicit.
+url = "2"
 
 [build-dependencies]
 # Group A codegen: parses vendor/openapi-spec/v3/*.json and
