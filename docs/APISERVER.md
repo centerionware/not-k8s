@@ -1140,7 +1140,8 @@ an external `authorization.k8s.io/v1` `SubjectAccessReview` authorizer and
 preserves its three decisions: `Allow` short-circuits the local Node/RBAC
 chain, `Deny` returns `403`, and `NoOpinion` falls through to the next local
 authorizer. Transport and malformed-response failures fail closed with
-`503`; webhook retry, caching, and the remaining upstream diagnostic details
+`503`; transient transport/5xx and rate-limit failures now use a small bounded
+retry, while decision caching and the remaining upstream diagnostic details
 are still outside the current scope. PKI primitives
 (`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
