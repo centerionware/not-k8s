@@ -1926,22 +1926,20 @@ used*:
    upstream's own CRD-acceptance-time static check
    (`pkg/apis/apiextensions/validation/validation.go`'s own
    `ValidateCustomResourceDefinitionOpenAPISchema`, fetched and read
-   directly): a rule whose own `cost().max` exceeds real upstream's own
-   `StaticEstimatedCostLimit` (`10_000_000` — confirmed directly,
-   numerically identical to `RuntimeCELCostBudget` but a conceptually
-   distinct constant: one bounds a rule's estimated worst case at
-   CRD-acceptance time, the other bounds actual accumulated runtime cost
-   against one real object) is rejected. **Real, named scope gap found
-   while researching this**: real upstream's own actual comparison is
-   `cr.MaxCost * cardinalityCost.MaxCardinality`
-   (`getExpressionCost`) — accounting for a rule nested under a
-   repeating array/map schema running once per element, not just once.
-   This crate has no `MaxCardinality`/`CELSchemaContext`-equivalent
-   cardinality-propagation concept yet (distinct from `DeclType::
-   max_elements`, which only bounds one node's own element count, not
-   the product of every ancestor's own bound) — real, separate,
-   not-yet-started work; `check_rule_cost` compares a rule's raw,
-   single-evaluation cost only, still a real, useful check on its own.
+   directly): a rule whose effective worst-case cost exceeds real
+   upstream's own `StaticEstimatedCostLimit` (`10_000_000` — confirmed
+   directly, numerically identical to `RuntimeCELCostBudget` but a
+   conceptually distinct constant: one bounds a rule's estimated worst
+   case at CRD-acceptance time, the other bounds actual accumulated
+   runtime cost against one real object) is rejected. The effective cost
+   is `cr.MaxCost * cardinalityCost.MaxCardinality`
+   (`getExpressionCost`): the recursive CRD schema walk propagates the
+   maximum product of enclosing `maxItems`/`maxProperties` bounds, so a
+   rule nested under a repeating array/map is charged once per possible
+   element/entry rather than only once. That propagated cardinality is
+   distinct from `DeclType::max_elements`, which bounds one node's own
+   element count. The standalone `check_rule_cost` helper remains the
+   single-evaluation form for callers that do not have a schema path.
    Also not ported: real upstream's own static `ast.OutputType() !=
    cel.BoolType` rejection (this crate's type-checker-free parser can
    only discover a non-bool rule at runtime, via `eval_bool`'s existing

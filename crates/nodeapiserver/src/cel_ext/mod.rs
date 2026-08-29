@@ -23,13 +23,12 @@
 //! own real loop-cost multiplication — see that module's own doc
 //! comment for the exact real scope and the one named gap
 //! (`cel.bind()`'s own distinct cost shape isn't detected)); `budget` —
-//! `check_rule_cost`, the real accept/reject decision for one rule
-//! against [`budget::STATIC_ESTIMATED_COST_LIMIT`] (real upstream's own
-//! `StaticEstimatedCostLimit`), scoped to a single rule's own raw cost —
-//! **not yet accounting for real upstream's own `MaxCardinality`
-//! multiplication** (a rule nested under a repeating array/map could
-//! run once per element; this crate has no cardinality-propagation
-//! concept yet, see that module's own doc comment). **Now wired into a
+//! `check_rule_cost`/`check_rule_cost_with_cardinality`, the real
+//! accept/reject decision for one rule against
+//! [`budget::STATIC_ESTIMATED_COST_LIMIT`] (real upstream's own
+//! `StaticEstimatedCostLimit`), including the propagated
+//! `MaxCardinality` multiplier for rules nested below repeating
+//! array/map schemas. **Now wired into a
 //! real CRD-acceptance request path**: `apiextensions::cel_validations`
 //! recursively walks a `CustomResourceDefinition`'s own declared schema
 //! (any nesting level, not just the root) and `server::rest::create`/
