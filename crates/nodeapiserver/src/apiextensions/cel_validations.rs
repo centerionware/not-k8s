@@ -13,9 +13,10 @@
 //! root, a rule can live on any nested `properties`/`items`/
 //! `additionalProperties` schema, evaluated with `self` bound to
 //! *that* level's own value, not the whole object — each rule's real
-//! cost is checked against [`crate::cel_ext::budget::check_rule_cost`],
-//! using a `DeclType` built fresh from that same nested schema level
-//! (never the root's), since a rule's own `self` genuinely means
+//! cost is checked against the rule's own schema cost multiplied by the
+//! maximum number of enclosing array elements/map entries that can reach
+//! that level, using a `DeclType` built fresh from that same nested schema
+//! level (never the root's), since a rule's own `self` genuinely means
 //! "the value here," not "the value at the top."
 //!
 //! [`validate_crd_cel_costs`] is the actual `CustomResourceDefinition`
@@ -31,7 +32,7 @@
 //! rule now finds out at CRD-acceptance time, not the first time some
 //! real custom resource instance trips it at runtime.
 
-use crate::cel_ext::budget::{check_rule_cost, RuleCostError};
+use crate::cel_ext::budget::{check_rule_cost_with_cardinality, RuleCostError};
 use crate::cel_ext::decl_type;
 use crate::cel_ext::type_check::{check_root_rule, check_rule, TypeError};
 use serde_json::Value;
@@ -54,7 +55,7 @@ pub struct CelCostViolation {
 /// resource using it exists).
 pub fn validate_schema_cel_costs(schema: &Value) -> Vec<CelCostViolation> {
     let mut out = Vec::new();
-    walk(schema, "", &mut out);
+    walk(schema, "", 1, &mut out);
     out
 }
 
@@ -100,7 +101,7 @@ fn walk_types(schema: &Value, path: &str, out: &mut Vec<CelTypeViolation>) {
     }
 }
 
-fn walk(schema: &Value, path: &str, out: &mut Vec<CelCostViolation>) {
+fn walk(schema: &Value, path: &str, cardinality: u64, out: &mut Vec<CelCostViolation>) {
     if let Some(rules) = schema.get("x-kubernetes-validations").and_then(Value::as_array) {
         // A schema that declares rules must itself convert to a real
         // DeclType to check them against. When it can't (a shape
@@ -114,7 +115,7 @@ fn walk(schema: &Value, path: &str, out: &mut Vec<CelCostViolation>) {
         if let Some(root) = decl_type::decl_type_for(schema) {
             for (i, rule) in rules.iter().enumerate() {
                 let Some(rule_str) = rule.get("rule").and_then(Value::as_str) else { continue };
-                if let Err(error) = check_rule_cost(&root, rule_str) {
+                if let Err(error) = check_rule_cost_with_cardinality(&root, rule_str, cardinality) {
                     out.push(CelCostViolation { path: path.to_string(), rule_index: i, error });
                 }
             }
@@ -123,18 +124,31 @@ fn walk(schema: &Value, path: &str, out: &mut Vec<CelCostViolation>) {
 
     if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
         for (name, prop_schema) in properties {
-            walk(prop_schema, &join_path(path, name), out);
+            walk(prop_schema, &join_path(path, name), cardinality, out);
         }
     }
     if let Some(items) = schema.get("items") {
-        walk(items, &format!("{path}[*]"), out);
+        let child_cardinality = cardinality.saturating_mul(max_collection_cardinality(schema, "maxItems"));
+        walk(items, &format!("{path}[*]"), child_cardinality, out);
     }
     // Only a real nested schema, never the boolean `additionalProperties:
     // true/false` shorthand -- same distinction `decl_type::decl_type_for`
     // itself already draws for exactly the same reason.
     if let Some(additional) = schema.get("additionalProperties").filter(|a| a.is_object()) {
-        walk(additional, &format!("{path}[*]"), out);
+        let child_cardinality = cardinality.saturating_mul(max_collection_cardinality(schema, "maxProperties"));
+        walk(additional, &format!("{path}[*]"), child_cardinality, out);
     }
+}
+
+/// Return the maximum number of children a collection schema can expose.
+/// Explicit bounds are preferred; otherwise use the same request-size-derived
+/// bound as `decl_type_for`. An unrepresentable/invalid shape stays
+/// conservative so a nested rule is never silently under-costed.
+fn max_collection_cardinality(schema: &Value, keyword: &str) -> u64 {
+    if let Some(value) = schema.get(keyword).and_then(Value::as_i64) {
+        return value.max(0) as u64;
+    }
+    decl_type::decl_type_for(schema).map(|decl| decl.max_elements.max(0) as u64).unwrap_or(u64::MAX)
 }
 
 fn join_path(prefix: &str, field: &str) -> String {
@@ -313,6 +327,28 @@ mod tests {
         let violations = validate_schema_cel_costs(&schema);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].path, "tags[*]");
+    }
+
+    #[test]
+    fn a_nested_rule_cost_includes_each_enclosing_array_element() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string", "maxLength": 1_000_000}},
+                        "x-kubernetes-validations": [{"rule": "self.name.matches('a+')"}],
+                    },
+                },
+            },
+        });
+        let violations = validate_schema_cel_costs(&schema);
+        assert_eq!(violations.len(), 1, "expected the ancestor array bound to make the nested rule too expensive: {violations:?}");
+        assert_eq!(violations[0].path, "items[*]");
+        assert!(matches!(violations[0].error, RuleCostError::TooExpensive { .. }));
     }
 
     #[test]
