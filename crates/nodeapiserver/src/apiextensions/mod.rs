@@ -74,6 +74,7 @@
 pub mod cel_evaluate;
 pub mod cel_validations;
 pub mod conditions;
+pub mod conversion;
 pub mod registry;
 pub mod schema_defaults;
 pub mod schema_apply;

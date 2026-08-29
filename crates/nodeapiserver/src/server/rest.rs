@@ -217,6 +217,7 @@ struct ResolvedResource {
     /// separate, wider gap this field doesn't attempt to close — see
     /// `update_status`/`patch_status`'s own doc comment).
     has_status_subresource: bool,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
 }
 
 /// The single place every real verb in this module decides what
@@ -236,11 +237,53 @@ struct ResolvedResource {
 /// of this function ever listing CRDs to resolve a request for CRDs.
 async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<ResolvedResource>, Error> {
     if let Some(kind) = resolve_kind(group, version, resource) {
-        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, has_status_subresource: true }));
+        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, has_status_subresource: true, conversion_webhook: None }));
     }
     Ok(resolve_crd(storage, group, version, resource)
         .await?
-        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, has_status_subresource: r.has_status_subresource }))
+        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
+}
+
+async fn convert_to_storage_version(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    conversion_webhook: Option<&apiextensions::registry::ConversionWebhook>,
+    object: Value,
+) -> Result<Value, Error> {
+    let Some(conversion_webhook) = conversion_webhook else {
+        return Ok(object);
+    };
+    if conversion_webhook.storage_version == version {
+        return Ok(object);
+    }
+    let mut objects = apiextensions::conversion::convert(storage, group, conversion_webhook, &conversion_webhook.storage_version, vec![object]).await.map_err(|error| Error::InvalidProtobufRequest(error.to_string()))?;
+    objects.pop().ok_or_else(|| Error::InvalidProtobufRequest("conversion webhook returned no object".to_string()))
+}
+
+async fn convert_to_requested_version(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    kind: &str,
+    conversion_webhook: Option<&apiextensions::registry::ConversionWebhook>,
+    object: Value,
+) -> Result<Value, Error> {
+    let object = if let Some(conversion_webhook) = conversion_webhook {
+        let source_version = object
+            .get("apiVersion")
+            .and_then(Value::as_str)
+            .map(|api_version| api_version.rsplit_once('/').map_or(api_version, |(_, version)| version));
+        if source_version != Some(version) {
+            let mut objects = apiextensions::conversion::convert(storage, group, conversion_webhook, version, vec![object]).await.map_err(|error| Error::InvalidProtobufRequest(error.to_string()))?;
+            objects.pop().ok_or_else(|| Error::InvalidProtobufRequest("conversion webhook returned no object".to_string()))?
+        } else {
+            object
+        }
+    } else {
+        object
+    };
+    Ok(crate::scheme::conversion::to_version(group, version, kind, object))
 }
 
 /// The dynamic (CRD-only) half of [`resolve_resource`] — skips the
@@ -268,7 +311,20 @@ async fn resolve_crd(storage: &mut StorageClient, group: &str, version: &str, re
 /// Group K's dynamic registry directly — every other verb goes through
 /// [`resolve_resource`] instead, which this module keeps private).
 pub async fn resolve_dynamic_kind(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<String>, Error> {
-    Ok(resolve_crd(storage, group, version, resource).await?.map(|r| r.kind))
+    Ok(resolve_dynamic_resource(storage, group, version, resource).await?.map(|r| r.kind))
+}
+
+/// Public dynamic-registry lookup for callers that need more than the
+/// resolved Kind. In particular, the watch path needs the CRD's conversion
+/// webhook configuration while it formats events from the storage-version
+/// cache for a client's requested served version.
+pub async fn resolve_dynamic_resource(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+) -> Result<Option<apiextensions::registry::CrdResource>, Error> {
+    resolve_crd(storage, group, version, resource).await
 }
 
 /// Every stored `CustomResourceDefinition`, decoded — `server::listener`'s
@@ -519,7 +575,7 @@ pub async fn get_at_revision(storage: &mut StorageClient, cache: Option<&crate::
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(GetOutcome::UnknownResource);
     };
-    let kind = resolved.kind;
+    let kind = resolved.kind.clone();
     let key = keys::object_key(group, resource, namespace, name);
 
     if resource_version <= 0 {
@@ -527,7 +583,8 @@ pub async fn get_at_revision(storage: &mut StorageClient, cache: Option<&crate::
             if let Some(entry) = cache.get(key.as_bytes()) {
                 let mut object = decrypt_and_decode_with_rotation(storage, group, resource, key.as_bytes(), &entry.value, entry.mod_revision).await?;
                 set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
-                return Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)));
+                let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
+                return Ok(GetOutcome::Found(object));
             }
         }
     }
@@ -553,7 +610,8 @@ pub async fn get_at_revision(storage: &mut StorageClient, cache: Option<&crate::
     // already carried a real `resourceVersion`, so nothing exercised a
     // genuine `GET` followed by an `UPDATE` until this one did.
     set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
-    Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)))
+    let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
+    Ok(GetOutcome::Found(object))
 }
 
 #[derive(Debug, PartialEq)]
@@ -681,7 +739,7 @@ pub async fn list_at_revision(
                 // upstream does.
                 let mut object = decrypt_and_decode_with_rotation(storage, group, resource, key, &entry.value, entry.mod_revision).await?;
                 set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
-                object = crate::scheme::conversion::to_version(group, version, kind, object);
+                object = convert_to_requested_version(storage, group, version, kind, resolved.conversion_webhook.as_ref(), object).await?;
                 if selector::object_matches(&object, &label_reqs, &field_reqs) {
                     items.push(object);
                 }
@@ -734,7 +792,7 @@ pub async fn list_at_revision(
     for kv in &resp.kvs {
         let mut object = decrypt_and_decode_with_rotation(storage, group, resource, &kv.key, &kv.value, kv.mod_revision).await?;
         set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
-        object = crate::scheme::conversion::to_version(group, version, kind, object);
+        object = convert_to_requested_version(storage, group, version, kind, resolved.conversion_webhook.as_ref(), object).await?;
         if selector::object_matches(&object, &label_reqs, &field_reqs) {
             items.push(object);
         }
@@ -944,15 +1002,22 @@ pub async fn create_with_options(storage: &mut StorageClient, group: &str, versi
         object["status"] = apiextensions::conditions::compute_status(&object, other_crds.iter(), &[], &now_rfc3339());
     }
 
+    // Conversion sees the complete object, including the system metadata
+    // generated above. This is the same object shape a webhook receives for
+    // an object that is about to be persisted, not the pre-create body.
+    object = convert_to_storage_version(storage, group, version, resolved.conversion_webhook.as_ref(), object).await?;
+
     let key = keys::object_key(group, resource, namespace, &name);
     if dry_run {
         let existing = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
         if !existing.kvs.is_empty() {
             return Ok(CreateOutcome::AlreadyExists);
         }
+        let object = convert_to_requested_version(storage, group, version, kind, resolved.conversion_webhook.as_ref(), object).await?;
         return Ok(CreateOutcome::Created(object));
     }
-    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let stored_version = resolved.conversion_webhook.as_ref().map_or(version, |conversion| conversion.storage_version.as_str());
+    let api_version = if group.is_empty() { stored_version.to_string() } else { format!("{group}/{stored_version}") };
     let object_bytes = match resolved.schema {
         Some(schema) => protobuf::encode_message(schema, &object)?,
         None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
@@ -985,6 +1050,7 @@ pub async fn create_with_options(storage: &mut StorageClient, group: &str, versi
 
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
     set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+    let object = convert_to_requested_version(storage, group, version, kind, resolved.conversion_webhook.as_ref(), object).await?;
     Ok(CreateOutcome::Created(object))
 }
 
@@ -1154,6 +1220,7 @@ pub async fn bind_pod(
         Some(namespace),
         object,
         false,
+        None,
     )
     .await?
     {
@@ -1265,7 +1332,7 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
         }
     }
 
-    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run).await
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone()).await
 }
 
 /// Real upstream's generic status subresource (`GenericStatusREST`,
@@ -1313,6 +1380,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         return Ok(UpdateOutcome::ObjectNotFound);
     };
     let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+    let existing_object_for_request = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), existing_object.clone()).await?;
 
     let Some(submitted_rv) = body.pointer("/metadata/resourceVersion").and_then(Value::as_str).and_then(|s| s.parse::<i64>().ok()) else {
         return Ok(UpdateOutcome::MissingResourceVersion);
@@ -1321,7 +1389,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         return Ok(UpdateOutcome::Conflict);
     }
 
-    let mut object = existing_object.clone();
+    let mut object = existing_object_for_request;
     match body.get("status") {
         Some(status) => object["status"] = status.clone(),
         None => {
@@ -1336,7 +1404,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run).await
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone()).await
 }
 
 /// Applies a CRD version's `properties.status` schema to a status-subresource
@@ -1396,6 +1464,7 @@ async fn persist_update(
     namespace: Option<&str>,
     mut object: Value,
     dry_run: bool,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
 ) -> Result<UpdateOutcome, Error> {
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
@@ -1407,6 +1476,7 @@ async fn persist_update(
     }
 
     object = crate::scheme::conversion::to_version(group, version, kind, object);
+    object = convert_to_storage_version(storage, group, version, conversion_webhook.as_ref(), object).await?;
 
     // Removing the last finalizer from an object already marked for deletion
     // completes the deletion. This mirrors the generic registry's
@@ -1414,6 +1484,7 @@ async fn persist_update(
     // is removed atomically instead of being written back as a live object.
     if has_deletion_timestamp(existing_object) && !has_finalizers(&object) {
         if dry_run {
+            let object = convert_to_requested_version(storage, group, version, kind, conversion_webhook.as_ref(), object).await?;
             return Ok(UpdateOutcome::Updated(object));
         }
         let compare = pb::Compare {
@@ -1440,14 +1511,17 @@ async fn persist_update(
         }
         let revision = response.header.map(|header| header.revision).unwrap_or(0);
         set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        let object = convert_to_requested_version(storage, group, version, kind, conversion_webhook.as_ref(), object).await?;
         return Ok(UpdateOutcome::Updated(object));
     }
 
     if dry_run {
+        let object = convert_to_requested_version(storage, group, version, kind, conversion_webhook.as_ref(), object).await?;
         return Ok(UpdateOutcome::Updated(object));
     }
 
-    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let stored_version = conversion_webhook.as_ref().map_or(version, |conversion| conversion.storage_version.as_str());
+    let api_version = if group.is_empty() { stored_version.to_string() } else { format!("{group}/{stored_version}") };
     let object_bytes = match schema {
         Some(schema) => protobuf::encode_message(schema, &object)?,
         None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
@@ -1477,6 +1551,7 @@ async fn persist_update(
 
     let revision = resp.header.map(|h| h.revision).unwrap_or(0);
     set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+    let object = convert_to_requested_version(storage, group, version, kind, conversion_webhook.as_ref(), object).await?;
     Ok(UpdateOutcome::Updated(object))
 }
 
@@ -1560,6 +1635,7 @@ pub struct PatchContext {
     schema: Option<&'static str>,
     open_api_schema: Option<Value>,
     kind: String,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
     key: String,
     existing_kv: mvccpb::KeyValue,
     existing_object: Value,
@@ -1635,15 +1711,16 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
         return Ok(PatchPrepareOutcome::ObjectNotFound);
     };
     let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+    let existing_object_for_request = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), existing_object.clone()).await?;
 
-    let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object, patch_doc) {
+    let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object_for_request, patch_doc) {
         Ok(object) => object,
         Err(msg) => return Ok(PatchPrepareOutcome::Invalid(vec![msg])),
     };
 
     Ok(PatchPrepareOutcome::Ready(
         patched,
-        PatchContext { schema: resolved.schema, open_api_schema: resolved.open_api_schema, kind: resolved.kind, key, existing_kv, existing_object },
+        PatchContext { schema: resolved.schema, open_api_schema: resolved.open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing_kv, existing_object },
     ))
 }
 
@@ -1699,7 +1776,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run).await
+    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run, context.conversion_webhook).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -1733,13 +1810,14 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         return Ok(UpdateOutcome::ObjectNotFound);
     };
     let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+    let existing_object_for_request = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), existing_object.clone()).await?;
 
-    let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object, patch_doc) {
+    let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object_for_request, patch_doc) {
         Ok(object) => object,
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
     };
 
-    let mut object = existing_object.clone();
+    let mut object = existing_object_for_request;
     match patched.get("status") {
         Some(status) => object["status"] = status.clone(),
         None => {
@@ -1754,7 +1832,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run).await
+    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone()).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
@@ -1851,6 +1929,7 @@ pub struct ApplyContext {
     /// runtime schema has already been consumed during preparation.
     schema: Option<&'static str>,
     kind: String,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
     key: String,
     /// `Some((existing_kv, live))` for an update-on-apply (persisted via
     /// [`persist_update`]'s update-if-matches `Txn`); `None` for
@@ -1968,12 +2047,13 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             }
         }
 
-        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: None }));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing: None }));
     };
 
     let live = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+    let live_for_request = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live.clone()).await?;
 
-    let stored_managed_fields = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let stored_managed_fields = live_for_request.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
     // A stored `managedFields` this crate can't parse (malformed, or an
     // entry with a `fieldsType` this crate doesn't understand — see
     // `managed_fields::parse_managed_fields`'s own doc comment) degrades
@@ -1984,8 +2064,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let managers = crate::patch::managed_fields::to_managers_map(&entries);
 
     let applied_result = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => crate::patch::updater::apply(schema, &live, &effective_config, &managers, manager, force),
-        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, &effective_config, &managers, manager, force),
+        (Some(schema), _) => crate::patch::updater::apply(schema, &live_for_request, &effective_config, &managers, manager, force),
+        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live_for_request, &effective_config, &managers, manager, force),
         (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
     };
     let applied = match applied_result {
@@ -1994,6 +2074,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
 
     let Some(mut object) = applied.object else {
+        let live = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live).await?;
         return Ok(ApplyPrepareOutcome::NoOp(live));
     };
 
@@ -2028,13 +2109,13 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         (None, None) => object,
     };
     if let Some(schema) = &open_api_schema {
-        let rule_violations = apiextensions::cel_evaluate::validate_object(schema, &object, Some(&live));
+        let rule_violations = apiextensions::cel_evaluate::validate_object(schema, &object, Some(&live_for_request));
         if !rule_violations.is_empty() {
             return Ok(ApplyPrepareOutcome::Invalid(rule_violations.into_iter().map(|v| v.to_string()).collect()));
         }
     }
 
-    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, key, existing: Some((existing_kv, live)) }))
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing: Some((existing_kv, live)) }))
 }
 
 fn prune_runtime_schema(schema: Option<&Value>, value: Value) -> Value {
@@ -2050,10 +2131,13 @@ fn prune_runtime_schema(schema: Option<&Value>, value: Value) -> Value {
 /// [`ApplyContext::existing`] calls for.
 pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value, dry_run: bool) -> Result<ApplyOutcome, Error> {
     let Some((existing_kv, live)) = context.existing else {
+        object = convert_to_storage_version(storage, group, version, context.conversion_webhook.as_ref(), object).await?;
         if dry_run {
+            let object = convert_to_requested_version(storage, group, version, &context.kind, context.conversion_webhook.as_ref(), object).await?;
             return Ok(ApplyOutcome::Applied(object));
         }
-        let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+        let stored_version = context.conversion_webhook.as_ref().map_or(version, |conversion| conversion.storage_version.as_str());
+        let api_version = if group.is_empty() { stored_version.to_string() } else { format!("{group}/{stored_version}") };
         let object_bytes = match context.schema {
             Some(schema) => protobuf::encode_message(schema, &object)?,
             None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
@@ -2081,10 +2165,11 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         }
         let revision = resp.header.map(|h| h.revision).unwrap_or(0);
         set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        let object = convert_to_requested_version(storage, group, version, &context.kind, context.conversion_webhook.as_ref(), object).await?;
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run).await? {
+    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run, context.conversion_webhook).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
@@ -2321,7 +2406,6 @@ pub async fn delete_with_options(
         }
     }
     let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
-    let mut object = crate::scheme::conversion::to_version(group, version, &kind, object);
 
     // A delete request against an object with finalizers is a graceful
     // deletion request, not an immediate storage delete. This is the
@@ -2330,17 +2414,20 @@ pub async fn delete_with_options(
     // physically removed.
     if has_finalizers(&object) {
         if has_deletion_timestamp(&object) {
+            let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
             return Ok(DeleteOutcome::Deleted(object));
         }
         set_metadata_field(&mut object, "deletionTimestamp", Value::String(now_rfc3339()));
         if dry_run {
+            let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
             return Ok(DeleteOutcome::Deleted(object));
         }
         let object_bytes = match resolved.schema {
             Some(schema) => protobuf::encode_message(schema, &object)?,
             None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
         };
-        let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+        let stored_version = resolved.conversion_webhook.as_ref().map_or(version, |conversion| conversion.storage_version.as_str());
+        let api_version = if group.is_empty() { stored_version.to_string() } else { format!("{group}/{stored_version}") };
         let envelope = encrypt_for_storage(storage, group, resource, key.as_bytes(), &protobuf::wrap_unknown(&api_version, &kind, &object_bytes))?;
         let compare = pb::Compare {
             key: key.clone().into_bytes(),
@@ -2366,10 +2453,12 @@ pub async fn delete_with_options(
         }
         let revision = response.header.map(|header| header.revision).unwrap_or(0);
         set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
+        let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
         return Ok(DeleteOutcome::Deleted(object));
     }
 
     if dry_run {
+        let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
         return Ok(DeleteOutcome::Deleted(object));
     }
 
@@ -2395,6 +2484,7 @@ pub async fn delete_with_options(
     if !response.succeeded {
         return Ok(DeleteOutcome::PreconditionFailed);
     }
+    let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
     Ok(DeleteOutcome::Deleted(object))
 }
 
@@ -2740,6 +2830,7 @@ mod tests {
             schema: Some(schema),
             open_api_schema: None,
             has_status_subresource: true,
+            conversion_webhook: None,
         };
         let decoded = decode_protobuf_object(&resolved, "configmaps", &envelope).unwrap();
         assert_eq!(decoded["apiVersion"], "v1");
@@ -2755,6 +2846,7 @@ mod tests {
             schema: None,
             open_api_schema: None,
             has_status_subresource: true,
+            conversion_webhook: None,
         };
         let envelope = protobuf::wrap_unknown("v1", "Secret", br#"{}"#);
         assert!(matches!(decode_protobuf_object(&resolved, "configmaps", &envelope), Err(Error::InvalidProtobufRequest(_))));

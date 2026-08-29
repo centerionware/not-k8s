@@ -103,8 +103,12 @@ use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
@@ -428,6 +432,115 @@ fn encode_watch_event(
     }
 }
 
+async fn encode_watch_event_with_conversion(
+    event: &crate::cacher::store::WatchEvent,
+    kind: &str,
+    api_version: &str,
+    storage: Option<StorageClient>,
+    group: &str,
+    resource: &str,
+    version: &str,
+    partial_metadata: bool,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+    let mut storage = storage;
+    match crate::server::watch_event::to_watch_event_json_with_conversion(
+        event,
+        kind,
+        api_version,
+        storage.as_mut(),
+        group,
+        resource,
+        conversion_webhook.as_ref(),
+    )
+    .await
+    {
+        None => None,
+        Some(Ok(mut event_json)) => {
+            if partial_metadata {
+                if let Some(object) = event_json.get_mut("object") {
+                    *object = crate::codec::partial_metadata::object(object);
+                }
+            }
+            let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
+            bytes.push(b'\n');
+            metrics::record_watch_event(group, version, resource);
+            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
+        }
+        Some(Err(error)) => Some(Err(Box::new(error) as BoxError)),
+    }
+}
+
+type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send>>;
+type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
+
+struct ConversionWatchState {
+    events: WatchEventStream,
+    pending: Option<WatchFrameFuture>,
+    kind: String,
+    api_version: String,
+    storage: Option<StorageClient>,
+    group: String,
+    resource: String,
+    version: String,
+    partial_metadata: bool,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+}
+
+struct ConversionWatchStream {
+    state: Arc<Mutex<ConversionWatchState>>,
+}
+
+impl tokio_stream::Stream for ConversionWatchStream {
+    type Item = Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut state = self.state.lock().expect("conversion watch state lock poisoned");
+        loop {
+            if state.pending.is_some() {
+                let poll = state.pending.as_mut().expect("pending conversion future exists").as_mut().poll(cx);
+                match poll {
+                    Poll::Ready(result) => {
+                        state.pending = None;
+                        if let Some(result) = result {
+                            return Poll::Ready(Some(result));
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            let event = match state.events.as_mut().poll_next(cx) {
+                Poll::Ready(Some(event)) => event,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            let kind = state.kind.clone();
+            let api_version = state.api_version.clone();
+            let storage = state.storage.clone();
+            let group = state.group.clone();
+            let resource = state.resource.clone();
+            let version = state.version.clone();
+            let partial_metadata = state.partial_metadata;
+            let conversion_webhook = state.conversion_webhook.clone();
+            state.pending = Some(Box::pin(async move {
+                encode_watch_event_with_conversion(
+                    &event,
+                    &kind,
+                    &api_version,
+                    storage,
+                    &group,
+                    &resource,
+                    &version,
+                    partial_metadata,
+                    conversion_webhook,
+                )
+                .await
+            }));
+        }
+    }
+}
+
 /// The real streaming `watch` response body: every already-retained
 /// history event past `start_revision` (`replay`), then every live event
 /// as it arrives on `rx`, each encoded by [`encode_watch_event`]. A
@@ -508,6 +621,7 @@ fn watch_response_body(
     resource: String,
     version: String,
     partial_metadata: bool,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
 ) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::wrappers::BroadcastStream;
@@ -522,8 +636,29 @@ fn watch_response_body(
     // their own `'static`-owned copy of the encryption-lookup context.
     let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
     let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
-    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata));
-    StreamBody::new(frames).boxed()
+    if conversion_webhook.is_none() {
+        let frames = filtered.filter_map(move |event| {
+            encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata)
+        });
+        return StreamBody::new(frames).boxed();
+    }
+
+    let events: WatchEventStream = Box::pin(filtered);
+    let stream = ConversionWatchStream {
+        state: Arc::new(Mutex::new(ConversionWatchState {
+            events,
+            pending: None,
+            kind,
+            api_version,
+            storage,
+            group,
+            resource,
+            version,
+            partial_metadata,
+            conversion_webhook,
+        })),
+    };
+    StreamBody::new(stream).boxed()
 }
 
 /// Runs the listener forever (until the process exits). Best-effort on
@@ -3420,12 +3555,16 @@ async fn handle(
         // once leaves an idle reflector running for the rest of this
         // process's life, real upstream's own per-CRD informer teardown
         // isn't modeled yet.
-        let cache_and_kind: Option<(crate::cacher::store::SharedCache, String)> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
+        let cache_and_kind: Option<(
+            crate::cacher::store::SharedCache,
+            String,
+            Option<crate::apiextensions::registry::ConversionWebhook>,
+        )> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
             if let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) {
-                Some((cache, kind.to_string()))
+                Some((cache, kind.to_string(), None))
             } else if let Some(mut client) = storage.clone() {
-                match rest::resolve_dynamic_kind(&mut client, &info.api_group, &info.api_version, &info.resource).await {
-                    Ok(Some(kind)) => Some((cache, kind)),
+                match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                    Ok(Some(resource)) => Some((cache, resource.kind, resource.conversion_webhook)),
                     Ok(None) => None,
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "watch: resolving the registered CRD-defined resource failed");
@@ -3438,8 +3577,11 @@ async fn handle(
         } else if rest::resolve_kind(&info.api_group, &info.api_version, &info.resource).is_some() {
             None
         } else if let Some(mut client) = storage.clone() {
-            match rest::resolve_dynamic_kind(&mut client, &info.api_group, &info.api_version, &info.resource).await {
-                Ok(Some(kind)) => Some((cache_registry.spawn(client, &info.api_group, &info.api_version, &info.resource), kind)),
+            match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(resource)) => {
+                    let cache = cache_registry.spawn(client, &info.api_group, &info.api_version, &info.resource);
+                    Some((cache, resource.kind, resource.conversion_webhook))
+                }
                 Ok(None) => None,
                 Err(e) => {
                     warn!(path = %path_str, error = ?e, "watch: resolving a possible CRD-defined resource failed");
@@ -3450,7 +3592,7 @@ async fn handle(
             None
         };
 
-        if let Some((cache, kind)) = cache_and_kind {
+        if let Some((cache, kind, conversion_webhook)) = cache_and_kind {
             if !cache.has_synced() {
                 if tokio::time::timeout(std::time::Duration::from_secs(30), cache.wait_until_synced()).await.is_err() {
                     warn!(path = %path_str, "watch: cache did not complete its initial LIST before the startup wait expired");
@@ -3496,6 +3638,7 @@ async fn handle(
                         info.resource.clone(),
                         info.api_version.clone(),
                         wants_partial_metadata,
+                        conversion_webhook,
                     );
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
@@ -4225,7 +4368,20 @@ mod tests {
         // artificially closing the channel first).
         drop(shared);
 
-        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new(), None, String::new(), "namespaces".to_string(), "v1".to_string(), false);
+        let body = watch_response_body(
+            replay,
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            None,
+        );
         let collected = body.collect().await.unwrap().to_bytes();
         let text = String::from_utf8(collected.to_vec()).unwrap();
         assert_eq!(text.lines().count(), 1);

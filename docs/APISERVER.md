@@ -13,7 +13,7 @@
 | H — Authentication | in progress | 6/7 |
 | I — Authorization | in progress | 5/6 |
 | J — Admission | in progress | 7/8 |
-| K — CustomResourceDefinitions | in progress | 6/7 |
+| K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 4/8 |
 | N — Streaming and proxy subresources | done for current scope | 5/5 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `be1454b` on
+This snapshot is checked against `origin/nodeapiserver` at `70d8417` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -52,7 +52,7 @@ explanation of each boundary.
 | H. Authentication | **in progress** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and static-token file reload are integrated; remaining authentication-file reload and some upstream diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
-| K. CRDs | **in progress** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, and proactive lifecycle cache refresh are integrated; conversion webhooks remain. |
+| K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, and REST/watch conversion webhooks are integrated; full storage-version schema revalidation remains. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, and bounded APF plumbing are present; full fair queueing, seat borrowing, distinguishers, and sampled inflight semantics remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
@@ -927,9 +927,9 @@ nested `$ref` fields, arrays, and maps, so source-version-only fields are not
 leaked to clients. Semantic shape changes remain explicit conversions: the
 real autoscaling HPA v1/v2 CPU target is converted between v1's
 `targetCPUUtilizationPercentage` and v2's Resource metric form (including
-status). Conversion webhooks and the small set of version pairs with
-hand-written semantic renames remain separate work; a missing target schema
-fails open to the existing GVK rewrite rather than silently dropping data.
+status). The small set of version pairs with hand-written semantic renames
+remains separate work; a missing target schema fails open to the existing GVK
+rewrite rather than silently dropping data.
 
 `scheme::quantity::Quantity` parses real upstream's own resource-quantity
 string format (`100m`, `1.5Gi`, `1e3`, …) — a faithful port of the real
@@ -1663,8 +1663,17 @@ uniqueness, and standard scalar formats are enforced by
 `apiextensions::schema_validation`. Cross-field consistency remains the
 CRD's `x-kubernetes-validations` CEL mechanism — runtime evaluation now has
 a shared request-side budget, while interpreter-level fuel accounting
-remains a real DoS-hardening limitation. **Not yet landed, named honestly**:
-conversion webhooks.
+remains a real DoS-hardening limitation.
+
+**CRD conversion webhooks are real for REST CRUD paths now** —
+`apiextensions::conversion` sends the ordered `ConversionReview` request to
+the configured URL or Service, reusing the admission client's ClusterIP
+resolution, TLS, and CA-bundle handling. CRD objects are converted to the
+declared storage version before writes and back to the requested served
+version for `GET`/`LIST`, watches, and write responses; the focused
+`tests/crd_roundtrip.rs` test proves this against a real nodestore and a
+local conversion webhook. Full storage-version schema revalidation remains
+an explicit follow-up limitation.
 
 **Status-subresource schema handling is real now** — for an established CRD
 version that declares `subresources.status`, both `update_status` and
