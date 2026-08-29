@@ -2,8 +2,9 @@
 //!
 //! The upstream library exposes a small fluent object graph rather than a
 //! JSON value: `authorizer.group("apps").resource("deployments")`
-//! produces a check which can be finished with `.namespace()`, `.name()` and
-//! `.check("get").allowed()`. The `cel` crate supports opaque values and
+//! produces a check which can be finished with `.namespace()`, `.name()`,
+//! `.fieldSelector()`, `.labelSelector()` and `.check("get").allowed()`. The
+//! `cel` crate supports opaque values and
 //! receiver functions, so this module preserves that shape while keeping the
 //! actual authorization decision in the existing RBAC implementation.
 //!
@@ -78,7 +79,16 @@ impl AuthorizationContext {
 enum AuthorizerValue {
     Authorizer(Arc<AuthorizationContext>),
     Group { context: Arc<AuthorizationContext>, group: String },
-    Resource { context: Arc<AuthorizationContext>, group: String, resource: String, subresource: String, namespace: String, name: String },
+    Resource {
+        context: Arc<AuthorizationContext>,
+        group: String,
+        resource: String,
+        subresource: String,
+        namespace: String,
+        name: String,
+        field_selector: String,
+        label_selector: String,
+    },
     Path { context: Arc<AuthorizationContext>, path: String },
     Decision { allowed: bool, reason: String, error: Option<String> },
 }
@@ -131,6 +141,8 @@ fn authorizer_map(context: Arc<AuthorizationContext>) -> Value {
         subresource: request.subresource,
         namespace: request.namespace,
         name: request.name,
+        field_selector: String::new(),
+        label_selector: String::new(),
     });
     Value::Map(Map::from(HashMap::from([
         ("requestResource".to_string(), request_resource),
@@ -190,11 +202,13 @@ fn group_resource(ftx: &FunctionContext, This(value): This<Value>, resource: Arc
         subresource: String::new(),
         namespace: String::new(),
         name: String::new(),
+        field_selector: String::new(),
+        label_selector: String::new(),
     }))
 }
 
 fn resource_subresource(ftx: &FunctionContext, This(value): This<Value>, subresource: Arc<String>) -> Result<Value, ExecutionError> {
-    let Some(AuthorizerValue::Resource { context, group, resource, namespace, name, .. }) = opaque_ref(&value) else {
+    let Some(AuthorizerValue::Resource { context, group, resource, namespace, name, field_selector, label_selector, .. }) = opaque_ref(&value) else {
         return Err(function_error(ftx, "subresource() requires a resource check"));
     };
     Ok(opaque(AuthorizerValue::Resource {
@@ -204,11 +218,13 @@ fn resource_subresource(ftx: &FunctionContext, This(value): This<Value>, subreso
         subresource: subresource.as_str().to_string(),
         namespace: namespace.clone(),
         name: name.clone(),
+        field_selector: field_selector.clone(),
+        label_selector: label_selector.clone(),
     }))
 }
 
 fn resource_namespace(ftx: &FunctionContext, This(value): This<Value>, namespace: Arc<String>) -> Result<Value, ExecutionError> {
-    let Some(AuthorizerValue::Resource { context, group, resource, subresource, name, .. }) = opaque_ref(&value) else {
+    let Some(AuthorizerValue::Resource { context, group, resource, subresource, name, field_selector, label_selector, .. }) = opaque_ref(&value) else {
         return Err(function_error(ftx, "namespace() requires a resource check"));
     };
     Ok(opaque(AuthorizerValue::Resource {
@@ -218,11 +234,13 @@ fn resource_namespace(ftx: &FunctionContext, This(value): This<Value>, namespace
         subresource: subresource.clone(),
         namespace: namespace.as_str().to_string(),
         name: name.clone(),
+        field_selector: field_selector.clone(),
+        label_selector: label_selector.clone(),
     }))
 }
 
 fn resource_name(ftx: &FunctionContext, This(value): This<Value>, name: Arc<String>) -> Result<Value, ExecutionError> {
-    let Some(AuthorizerValue::Resource { context, group, resource, subresource, namespace, .. }) = opaque_ref(&value) else {
+    let Some(AuthorizerValue::Resource { context, group, resource, subresource, namespace, field_selector, label_selector, .. }) = opaque_ref(&value) else {
         return Err(function_error(ftx, "name() requires a resource check"));
     };
     Ok(opaque(AuthorizerValue::Resource {
@@ -232,6 +250,44 @@ fn resource_name(ftx: &FunctionContext, This(value): This<Value>, name: Arc<Stri
         subresource: subresource.clone(),
         namespace: namespace.clone(),
         name: name.as_str().to_string(),
+        field_selector: field_selector.clone(),
+        label_selector: label_selector.clone(),
+    }))
+}
+
+fn resource_field_selector(ftx: &FunctionContext, This(value): This<Value>, selector: Arc<String>) -> Result<Value, ExecutionError> {
+    let Some(AuthorizerValue::Resource { context, group, resource, subresource, namespace, name, label_selector, .. }) = opaque_ref(&value) else {
+        return Err(function_error(ftx, "fieldSelector() requires a resource check"));
+    };
+    // Kubernetes carries the selector through the authorizer attributes. The
+    // current RBAC evaluator has no object-selection phase, so it remains on
+    // the opaque check value; malformed selectors are intentionally not
+    // rejected, matching upstream.
+    Ok(opaque(AuthorizerValue::Resource {
+        context: context.clone(),
+        group: group.clone(),
+        resource: resource.clone(),
+        subresource: subresource.clone(),
+        namespace: namespace.clone(),
+        name: name.clone(),
+        field_selector: selector.as_str().to_string(),
+        label_selector: label_selector.clone(),
+    }))
+}
+
+fn resource_label_selector(ftx: &FunctionContext, This(value): This<Value>, selector: Arc<String>) -> Result<Value, ExecutionError> {
+    let Some(AuthorizerValue::Resource { context, group, resource, subresource, namespace, name, field_selector, .. }) = opaque_ref(&value) else {
+        return Err(function_error(ftx, "labelSelector() requires a resource check"));
+    };
+    Ok(opaque(AuthorizerValue::Resource {
+        context: context.clone(),
+        group: group.clone(),
+        resource: resource.clone(),
+        subresource: subresource.clone(),
+        namespace: namespace.clone(),
+        name: name.clone(),
+        field_selector: field_selector.clone(),
+        label_selector: selector.as_str().to_string(),
     }))
 }
 
@@ -242,7 +298,7 @@ fn check(ftx: &FunctionContext, This(value): This<Value>, verb: Arc<String>) -> 
             let attrs = rbac::RequestAttributes { is_resource_request: false, verb: verb.as_str(), path, ..Default::default() };
             rbac::rules_allow(&attrs, &rules)
         }
-        Some(AuthorizerValue::Resource { context, group, resource, subresource, namespace, name }) => {
+        Some(AuthorizerValue::Resource { context, group, resource, subresource, namespace, name, .. }) => {
             let rules = context.rules_for(namespace);
             let attrs = rbac::RequestAttributes { is_resource_request: true, verb: verb.as_str(), api_group: group, resource, subresource, name, ..Default::default() };
             rbac::rules_allow(&attrs, &rules)
@@ -289,6 +345,8 @@ pub fn register(ctx: &mut Context) {
     ctx.add_function("subresource", resource_subresource);
     ctx.add_function("namespace", resource_namespace);
     ctx.add_function("name", resource_name);
+    ctx.add_function("fieldSelector", resource_field_selector);
+    ctx.add_function("labelSelector", resource_label_selector);
     ctx.add_function("check", check);
     ctx.add_function("allowed", decision_allowed);
     ctx.add_function("errored", decision_errored);
@@ -340,5 +398,23 @@ mod tests {
     fn fluent_group_resource_check_and_service_account_shape_work() {
         assert_eq!(eval("authorizer.group('apps').resource('deployments').namespace('default').name('web').check('get').allowed()", context(true)), Value::Bool(true));
         assert_eq!(eval("authorizer.serviceAccount('default', 'web').group('apps').resource('deployments').check('get').allowed()", context(true)), Value::Bool(false));
+    }
+
+    #[test]
+    fn resource_selectors_preserve_the_fluent_authorization_shape() {
+        assert_eq!(
+            eval(
+                "authorizer.group('apps').resource('deployments').fieldSelector('metadata.name=web').labelSelector('app=web').check('get').allowed()",
+                context(true),
+            ),
+            Value::Bool(true),
+        );
+        assert_eq!(
+            eval(
+                "authorizer.group('apps').resource('deployments').fieldSelector('not a selector').labelSelector('also not a selector').check('get').allowed()",
+                context(true),
+            ),
+            Value::Bool(true),
+        );
     }
 }
