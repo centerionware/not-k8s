@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn user_group_and_non_resource_wildcards_match() {
         let policy = policy(
-            "apiVersion: audit.k8s.io/v1\nkind: Policy\nrules:\n- level: None\n  userGroups: [system:authenticated]\n  nonResourceURLs: [/healthz*]\n",
+            "apiVersion: audit.k8s.io/v1\nkind: Policy\nrules:\n- level: None\n  userGroups: [system:authenticated]\n  nonResourceURLs: [/healthz*]\n- level: Metadata\n",
         );
         let groups = vec!["system:authenticated".to_string()];
         assert!(!policy.should_emit_response_complete(&info("/healthz/ready"), "alice", &groups));
