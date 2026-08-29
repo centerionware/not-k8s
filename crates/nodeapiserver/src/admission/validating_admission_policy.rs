@@ -232,7 +232,7 @@ pub fn evaluate_with_composed_cel_vars(
     variables: &[policy_matching::Variable<'_>],
     cel_vars: &[(&'static str, cel::Value)],
 ) -> PolicyOutcome {
-    evaluate_with_composed_cel_vars_and_scope(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, variables, validation_vars, None, cel_vars)
+    evaluate_with_composed_cel_vars_and_scope(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, validation_vars, variables, None, cel_vars)
 }
 
 /// [`evaluate_with_composed_cel_vars`] with the resolved namespacedness of

@@ -78,7 +78,7 @@ pub async fn validate(
     };
     let authorizer_vars = authorizer.as_ref().map(|authorizer| vec![("authorizer", authorizer.clone())]).unwrap_or_default();
 
-    let namespaced = rest::resource_is_namespaced(storage, group, version, resource).await?;
+    let namespaced = rest::resource_is_namespaced(storage, group, version, resource).await.map_err(|error| error.to_string())?;
 
     let (namespace_object, namespace_labels) = if namespace.is_empty() {
         (None, BTreeMap::new())
