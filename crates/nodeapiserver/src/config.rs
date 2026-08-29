@@ -4,6 +4,10 @@
 
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
+use std::time::Duration;
+
+const DEFAULT_AUTHORIZATION_WEBHOOK_AUTHORIZED_TTL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_AUTHORIZATION_WEBHOOK_UNAUTHORIZED_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -74,6 +78,11 @@ pub struct Config {
     /// When set, requests are denied if the webhook denies them and return
     /// `503` if the webhook cannot be reached or returns an invalid review.
     pub authorization_webhook_url: Option<String>,
+    /// Cache lifetimes for successful authorization-webhook decisions. A
+    /// zero duration disables the corresponding cache, matching the
+    /// upstream authorization configuration.
+    pub authorization_webhook_authorized_ttl: Duration,
+    pub authorization_webhook_unauthorized_ttl: Duration,
     /// APF's finite ordinary-request budgets. These mirror kube-apiserver's
     /// separate read and mutating request limits; the queue bound prevents
     /// unbounded memory growth while requests wait for a seat.
@@ -149,6 +158,8 @@ impl Default for Config {
             oidc_signing_algs: vec!["RS256".to_string(), "PS256".to_string(), "ES256".to_string()],
             oidc_ca_file: None,
             authorization_webhook_url: None,
+            authorization_webhook_authorized_ttl: DEFAULT_AUTHORIZATION_WEBHOOK_AUTHORIZED_TTL,
+            authorization_webhook_unauthorized_ttl: DEFAULT_AUTHORIZATION_WEBHOOK_UNAUTHORIZED_TTL,
             apf_max_requests_inflight: 400,
             apf_max_mutating_requests_inflight: 200,
             apf_queue_length_limit: 1000,
@@ -253,6 +264,14 @@ impl Config {
         }
         cfg.oidc_ca_file = path_env("NODEAPISERVER_OIDC_CA_FILE");
         cfg.authorization_webhook_url = string_env("NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL");
+        cfg.authorization_webhook_authorized_ttl = duration_env(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL",
+            cfg.authorization_webhook_authorized_ttl,
+        )?;
+        cfg.authorization_webhook_unauthorized_ttl = duration_env(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_UNAUTHORIZED_TTL",
+            cfg.authorization_webhook_unauthorized_ttl,
+        )?;
         cfg.apf_max_requests_inflight = usize_env(
             "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
             cfg.apf_max_requests_inflight,
@@ -310,6 +329,34 @@ fn usize_env(name: &str, default: usize) -> Result<usize> {
         }
         Err(_) => Ok(default),
     }
+}
+
+fn duration_env(name: &str, default: Duration) -> Result<Duration> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(default);
+    };
+    parse_duration(name, &value)
+}
+
+fn parse_duration(name: &str, value: &str) -> Result<Duration> {
+    let value = value.trim();
+    let (number, unit) = ["ns", "us", "µs", "ms", "s", "m", "h"]
+        .iter()
+        .find_map(|unit| value.strip_suffix(unit).map(|number| (number, *unit)))
+        .ok_or_else(|| anyhow!("{name} must be a duration such as 30s or 5m"))?;
+    let number = number
+        .parse::<u64>()
+        .map_err(|error| anyhow!("{name} has an invalid duration {value:?}: {error}"))?;
+    let nanos = match unit {
+        "ns" => number,
+        "us" | "µs" => number.saturating_mul(1_000),
+        "ms" => number.saturating_mul(1_000_000),
+        "s" => number.saturating_mul(1_000_000_000),
+        "m" => number.saturating_mul(60 * 1_000_000_000),
+        "h" => number.saturating_mul(60 * 60 * 1_000_000_000),
+        _ => unreachable!("the suffix list above is exhaustive"),
+    };
+    Ok(Duration::from_nanos(nanos))
 }
 
 fn parse_bool(name: &str, value: &str) -> Result<bool> {
@@ -612,5 +659,31 @@ mod tests {
             cfg.authorization_webhook_url.as_deref(),
             Some("https://authz.example/review")
         );
+    }
+
+    #[test]
+    fn authorization_webhook_cache_ttls_are_read_from_their_own_env_vars() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL",
+            "2m",
+        );
+        std::env::set_var(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_UNAUTHORIZED_TTL",
+            "250ms",
+        );
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL",
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_UNAUTHORIZED_TTL",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.authorization_webhook_authorized_ttl, Duration::from_secs(120));
+        assert_eq!(cfg.authorization_webhook_unauthorized_ttl, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn authorization_webhook_cache_ttl_rejects_missing_units() {
+        assert!(parse_duration("CACHE_TTL", "30").is_err());
+        assert!(parse_duration("CACHE_TTL", "-1s").is_err());
     }
 }
