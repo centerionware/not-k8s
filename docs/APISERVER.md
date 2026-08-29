@@ -11,7 +11,7 @@
 | F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
 | H — Authentication | in progress | 6/7 |
-| I — Authorization | in progress | 5/6 |
+| I — Authorization | done for current scope | 6/6 |
 | J — Admission | in progress | 7/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `d1c12e3` on
+This snapshot is checked against `origin/nodeapiserver` at `6d53d13` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1141,8 +1141,11 @@ preserves its three decisions: `Allow` short-circuits the local Node/RBAC
 chain, `Deny` returns `403`, and `NoOpinion` falls through to the next local
 authorizer. Transport and malformed-response failures fail closed with
 `503`; transient transport/5xx and rate-limit failures now use a small bounded
-retry, while decision caching and the remaining upstream diagnostic details
-are still outside the current scope. PKI primitives
+retry, while the remaining upstream diagnostic details are still outside the
+current scope. Decisions are cached with separate bounded TTLs for allowed
+and non-allowed results; `NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL`
+and `NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_UNAUTHORIZED_TTL` configure
+those lifetimes, and zero disables the respective cache. PKI primitives
 (`rcgen`, `p256`, `x509-parser`, `pem`) are
 already in-tree from `nodecontroller`'s CSR
 group.
