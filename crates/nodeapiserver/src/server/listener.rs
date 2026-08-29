@@ -1070,6 +1070,18 @@ fn admission_forbidden_status(path_str: &str, detail: &str) -> serde_json::Value
     })
 }
 
+fn admission_webhook_error_response(
+    path_str: &str,
+    error: &admission::webhook::Error,
+) -> Response<BoxedBody> {
+    match error {
+        admission::webhook::Error::DryRunUnsupported { detail, .. } => {
+            json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, detail))
+        }
+        _ => json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str)),
+    }
+}
+
 /// Real upstream's own shape for a proxy subresource (`pods/log`, ...)
 /// whose dial to the real backend (nodelet) itself failed — `reason:
 /// "" ` (upstream doesn't set one for this case either), `code: 502`,
@@ -1851,7 +1863,7 @@ async fn handle(
                 }
                 Err(error) => {
                     warn!(path = %path_str, error = ?error, "admission webhook invocation failed for apply");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    return Ok(admission_webhook_error_response(&path_str, &error));
                 }
             }
 
@@ -2007,7 +2019,7 @@ async fn handle(
             }
             Err(error) => {
                 warn!(path = %path_str, error = ?error, "admission webhook invocation failed for patch");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(admission_webhook_error_response(&path_str, &error));
             }
         }
 
@@ -3190,7 +3202,7 @@ async fn handle(
                         }
                         Err(error) => {
                             warn!(path = %path_str, error = ?error, "admission webhook invocation failed");
-                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            return Ok(admission_webhook_error_response(&path_str, &error));
                         }
                     }
                 }

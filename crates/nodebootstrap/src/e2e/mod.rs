@@ -275,6 +275,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_webhook_side_effects_on_dry_run",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_honors_authorization_webhook_decisions",
         group: TestGroup::General,
     },
@@ -1666,6 +1670,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_honors_webhook_match_conditions" => {
             bootstrap::nodeapiserver_honors_webhook_match_conditions(context).await
+        },
+        "test_nodeapiserver_honors_webhook_side_effects_on_dry_run" => {
+            bootstrap::nodeapiserver_honors_webhook_side_effects_on_dry_run(context).await
         },
         "test_nodeapiserver_honors_authorization_webhook_decisions" => {
             bootstrap::nodeapiserver_honors_authorization_webhook_decisions(context).await

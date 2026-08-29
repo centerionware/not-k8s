@@ -42,6 +42,8 @@ pub enum Error {
     Storage(#[from] rest::Error),
     #[error("invalid admission webhook {webhook}: {detail}")]
     Invalid { webhook: String, detail: String },
+    #[error("admission webhook {webhook} cannot handle a dry-run request: {detail}")]
+    DryRunUnsupported { webhook: String, detail: String },
     #[error("admission webhook {webhook} failed: {detail}")]
     Invocation { webhook: String, detail: String },
 }
@@ -105,6 +107,7 @@ pub async fn admit(
             )? {
                 continue;
             }
+            validate_dry_run_side_effects(&webhook, dry_run)?;
             match invoke(
                 storage,
                 &webhook,
@@ -155,6 +158,7 @@ pub async fn admit(
             )? {
                 continue;
             }
+            validate_dry_run_side_effects(&webhook, dry_run)?;
             match invoke(
                 storage,
                 &webhook,
@@ -237,6 +241,25 @@ fn object_name(value: &Value) -> String {
 
 fn failure_policy_ignore(webhook: &Value) -> bool {
     webhook.get("failurePolicy").and_then(Value::as_str) == Some("Ignore")
+}
+
+fn validate_dry_run_side_effects(webhook: &Value, dry_run: bool) -> Result<(), Error> {
+    if !dry_run {
+        return Ok(());
+    }
+
+    let webhook_name = object_name(webhook);
+    match webhook.get("sideEffects").and_then(Value::as_str) {
+        Some("None") | Some("NoneOnDryRun") => Ok(()),
+        Some("Unknown") | Some("Some") | None => Err(Error::DryRunUnsupported {
+            webhook: webhook_name,
+            detail: "sideEffects must be None or NoneOnDryRun".to_string(),
+        }),
+        Some(side_effects) => Err(Error::Invalid {
+            webhook: webhook_name,
+            detail: format!("unsupported sideEffects value {side_effects:?}"),
+        }),
+    }
 }
 
 fn matches_webhook(
@@ -916,5 +939,23 @@ mod tests {
         assert_eq!(options_kind(Operation::Create), "CreateOptions");
         assert_eq!(options_kind(Operation::Update), "UpdateOptions");
         assert_eq!(options_kind(Operation::Delete), "DeleteOptions");
+    }
+
+    #[test]
+    fn dry_run_requires_a_webhook_without_side_effects() {
+        let webhook = json!({"metadata": {"name": "side-effecting"}, "sideEffects": "Some"});
+        assert!(matches!(
+            validate_dry_run_side_effects(&webhook, true),
+            Err(Error::DryRunUnsupported { .. })
+        ));
+        assert!(validate_dry_run_side_effects(&webhook, false).is_ok());
+    }
+
+    #[test]
+    fn dry_run_allows_none_and_none_on_dry_run_webhooks() {
+        for side_effects in ["None", "NoneOnDryRun"] {
+            let webhook = json!({"sideEffects": side_effects});
+            assert!(validate_dry_run_side_effects(&webhook, true).is_ok());
+        }
     }
 }
