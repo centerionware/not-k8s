@@ -990,6 +990,64 @@ pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext)
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_honors_patch_dry_run(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("dry-run checks are only exercised against nodeapiserver"));
+    }
+
+    let name = format!("nodeapiserver-dry-run-{}", std::process::id());
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the dry-run probe ConfigMap")?;
+
+    let uri = format!(
+        "/api/v1/namespaces/{}/configmaps/{name}?dryRun=All",
+        context.namespace
+    );
+    let response = context
+        .client
+        .request::<Value>(
+            Request::builder()
+                .method("PATCH")
+                .uri(uri)
+                .header("Content-Type", "application/merge-patch+json")
+                .body(serde_json::to_vec(&json!({"data": {"dry-run": "yes"}}))?)?,
+        )
+        .await
+        .context("dry-running a ConfigMap patch")?;
+    anyhow::ensure!(
+        response.pointer("/data/dry-run").and_then(Value::as_str) == Some("yes"),
+        "nodeapiserver did not return the dry-run patch candidate: {response}"
+    );
+
+    let stored = configmaps
+        .get(&name)
+        .await
+        .context("reading the ConfigMap after a dry-run patch")?;
+    anyhow::ensure!(
+        stored.data.is_none(),
+        "nodeapiserver persisted a dry-run patch: {:?}",
+        stored.data
+    );
+    configmaps
+        .delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the dry-run probe ConfigMap")?;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
     context: &E2eContext,
 ) -> Result<()> {
