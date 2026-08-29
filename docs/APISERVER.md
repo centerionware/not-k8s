@@ -17,7 +17,7 @@
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 4/8 |
 | N — Streaming and proxy subresources | in progress | 3/5 |
-| O — Cluster bootstrap | in progress | 2/5 |
+| O — nodebootstrap integration | done for current scope | 1/1 |
 
 kube-apiserver's job: the one thing every other component in this project
 talks to — REST + watch over every built-in and CRD-defined resource, backed
@@ -56,7 +56,7 @@ explanation of each boundary.
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, and bounded APF plumbing are present; full fair queueing, seat borrowing, distinguishers, and sampled inflight semantics remain. |
 | N. Streaming/proxy | **in progress** | Pod log/exec/attach/port-forward are live; node and Service proxy subresources remain in the child slice currently under validation. |
-| O. Cluster bootstrap | **in progress** | `nodebootstrap` can target nodeapiserver, but the default install still needs the no-k3s cutover and the full unfiltered e2e gate. |
+| O. nodebootstrap integration | **done for current scope** | The existing nodebootstrap path can select and install nodeapiserver; nodebootstrap's own bootstrap features are tracked separately. |
 
 Branching: `nodeapiserver` is a long-lived integration branch (pushed to
 `origin/nodeapiserver`). Every group below is its own sub-branch and PR
@@ -2335,39 +2335,13 @@ real CRI runtime. Node and Service proxy subresources are implemented in a
 child slice, but that slice is not yet integrated into `nodeapiserver`; its
 focused e2e check must pass after rebase before N can be marked done.
 
-**O. Cluster bootstrap — the k3s replacement half** — **owned by
-`nodebootstrap`, deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is
-**superseded by `docs/NODEBOOTSTRAP_PLAN.md` (2026-08-22)** — read that
-first. Summary of what changed: the crate is `nodebootstrap`, not
-`clusterbootstrap`; its scope grew to also absorb the shell bootstrap
-tooling (toolchain/containerd/CNI/build-or-fetch/layout, replacing
-`bootstrap-source.sh`/`bootstrap-release.sh`); and — the part that actually
-unblocks this group without waiting on `nodeapiserver` — it drops k3s
-entirely and is tested against **real upstream `kube-apiserver`/
-`kube-controller-manager`/`kube-scheduler`** instead, merging to `main` on
-its own gates now. `nodeapiserver` is now wired as a second `nodebootstrap`
-target (`targets/nodeapiserver.rs`) on this integration branch. It is selected
-with `--apiserver=nodeapiserver` while the upstream target remains the default;
-the default changes only after this component's own acceptance criteria below
-are met. Original 2026-08-21 rationale, still true of the pieces it
-named (decided before any of it was written): cluster PKI generation (CA,
-serving cert, SA signing keypair, per-component client certs, kubeconfig
-emission), the ~90 `system:` ClusterRoles/Bindings from upstream's
-`bootstrappolicy`, the `kubernetes` default Service + endpoint reconciler,
-and CoreDNS + flannel manifests moved into `deploy/` don't belong inside the
-API server binary itself — real upstream doesn't put this logic in
-`kube-apiserver` either (it's spread across cluster-provisioning tooling
-outside the binary). This build's equivalent is its own separate crate/
-component — a `nodebootstrap` app, forked into its own branch (`main`-
-mergeable for Phase 1, integration-branch-only for the `nodeapiserver`-
-dependent Phase 2 — see the plan doc), following
-the established component pattern (`deploy/lib/components.sh`'s table +
-a `notk8s` applet — `components.sh:6` and `deploy/measure.sh:98` already
-name `nodeapiserver` in anticipation, `nodebootstrap` needs the same
-treatment when its own branch starts). `deploy/setup-control-plane.sh`
-still needs rewriting to stop installing k3s entirely once both
-`nodeapiserver` and `clusterbootstrap` exist — that wiring is
-`clusterbootstrap`'s own job, not folded back into `nodeapiserver`.
+**O. nodebootstrap integration** — **done for this branch's scope.**
+Nodebootstrap itself is not part of the nodeapiserver implementation. The
+only item tracked here is the API-server-facing integration: the existing
+bootstrap path can select and install nodeapiserver via
+`--apiserver=nodeapiserver`. PKI, RBAC bootstrap policy, the default
+`kubernetes` Service, CoreDNS, flannel, and the remaining installer lifecycle
+belong to `docs/NODEBOOTSTRAP_PLAN.md`, not this document.
 
 ## Final acceptance
 
