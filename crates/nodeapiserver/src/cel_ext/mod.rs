@@ -91,6 +91,8 @@
 //! surface from upstream's `kubernetes.net.ip` library.
 //! `kubernetes_cidr` builds on that value for upstream's `kubernetes.net.cidr`
 //! parser, containment, masking, and prefix-length helpers.
+//! `kubernetes_url` provides the upstream `kubernetes.urls` parser and URL
+//! component/query accessors.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -124,9 +126,11 @@ pub mod kubernetes_cidr;
 pub mod kubernetes_ip;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
+pub mod kubernetes_url;
 pub mod path;
 
-use cel::{Context, Program, Value as CelValue};
+use cel::extractors::This;
+use cel::{Context, FunctionContext, Program, Value as CelValue};
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -234,8 +238,26 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("ip", kubernetes_cidr::ip_binding);
     ctx.add_function("prefixLength", kubernetes_cidr::prefix_length_binding);
     ctx.add_function("masked", kubernetes_cidr::masked_binding);
-    ctx.add_function("string", kubernetes_cidr::string_binding);
+    ctx.add_function("url", kubernetes_url::url_binding);
+    ctx.add_function("isURL", kubernetes_url::is_url_binding);
+    ctx.add_function("getScheme", kubernetes_url::get_scheme_binding);
+    ctx.add_function("getHost", kubernetes_url::get_host_binding);
+    ctx.add_function("getHostname", kubernetes_url::get_hostname_binding);
+    ctx.add_function("getPort", kubernetes_url::get_port_binding);
+    ctx.add_function("getEscapedPath", kubernetes_url::get_escaped_path_binding);
+    ctx.add_function("getQuery", kubernetes_url::get_query_binding);
+    ctx.add_function("string", string_binding);
     authorizer::register(ctx);
+}
+
+fn string_binding(ftx: &FunctionContext, This(value): This<CelValue>) -> Result<CelValue, cel::ExecutionError> {
+    if let Some(value) = kubernetes_url::string_value(&value) {
+        return Ok(CelValue::String(std::sync::Arc::new(value)));
+    }
+    if let Some(value) = kubernetes_cidr::string_value(&value) {
+        return Ok(CelValue::String(std::sync::Arc::new(value)));
+    }
+    kubernetes_ip::string_binding(ftx, This(value))
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
@@ -639,6 +661,15 @@ mod tests {
         assert_eq!(eval_bool_with_vars("cidr('192.168.0.1/24').prefixLength() == 24", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("cidr('::1/128').ip().family() == 6", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("string(cidr('192.168.0.1/24')) == '192.168.0.1/24'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isURL('https://example.com/path')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isURL('/relative/path')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("url('https://example.com:8443/path%20with%20spaces?k=a&k=b').getScheme() == 'https'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("url('https://example.com:8443/path%20with%20spaces?k=a&k=b').getHost() == 'example.com:8443'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("url('https://example.com:8443/path%20with%20spaces?k=a&k=b').getHostname() == 'example.com'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("url('https://example.com:8443/path%20with%20spaces?k=a&k=b').getPort() == '8443'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("url('https://example.com:8443/path%20with%20spaces?k=a&k=b').getEscapedPath() == '/path%20with%20spaces'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("url('https://example.com/path?k=a&k=b').getQuery()['k'][1] == 'b'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("string(url('https://example.com/path')) == 'https://example.com/path'", &[]).unwrap(), true);
     }
 
     #[test]
