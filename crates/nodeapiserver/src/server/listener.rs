@@ -319,6 +319,17 @@ fn is_authorization_review(info: &path::RequestInfo) -> bool {
         || (info.api_group == "authentication.k8s.io" && info.resource == "selfsubjectreviews")
 }
 
+fn should_run_local_authorization(
+    info: &path::RequestInfo,
+    enforce_rbac: bool,
+    authorization_webhook_allowed: bool,
+) -> bool {
+    enforce_rbac
+        && !authorization_webhook_allowed
+        && info.is_resource_request
+        && !is_authorization_review(info)
+}
+
 fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest::DeletePreconditions>, &'static str> {
     let Some(preconditions) = value.and_then(|value| value.get("preconditions")) else {
         return Ok(None);
@@ -1259,10 +1270,14 @@ async fn handle_with_audit(
     };
     let audit_identity = identity.clone();
     let request_info = path::parse(&method, &path_str, &query);
+    let mut authorization_webhook_allowed = false;
     if let Some(authorizer) = authorization_webhook {
         match authorizer.authorize(&request_info, identity.as_ref()).await {
-            Ok(true) => {}
-            Ok(false) => {
+            Ok(crate::authz::webhook::Decision::Allow) => {
+                authorization_webhook_allowed = true;
+            }
+            Ok(crate::authz::webhook::Decision::NoOpinion) => {}
+            Ok(crate::authz::webhook::Decision::Deny) => {
                 let user_name = identity
                     .as_ref()
                     .map(|identity| identity.name.as_str())
@@ -1324,7 +1339,7 @@ async fn handle_with_audit(
     // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
     // has, not a new gap this metric introduces.
     let start = std::time::Instant::now();
-    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, kubelet_tls).await;
+    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, kubelet_tls).await;
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
@@ -1463,6 +1478,7 @@ async fn handle(
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
     enforce_rbac: bool,
+    authorization_webhook_allowed: bool,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
@@ -1567,7 +1583,7 @@ async fn handle(
     // enforcement was enabled. Virtual review resources are intentionally
     // exempt: they answer questions about authorization rather than mutate
     // the resource named by the request.
-    if enforce_rbac && info.is_resource_request && !is_authorization_review(&info) {
+    if should_run_local_authorization(&info, enforce_rbac, authorization_webhook_allowed) {
         let Some(client) = storage.as_mut() else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
@@ -3975,6 +3991,21 @@ mod tests {
         assert!(is_authorization_review(&sar));
         assert!(is_authorization_review(&self_review));
         assert!(!is_authorization_review(&pods));
+    }
+
+    #[test]
+    fn an_authorization_webhook_allow_short_circuits_local_resource_authorization() {
+        let pod = path::parse("GET", "/api/v1/namespaces/default/pods/p1", "");
+        let review = path::parse(
+            "POST",
+            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+            "",
+        );
+
+        assert!(!should_run_local_authorization(&pod, true, true));
+        assert!(should_run_local_authorization(&pod, true, false));
+        assert!(!should_run_local_authorization(&review, true, false));
+        assert!(!should_run_local_authorization(&pod, false, false));
     }
 
     #[test]

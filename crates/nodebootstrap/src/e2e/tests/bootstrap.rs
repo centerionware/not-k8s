@@ -26,7 +26,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use futures::AsyncBufReadExt;
@@ -174,6 +174,54 @@ impl Drop for NodeapiserverAuthenticationOverride {
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
         let _ = fs::remove_file(&self.token_file);
+    }
+}
+
+struct NodeapiserverAuthorizationWebhookOverride {
+    drop_in: PathBuf,
+}
+
+impl NodeapiserverAuthorizationWebhookOverride {
+    fn install(url: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; authorization webhook checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-e2e-authz-webhook-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-authz-webhook-{suffix}.conf"));
+        let contents = format!(
+            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=1\nEnvironment=NODEAPISERVER_ENFORCE_RBAC=1\nEnvironment=NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL={url}\n"
+        );
+        fs::write(&local_drop_in, contents)
+            .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged(
+            "install",
+            &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
+        )?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverAuthorizationWebhookOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
     }
 }
 
@@ -2109,6 +2157,80 @@ fn serve_webhook_connection(
     Ok(())
 }
 
+fn serve_authorization_webhook_connection(
+    mut stream: std::net::TcpStream,
+    reviews: &Mutex<Vec<Value>>,
+    denied_name: &str,
+) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let content_length = loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let Some(headers_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&request[..headers_end]);
+        break headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Content-Length:")
+                    .or_else(|| line.strip_prefix("content-length:"))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+    };
+    let headers_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP headers were found above")
+        + 4;
+    while request.len() < headers_end + content_length {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    if request.len() < headers_end + content_length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "authorization webhook request body was truncated",
+        ));
+    }
+    let review: Value = serde_json::from_slice(&request[headers_end..headers_end + content_length])
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let decision = if review.pointer("/spec/nonResourceAttributes/path").and_then(Value::as_str) == Some("/healthz") {
+        json!({"allowed": false, "denied": false})
+    } else if review.pointer("/spec/resourceAttributes/name").and_then(Value::as_str) == Some(denied_name) {
+        json!({"allowed": false, "denied": true})
+    } else {
+        json!({"allowed": true, "denied": false})
+    };
+    if let Ok(mut seen) = reviews.lock() {
+        seen.push(review);
+    }
+    let body = serde_json::to_vec(&json!({
+        "apiVersion": "authorization.k8s.io/v1",
+        "kind": "SubjectAccessReview",
+        "status": decision,
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(&body)
+}
+
 pub(super) async fn nodeapiserver_honors_webhook_match_conditions(
     context: &E2eContext,
 ) -> Result<()> {
@@ -2230,6 +2352,173 @@ pub(super) async fn nodeapiserver_honors_webhook_match_conditions(
         ))
         .body(Vec::new())?;
     let _ = context.client.request::<Value>(delete_configuration).await;
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    result
+}
+
+pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "authorization webhook checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("binding the e2e authorization webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let reviews = Arc::new(Mutex::new(Vec::new()));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_reviews = reviews.clone();
+    let server_stopping = stopping.clone();
+    let denied_name = format!("nodeapiserver-authz-denied-{}", std::process::id());
+    let allowed_name = format!("nodeapiserver-authz-allowed-{}", std::process::id());
+    let server_denied_name = denied_name.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_authorization_webhook_connection(
+                        stream,
+                        &server_reviews,
+                        &server_denied_name,
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let webhook = match NodeapiserverAuthorizationWebhookOverride::install(&format!("http://{address}")) {
+        Ok(webhook) => webhook,
+        Err(error) => {
+            stopping.store(true, Ordering::Relaxed);
+            let _ = server.join();
+            return Err(error);
+        }
+    };
+    let result = async {
+        context
+            .wait_until(
+                "nodeapiserver to allow a NoOpinion authorization webhook response",
+                Duration::from_secs(60),
+                || async {
+                    let output = Command::new("curl")
+                        .args([
+                            "-k",
+                            "-sS",
+                            "--max-time",
+                            "10",
+                            "-o",
+                            "/dev/null",
+                            "-w",
+                            "%{http_code}",
+                            "https://127.0.0.1:6443/healthz",
+                        ])
+                        .output();
+                    Ok(output.is_ok_and(|output| {
+                        output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "200"
+                    }))
+                },
+            )
+            .await?;
+
+        let denied_url = format!(
+            "https://127.0.0.1:6443/api/v1/namespaces/{}/configmaps/{denied_name}",
+            context.namespace
+        );
+        let denied = Command::new("curl")
+            .args([
+                "-k",
+                "-sS",
+                "--max-time",
+                "10",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                &denied_url,
+            ])
+            .output()
+            .context("checking an authorization webhook denial")?;
+        anyhow::ensure!(
+            denied.status.success() && String::from_utf8_lossy(&denied.stdout).trim() == "403",
+            "authorization webhook Deny did not produce HTTP 403: stdout={} stderr={}",
+            String::from_utf8_lossy(&denied.stdout),
+            String::from_utf8_lossy(&denied.stderr)
+        );
+
+        let allowed_url = format!(
+            "https://127.0.0.1:6443/api/v1/namespaces/{}/configmaps/{allowed_name}",
+            context.namespace
+        );
+        let allowed = Command::new("curl")
+            .args([
+                "-k",
+                "-sS",
+                "--max-time",
+                "10",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                &allowed_url,
+            ])
+            .output()
+            .context("checking an authorization webhook allow")?;
+        anyhow::ensure!(
+            allowed.status.success() && String::from_utf8_lossy(&allowed.stdout).trim() == "404",
+            "authorization webhook Allow did not bypass local RBAC: stdout={} stderr={}",
+            String::from_utf8_lossy(&allowed.stdout),
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+
+        context
+            .wait_until(
+                "authorization webhook to receive all test requests",
+                Duration::from_secs(30),
+                || {
+                    let reviews = reviews.clone();
+                    async move { Ok(reviews.lock().is_ok_and(|reviews| reviews.len() >= 3)) }
+                },
+            )
+            .await?;
+        let reviews = reviews
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authorization webhook review list was poisoned"))?;
+        anyhow::ensure!(
+            reviews.iter().any(|review| {
+                review.pointer("/spec/nonResourceAttributes/path").and_then(Value::as_str) == Some("/healthz")
+                    && review.pointer("/spec/nonResourceAttributes/verb").and_then(Value::as_str) == Some("get")
+            }),
+            "authorization webhook did not receive the expected non-resource attributes: {reviews:?}"
+        );
+        anyhow::ensure!(
+            reviews.iter().any(|review| {
+                review.pointer("/spec/resourceAttributes/resource").and_then(Value::as_str) == Some("configmaps")
+                    && review.pointer("/spec/resourceAttributes/name").and_then(Value::as_str) == Some(denied_name.as_str())
+            }),
+            "authorization webhook did not receive the expected resource attributes: {reviews:?}"
+        );
+        anyhow::ensure!(
+            reviews.iter().any(|review| {
+                review.pointer("/spec/resourceAttributes/resource").and_then(Value::as_str) == Some("configmaps")
+                    && review.pointer("/spec/resourceAttributes/name").and_then(Value::as_str) == Some(allowed_name.as_str())
+            }),
+            "authorization webhook did not receive the allowed resource request: {reviews:?}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    drop(webhook);
     stopping.store(true, Ordering::Relaxed);
     let _ = server.join();
     result
