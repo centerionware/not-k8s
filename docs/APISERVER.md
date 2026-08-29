@@ -15,7 +15,7 @@
 | J — Admission | in progress | 8/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
-| M — APF, audit, and observability | in progress | 6/8 |
+| M — APF, audit, and observability | in progress | 7/8 |
 | N — Streaming and proxy subresources | done for current scope | 5/5 |
 | O — nodebootstrap integration | done for current scope | 1/1 |
 
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `1b68b5c` on
+This snapshot is checked against `origin/nodeapiserver` at `dc4fbc4` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -54,7 +54,7 @@ explanation of each boundary.
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
-| M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, and seat borrowing are present; sampled inflight semantics remain. |
+| M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The existing nodebootstrap path can select and install nodeapiserver; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -2315,8 +2315,9 @@ that bypass the gate are not counted. **APF
 gate**: in addition to the global ordinary and mutating budgets, selected
 limited priority levels enforce nominal-share concurrency caps and their
 `Reject`/queue-length policy, while exempt levels and long-running streams
-remain outside the finite budgets. **Sampled inflight semantics remain a
-separate refinement.** `flowcontrol::flow_schema` ports real
+remain outside the finite budgets. The inflight gauge reports the maximum
+seat usage observed during the preceding one-second window, matching
+upstream's pre-aggregated semantics. `flowcontrol::flow_schema` ports real
 upstream's own
 `FlowSchema` matching (`pkg/util/flowcontrol/rule.go`, fetched and read
 directly) — `matches_flow_schema`/`matches_policy_rule`/`matches_subject`
