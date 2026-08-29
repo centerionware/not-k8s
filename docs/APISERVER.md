@@ -16,7 +16,7 @@
 | K — CustomResourceDefinitions | in progress | 6/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 4/8 |
-| N — Streaming and proxy subresources | in progress | 3/5 |
+| N — Streaming and proxy subresources | done for current scope | 5/5 |
 | O — nodebootstrap integration | done for current scope | 1/1 |
 
 kube-apiserver's job: the one thing every other component in this project
@@ -2339,9 +2339,20 @@ kubelet-style routes, and `proxy::http_client::upgrade` forwards the
 upgrade headers before splicing both upgraded connections. The listener is
 served with hyper's upgrade-aware connection path. Existing streaming e2e
 cases for exec, attach, and port-forward exercise these routes against a
-real CRI runtime. Node and Service proxy subresources are implemented in a
-child slice, but that slice is not yet integrated into `nodeapiserver`; its
-focused e2e check must pass after rebase before N can be marked done.
+real CRI runtime.
+
+The core `nodes/{name}/proxy` and `services/{name}[:port]/proxy` subresources
+are now live request/response relays. Node targets use the Node's preferred
+address and kubelet port; Service targets select a ready EndpointSlice first
+and fall back to the Service ClusterIP when endpoint data is temporarily
+absent. The relay preserves the incoming method, query, supported headers,
+body, response status, response headers, and response body. Service
+`appProtocol: https` is supported; non-TCP Service ports are rejected because
+the proxy is an HTTP relay. Both the normal `/.../{name}/proxy/...` and the
+legacy `/.../proxy/{resource}/{name}/...` path forms are handled. Remaining
+Group N work is limited to the upstream's less common proxy transport details
+(for example SPDY-era protocol negotiation and endpoint retry/load-balancing
+policy).
 
 **O. nodebootstrap integration** — **done for this branch's scope.**
 Nodebootstrap itself is not part of the nodeapiserver implementation. The
