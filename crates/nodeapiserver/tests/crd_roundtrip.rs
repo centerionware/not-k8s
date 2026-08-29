@@ -27,6 +27,8 @@ use nodeapiserver::storage::client::StorageClient;
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 /// Mirrors `tests/encryption_roundtrip.rs`'s own `find_nodestore_binary`
 /// exactly — see that file's doc comment for why building on demand
@@ -127,6 +129,227 @@ fn a_crd() -> serde_json::Value {
             }],
         },
     })
+}
+
+fn conversion_crd(webhook_url: &str) -> serde_json::Value {
+    json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": "convertedwidgets.example.com"},
+        "spec": {
+            "group": "example.com",
+            "scope": "Namespaced",
+            "names": {"plural": "convertedwidgets", "singular": "convertedwidget", "kind": "ConvertedWidget", "listKind": "ConvertedWidgetList"},
+            "conversion": {
+                "strategy": "Webhook",
+                "webhook": {
+                    "conversionReviewVersions": ["v1"],
+                    "clientConfig": {"url": webhook_url}
+                }
+            },
+            "versions": [
+                {
+                    "name": "v1",
+                    "served": true,
+                    "storage": true,
+                    "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object", "properties": {"value": {"type": "string"}, "convertedVersion": {"type": "string"}}}}}}
+                },
+                {
+                    "name": "v1beta1",
+                    "served": true,
+                    "storage": false,
+                    "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object", "properties": {"value": {"type": "string"}, "convertedVersion": {"type": "string"}}}}}}
+                }
+            ]
+        }
+    })
+}
+
+fn spawn_conversion_webhook(
+    listener: TcpListener,
+    expected_versions: Vec<&'static str>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        for expected_version in expected_versions {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("conversion webhook should accept a request");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let body_start = loop {
+                let read = stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("read conversion webhook request");
+                assert!(read > 0, "conversion webhook request ended before its headers");
+                request.extend_from_slice(&chunk[..read]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break position + 4;
+                }
+            };
+            let content_length = String::from_utf8_lossy(&request[..body_start])
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .map(|(_, value)| value)
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .expect("conversion webhook request should include Content-Length");
+            while request.len() < body_start + content_length {
+                let read = stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("read conversion webhook body");
+                assert!(read > 0, "conversion webhook request ended before its body");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let payload: serde_json::Value = serde_json::from_slice(&request[body_start..body_start + content_length])
+                .expect("conversion webhook body should be JSON");
+            assert_eq!(payload["kind"], "ConversionReview");
+            assert_eq!(payload["apiVersion"], "apiextensions.k8s.io/v1");
+            assert_eq!(payload["request"]["desiredAPIVersion"], format!("example.com/{expected_version}"));
+            let uid = payload["request"]["uid"].as_str().expect("conversion request UID");
+            let mut converted = payload["request"]["objects"][0].clone();
+            converted["apiVersion"] = json!(format!("example.com/{expected_version}"));
+            converted["spec"]["convertedVersion"] = json!(expected_version);
+            let response = json!({
+                "apiVersion": "apiextensions.k8s.io/v1",
+                "kind": "ConversionReview",
+                "response": {
+                    "uid": uid,
+                    "result": {"status": "Success"},
+                    "convertedObjects": [converted]
+                }
+            });
+            let body = serde_json::to_vec(&response).expect("encode conversion response");
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.expect("write conversion webhook headers");
+            stream.write_all(&body).await.expect("write conversion webhook body");
+        }
+    })
+}
+
+/// A versioned CRD must store objects in its one nominated storage version,
+/// while every request and response still uses the version named by the URL.
+/// This drives the real ConversionReview HTTP contract through a local
+/// webhook and a real nodestore, including a LIST response rather than only
+/// checking the CREATE return value.
+#[tokio::test]
+async fn conversion_webhook_round_trips_cr_objects_between_served_versions() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary found and building one on demand failed");
+        return;
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind conversion webhook listener");
+    let webhook_url = format!("http://{}/convert", listener.local_addr().expect("conversion webhook listener address"));
+    let webhook_task = spawn_conversion_webhook(listener, vec!["v1", "v1beta1", "v1beta1", "v1beta1", "v1beta1"]);
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23807).await;
+
+    rest::create(
+        &mut storage,
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        &conversion_crd(&webhook_url),
+    )
+    .await
+    .expect("rest::create(CRD) must not itself error");
+
+    let resolved = rest::resolve_dynamic_resource(&mut storage, "example.com", "v1beta1", "convertedwidgets")
+        .await
+        .expect("resolve_dynamic_resource must not itself error")
+        .expect("the converted CRD must resolve");
+    let conversion_webhook = resolved.conversion_webhook.clone().expect("the converted CRD must retain its webhook configuration");
+    let cache_registry = nodeapiserver::cacher::CacheRegistry::new();
+    let cache = cache_registry.spawn(storage.clone(), "example.com", "v1beta1", "convertedwidgets");
+    tokio::time::timeout(Duration::from_secs(5), cache.wait_until_synced())
+        .await
+        .expect("the converted CRD cache must synchronize");
+    let (replay, mut watch_rx) = cache.watch_from(0).expect("the converted CRD watch must start");
+    assert!(replay.is_empty());
+
+    let object = json!({
+        "apiVersion": "example.com/v1beta1",
+        "kind": "ConvertedWidget",
+        "metadata": {"name": "converted-widget", "namespace": "default"},
+        "spec": {"value": "hello"},
+    });
+    let created = match rest::create(&mut storage, "example.com", "v1beta1", "convertedwidgets", Some("default"), &object)
+        .await
+        .expect("rest::create(ConvertedWidget) must not itself error")
+    {
+        rest::CreateOutcome::Created(object) => object,
+        other => panic!("expected Created, got {other:?}"),
+    };
+    assert_eq!(created["apiVersion"], "example.com/v1beta1");
+    assert_eq!(created["spec"]["convertedVersion"], "v1beta1");
+
+    // The storage-version read must not invoke the webhook: it should expose
+    // the version and shape the webhook returned for storage.
+    let storage_version = match rest::get(&mut storage, None, "example.com", "v1", "convertedwidgets", Some("default"), "converted-widget")
+        .await
+        .expect("rest::get(storage version) must not error")
+    {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    assert_eq!(storage_version["apiVersion"], "example.com/v1");
+    assert_eq!(storage_version["spec"]["convertedVersion"], "v1");
+
+    let served_version = match rest::get(&mut storage, None, "example.com", "v1beta1", "convertedwidgets", Some("default"), "converted-widget")
+        .await
+        .expect("rest::get(served version) must not error")
+    {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    assert_eq!(served_version["apiVersion"], "example.com/v1beta1");
+    assert_eq!(served_version["spec"]["convertedVersion"], "v1beta1");
+
+    let listed = match rest::list(&mut storage, None, "example.com", "v1beta1", "convertedwidgets", Some("default"), "", "", 0, "")
+        .await
+        .expect("rest::list(served version) must not error")
+    {
+        rest::ListOutcome::Found(list) => list,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    assert_eq!(listed["items"][0]["apiVersion"], "example.com/v1beta1");
+    assert_eq!(listed["items"][0]["spec"]["convertedVersion"], "v1beta1");
+
+    let event = tokio::time::timeout(Duration::from_secs(5), watch_rx.recv())
+        .await
+        .expect("the converted CRD cache must observe the created object")
+        .expect("the converted CRD watch must remain open");
+    assert_eq!(event.kind, nodeapiserver::cacher::EventKind::Added);
+    let watch_object = nodeapiserver::server::watch_event::to_watch_event_json_with_conversion(
+        &event,
+        "ConvertedWidget",
+        "example.com/v1beta1",
+        Some(&mut storage),
+        "example.com",
+        "convertedwidgets",
+        Some(&conversion_webhook),
+    )
+    .await
+    .expect("the converted watch event must have an object")
+    .expect("the converted watch event must decode");
+    assert_eq!(watch_object["object"]["apiVersion"], "example.com/v1beta1");
+    assert_eq!(watch_object["object"]["spec"]["convertedVersion"], "v1beta1");
+
+    tokio::time::timeout(Duration::from_secs(5), webhook_task)
+        .await
+        .expect("conversion webhook should receive all expected requests")
+        .expect("conversion webhook task must not fail");
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 #[tokio::test]
