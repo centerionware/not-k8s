@@ -1711,6 +1711,7 @@ async fn handle(
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
+    let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
 
     if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
         let verbose = path::parse_query(&query).iter().any(|(k, _)| k == "verbose");
@@ -2427,7 +2428,7 @@ async fn handle(
             .await
             {
                 Ok(outcome) => {
-                    record_admission_outcome(req.extensions().get::<SharedAdmissionMetadata>(), &outcome);
+                    record_admission_outcome(admission_metadata.as_ref(), &outcome);
                     if let Some(message) = outcome.denial {
                         return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
                     }
@@ -3350,7 +3351,7 @@ async fn handle(
                 };
                 match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), old_object.as_ref(), dry_run).await {
                     Ok(outcome) => {
-                        record_admission_outcome(req.extensions().get::<SharedAdmissionMetadata>(), &outcome);
+                        record_admission_outcome(admission_metadata.as_ref(), &outcome);
                         if let Some(message) = outcome.denial {
                             return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
                         }
