@@ -24,7 +24,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
-use tokio::io::AsyncBufReadExt;
+use futures::AsyncBufReadExt;
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
     let uid = Command::new("id")
@@ -960,7 +960,7 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
     result
 }
 
-pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext) -> Result<()> {
+pub(super) async fn nodeapiserver_exposes_inflight_metrics(_context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
         return Err(skip_test("inflight metrics are a nodeapiserver-only check"));
