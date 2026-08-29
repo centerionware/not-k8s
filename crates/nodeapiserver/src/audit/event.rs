@@ -44,9 +44,10 @@ pub struct EventInput<'a> {
     pub request_uri: &'a str,
     pub verb: &'a str,
     /// Real upstream's own `authn/v1.UserInfo` shape: `username` +
-    /// `groups` is the subset this crate's own `authn::x509::Identity`
-    /// actually has (no `uid`/`extra`).
+    /// `groups` and the optional `uid` are the identity fields this crate's
+    /// authenticators currently expose. `extra` remains unsupported.
     pub user_name: &'a str,
+    pub user_uid: Option<&'a str>,
     pub user_groups: &'a [String],
     pub source_ip: Option<&'a str>,
     pub user_agent: Option<&'a str>,
@@ -92,6 +93,10 @@ pub fn build_event(input: &EventInput<'_>) -> Value {
         },
     });
 
+    if let Some(uid) = input.user_uid {
+        event["user"]["uid"] = json!(uid);
+    }
+
     if let Some(ip) = input.source_ip {
         event["sourceIPs"] = json!([ip]);
     }
@@ -121,6 +126,7 @@ mod tests {
             request_uri: "/api/v1/namespaces/default/pods/web-1",
             verb: "get",
             user_name: "alice",
+            user_uid: None,
             user_groups: &[],
             source_ip: None,
             user_agent: None,
