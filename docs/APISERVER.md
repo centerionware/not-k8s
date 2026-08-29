@@ -10,7 +10,7 @@
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 5/8 |
 | G — Patch and Server-Side Apply | in progress | 4/6 |
-| H — Authentication | in progress | 6/7 |
+| H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 6/6 |
 | J — Admission | in progress | 7/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `73921e6` on
+This snapshot is checked against `origin/nodeapiserver` at `ad80d6e` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -49,7 +49,7 @@ explanation of each boundary.
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch and CRD-aware Server-Side Apply are present; remaining upstream directive and managed-fields edge cases need coverage. |
-| H. Authentication | **in progress** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and static-token file reload are integrated; remaining authentication-file reload and some upstream diagnostics remain. |
+| H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
@@ -1060,9 +1060,11 @@ request identity and `SelfSubjectReview`, and a changed file is reloaded on
 the next authentication request while the last valid table remains active
 during a malformed rotation. A real e2e probe exercises startup
 authentication and in-place token rotation without restarting the service.
-Structured anonymous-authentication conditions and live reload of the
-remaining authentication files remain intentionally outside this
-implementation's supported scope.
+Structured anonymous-authentication conditions remain intentionally outside
+this implementation's supported scope. The ServiceAccount signing key and
+client-CA bundle now reload for new authentication operations/connections;
+malformed rotations retain the last valid contents. Some upstream OIDC
+diagnostic details remain outside the current scope.
 
 **I. Authorization** — **in progress**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own
