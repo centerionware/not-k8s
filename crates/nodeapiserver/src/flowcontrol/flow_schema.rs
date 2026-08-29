@@ -254,6 +254,20 @@ mod tests {
     }
 
     #[test]
+    fn matches_subject_group_uses_the_v1_object_shape() {
+        let groups = vec!["system:authenticated".to_string()];
+        let d = digest("alice", &groups, "get", "pods");
+        assert!(matches_subject(&d, &json!({
+            "kind": "Group",
+            "group": {"name": "system:authenticated"},
+        })));
+        assert!(!matches_subject(&d, &json!({
+            "kind": "Group",
+            "group": "system:authenticated",
+        })));
+    }
+
+    #[test]
     fn matches_subject_service_account_exact_and_wildcard_name() {
         let username = crate::authz::subject::service_account_username("kube-system", "coredns");
         let d = digest(&username, &[], "get", "pods");

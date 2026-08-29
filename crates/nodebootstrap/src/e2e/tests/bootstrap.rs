@@ -655,7 +655,7 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
             "matchingPrecedence": 1,
             "priorityLevelConfiguration": {"name": priority_name},
             "rules": [{
-                "subjects": [{"kind": "Group", "group": "system:authenticated"}],
+                "subjects": [{"kind": "Group", "group": {"name": "system:authenticated"}}],
                 "nonResourceRules": [{"verbs": ["get"], "nonResourceURLs": ["/version"]}]
             }]
         }
