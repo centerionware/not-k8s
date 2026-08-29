@@ -778,7 +778,11 @@ pub async fn run(cfg: Config) {
     };
 
     let authorization_webhook = match cfg.authorization_webhook_url.clone() {
-        Some(url) => match crate::authz::webhook::WebhookAuthorizer::new(url.clone()) {
+        Some(url) => match crate::authz::webhook::WebhookAuthorizer::new_with_cache_ttls(
+            url.clone(),
+            cfg.authorization_webhook_authorized_ttl,
+            cfg.authorization_webhook_unauthorized_ttl,
+        ) {
             Ok(authorizer) => Some(Arc::new(authorizer)),
             Err(error) => {
                 warn!(%url, error = ?error, "invalid NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL; the REST/watch listener will not run");
