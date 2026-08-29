@@ -36,7 +36,7 @@
 //! from the original decoded object, no intermediate storage needed).
 
 use super::match_conditions::{FailurePolicy, MatchCondition};
-use super::policy_matching::ResourceRule;
+use super::policy_matching::{ResourceRule, Variable};
 use super::policy_validations::Validation;
 use serde_json::Value;
 
@@ -76,6 +76,13 @@ fn decode_validation(v: &Value) -> Option<Validation<'_>> {
     })
 }
 
+fn decode_variable(v: &Value) -> Option<Variable<'_>> {
+    Some(Variable {
+        name: v.get("name").and_then(Value::as_str)?,
+        expression: v.get("expression").and_then(Value::as_str)?,
+    })
+}
+
 /// The owned decode of one real `ValidatingAdmissionPolicy` object's
 /// `spec` — see this module's own doc comment for the real two-step shape
 /// a caller uses this through.
@@ -92,6 +99,7 @@ pub struct DecodedPolicy<'b> {
     pub object_selector: Option<&'b Value>,
     pub match_conditions: Vec<MatchCondition<'b>>,
     pub validations: Vec<Validation<'b>>,
+    pub variables: Vec<Variable<'b>>,
     /// `spec.failurePolicy` — real upstream's own default (`Fail`) when
     /// absent or set to anything other than the real `"Ignore"` string.
     pub failure_policy: FailurePolicy,
@@ -110,11 +118,12 @@ impl<'b> DecodedPolicy<'b> {
         let object_selector = constraints.and_then(|c| c.get("objectSelector")).filter(|v| !v.is_null());
         let match_conditions = spec.and_then(|s| s.get("matchConditions")).and_then(Value::as_array).map(|a| a.iter().filter_map(decode_match_condition).collect()).unwrap_or_default();
         let validations = spec.and_then(|s| s.get("validations")).and_then(Value::as_array).map(|a| a.iter().filter_map(decode_validation).collect()).unwrap_or_default();
+        let variables = spec.and_then(|s| s.get("variables")).and_then(Value::as_array).map(|a| a.iter().filter_map(decode_variable).collect()).unwrap_or_default();
         let failure_policy = match spec.and_then(|s| s.get("failurePolicy")).and_then(Value::as_str) {
             Some("Ignore") => FailurePolicy::Ignore,
             _ => FailurePolicy::Fail,
         };
-        DecodedPolicy { resource_rules, exclude_resource_rules, namespace_selector, object_selector, match_conditions, validations, failure_policy }
+        DecodedPolicy { resource_rules, exclude_resource_rules, namespace_selector, object_selector, match_conditions, validations, variables, failure_policy }
     }
 
     /// `spec.matchConstraints.resourceRules`, freshly built each call —
@@ -263,5 +272,14 @@ mod tests {
         let decoded = DecodedPolicy::decode(&policy);
         assert_eq!(decoded.match_conditions.len(), 1);
         assert_eq!(decoded.match_conditions[0].name, "ok");
+    }
+
+    #[test]
+    fn policy_variables_decode_in_the_declared_order() {
+        let policy = json!({"spec": {"variables": [{"name": "replicas", "expression": "object.spec.replicas"}, {"name": "minimum", "expression": "variables.replicas + 2"} ]}});
+        let decoded = DecodedPolicy::decode(&policy);
+        assert_eq!(decoded.variables.len(), 2);
+        assert_eq!(decoded.variables[0].name, "replicas");
+        assert_eq!(decoded.variables[1].expression, "variables.replicas + 2");
     }
 }

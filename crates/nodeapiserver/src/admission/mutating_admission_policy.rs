@@ -153,7 +153,7 @@ pub async fn mutate(
                 }) {
                     continue;
                 }
-                let vars = policy_matching::build_eval_vars(
+                let match_vars = policy_matching::build_eval_vars(
                     Some(&object),
                     old_object,
                     &request,
@@ -168,7 +168,7 @@ pub async fn mutate(
                     subresource,
                     &namespace_labels,
                     &labels,
-                    &vars,
+                    &match_vars,
                 ) {
                     PolicyOutcome::NotApplicable => continue,
                     PolicyOutcome::MatchConditionsError { errors } => {
@@ -180,6 +180,17 @@ pub async fn mutate(
                     PolicyOutcome::Decided(_) => {}
                 }
 
+                let composed_variables = match policy_matching::compose_variables(&decoded.variables, &match_vars) {
+                    Ok(value) => value,
+                    Err(error) if decoded.failure_policy == FailurePolicy::Ignore => {
+                        tracing::warn!(policy = policy_name, error, "ignoring failed MutatingAdmissionPolicy variable composition");
+                        continue;
+                    }
+                    Err(error) => return Err(format!("MutatingAdmissionPolicy {policy_name:?}: {error}")),
+                };
+                let mut mutation_vars = match_vars;
+                mutation_vars.push(("variables", &composed_variables));
+
                 let mutations = policy
                     .get("spec")
                     .and_then(|spec| spec.get("mutations"))
@@ -189,7 +200,7 @@ pub async fn mutate(
                 let mut candidate = object.clone();
                 for mutation in &mutations {
                     match apply_mutation(
-                        storage, group, version, resource, &candidate, mutation, &vars,
+                        storage, group, version, resource, &candidate, mutation, &mutation_vars,
                     )
                     .await
                     {
