@@ -355,13 +355,22 @@ fn matches_webhook(
             dry_run,
         },
     );
-    let kind = object.get("kind").cloned().unwrap_or(Value::Null);
+    let kind = object
+        .get("kind")
+        .cloned()
+        .or_else(|| old_object.and_then(|value| value.get("kind")).cloned())
+        .unwrap_or(Value::Null);
     request["kind"]["kind"] = kind.clone();
     request["requestKind"]["kind"] = kind;
     request["userInfo"] = user_info(identity);
     let old_object = old_object.cloned().unwrap_or(Value::Null);
+    let admission_object = if operation == Operation::Delete {
+        Value::Null
+    } else {
+        object.clone()
+    };
     let vars = [
-        ("object", object),
+        ("object", &admission_object),
         ("oldObject", &old_object),
         ("request", &request),
     ];
@@ -550,6 +559,15 @@ async fn invoke(
         .map(|seconds| Duration::from_secs(seconds.clamp(1, 30)))
         .unwrap_or(DEFAULT_TIMEOUT);
     let client = build_client(webhook, endpoint.resolve, timeout, &webhook_name)?;
+    let admission_object = if operation == Operation::Delete {
+        Value::Null
+    } else {
+        object.clone()
+    };
+    let old_object = old_object
+        .filter(|_| operation != Operation::Create)
+        .cloned()
+        .unwrap_or(Value::Null);
     let admission_request = json!({
         "uid": uid,
         "kind": {"group": group, "version": version, "kind": object.get("kind").and_then(Value::as_str).unwrap_or("")},
@@ -561,8 +579,8 @@ async fn invoke(
         "namespace": namespace,
         "operation": operation_name(operation),
         "userInfo": user_info(identity),
-        "object": object,
-        "oldObject": old_object.filter(|_| operation != Operation::Create).cloned().unwrap_or(Value::Null),
+        "object": admission_object,
+        "oldObject": old_object,
         "dryRun": dry_run,
         "options": {"apiVersion": "meta.k8s.io/v1", "kind": options_kind(operation)}
     });

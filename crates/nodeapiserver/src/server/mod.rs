@@ -74,9 +74,8 @@
 //! `PATCH`/`DELETECOLLECTION`, gated by opt-in RBAC (Groups H/I) — `PATCH`
 //! now runs the two Group J plugins that ever apply to an `Update`-shaped
 //! write (`namespace_lifecycle`, `LimitRanger`'s own PVC validation);
-//! `DELETECOLLECTION` alone still doesn't, a small named gap
-//! (`listener`'s own doc comment has why it's small in practice). `watch`
-//! is also real now (a real streaming HTTP response against a
+//! `DELETECOLLECTION` also runs configured admission per selected object.
+//! `watch` is also real now (a real streaming HTTP response against a
 //! registered cache — this paragraph was stale about that; see
 //! `listener`'s own doc comment for the full, current picture). Every
 //! resource verb this build knows about is now real. **Not yet

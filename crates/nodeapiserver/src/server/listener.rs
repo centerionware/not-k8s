@@ -36,14 +36,9 @@
 //! `LimitRanger`'s own PVC validation — the split between
 //! `rest::patch_prepare`/`patch_persist` exists specifically so admission
 //! can see the real candidate object in between the two). `deletecollection`
-//! is real too now (`rest::delete_collection` — lists via the same
-//! selector filtering `LIST` already has, then deletes each match) —
-//! **it alone still runs no Group J admission**, a named gap (in
-//! practice a small one: `namespace_lifecycle`'s own immortal-namespace
-//! check needs a `name`, which a collection delete never has, so the
-//! only real loss is `LimitRanger`'s own PVC check, which a bulk PVC
-//! delete wouldn't be blocked by anyway — deleting under a limit never
-//! violates a *minimum*). `watch` is the only remaining resource verb
+//! is real too now (it lists via the same selector filtering `LIST` already
+//! has, runs configured admission against each matched object, then deletes
+//! each match) — `watch` is the only remaining resource verb
 //! this build knows about that isn't a real generic REST dispatch — it's
 //! real too, just structurally different (a streaming response, covered
 //! above).
@@ -105,6 +100,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -2167,29 +2163,95 @@ async fn handle(
     }
     // `deletecollection` is handled in its own branch too, for the same
     // reason `patch` is: it needs no request body at all (unlike
-    // `create`/`update`), and reuses [`rest::delete_collection`] rather
-    // than the single-object shape the five-verb block below assumes.
-    // **No Group J admission runs on it yet**, a named gap — but a small
-    // one in practice: `namespace_lifecycle`'s own immortal-namespace
-    // check needs a `name`, which a collection delete never has, and
-    // `LimitRanger`'s only `Update`-shaped check is a PVC *minimum*,
-    // which deleting can't violate. See this crate's
-    // `rest::delete_collection`'s own doc comment for the rest of its
-    // scope.
+    // `create`/`update`), and has to validate each selected object before
+    // deleting it. This mirrors upstream's DeleteCollection handler, which
+    // passes its delete validator into the store and lets the store invoke
+    // it for every matched object.
     if info.is_resource_request && info.verb == "deletecollection" && info.subresource.is_empty() {
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-        return match rest::delete_collection(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
-            Ok(rest::DeleteCollectionOutcome::Deleted(list)) => Ok(json_response(StatusCode::OK, &list)),
-            Ok(rest::DeleteCollectionOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
-            Err(rest::Error::Selector(e)) => Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
-            Err(e) => {
-                warn!(path = %path_str, error = ?e, "rest::delete_collection failed");
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+        let listed = match rest::list_delete_collection(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
+            Ok(outcome) => outcome,
+            Err(rest::Error::Selector(error)) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::list_delete_collection failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             }
         };
+        let rest::DeleteCollectionOutcome::Deleted(list) = listed else {
+            return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+        };
+        let items = list.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in &items {
+            let Some(name) = item.pointer("/metadata/name").and_then(Value::as_str) else {
+                continue;
+            };
+
+            // DeleteCollection's admission attributes intentionally retain
+            // an empty request name, as upstream does; the selected object
+            // is still supplied as oldObject to policy/webhook admission.
+            match admission::policy_enforcement::validate(
+                &mut client,
+                "DELETE",
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                "",
+                None,
+                Some(item),
+                false,
+            )
+            .await
+            {
+                Ok(Some(message)) => return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message))),
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed for deletecollection");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+
+            match admission::webhook::admit(
+                &mut client,
+                admission::attributes::Operation::Delete,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                "",
+                item.clone(),
+                Some(item.clone()),
+                identity.as_ref(),
+                false,
+            )
+            .await
+            {
+                Ok(admission::webhook::Outcome::Allowed(_)) => {}
+                Ok(admission::webhook::Outcome::Denied(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, name, "admission webhook invocation failed for deletecollection");
+                    return Ok(admission_webhook_error_response(&path_str, &error));
+                }
+            }
+
+            match rest::delete(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, name).await {
+                Ok(rest::DeleteOutcome::Deleted(_)) | Ok(rest::DeleteOutcome::ObjectNotFound) => {}
+                Ok(rest::DeleteOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::DeleteOutcome::PreconditionFailed) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, name, "rest::delete failed for deletecollection");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+        return Ok(json_response(StatusCode::OK, &list));
     }
     // Group I: `SubjectAccessReview`/`SelfSubjectAccessReview`/
     // `LocalSubjectAccessReview` — its own branch, checked before the
