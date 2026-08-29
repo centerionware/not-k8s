@@ -299,7 +299,18 @@ async fn list_stored_crds(storage: &mut StorageClient) -> Result<Vec<Value>, Err
     let prefix = keys::list_prefix("apiextensions.k8s.io", "customresourcedefinitions", None).into_bytes();
     let range_end = prefix_range_end(&prefix);
     let resp = storage.range(RangeRequest { key: prefix, range_end, ..Default::default() }).await?;
-    resp.kvs.iter().map(|kv| decrypt_and_decode(storage, "apiextensions.k8s.io", "customresourcedefinitions", &kv.key, &kv.value)).collect()
+    let mut objects = Vec::with_capacity(resp.kvs.len());
+    for kv in resp.kvs {
+        objects.push(decrypt_and_decode_with_rotation(
+            storage,
+            "apiextensions.k8s.io",
+            "customresourcedefinitions",
+            &kv.key,
+            &kv.value,
+            kv.mod_revision,
+        ).await?);
+    }
+    Ok(objects)
 }
 
 /// Decodes a value exactly as stored in nodestore — the full `k8s\0`-
@@ -376,13 +387,9 @@ fn decode_protobuf_object(resolved: &ResolvedResource, resource: &str, bytes: &[
 /// comment: "so a ciphertext can't be copied to a different key and
 /// still decrypt"), matching real upstream's own
 /// `dataCtx.AuthenticatedData()` convention exactly. The real upstream
-/// `stale` flag `transform_from_storage` returns (real upstream's own
-/// signal that a value was encrypted under a non-primary key — a
-/// migration-in-progress marker meaning "rewrite this with the current
-/// primary key next time it's written") is intentionally discarded here:
-/// this build has nowhere to act on it yet (no background re-encryption
-/// sweep), a named, narrower gap than the wiring itself, not silently
-/// dropped without comment.
+/// The plain helper is retained for synchronous callers such as watch-event
+/// formatting. Async REST reads use [`decrypt_and_decode_with_rotation`],
+/// which honors the transformer's stale-key signal after decoding.
 pub(crate) fn decrypt_and_decode(storage: &StorageClient, group: &str, resource: &str, key: &[u8], bytes: &[u8]) -> Result<Value, Error> {
     match storage.transformers_for(group, resource) {
         Some(transformers) => {
@@ -391,6 +398,68 @@ pub(crate) fn decrypt_and_decode(storage: &StorageClient, group: &str, resource:
         }
         None => Ok(decode_stored_object(bytes)?),
     }
+}
+
+/// The read path with upstream's key-rotation behavior. A value encrypted
+/// with any non-primary provider/key is returned normally, then rewritten
+/// with the first configured transformer only if the optimistic-concurrency
+/// check still sees the revision that was read. Rotation is bookkeeping: a
+/// failed or raced rewrite must never turn a successful read into an API
+/// error, and the next read can safely try again.
+pub(crate) async fn decrypt_and_decode_with_rotation(
+    storage: &mut StorageClient,
+    group: &str,
+    resource: &str,
+    key: &[u8],
+    bytes: &[u8],
+    revision: i64,
+) -> Result<Value, Error> {
+    let Some(transformers) = storage.transformers_for(group, resource) else {
+        return Ok(decode_stored_object(bytes)?);
+    };
+    let (plaintext, stale) = transformers.transform_from_storage(bytes, key)?;
+    let object = decode_stored_object(&plaintext)?;
+
+    if stale && revision > 0 {
+        let rotated = match encrypt_for_storage(storage, group, resource, key, &plaintext) {
+            Ok(rotated) => rotated,
+            Err(error) => {
+                tracing::warn!(group, resource, revision, error = ?error, "storage: stale-key rewrite could not encrypt the value; returning the decrypted value");
+                return Ok(object);
+            }
+        };
+        let compare = pb::Compare {
+            key: key.to_vec(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(revision)),
+            range_end: Vec::new(),
+        };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestPut(pb::PutRequest {
+                    key: key.to_vec(),
+                    value: rotated,
+                    ..Default::default()
+                })),
+            }],
+            failure: Vec::new(),
+        };
+        match storage.txn(txn).await {
+            Ok(response) if response.succeeded => {
+                tracing::debug!(group, resource, revision, "storage: re-encrypted a value with the primary key");
+            }
+            Ok(_) => {
+                tracing::debug!(group, resource, revision, "storage: skipped stale-key rewrite after a concurrent update");
+            }
+            Err(error) => {
+                tracing::warn!(group, resource, revision, error = ?error, "storage: stale-key rewrite failed; returning the decrypted value");
+            }
+        }
+    }
+
+    Ok(object)
 }
 
 /// The write-side counterpart to [`decrypt_and_decode`]: encrypts `bytes`
@@ -455,7 +524,7 @@ pub async fn get_at_revision(storage: &mut StorageClient, cache: Option<&crate::
     if resource_version <= 0 {
         if let Some(cache) = cache {
             if let Some(entry) = cache.get(key.as_bytes()) {
-                let mut object = decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
+                let mut object = decrypt_and_decode_with_rotation(storage, group, resource, key.as_bytes(), &entry.value, entry.mod_revision).await?;
                 set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
                 return Ok(GetOutcome::Found(crate::scheme::conversion::to_version(group, version, &kind, object)));
             }
@@ -466,7 +535,7 @@ pub async fn get_at_revision(storage: &mut StorageClient, cache: Option<&crate::
     let Some(kv) = resp.kvs.into_iter().next() else {
         return Ok(GetOutcome::ObjectNotFound);
     };
-    let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
+    let mut object = decrypt_and_decode_with_rotation(storage, group, resource, &kv.key, &kv.value, kv.mod_revision).await?;
     // Real, load-bearing fix, found live (`tests/apiservice_roundtrip.rs`'s
     // own get-then-update round trip): `resourceVersion` is never
     // actually *persisted* into the stored object bytes (`create`/
@@ -602,24 +671,20 @@ pub async fn list_at_revision(
     if let Some(cache) = cache {
         if cache.has_synced() && !paginated {
             let (entries, revision) = cache.list();
-            let items = entries
-                .iter()
-                .filter(|(key, _)| key.starts_with(&prefix))
-                .map(|(key, entry)| {
-                    // Same real fix `get`'s own doc comment covers: a
-                    // stored object never carries `resourceVersion` as
-                    // persisted content, so every item in a `LIST`
-                    // response needs it stamped from its own live
-                    // revision, the same way real upstream does.
-                    let mut object = decrypt_and_decode(storage, group, resource, key, &entry.value)?;
-                    set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
-                    object = crate::scheme::conversion::to_version(group, version, kind, object);
-                    Ok(object)
-                })
-                .collect::<Result<Vec<Value>, Error>>()?
-                .into_iter()
-                .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
-                .collect::<Vec<Value>>();
+            let mut items = Vec::new();
+            for (key, entry) in entries.iter().filter(|(key, _)| key.starts_with(&prefix)) {
+                // Same real fix `get`'s own doc comment covers: a stored
+                // object never carries `resourceVersion` as persisted
+                // content, so every item in a `LIST` response needs it
+                // stamped from its own live revision, the same way real
+                // upstream does.
+                let mut object = decrypt_and_decode_with_rotation(storage, group, resource, key, &entry.value, entry.mod_revision).await?;
+                set_metadata_field(&mut object, "resourceVersion", Value::String(entry.mod_revision.to_string()));
+                object = crate::scheme::conversion::to_version(group, version, kind, object);
+                if selector::object_matches(&object, &label_reqs, &field_reqs) {
+                    items.push(object);
+                }
+            }
             return Ok(ListOutcome::Found(json!({
                 "kind": list_kind(kind),
                 "apiVersion": group_version,
@@ -664,19 +729,15 @@ pub async fn list_at_revision(
         k.push(0);
         k
     });
-    let items = resp
-        .kvs
-        .iter()
-        .map(|kv| {
-            let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
-            set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
-            object = crate::scheme::conversion::to_version(group, version, kind, object);
-            Ok(object)
-        })
-        .collect::<Result<Vec<Value>, Error>>()?
-        .into_iter()
-        .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
-        .collect::<Vec<Value>>();
+    let mut items = Vec::with_capacity(resp.kvs.len());
+    for kv in &resp.kvs {
+        let mut object = decrypt_and_decode_with_rotation(storage, group, resource, &kv.key, &kv.value, kv.mod_revision).await?;
+        set_metadata_field(&mut object, "resourceVersion", Value::String(kv.mod_revision.to_string()));
+        object = crate::scheme::conversion::to_version(group, version, kind, object);
+        if selector::object_matches(&object, &label_reqs, &field_reqs) {
+            items.push(object);
+        }
+    }
 
     let mut metadata = json!({"resourceVersion": revision.to_string()});
     if more {
@@ -1127,7 +1188,7 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
+    let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
 
     if let (Some(ns), Some(body_ns)) = (namespace, body.pointer("/metadata/namespace").and_then(Value::as_str)) {
         if !body_ns.is_empty() && body_ns != ns {
@@ -1245,7 +1306,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
+    let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
 
     let Some(submitted_rv) = body.pointer("/metadata/resourceVersion").and_then(Value::as_str).and_then(|s| s.parse::<i64>().ok()) else {
         return Ok(UpdateOutcome::MissingResourceVersion);
@@ -1532,7 +1593,7 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(PatchPrepareOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
+    let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
 
     let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object, patch_doc) {
         Ok(object) => object,
@@ -1628,7 +1689,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
+    let existing_object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
 
     let patched = match apply_patch(kind_of_patch, resolved.schema, resolved.open_api_schema.as_ref(), &existing_object, patch_doc) {
         Ok(object) => object,
@@ -1821,7 +1882,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema: Some(schema), kind: resolved.kind, key, existing: None }));
     };
 
-    let live = decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?;
+    let live = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
 
     let stored_managed_fields = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
     // A stored `managedFields` this crate can't parse (malformed, or an
@@ -1876,7 +1937,10 @@ async fn apply_prepare_crd(
     let key = keys::object_key(group, resource, namespace, name);
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
     let (live, existing_kv) = match existing_resp.kvs.into_iter().next() {
-        Some(existing_kv) => (decrypt_and_decode(storage, group, resource, &existing_kv.key, &existing_kv.value)?, Some(existing_kv)),
+        Some(existing_kv) => {
+            let object = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+            (object, Some(existing_kv))
+        }
         None => (json!({}), None),
     };
     let stored = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
@@ -2191,7 +2255,7 @@ pub async fn delete_with_options(
     let Some(prev) = current.kvs.into_iter().next() else {
         return Ok(DeleteOutcome::ObjectNotFound);
     };
-    let mut object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
+    let mut object = decrypt_and_decode_with_rotation(storage, group, resource, &prev.key, &prev.value, prev.mod_revision).await?;
     set_metadata_field(&mut object, "resourceVersion", Value::String(prev.mod_revision.to_string()));
     if let Some(preconditions) = preconditions {
         if let Some(resource_version) = &preconditions.resource_version {
