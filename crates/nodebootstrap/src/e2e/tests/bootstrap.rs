@@ -545,6 +545,31 @@ pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> 
         )
         .await?;
 
+    context
+        .wait_until(
+            "nodeapiserver to answer requests after authentication configuration",
+            Duration::from_secs(60),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "2",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "https://127.0.0.1:6443/healthz",
+                    ])
+                    .output();
+                Ok(output.is_ok_and(|output| {
+                    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() != "000"
+                }))
+            },
+        )
+        .await?;
+
     let anonymous = Command::new("curl")
         .args([
             "-k",
