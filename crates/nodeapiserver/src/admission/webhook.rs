@@ -49,9 +49,9 @@ pub enum Error {
 }
 
 #[derive(Debug)]
-struct Endpoint {
-    url: String,
-    resolve: Option<(String, SocketAddr)>,
+pub(crate) struct Endpoint {
+    pub(crate) url: String,
+    pub(crate) resolve: Option<(String, SocketAddr)>,
 }
 
 /// Run all matching mutating webhooks followed by all matching validating
@@ -689,7 +689,7 @@ fn review_version(webhook: &Value, webhook_name: &str) -> Result<&'static str, E
     }
 }
 
-async fn endpoint(
+pub(crate) async fn endpoint(
     storage: &mut StorageClient,
     webhook: &Value,
     webhook_name: &str,
@@ -719,7 +719,7 @@ async fn endpoint(
             detail: "service name and namespace are required".to_string(),
         });
     }
-    let service_object = match rest::get(
+    let service_object = match Box::pin(rest::get(
         storage,
         None,
         "",
@@ -727,7 +727,7 @@ async fn endpoint(
         "services",
         Some(service_namespace),
         service_name,
-    )
+    ))
     .await?
     {
         rest::GetOutcome::Found(value) => value,
@@ -782,7 +782,7 @@ async fn endpoint(
     })
 }
 
-fn build_client(
+pub(crate) fn build_client(
     webhook: &Value,
     resolve: Option<(String, SocketAddr)>,
     timeout: Duration,
@@ -799,10 +799,12 @@ fn build_client(
                 webhook: webhook_name.to_string(),
                 detail: format!("invalid clientConfig.caBundle: {error}"),
             })?;
-        let certificate = Certificate::from_der(&ca_bundle).map_err(|error| Error::Invalid {
-            webhook: webhook_name.to_string(),
-            detail: format!("invalid clientConfig.caBundle certificate: {error}"),
-        })?;
+        let certificate = Certificate::from_pem(&ca_bundle)
+            .or_else(|_| Certificate::from_der(&ca_bundle))
+            .map_err(|error| Error::Invalid {
+                webhook: webhook_name.to_string(),
+                detail: format!("invalid clientConfig.caBundle certificate: {error}"),
+            })?;
         builder = builder.add_root_certificate(certificate);
     }
     if let Some((host, address)) = resolve {
