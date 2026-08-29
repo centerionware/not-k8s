@@ -276,10 +276,10 @@ mod tests {
 
     #[test]
     fn policy_variables_decode_in_the_declared_order() {
-        let policy = json!({"spec": {"variables": [{"name": "replicas", "expression": "object.spec.replicas"}, {"name": "minimum", "expression": "variables.replicas + 2"} ]}});
+        let policy = json!({"spec": {"variables": [{"name": "replicas", "expression": "object.spec.replicas"}, {"name": "minimum", "expression": "variables.replicas + 2u"} ]}});
         let decoded = DecodedPolicy::decode(&policy);
         assert_eq!(decoded.variables.len(), 2);
         assert_eq!(decoded.variables[0].name, "replicas");
-        assert_eq!(decoded.variables[1].expression, "variables.replicas + 2");
+        assert_eq!(decoded.variables[1].expression, "variables.replicas + 2u");
     }
 }

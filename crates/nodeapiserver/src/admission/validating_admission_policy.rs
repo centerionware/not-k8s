@@ -413,7 +413,7 @@ mod tests {
         let validation_vars = policy_matching::build_eval_vars_with_namespace(Some(&object), None, &request, None, None);
         let variables = [
             policy_matching::Variable { name: "replicas", expression: "object.spec.replicas" },
-            policy_matching::Variable { name: "minimum", expression: "variables.replicas + 2" },
+            policy_matching::Variable { name: "minimum", expression: "variables.replicas + 2u" },
         ];
         let outcome = evaluate_with_composed_variables(&policy, "CREATE", "", "v1", "pods", "", &labels(&[]), &labels(&[]), &match_vars, &validation_vars, &variables);
         assert_eq!(outcome, PolicyOutcome::Decided(vec![Decision { action: Action::Admit, is_error: false, message: None, reason: None }]));

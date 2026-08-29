@@ -500,7 +500,7 @@ mod tests {
         let request = json!({"operation": "CREATE"});
         let variables = [
             Variable { name: "replicas", expression: "object.spec.replicas" },
-            Variable { name: "minimum", expression: "variables.replicas + 2" },
+            Variable { name: "minimum", expression: "variables.replicas + 2u" },
         ];
         let base = build_eval_vars(Some(&object), None, &request, None);
         let composed = compose_variables(&variables, &base).unwrap();
