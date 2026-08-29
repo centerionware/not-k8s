@@ -28,6 +28,7 @@ use crate::storage::client::{prefix_range_end, Error as StorageError, StorageCli
 use crate::storage::pb::etcdserverpb::watch_request::RequestUnion;
 use crate::storage::pb::etcdserverpb::{RangeRequest, WatchProgressRequest, WatchRequest, WatchResponse};
 use crate::storage::pb::mvccpb;
+use tokio::sync::watch;
 
 /// LIST: fetch every key under `key_prefix` at the current revision.
 /// Returns the seed data and revision `WatchCache::new` needs.
@@ -86,23 +87,36 @@ pub async fn reflect(
     history_limit: usize,
     backoff: std::time::Duration,
     bookmark_interval: std::time::Duration,
+    mut stop: watch::Receiver<bool>,
 ) {
     loop {
-        let (items, revision) = match list(client, key_prefix).await {
+        let listed = tokio::select! {
+            result = list(client, key_prefix) => result,
+            _ = stop.changed() => return,
+        };
+        let (items, revision) = match listed {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = ?e, "cacher: LIST failed, retrying after backoff");
-                tokio::time::sleep(backoff).await;
+                if wait_or_stop(&mut stop, backoff).await {
+                    return;
+                }
                 continue;
             }
         };
         cache.replace(WatchCache::new(items, revision, event_buffer, history_limit));
 
-        let mut handle = match watch_from_revision(client, key_prefix, revision).await {
+        let opened = tokio::select! {
+            result = watch_from_revision(client, key_prefix, revision) => result,
+            _ = stop.changed() => return,
+        };
+        let mut handle = match opened {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!(error = ?e, "cacher: opening watch failed, relisting after backoff");
-                tokio::time::sleep(backoff).await;
+                if wait_or_stop(&mut stop, backoff).await {
+                    return;
+                }
                 continue;
             }
         };
@@ -126,7 +140,9 @@ pub async fn reflect(
                         }
                         Err(e) => {
                             tracing::warn!(error = ?e, "cacher: watch stream error, relisting after backoff");
-                            tokio::time::sleep(backoff).await;
+                            if wait_or_stop(&mut stop, backoff).await {
+                                return;
+                            }
                             break;
                         }
                     }
@@ -142,8 +158,16 @@ pub async fn reflect(
                         tracing::debug!("cacher: watch request channel closed while sending a progress request");
                     }
                 }
+                _ = stop.changed() => return,
             }
         }
+    }
+}
+
+async fn wait_or_stop(stop: &mut watch::Receiver<bool>, delay: std::time::Duration) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        _ = stop.changed() => true,
     }
 }
 
@@ -322,5 +346,16 @@ mod tests {
         apply_watch_response(&mut cache, &resp);
         assert_eq!(cache.revision(), 5, "an at-or-below-current event must be skipped, not applied");
         assert!(cache.list().0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reflector_backoff_stops_when_registration_is_replaced() {
+        let (stop, mut receiver) = watch::channel(false);
+        let waiting = tokio::spawn(async move { wait_or_stop(&mut receiver, std::time::Duration::from_secs(60)).await });
+
+        tokio::task::yield_now().await;
+        stop.send(true).unwrap();
+
+        assert!(waiting.await.unwrap(), "a replaced registration must cancel its old reflector");
     }
 }

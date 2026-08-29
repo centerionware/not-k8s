@@ -20,6 +20,7 @@ use crate::storage::keys;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::sync::watch;
 
 /// `(group, version, resource)` — the same triple `server::rest`'s own
 /// functions key resources by.
@@ -37,7 +38,12 @@ const DEFAULT_BOOKMARK_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default)]
 pub struct CacheRegistry {
-    caches: Arc<RwLock<HashMap<ResourceKey, SharedCache>>>,
+    caches: Arc<RwLock<HashMap<ResourceKey, Registration>>>,
+}
+
+struct Registration {
+    cache: SharedCache,
+    stop: watch::Sender<bool>,
 }
 
 impl CacheRegistry {
@@ -52,15 +58,19 @@ impl CacheRegistry {
     /// objects is a real, valid state).
     pub fn get(&self, group: &str, version: &str, resource: &str) -> Option<SharedCache> {
         let key = (group.to_string(), version.to_string(), resource.to_string());
-        self.caches.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key).cloned()
+        self.caches
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .map(|registration| registration.cache.clone())
     }
 
     /// Starts a background `reflect()` loop for one resource and
     /// registers the [`SharedCache`] it keeps live, replacing any
-    /// previous registration for the same key (the old reflector, if any,
-    /// keeps running against its own now-orphaned cache until the process
-    /// exits — restarting a registration cleanly is separate work, since
-    /// startup registers each built-in GVR only once.
+    /// previous registration for the same key. Replacing a registration
+    /// cancels the old reflector before its cache is forgotten, so a CRD
+    /// delete/recreate or an explicit re-registration cannot leak a second
+    /// nodestore watch task.
     /// Returns the cache immediately; it starts empty and populates once
     /// the first `LIST` completes — a reader that consults it before then
     /// just sees a not-yet-synced cache, the same window a real
@@ -68,13 +78,31 @@ impl CacheRegistry {
     pub fn spawn(&self, mut storage: StorageClient, group: &str, version: &str, resource: &str) -> SharedCache {
         let key_prefix = keys::list_prefix(group, resource, None).into_bytes();
         let cache = SharedCache::new(WatchCache::new(Vec::new(), 0, DEFAULT_EVENT_BUFFER, DEFAULT_HISTORY_LIMIT));
+        let (stop, stop_receiver) = watch::channel(false);
 
         let key = (group.to_string(), version.to_string(), resource.to_string());
-        self.caches.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, cache.clone());
+        let previous = self
+            .caches
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, Registration { cache: cache.clone(), stop });
+        if let Some(previous) = previous {
+            let _ = previous.stop.send(true);
+        }
 
         let reflect_cache = cache.clone();
         tokio::spawn(async move {
-            reflect(&mut storage, &key_prefix, &reflect_cache, DEFAULT_EVENT_BUFFER, DEFAULT_HISTORY_LIMIT, DEFAULT_RECONNECT_BACKOFF, DEFAULT_BOOKMARK_INTERVAL).await;
+            reflect(
+                &mut storage,
+                &key_prefix,
+                &reflect_cache,
+                DEFAULT_EVENT_BUFFER,
+                DEFAULT_HISTORY_LIMIT,
+                DEFAULT_RECONNECT_BACKOFF,
+                DEFAULT_BOOKMARK_INTERVAL,
+                stop_receiver,
+            )
+            .await;
         });
 
         cache
@@ -95,7 +123,13 @@ mod tests {
     fn get_is_none_for_a_resource_nothing_has_spawned() {
         let registry = CacheRegistry::new();
         // Registering "pods" must not make "nodes" appear too.
-        registry.caches.write().unwrap().insert(("".to_string(), "v1".to_string(), "pods".to_string()), SharedCache::new(WatchCache::new(Vec::new(), 0, 8, 8)));
+        registry.caches.write().unwrap().insert(
+            ("".to_string(), "v1".to_string(), "pods".to_string()),
+            Registration {
+                cache: SharedCache::new(WatchCache::new(Vec::new(), 0, 8, 8)),
+                stop: watch::channel(false).0,
+            },
+        );
         assert!(registry.get("", "v1", "nodes").is_none());
         assert!(registry.get("", "v1", "pods").is_some());
     }
