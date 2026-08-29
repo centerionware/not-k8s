@@ -385,11 +385,25 @@ fn resource_expired_status(path_str: &str) -> serde_json::Value {
 /// key this cache never held a value for — see that module's own doc
 /// comment) — the event is silently skipped from the stream rather than
 /// breaking it, since there is nothing real to report for it.
-fn encode_watch_event(event: &crate::cacher::store::WatchEvent, kind: &str, api_version: &str, storage: Option<&StorageClient>, group: &str, resource: &str, version: &str) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+fn encode_watch_event(
+    event: &crate::cacher::store::WatchEvent,
+    kind: &str,
+    api_version: &str,
+    storage: Option<&StorageClient>,
+    group: &str,
+    resource: &str,
+    version: &str,
+    partial_metadata: bool,
+) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
     match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
         None => None,
-        Some(Ok(json)) => {
-            let mut bytes = serde_json::to_vec(&json).unwrap_or_default();
+        Some(Ok(mut event_json)) => {
+            if partial_metadata {
+                if let Some(object) = event_json.get_mut("object") {
+                    *object = crate::codec::partial_metadata::object(object);
+                }
+            }
+            let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
             bytes.push(b'\n');
             // Group M: `apiserver_watch_events_total` -- real upstream's
             // own increment point too (`metrics.go`'s own `WatchEvents.
@@ -482,6 +496,7 @@ fn watch_response_body(
     group: String,
     resource: String,
     version: String,
+    partial_metadata: bool,
 ) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::wrappers::BroadcastStream;
@@ -496,7 +511,7 @@ fn watch_response_body(
     // their own `'static`-owned copy of the encryption-lookup context.
     let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
     let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
-    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version));
+    let frames = filtered.filter_map(move |event| encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata));
     StreamBody::new(frames).boxed()
 }
 
@@ -2560,6 +2575,15 @@ async fn handle(
         };
     }
 
+    // WATCH is dispatched below the CRUD block, so retain this negotiated
+    // representation before the request body can be consumed by a mutating
+    // request.
+    let wants_partial_metadata = req
+        .headers()
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .and_then(negotiation::negotiate)
+        .is_some_and(|accepted| accepted.wants_partial_object_metadata());
     let has_body = is_create || is_update;
     if is_get || is_list || is_create || is_delete || is_update {
         // Captured before `req` is potentially consumed below (`has_body`
@@ -2571,7 +2595,6 @@ async fn handle(
         // after `req` may already be gone.
         let accepted = req.headers().get("accept").and_then(|v| v.to_str().ok()).and_then(negotiation::negotiate);
         let wants_table = accepted.as_ref().is_some_and(|a| a.wants_table());
-        let wants_partial_metadata = accepted.as_ref().is_some_and(|a| a.wants_partial_object_metadata());
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
@@ -3386,7 +3409,19 @@ async fn handle(
             match cache.watch_from(start_revision) {
                 Ok((replay, rx)) => {
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
-                    let body = watch_response_body(replay, rx, kind, group_version, label_reqs, field_reqs, storage.clone(), info.api_group.clone(), info.resource.clone(), info.api_version.clone());
+                    let body = watch_response_body(
+                        replay,
+                        rx,
+                        kind,
+                        group_version,
+                        label_reqs,
+                        field_reqs,
+                        storage.clone(),
+                        info.api_group.clone(),
+                        info.resource.clone(),
+                        info.api_version.clone(),
+                        wants_partial_metadata,
+                    );
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
                     // no known length correctly for whichever protocol
@@ -4006,7 +4041,7 @@ mod tests {
     #[test]
     fn encode_watch_event_produces_a_newline_terminated_json_line() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1").expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false).expect("Bookmark always converts").expect("Bookmark conversion never fails");
         let bytes = frame.into_data().unwrap();
         assert!(bytes.ends_with(b"\n"));
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
@@ -4017,7 +4052,26 @@ mod tests {
     #[test]
     fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
-        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1").is_none());
+        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false).is_none());
+    }
+
+    #[test]
+    fn encode_watch_event_converts_objects_to_partial_metadata_when_requested() {
+        let event = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: b"k".to_vec(),
+            value: envelope_for("default", serde_json::json!({"app": "demo"})),
+            revision: 9,
+        };
+        let frame = encode_watch_event(&event, "Namespace", "v1", None, "", "namespaces", "v1", true)
+            .expect("Added events always convert")
+            .expect("the test envelope must decode");
+        let bytes = frame.into_data().unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(parsed["object"]["apiVersion"], "meta.k8s.io/v1");
+        assert_eq!(parsed["object"]["kind"], "PartialObjectMetadata");
+        assert_eq!(parsed["object"]["metadata"]["name"], "default");
+        assert!(parsed["object"].get("spec").is_none());
     }
 
     fn envelope_for(name: &str, labels: serde_json::Value) -> Vec<u8> {
@@ -4079,7 +4133,7 @@ mod tests {
         // artificially closing the channel first).
         drop(shared);
 
-        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new(), None, String::new(), "namespaces".to_string(), "v1".to_string());
+        let body = watch_response_body(replay, rx, "Namespace".to_string(), "v1".to_string(), Vec::new(), Vec::new(), None, String::new(), "namespaces".to_string(), "v1".to_string(), false);
         let collected = body.collect().await.unwrap().to_bytes();
         let text = String::from_utf8(collected.to_vec()).unwrap();
         assert_eq!(text.lines().count(), 1);

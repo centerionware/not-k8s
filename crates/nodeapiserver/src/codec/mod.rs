@@ -15,7 +15,7 @@
 //!
 //! `partial_metadata` serves the standard `meta.k8s.io/v1`
 //! `PartialObjectMetadata` and `PartialObjectMetadataList` representations
-//! for negotiated `GET` and `LIST` responses.
+//! for negotiated `GET`, `LIST`, and `WATCH` responses.
 
 pub mod wire;
 pub mod protobuf;

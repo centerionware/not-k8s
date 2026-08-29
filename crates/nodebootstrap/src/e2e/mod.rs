@@ -243,6 +243,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_watches_partial_object_metadata",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rejects_unsupported_resource_route",
         group: TestGroup::General,
     },
@@ -1642,6 +1646,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_recreates_a_dynamic_watch_cache" => {
             bootstrap::nodeapiserver_recreates_a_dynamic_watch_cache(context).await
+        },
+        "test_nodeapiserver_watches_partial_object_metadata" => {
+            bootstrap::nodeapiserver_watches_partial_object_metadata(context).await
         },
         "test_nodeapiserver_rejects_unsupported_resource_route" => {
             bootstrap::nodeapiserver_rejects_unsupported_resource_route(context).await
