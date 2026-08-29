@@ -2763,30 +2763,37 @@ async fn handle(
                 (None, None)
             };
 
-            // Group J: mutating admission — `DefaultTolerationSeconds`,
-            // real upstream's own plugin, ported (see
-            // `admission::default_toleration_seconds`'s own doc comment).
-            // Unconditional, same posture as `namespace_lifecycle`: no
-            // bootstrap data needed, so no lockout risk to gate behind a
-            // config flag. Runs on the decoded body before it reaches
-            // `rest::create`/`update`, so the appended tolerations are
-            // part of what actually gets validated and persisted.
+            // Group J: run the pure mutating admission registry before the
+            // storage-backed admission stages. This preserves the existing
+            // DefaultTolerationSeconds -> ServiceAccount defaulting order,
+            // while making pure plugins extensible without another direct
+            // listener call for each one.
             if let Some(body) = body_value.as_mut() {
-                if admission::default_toleration_seconds::applies_to(&info.api_group, &info.resource, &info.subresource) {
-                    admission::default_toleration_seconds::mutate(body);
-                }
+                let operation = if is_create {
+                    admission::attributes::Operation::Create
+                } else {
+                    admission::attributes::Operation::Update
+                };
+                let registry = admission::chain::MutatingRegistry::with_builtins();
+                let mut request = admission::chain::Request {
+                    operation,
+                    group: &info.api_group,
+                    resource: &info.resource,
+                    subresource: &info.subresource,
+                    namespace: &info.namespace,
+                    name: &info.name,
+                    object: body,
+                };
+                registry.run(&mut request);
             }
 
-            // Group J: `ServiceAccount` — mutating + validating, `CREATE`
-            // only (see `admission::service_account`'s own doc comment for
-            // exactly what's ported and what's named-honestly skipped).
-            // Defaulting is pure and always runs on a `pods` CREATE;
-            // `quick_decision` then says whether a real `ServiceAccount`
-            // lookup is needed before this plugin can finish.
+            // `ServiceAccount`'s validating and I/O-backed mutation step
+            // follows the pure registry. Defaulting has already happened;
+            // `quick_decision` now says whether a real ServiceAccount lookup
+            // is needed to finish the plugin.
             if is_create {
                 if let Some(pod) = body_value.as_mut() {
                     if admission::service_account::applies_to(&info.api_group, &info.resource, &info.subresource) {
-                        admission::service_account::default_service_account_name(pod);
                         match admission::service_account::quick_decision(pod, admission::attributes::Operation::Create) {
                             admission::service_account::Decision::Allow => {}
                             admission::service_account::Decision::Forbidden(msg) => {
