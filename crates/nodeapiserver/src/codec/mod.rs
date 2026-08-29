@@ -9,9 +9,9 @@
 //! `as=Table;g=...;v=...` server-side-printing parameters `kubectl get`
 //! sends.
 //! `table` — the `Table` conversion itself, negotiated via those
-//! parameters: the generic default converter only (real per-type printers
-//! like Pod's `READY`/`STATUS` columns are separate, unstarted work — see
-//! the module's own doc for exactly what's covered).
+//! parameters: the generic default converter plus the verified core Pod
+//! printer; other per-type printers remain separate work — see the module's
+//! own doc for exactly what's covered.
 //!
 //! `partial_metadata` serves the standard `meta.k8s.io/v1`
 //! `PartialObjectMetadata` and `PartialObjectMetadataList` representations
