@@ -19,9 +19,9 @@
 //! genuinely bespoke Go per Kind, nothing here derives it from data) and a
 //! **generic default converter** every type without one of those falls
 //! back to — most visibly, every CRD, since a CRD has no compiled-in Go
-//! printer at all. This module faithfully ports that generic converter and
-//! the verified common built-in printers; less-common per-type printers remain
-//! separate work.
+//! printer at all. This module faithfully ports that generic converter, CRD
+//! `additionalPrinterColumns`, and the verified common built-in printers;
+//! less-common per-type printers remain separate work.
 //! (`k8s.io/apiserver/pkg/registry/rest/table.go`'s `defaultTableConvertor`,
 //! fetched and read directly, not reconstructed from memory): exactly two
 //! columns, `Name` and `Created At`, cells `[metadata.name,
@@ -90,8 +90,19 @@ pub fn convert_to_table(object: &Value) -> Value {
 
 /// Converts a resource using the built-in printer for the small set of
 /// resource types this crate has verified. Resources without a printer keep
-/// the generic default-table behavior, including all CRD-defined resources.
+/// the generic default-table behavior, including CRD-defined resources when
+/// no CRD columns are supplied.
 pub fn convert_to_table_for_resource(group: &str, version: &str, resource: &str, object: &Value) -> Value {
+    convert_to_table_for_resource_with_crd_columns(group, version, resource, None, object)
+}
+
+/// Converts a resource using its built-in printer or, for a CRD, the
+/// `additionalPrinterColumns` attached to its served version. A CRD with no
+/// custom columns gets the upstream default `Age` column.
+pub fn convert_to_table_for_resource_with_crd_columns(group: &str, version: &str, resource: &str, crd_columns: Option<&[Value]>, object: &Value) -> Value {
+    if let Some(columns) = crd_columns {
+        return convert_crd_to_table(object, columns);
+    }
     if group.is_empty() && version == "v1" {
         return match resource {
             "pods" => convert_pod_to_table(object),
@@ -111,6 +122,98 @@ pub fn convert_to_table_for_resource(group: &str, version: &str, resource: &str,
         };
     }
     convert_to_table(object)
+}
+
+fn convert_crd_to_table(object: &Value, columns: &[Value]) -> Value {
+    let column_definitions = crd_column_definitions(columns);
+    let items = list_items(object);
+    let rows = match &items {
+        Some(items) => items.iter().map(|item| crd_row(item, columns)).collect(),
+        None => vec![crd_row(object, columns)],
+    };
+    let mut table = json!({
+        "kind": "Table",
+        "apiVersion": "meta.k8s.io/v1",
+        "columnDefinitions": column_definitions,
+        "rows": rows,
+    });
+    copy_list_metadata(&mut table, object, items.is_some());
+    table
+}
+
+fn crd_column_definitions(columns: &[Value]) -> Value {
+    let mut definitions = vec![json!({
+        "name": "Name",
+        "type": "string",
+        "format": "name",
+        "description": NAME_DESCRIPTION,
+        "priority": 0,
+    })];
+    if columns.is_empty() {
+        definitions.push(json!({
+            "name": "Age",
+            "type": "date",
+            "description": CREATED_AT_DESCRIPTION,
+            "priority": 0,
+        }));
+    } else {
+        for column in columns {
+            let mut definition = json!({
+                "name": column.get("name").and_then(Value::as_str).unwrap_or(""),
+                "type": column.get("type").and_then(Value::as_str).unwrap_or("string"),
+                "priority": column.get("priority").and_then(Value::as_i64).unwrap_or(0),
+            });
+            if let Some(format) = column.get("format").and_then(Value::as_str).filter(|format| !format.is_empty()) {
+                definition["format"] = json!(format);
+            }
+            if let Some(description) = column.get("description").and_then(Value::as_str).filter(|description| !description.is_empty()) {
+                definition["description"] = json!(description);
+            }
+            definitions.push(definition);
+        }
+    }
+    Value::Array(definitions)
+}
+
+fn crd_row(resource: &Value, columns: &[Value]) -> Value {
+    let mut cells = vec![name_cell(resource)];
+    if columns.is_empty() {
+        cells.push(resource.pointer("/metadata/creationTimestamp").cloned().unwrap_or(Value::Null));
+    } else {
+        cells.extend(columns.iter().map(|column| {
+            let path = column.get("jsonPath").and_then(Value::as_str).unwrap_or("");
+            let value = json_path(resource, path).cloned().unwrap_or(Value::Null);
+            printer_cell(value, column.get("type").and_then(Value::as_str).unwrap_or("string"))
+        }));
+    }
+    json!({"cells": cells, "object": resource})
+}
+
+fn json_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let path = path.strip_prefix('.')?;
+    if path.is_empty() {
+        return Some(value);
+    }
+    let mut current = value;
+    for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+fn printer_cell(value: Value, declared_type: &str) -> Value {
+    match (declared_type, value) {
+        (_, Value::Null) => Value::Null,
+        ("string" | "date", Value::String(value)) => Value::String(value),
+        ("string" | "date", Value::Number(value)) => Value::String(value.to_string()),
+        ("string" | "date", Value::Bool(value)) => Value::String(value.to_string()),
+        ("string" | "date", value @ (Value::Array(_) | Value::Object(_))) => Value::String(value.to_string()),
+        ("integer" | "number" | "boolean", value) => value,
+        (_, value) => value,
+    }
 }
 
 const POD_READY_DESCRIPTION: &str = "The aggregate readiness state of this pod for accepting traffic.";
@@ -812,6 +915,48 @@ mod tests {
         assert_eq!(table["columnDefinitions"].as_array().unwrap().len(), 2);
         let table = convert_to_table_for_resource("", "v1", "configmaps", &object);
         assert_eq!(table["columnDefinitions"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn crd_printer_columns_are_evaluated_and_keep_the_declared_types() {
+        let columns = json!([
+            {"name": "Spec", "type": "string", "description": "The schedule.", "jsonPath": ".spec.schedule"},
+            {"name": "Replicas", "type": "integer", "jsonPath": ".status.replicas"},
+            {"name": "Ready", "type": "boolean", "jsonPath": ".status.ready"},
+            {"name": "Missing", "type": "string", "jsonPath": ".status.missing"}
+        ]);
+        let object = json!({
+            "apiVersion": "example.com/v1",
+            "kind": "CronTab",
+            "metadata": {"name": "nightly", "creationTimestamp": "2026-08-29T00:00:00Z"},
+            "spec": {"schedule": "0 0 * * *"},
+            "status": {"replicas": 3, "ready": true}
+        });
+        let table = convert_to_table_for_resource_with_crd_columns(
+            "example.com",
+            "v1",
+            "crontabs",
+            Some(columns.as_array().unwrap()),
+            &object,
+        );
+        assert_eq!(
+            table["columnDefinitions"].as_array().unwrap().iter().map(|column| column["name"].as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["Name", "Spec", "Replicas", "Ready", "Missing"]
+        );
+        assert_eq!(table["columnDefinitions"][1]["description"], "The schedule.");
+        assert_eq!(table["rows"][0]["cells"], json!(["nightly", "0 0 * * *", 3, true, null]));
+        assert_eq!(table["rows"][0]["object"], object);
+    }
+
+    #[test]
+    fn crds_without_additional_printer_columns_get_the_default_age_column() {
+        let object = json!({
+            "metadata": {"name": "widget", "creationTimestamp": "2026-08-29T00:00:00Z"}
+        });
+        let columns: Vec<Value> = Vec::new();
+        let table = convert_to_table_for_resource_with_crd_columns("example.com", "v1", "widgets", Some(&columns), &object);
+        assert_eq!(table["columnDefinitions"].as_array().unwrap().iter().map(|column| column["name"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Name", "Age"]);
+        assert_eq!(table["rows"][0]["cells"], json!(["widget", "2026-08-29T00:00:00Z"]));
     }
 
     #[test]
