@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `ad80d6e` on
+This snapshot is checked against `origin/nodeapiserver` at `3d859be` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1478,11 +1478,15 @@ own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.
 
 `ValidatingAdmissionPolicy` and `ValidatingAdmissionPolicyBinding` are now
-loaded from storage and deny-capable bindings are evaluated against the
-final candidate object before persistence. The existing pure policy
+loaded from storage and matching bindings are evaluated against the final
+candidate object before persistence. The existing pure policy
 decoder/matcher/CEL evaluator is reused; named and selector-based
-`paramRef` objects are resolved through generic REST storage, and
-Warn/Audit actions are not emitted yet.
+`paramRef` objects are resolved through generic REST storage. `Deny` rejects
+the request, `Warn` is returned as an HTTP `Warning: 299` header, and `Audit`
+adds the upstream `validation.policy.admission.k8s.io/validation_failure`
+annotation to the request's audit event. Multiple failures are accumulated so
+warnings and audit details survive even when another binding denies the
+request.
 
 `MutatingAdmissionPolicy` and `MutatingAdmissionPolicyBinding` are now
 loaded from storage before validating admission. Matching bindings can apply
@@ -1968,8 +1972,8 @@ used*:
 5. **ValidatingAdmissionPolicy enforcement is landed.**
    `admission::policy_enforcement` loads policies and bindings from storage,
    resolves named or selector-based `paramRef` objects, and evaluates every
-   matching deny-capable binding against the final candidate object before
-   persistence. It also supplies `oldObject` for update/delete and the real
+   matching binding against the final candidate object before persistence.
+   It also supplies `oldObject` for update/delete and the real
    `request.dryRun` value. MutatingAdmissionPolicy remains separate work.
    `ValidatingAdmissionPolicy` itself is now **confirmed, live, working
    generic CRUD** (`tests/validating_admission_policy_roundtrip.rs`, a
@@ -2100,16 +2104,17 @@ used*:
    `denies()` — safe unconditionally, since `evaluate` only ever produces
    that variant when `failurePolicy` is already `Fail`) /
    `denial_message` (what to actually report) and the standalone
-   `validation_actions_deny` (the real `ValidatingAdmissionPolicyBinding.
-   spec.validationActions` gate — `"Deny"` only; `"Warn"`/`"Audit"` are a
-   named, honest gap, this crate having no warning-header/audit-event
-   plumbing to report them through yet).
+   `validation_actions_deny`, `validation_actions_warn`, and
+   `validation_actions_audit` (the real `ValidatingAdmissionPolicyBinding.
+   spec.validationActions` gates). The storage-backed adapter accumulates
+   the matching warning messages and upstream-shaped validation-failure
+   audit annotation details for the request wrapper to publish.
 
    The storage-backed adapter is wired into `server::listener` after
    authorization and before persistence. Parameter references support named
    and label-selected parameters, including `parameterNotFoundAction`;
-   `Warn`/`Audit` reporting and the additional `namespaceObject`,
-   `variables`, and `authorizer` CEL bindings remain explicit gaps.
+   The additional `namespaceObject`, `variables`, and `authorizer` CEL
+   bindings remain explicit gaps.
 6. Kubernetes' own CEL extension library — **started**: `cel_ext::
    kubernetes_lists` is real upstream's own `kubernetes.lists` library
    (`k8s.io/apiserver/pkg/cel/library/lists.go`, fetched and read
