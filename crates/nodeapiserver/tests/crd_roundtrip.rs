@@ -531,7 +531,10 @@ async fn create_rejects_a_crd_defined_object_that_violates_its_own_schema() {
                             "spec": {
                                 "type": "object",
                                 "required": ["color"],
-                                "properties": {"color": {"type": "string"}, "weight": {"type": "integer"}},
+                                "properties": {
+                                    "color": {"type": "string", "enum": ["red", "blue"], "minLength": 3, "pattern": "^[a-z]+$"},
+                                    "weight": {"type": "integer", "minimum": 1, "maximum": 5}
+                                },
                             },
                         },
                     },
@@ -565,6 +568,20 @@ async fn create_rejects_a_crd_defined_object_that_violates_its_own_schema() {
     match rest::create(&mut storage, "example.com", "v1", "gadgets", Some("default"), &wrong_type).await.expect("rest::create must not itself error") {
         rest::CreateOutcome::Invalid(violations) => {
             assert!(violations.iter().any(|v| v.contains("spec.weight") && v.contains("integer")), "expected a spec.weight type violation, got {violations:?}");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+
+    let wrong_constraints = json!({
+        "apiVersion": "example.com/v1",
+        "kind": "Gadget",
+        "metadata": {"name": "bad-gadget-3", "namespace": "default"},
+        "spec": {"color": "green", "weight": 6},
+    });
+    match rest::create(&mut storage, "example.com", "v1", "gadgets", Some("default"), &wrong_constraints).await.expect("rest::create must not itself error") {
+        rest::CreateOutcome::Invalid(violations) => {
+            assert!(violations.iter().any(|v| v.contains("spec.color") && v.contains("one of")), "expected enum violation, got {violations:?}");
+            assert!(violations.iter().any(|v| v.contains("spec.weight") && v.contains("at most")), "expected maximum violation, got {violations:?}");
         }
         other => panic!("expected Invalid, got {other:?}"),
     }
