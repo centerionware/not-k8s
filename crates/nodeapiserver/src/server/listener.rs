@@ -219,6 +219,18 @@ fn dry_run_query(query: &str) -> Result<bool, &'static str> {
     }
 }
 
+fn is_authorization_review(info: &path::RequestInfo) -> bool {
+    (info.api_group == "authorization.k8s.io"
+        && matches!(
+            info.resource.as_str(),
+            "subjectaccessreviews"
+                | "selfsubjectaccessreviews"
+                | "localsubjectaccessreviews"
+                | "selfsubjectrulesreviews"
+        ))
+        || (info.api_group == "authentication.k8s.io" && info.resource == "selfsubjectreviews")
+}
+
 fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest::DeletePreconditions>, &'static str> {
     let Some(preconditions) = value.and_then(|value| value.get("preconditions")) else {
         return Ok(None);
@@ -1291,7 +1303,7 @@ async fn authenticate_request(
 
 async fn handle(
     req: Request<Incoming>,
-    storage: Option<StorageClient>,
+    mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::Authenticator>>,
@@ -1392,6 +1404,30 @@ async fn handle(
     }
 
     let info = path::parse(&method, &path_str, &query);
+
+    // Keep authorization ahead of every admission and REST handler. The
+    // earlier implementation performed this check only inside the generic
+    // CRUD block, which let PATCH, status writes, deletecollection, and the
+    // proxy/streaming branches reach their handlers without RBAC when
+    // enforcement was enabled. Virtual review resources are intentionally
+    // exempt: they answer questions about authorization rather than mutate
+    // the resource named by the request.
+    if enforce_rbac && info.is_resource_request && !is_authorization_review(&info) {
+        let Some(client) = storage.as_mut() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let allowed = match authz::request_allowed(client, identity.as_ref(), &info).await {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        if !allowed {
+            let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+            return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+        }
+    }
 
     // Group E's real resource verbs so far: single-object GET (`get`, not
     // `list`/`watch` — `path::parse` already tells those apart by an empty
@@ -2018,22 +2054,9 @@ async fn handle(
         && info.verb == "create"
         && info.subresource.is_empty()
     {
-        let Some(mut client) = storage else {
+        let Some(client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
-        if enforce_rbac {
-            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
-                Ok(allowed) => allowed,
-                Err(error) => {
-                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                }
-            };
-            if !allowed {
-                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
-            }
-        }
         let body_bytes = match read_body_bytes(req).await {
             Ok(b) => b,
             Err(e) => {
@@ -2079,19 +2102,6 @@ async fn handle(
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
-        if enforce_rbac {
-            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
-                Ok(allowed) => allowed,
-                Err(error) => {
-                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                }
-            };
-            if !allowed {
-                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
-            }
-        }
         let Some(authenticator) = service_account_authenticator.as_deref() else {
             return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "ServiceAccount token signing is not configured")));
         };
@@ -2197,20 +2207,6 @@ async fn handle(
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
 
-        if enforce_rbac {
-            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
-                Ok(allowed) => allowed,
-                Err(error) => {
-                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                }
-            };
-            if !allowed {
-                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
-            }
-        }
-
         let pod = match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
             Ok(rest::GetOutcome::Found(object)) => object,
             Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
@@ -2288,28 +2284,6 @@ async fn handle(
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-
-        // Group I: `pods/log` is its own distinct resource for RBAC
-        // purposes -- a role granting `get` on `pods` does NOT imply
-        // `pods/log`, real upstream's own subresource-is-a-separate-
-        // resource rule -- so this checks the subresource explicitly
-        // rather than reusing whatever the plain `pods` `get` branch
-        // below would decide.
-        if enforce_rbac {
-            let mut authz_info = info.clone();
-            authz_info.verb = "get".to_string();
-            let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &authz_info).await {
-                Ok(allowed) => allowed,
-                Err(error) => {
-                    warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                }
-            };
-            if !allowed {
-                let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-                return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
-            }
-        }
 
         let pod = match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
             Ok(rest::GetOutcome::Found(object)) => object,
@@ -2718,26 +2692,6 @@ async fn handle(
                 }
             }
 
-            // Group I: authorization, opt-in (see config::Config::enforce_rbac's
-            // own doc comment for why this defaults to off rather than
-            // being unconditional the moment identity extraction and RBAC
-            // resolution both exist). A request with no established x509
-            // identity is evaluated as the real anonymous user/group
-            // upstream itself uses, not silently skipped.
-            if enforce_rbac {
-                let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
-                    Ok(allowed) => allowed,
-                    Err(error) => {
-                        warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                    }
-                };
-                if !allowed {
-                    let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-                    return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
-                }
-            }
-
             // Group J: storage-backed `ValidatingAdmissionPolicy` bindings.
             // Authorization must complete before admission, and CEL gets
             // the same candidate/old object pair that the write will use.
@@ -3048,26 +3002,6 @@ async fn handle(
     // upstream's own posture (admission never runs on a read, whatever
     // the verb) — not a gap.
     if is_watch {
-        if enforce_rbac {
-            match storage.clone() {
-                Some(mut client) => {
-                    let allowed = match authz::request_allowed(&mut client, identity.as_ref(), &info).await {
-                        Ok(allowed) => allowed,
-                        Err(error) => {
-                            warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                        }
-                    };
-                    if !allowed {
-                        let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-                        return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
-                    }
-                }
-                None => {
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-                }
-            }
-        }
         // Group K: an already-registered cache first (unchanged), else —
         // only when the static table doesn't know this resource at all —
         // a live check against the dynamic CRD registry, lazily spawning
@@ -3484,6 +3418,25 @@ mod tests {
         assert_eq!(dry_run_query("dryRun=All").unwrap(), true);
         assert_eq!(dry_run_query("fieldManager=test").unwrap(), false);
         assert_eq!(dry_run_query("dryRun=Unknown").unwrap_err(), "dryRun must be All");
+    }
+
+    #[test]
+    fn authorization_reviews_bypass_resource_enforcement() {
+        let sar = path::parse(
+            "POST",
+            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+            "",
+        );
+        let self_review = path::parse(
+            "POST",
+            "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+            "",
+        );
+        let pods = path::parse("PATCH", "/api/v1/namespaces/default/pods/p1", "");
+
+        assert!(is_authorization_review(&sar));
+        assert!(is_authorization_review(&self_review));
+        assert!(!is_authorization_review(&pods));
     }
 
     #[test]
