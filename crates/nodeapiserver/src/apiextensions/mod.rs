@@ -59,11 +59,8 @@
 //! `/apis/{group}/{version}` and their aggregated-v2 counterparts, not
 //! just at their own already-known URL.
 //!
-//! **Not yet landed, named honestly**: conversion webhooks;
-//! reacting to a CRD's own lifecycle (a lazily-spawned watch reflector
-//! keeps running even after its CRD is deleted, and a newly
-//! `Established` CRD is only discovered by the next watch/discovery
-//! request for its resource, not eagerly); the `status` subresource is now
+//! **Not yet landed, named honestly**: conversion webhooks; the
+//! `status` subresource is now
 //! schema-pruned and validated on `update_status`/`patch_status`, using the
 //! matched version's `properties.status` schema. **Done, not a gap**: the
 //! `status` subresource is genuinely gated on a CRD's own
