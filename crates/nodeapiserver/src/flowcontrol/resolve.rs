@@ -1,12 +1,11 @@
 //! Storage resolution for API Priority and Fairness — fetches real
 //! `FlowSchema`/`PriorityLevelConfiguration` objects and identifies which
-//! pair governs a request, the storage-backed half `flow_schema`'s own
-//! module doc comment named as not yet built.
+//! pair governs a request.
 //!
 //! The request gate receives the selected limited level's nominal
-//! concurrency shares, aggregate share total, queue length, and reject
-//! policy. The full upstream shuffle-sharded fair queue and seat borrowing
-//! remain separate refinements. This module still labels every response with
+//! concurrency shares, aggregate share total, queue shape, queue length,
+//! lending, and reject policy. Seat borrowing remains a separate refinement.
+//! This module labels every response with
 //! the selected pair through the same real response headers upstream sets
 //! (`k8s.io/api/flowcontrol/v1/types.go`'s own
 //! `ResponseHeaderMatchedFlowSchemaUID`/
@@ -40,11 +39,17 @@ pub struct PriorityLevelConfig {
     pub exempt: bool,
     pub nominal_concurrency_shares: usize,
     pub total_nominal_concurrency_shares: usize,
+    pub queues: usize,
+    pub hand_size: usize,
     pub queue_length_limit: usize,
+    pub lendable_percent: usize,
+    pub borrowing_limit_percent: Option<usize>,
     pub reject: bool,
 }
 
 const DEFAULT_NOMINAL_CONCURRENCY_SHARES: usize = 30;
+const DEFAULT_QUEUES: usize = 64;
+const DEFAULT_HAND_SIZE: usize = 8;
 const DEFAULT_QUEUE_LENGTH_LIMIT: usize = 50;
 
 /// Lists every real `FlowSchema`, selects the one that governs this
@@ -81,30 +86,60 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     };
     let priority_level_uid = priority_level["metadata"]["uid"].as_str()?.to_string();
 
-    let exempt = priority_level["spec"]["type"].as_str() == Some("Exempt");
-    let priority_level = if exempt {
-        PriorityLevelConfig {
-            uid: priority_level_uid.clone(),
+    let priority_level = priority_level_config(&priority_level, priority_level_uid.clone(), total_nominal_concurrency_shares);
+    let exempt = priority_level.exempt;
+    Some(Selected { flow_schema_uid, priority_level_uid, flow_distinguisher, exempt, priority_level })
+}
+
+fn priority_level_config(priority_level: &Value, uid: String, total_nominal_concurrency_shares: usize) -> PriorityLevelConfig {
+    if priority_level["spec"]["type"].as_str() == Some("Exempt") {
+        return PriorityLevelConfig {
+            uid,
             exempt: true,
             nominal_concurrency_shares: 0,
             total_nominal_concurrency_shares,
+            queues: 1,
+            hand_size: 1,
             queue_length_limit: 0,
+            lendable_percent: 0,
+            borrowing_limit_percent: None,
             reject: false,
-        }
-    } else {
-        PriorityLevelConfig {
-            uid: priority_level_uid.clone(),
-            exempt: false,
-            nominal_concurrency_shares: nominal_concurrency_shares(&priority_level),
-            total_nominal_concurrency_shares,
-            queue_length_limit: priority_level["spec"]["limited"]["limitResponse"]["queuing"]["queueLengthLimit"]
-                .as_u64()
-                .map(|value| value as usize)
-                .unwrap_or(DEFAULT_QUEUE_LENGTH_LIMIT),
-            reject: priority_level["spec"]["limited"]["limitResponse"]["type"].as_str() == Some("Reject"),
-        }
-    };
-    Some(Selected { flow_schema_uid, priority_level_uid, flow_distinguisher, exempt, priority_level })
+        };
+    }
+
+    let queuing = &priority_level["spec"]["limited"]["limitResponse"]["queuing"];
+    let queues = queuing["queues"]
+        .as_u64()
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_QUEUES)
+        .max(1);
+    let hand_size = queuing["handSize"]
+        .as_u64()
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_HAND_SIZE)
+        .max(1)
+        .min(queues);
+    PriorityLevelConfig {
+        uid,
+        exempt: false,
+        nominal_concurrency_shares: nominal_concurrency_shares(priority_level),
+        total_nominal_concurrency_shares,
+        queues,
+        hand_size,
+        queue_length_limit: queuing["queueLengthLimit"]
+            .as_u64()
+            .map(|value| value as usize)
+            .unwrap_or(DEFAULT_QUEUE_LENGTH_LIMIT),
+        lendable_percent: priority_level["spec"]["limited"]["lendablePercent"]
+            .as_u64()
+            .map(|value| value as usize)
+            .unwrap_or(0)
+            .min(100),
+        borrowing_limit_percent: priority_level["spec"]["limited"]["borrowingLimitPercent"]
+            .as_u64()
+            .map(|value| value as usize),
+        reject: priority_level["spec"]["limited"]["limitResponse"]["type"].as_str() == Some("Reject"),
+    }
 }
 
 fn nominal_concurrency_shares(priority_level: &Value) -> usize {
@@ -117,6 +152,7 @@ fn nominal_concurrency_shares(priority_level: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn digest<'a>() -> RequestDigest<'a> {
         RequestDigest {
@@ -147,5 +183,34 @@ mod tests {
         let d = digest();
         assert!(d.is_resource_request);
         assert_eq!(d.resource, "pods");
+    }
+
+    #[test]
+    fn limited_priority_level_reads_shuffle_and_lending_configuration() {
+        let object = json!({
+            "spec": {
+                "type": "Limited",
+                "limited": {
+                    "nominalConcurrencyShares": 7,
+                    "lendablePercent": 25,
+                    "borrowingLimitPercent": 150,
+                    "limitResponse": {
+                        "type": "Queue",
+                        "queuing": {
+                            "queues": 32,
+                            "handSize": 4,
+                            "queueLengthLimit": 12
+                        }
+                    }
+                }
+            }
+        });
+        let config = priority_level_config(&object, "limited".to_string(), 10);
+        assert_eq!(config.nominal_concurrency_shares, 7);
+        assert_eq!(config.queues, 32);
+        assert_eq!(config.hand_size, 4);
+        assert_eq!(config.queue_length_limit, 12);
+        assert_eq!(config.lendable_percent, 25);
+        assert_eq!(config.borrowing_limit_percent, Some(150));
     }
 }

@@ -6,8 +6,7 @@
 //!
 //! This module remains the pure matching half. Storage resolution and the
 //! request gate live in the sibling `resolve` and `limiter` modules; the
-//! full upstream shuffle-sharded fair queue and seat-borrowing algorithm
-//! remain separate refinements.
+//! the seat-borrowing adjustment remains a separate refinement.
 //!
 //! # What's ported
 //!
