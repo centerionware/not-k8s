@@ -194,6 +194,11 @@ fn rule_matches(rule: &Rule, info: &RequestInfo, user: &str, groups: &[String]) 
                 .iter()
                 .any(|group| matches_string(group, &rule.user_groups)))
         || !matches_string(&info.verb, &rule.verbs)
+        || (!rule.namespaces.is_empty()
+            && !rule
+                .namespaces
+                .iter()
+                .any(|namespace| namespace == "*" || namespace == &info.namespace))
     {
         return false;
     }
@@ -216,14 +221,6 @@ fn rule_matches(rule: &Rule, info: &RequestInfo, user: &str, groups: &[String]) 
 
 fn resource_matches(rule: &GroupResources, info: &RequestInfo) -> bool {
     if rule.group != "*" && rule.group != info.api_group {
-        return false;
-    }
-    if !rule.namespaces.is_empty()
-        && !rule
-            .namespaces
-            .iter()
-            .any(|namespace| namespace == "*" || namespace == &info.namespace)
-    {
         return false;
     }
     if !rule.resource_names.is_empty()
