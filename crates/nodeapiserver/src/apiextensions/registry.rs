@@ -48,6 +48,9 @@ pub struct CrdResource {
     /// conversion webhook before it is persisted. A webhook can return a
     /// shape that is valid for the requested version but not for storage.
     pub storage_open_api_schema: Option<Value>,
+    /// Additional Table columns for the matched served version. An empty
+    /// list means the CRD uses the upstream default age column.
+    pub additional_printer_columns: Vec<Value>,
     /// Whether the matched version's own `subresources.status` is
     /// present — real upstream only serves `GET`/`PUT`/`PATCH .../status`
     /// for a CRD version that opts in this way (`spec.versions[].
@@ -116,9 +119,15 @@ pub fn resolve(crd: &Value, group: &str, version: &str, resource: &str) -> Optio
         .and_then(|versions| versions.iter().find(|version| version.get("storage").and_then(Value::as_bool) == Some(true)))
         .and_then(|version| version.pointer("/schema/openAPIV3Schema"))
         .cloned();
+    let additional_printer_columns = matched_version
+        .get("additionalPrinterColumns")
+        .and_then(Value::as_array)
+        .cloned()
+        .or_else(|| crd.get("spec").and_then(|spec| spec.get("additionalPrinterColumns")).and_then(Value::as_array).cloned())
+        .unwrap_or_default();
     let has_status_subresource = matched_version.pointer("/subresources/status").is_some();
     let conversion_webhook = conversion_webhook(crd);
-    Some(CrdResource { kind, namespaced, open_api_schema, storage_open_api_schema, has_status_subresource, conversion_webhook })
+    Some(CrdResource { kind, namespaced, open_api_schema, storage_open_api_schema, additional_printer_columns, has_status_subresource, conversion_webhook })
 }
 
 fn conversion_webhook(crd: &Value) -> Option<ConversionWebhook> {
@@ -233,6 +242,7 @@ mod tests {
         assert!(resolved.namespaced);
         assert!(resolved.open_api_schema.is_some());
         assert!(resolved.storage_open_api_schema.is_some());
+        assert!(resolved.additional_printer_columns.is_empty());
         assert!(!resolved.has_status_subresource, "established_crd()'s own fixture never declares subresources.status");
     }
 
@@ -242,6 +252,17 @@ mod tests {
         crd["spec"]["versions"][0]["subresources"] = json!({"status": {}});
         let resolved = resolve(&crd, "example.com", "v1", "widgets").expect("should resolve");
         assert!(resolved.has_status_subresource);
+    }
+
+    #[test]
+    fn resolves_printer_columns_from_the_matched_served_version() {
+        let mut crd = established_crd();
+        crd["spec"]["versions"][0]["additionalPrinterColumns"] = json!([
+            {"name": "Color", "type": "string", "jsonPath": ".spec.color"}
+        ]);
+        let resolved = resolve(&crd, "example.com", "v1", "widgets").expect("should resolve");
+        assert_eq!(resolved.additional_printer_columns[0]["name"], "Color");
+        assert_eq!(resolved.additional_printer_columns[0]["jsonPath"], ".spec.color");
     }
 
     #[test]

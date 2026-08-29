@@ -112,6 +112,7 @@ fn a_crd() -> serde_json::Value {
                 "name": "v1",
                 "served": true,
                 "storage": true,
+                "additionalPrinterColumns": [{"name": "Color", "type": "string", "jsonPath": ".spec.color"}],
                 "schema": {
                     "openAPIV3Schema": {
                         "type": "object",
@@ -472,6 +473,11 @@ async fn a_crd_defined_resource_routes_through_the_generic_rest_verbs() {
     let names_accepted = conditions.iter().find(|c| c["type"] == "NamesAccepted").expect("a NamesAccepted condition must be present");
     assert_eq!(names_accepted["status"], "True");
     assert_eq!(created_crd["status"]["storedVersions"], json!(["v1"]));
+    let resolved = rest::resolve_dynamic_resource(&mut storage, "example.com", "v1", "widgets")
+        .await
+        .expect("resolving the CRD must not itself error")
+        .expect("the CRD must resolve after creation");
+    assert_eq!(resolved.additional_printer_columns[0]["name"], "Color");
 
     // 2. Create a custom-resource instance of the CRD's own Kind --
     // resolved purely dynamically (`example.com/v1/widgets` has no
@@ -508,6 +514,15 @@ async fn a_crd_defined_resource_routes_through_the_generic_rest_verbs() {
     assert_eq!(listed["kind"], "WidgetList");
     let items = listed["items"].as_array().cloned().unwrap_or_default();
     assert_eq!(items.len(), 1, "the widget just created must be the only item listed: {listed}");
+    let table = nodeapiserver::codec::table::convert_to_table_for_resource_with_crd_columns(
+        "example.com",
+        "v1",
+        "widgets",
+        Some(&resolved.additional_printer_columns),
+        &listed,
+    );
+    assert_eq!(table["columnDefinitions"][1]["name"], "Color");
+    assert_eq!(table["rows"][0]["cells"], json!(["my-widget", "red"]));
 
     // 4. Server-Side Apply uses the CRD's runtime schema, rather than
     // returning the built-in-only 501 path. The first manager claims the
