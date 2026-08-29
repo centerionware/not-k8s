@@ -127,7 +127,7 @@
 //! `object`/`oldObject`/`params` bind to a real CEL `null`, not an absent
 //! variable, when the caller has none. See that module's own doc comment
 //! for the named, honest gaps (`Rule.Scope` not matched, `kind`/`userInfo`
-//! not yet populated, `authorizer` not bound). The storage-backed
+//! not yet populated). The storage-backed
 //! policy adapters consume these pure matching
 //! and variable-building primitives for real policy requests.
 //!

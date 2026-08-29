@@ -189,7 +189,7 @@ pub fn evaluate_with_validation_vars(
     match_vars: &[(&'static str, &Value)],
     validation_vars: &[(&'static str, &Value)],
 ) -> PolicyOutcome {
-    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars) {
+    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, &[]) {
         return outcome;
     }
     PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, validation_vars, policy.failure_policy))
@@ -212,17 +212,37 @@ pub fn evaluate_with_composed_variables(
     validation_vars: &[(&'static str, &Value)],
     variables: &[policy_matching::Variable<'_>],
 ) -> PolicyOutcome {
-    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars) {
+    evaluate_with_composed_cel_vars(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, validation_vars, variables, &[])
+}
+
+/// [`evaluate_with_composed_variables`] with native CEL values in addition
+/// to JSON variables. The Kubernetes `authorizer` binding uses this path.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_with_composed_cel_vars(
+    policy: &PolicyDefinition,
+    operation: &str,
+    group: &str,
+    version: &str,
+    resource: &str,
+    subresource: &str,
+    namespace_labels: &BTreeMap<String, String>,
+    object_labels: &BTreeMap<String, String>,
+    match_vars: &[(&'static str, &Value)],
+    validation_vars: &[(&'static str, &Value)],
+    variables: &[policy_matching::Variable<'_>],
+    cel_vars: &[(&'static str, cel::Value)],
+) -> PolicyOutcome {
+    if let Err(outcome) = match_policy(policy, operation, group, version, resource, subresource, namespace_labels, object_labels, match_vars, cel_vars) {
         return outcome;
     }
-    let composed = match policy_matching::compose_variables(variables, validation_vars) {
+    let composed = match policy_matching::compose_variables_with_cel_vars(variables, validation_vars, cel_vars) {
         Ok(value) => value,
         Err(_error) if policy.failure_policy == FailurePolicy::Ignore => return PolicyOutcome::NotApplicable,
         Err(error) => return PolicyOutcome::VariableError { error },
     };
     let mut validation_vars = validation_vars.to_vec();
     validation_vars.push(("variables", &composed));
-    PolicyOutcome::Decided(policy_validations::evaluate_validations(policy.validations, &validation_vars, policy.failure_policy))
+    PolicyOutcome::Decided(policy_validations::evaluate_validations_with_cel_vars(policy.validations, &validation_vars, cel_vars, policy.failure_policy))
 }
 
 fn match_policy(
@@ -235,6 +255,7 @@ fn match_policy(
     namespace_labels: &BTreeMap<String, String>,
     object_labels: &BTreeMap<String, String>,
     match_vars: &[(&'static str, &Value)],
+    cel_vars: &[(&'static str, cel::Value)],
 ) -> Result<(), PolicyOutcome> {
     if !policy_matching::matches_resource_rules(policy.resource_rules, policy.exclude_resource_rules, operation, group, version, resource, subresource) {
         return Err(PolicyOutcome::NotApplicable);
@@ -246,7 +267,7 @@ fn match_policy(
         return Err(PolicyOutcome::NotApplicable);
     }
     if !policy.match_conditions.is_empty() {
-        match match_conditions::match_conditions(policy.match_conditions, match_vars, policy.failure_policy) {
+        match match_conditions::match_conditions_with_cel_vars(policy.match_conditions, match_vars, cel_vars, policy.failure_policy) {
             MatchResult::Matches => {}
             // A real `false` result and real upstream's own `Ignore`-policy
             // "skip this policy" outcome are both "this policy has nothing
