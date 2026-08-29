@@ -566,6 +566,7 @@ mod tests {
             "deployments",
             "",
             &BTreeMap::new(),
+            &BTreeMap::new(),
             &BTreeMap::new()
         ));
     }
