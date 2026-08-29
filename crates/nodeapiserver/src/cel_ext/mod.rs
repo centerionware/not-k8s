@@ -84,10 +84,9 @@
 //! lists.go`, fetched and read directly) — every function it declares
 //! (`isSorted`/`min`/`max`/`indexOf`/`lastIndexOf`/`sum`/`includes`) is
 //! now landed. `kubernetes_quantity` is real upstream's own `kubernetes.
-//! quantity` library (`.../library/quantity.go`), scoped to `isQuantity`
-//! only so far — see that module's own doc comment for why the real
-//! opaque `Quantity` CEL type (`quantity()`'s own constructor plus its
-//! member functions) is separate, not-yet-started work.
+//! quantity` library (`.../library/quantity.go`), including its opaque
+//! `Quantity` value, constructor, scalar conversions, arithmetic, and
+//! comparison member functions.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -191,10 +190,8 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
 /// `params`, not `self`/`oldSelf`) — this is the shared primitive both
 /// real variable-naming conventions this crate supports are built from,
 /// rather than a second copy of the same compile-bind-execute sequence.
-/// Registers this crate's own real Kubernetes CEL extension functions
-/// (currently just [`kubernetes_lists::is_sorted_binding`] — see that
-/// module's own doc comment for the named, honest scope) onto a fresh
-/// [`Context`] — called by every real entry point below so a rule can
+/// Registers this crate's own real Kubernetes CEL extension functions onto a
+/// fresh [`Context`] — called by every real entry point below so a rule can
 /// use them regardless of which variable-naming convention it's
 /// evaluated through.
 pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
@@ -206,6 +203,16 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("sum", kubernetes_lists::sum_binding);
     ctx.add_function("includes", kubernetes_lists::includes_binding);
     ctx.add_function("isQuantity", kubernetes_quantity::is_quantity_binding);
+    ctx.add_function("quantity", kubernetes_quantity::quantity_binding);
+    ctx.add_function("isInteger", kubernetes_quantity::is_integer_binding);
+    ctx.add_function("asInteger", kubernetes_quantity::as_integer_binding);
+    ctx.add_function("asApproximateFloat", kubernetes_quantity::as_approximate_float_binding);
+    ctx.add_function("sign", kubernetes_quantity::sign_binding);
+    ctx.add_function("add", kubernetes_quantity::add_binding);
+    ctx.add_function("sub", kubernetes_quantity::sub_binding);
+    ctx.add_function("isLessThan", kubernetes_quantity::is_less_than_binding);
+    ctx.add_function("isGreaterThan", kubernetes_quantity::is_greater_than_binding);
+    ctx.add_function("compareTo", kubernetes_quantity::compare_to_binding);
     authorizer::register(ctx);
 }
 
@@ -582,6 +589,13 @@ mod tests {
         assert_eq!(eval_bool_with_vars("'model-a'.includes('model-a')", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("isQuantity('1.5G')", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("isQuantity('Three')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("quantity('50k').asInteger() == 50000", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("quantity('0.5').isInteger() == false", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("quantity('50k').sign() == 1", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("quantity('50k').add(20).sub(quantity('20')).compareTo(quantity('50k')) == 0", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("quantity('50Mi').isGreaterThan(quantity('50M'))", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("quantity('50M').isLessThan(quantity('100M'))", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("quantity('50k').asApproximateFloat() == 50000.0", &[]).unwrap(), true);
     }
 
     #[test]

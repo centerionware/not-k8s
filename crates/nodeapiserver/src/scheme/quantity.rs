@@ -79,6 +79,33 @@ impl Quantity {
         self.milli.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 
+    /// Return the exact whole-unit value when it fits in an `i64` without
+    /// rounding. This is the safe conversion used by the CEL quantity
+    /// extension's `asInteger()` member.
+    pub fn as_integer(&self) -> Option<i64> {
+        if self.milli % 1000 != 0 {
+            return None;
+        }
+        (self.milli / 1000).try_into().ok()
+    }
+
+    /// Return the quantity as an IEEE-754 approximation, matching the
+    /// intentionally lossy conversion exposed by CEL's `asApproximateFloat`.
+    pub fn as_approximate_float(&self) -> f64 {
+        self.milli as f64 / 1000.0
+    }
+
+    /// Return -1, 0, or 1 according to the quantity's sign.
+    pub fn sign(&self) -> i64 {
+        self.milli.signum() as i64
+    }
+
+    /// Return the exact negation, saturating only at the deliberately
+    /// unreachable `i128` boundary.
+    pub fn negated(self) -> Self {
+        Self { milli: self.milli.saturating_neg() }
+    }
+
     pub fn is_zero(&self) -> bool {
         self.milli == 0
     }
