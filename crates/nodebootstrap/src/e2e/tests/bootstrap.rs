@@ -1248,6 +1248,165 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
     result
 }
 
+pub(super) async fn nodeapiserver_validates_crd_status_subresource(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "CRD status-subresource validation is a nodeapiserver-only check",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let group = format!("nodeapiserver-status-{suffix}.test");
+    let crd_name = format!("widgets.{group}");
+    let widget_name = format!("widget-{suffix}");
+    let crds: Api<CustomResourceDefinition> = Api::all(context.client.clone());
+    let widgets: Api<DynamicObject> = Api::namespaced_with(
+        context.client.clone(),
+        &context.namespace,
+        &ApiResource::from_gvk(&GroupVersionKind::gvk(&group, "v1", "Widget")),
+    );
+    let crd: CustomResourceDefinition = serde_json::from_value(json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": crd_name},
+        "spec": {
+            "group": group.clone(),
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "listKind": "WidgetList"
+            },
+            "scope": "Namespaced",
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "schema": {"openAPIV3Schema": {
+                    "type": "object",
+                    "required": ["spec"],
+                    "properties": {
+                        "spec": {
+                            "type": "object",
+                            "required": ["color"],
+                            "properties": {"color": {"type": "string"}}
+                        },
+                        "status": {
+                            "type": "object",
+                            "required": ["phase"],
+                            "properties": {
+                                "phase": {"type": "string", "enum": ["Ready", "Failed"]}
+                            }
+                        }
+                    }
+                }},
+                "subresources": {"status": {}}
+            }]
+        }
+    }))?;
+
+    let result = async {
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("creating a CRD with a status schema")?;
+        context
+            .wait_until(
+                "CRD status schema resource to become established",
+                Duration::from_secs(60),
+                || {
+                    let crds = crds.clone();
+                    let crd_name = crd_name.clone();
+                    async move {
+                        Ok(crds
+                            .get_opt(&crd_name)
+                            .await?
+                            .and_then(|crd| crd.status)
+                            .and_then(|status| status.conditions)
+                            .is_some_and(|conditions| {
+                                conditions.iter().any(|condition| {
+                                    condition.type_ == "Established"
+                                        && condition.status == "True"
+                                })
+                            }))
+                    }
+                },
+            )
+            .await?;
+
+        let widget: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": widget_name.clone(), "namespace": &context.namespace},
+            "spec": {"color": "blue"}
+        }))?;
+        let created = widgets
+            .create(&PostParams::default(), &widget)
+            .await
+            .context("creating the CRD status-subresource fixture")?;
+        let resource_version = created
+            .metadata
+            .resource_version
+            .context("CRD status-subresource fixture had no resourceVersion")?;
+
+        let status_uri = format!(
+            "/apis/{group}/v1/namespaces/{}/widgets/{}/status",
+            context.namespace, widget_name
+        );
+        let invalid = json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": widget_name, "namespace": context.namespace, "resourceVersion": resource_version},
+            "status": {"phase": "Unknown"}
+        });
+        let request = Request::builder()
+            .method("PUT")
+            .uri(&status_uri)
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&invalid)?)?;
+        match context.client.request::<Value>(request).await {
+            Err(KubeError::Api(error)) if error.code == 422 => {}
+            Err(error) => {
+                anyhow::bail!("invalid CRD status returned the wrong API error: {error}")
+            }
+            Ok(value) => anyhow::bail!("invalid CRD status was accepted: {value}"),
+        }
+
+        let valid = json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": widget_name, "namespace": context.namespace, "resourceVersion": resource_version},
+            "status": {"phase": "Ready", "unknown": "prune me"}
+        });
+        let request = Request::builder()
+            .method("PUT")
+            .uri(&status_uri)
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&valid)?)?;
+        let updated: Value = context
+            .client
+            .request(request)
+            .await
+            .context("updating a valid CRD status subresource")?;
+        anyhow::ensure!(
+            updated.pointer("/status/phase").and_then(Value::as_str) == Some("Ready"),
+            "valid CRD status update returned the wrong phase: {updated}"
+        );
+        anyhow::ensure!(
+            updated.pointer("/status/unknown").is_none(),
+            "unknown CRD status field was not pruned: {updated}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = widgets.delete(&widget_name, &DeleteParams::default()).await;
+    let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
+    result
+}
+
 pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
     context: &E2eContext,
 ) -> Result<()> {

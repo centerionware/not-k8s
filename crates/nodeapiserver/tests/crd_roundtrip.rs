@@ -697,7 +697,7 @@ async fn status_subresource_is_gated_on_the_crd_declaring_it() {
                 "name": "v1",
                 "served": true,
                 "storage": true,
-                "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object"}, "status": {"type": "object"}}}},
+                "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object"}, "status": {"type": "object", "properties": {"phase": {"type": "string"}}}}}},
                 "subresources": {"status": {}},
             }],
         },
