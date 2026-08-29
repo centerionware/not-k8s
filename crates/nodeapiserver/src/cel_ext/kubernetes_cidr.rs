@@ -98,6 +98,10 @@ fn contains_address(cidr: CidrValue, address: IpAddr) -> bool {
     }
 }
 
+pub(crate) fn string_value(value: &Value) -> Option<String> {
+    cidr_ref(value).map(|cidr| format!("{}/{}", cidr.address, cidr.prefix_length))
+}
+
 pub fn cidr_binding(ftx: &FunctionContext, raw: Arc<String>) -> Result<Value, ExecutionError> {
     parse_cidr(&raw)
         .map(opaque)
