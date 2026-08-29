@@ -202,7 +202,7 @@ fn schema_type(schema: &Value) -> Option<CelType> {
                 .unwrap_or(CelType::Dyn),
         ))),
         Some("object") => {
-            let fields = schema
+            let fields: BTreeMap<String, CelType> = schema
                 .get("properties")
                 .and_then(Value::as_object)
                 .map(|properties| {
