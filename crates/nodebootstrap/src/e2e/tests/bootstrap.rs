@@ -21,8 +21,13 @@ use secrecy::SecretString;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
@@ -985,6 +990,64 @@ pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext)
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_honors_patch_dry_run(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("dry-run checks are only exercised against nodeapiserver"));
+    }
+
+    let name = format!("nodeapiserver-dry-run-{}", std::process::id());
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the dry-run probe ConfigMap")?;
+
+    let uri = format!(
+        "/api/v1/namespaces/{}/configmaps/{name}?dryRun=All",
+        context.namespace
+    );
+    let response = context
+        .client
+        .request::<Value>(
+            Request::builder()
+                .method("PATCH")
+                .uri(uri)
+                .header("Content-Type", "application/merge-patch+json")
+                .body(serde_json::to_vec(&json!({"data": {"dry-run": "yes"}}))?)?,
+        )
+        .await
+        .context("dry-running a ConfigMap patch")?;
+    anyhow::ensure!(
+        response.pointer("/data/dry-run").and_then(Value::as_str) == Some("yes"),
+        "nodeapiserver did not return the dry-run patch candidate: {response}"
+    );
+
+    let stored = configmaps
+        .get(&name)
+        .await
+        .context("reading the ConfigMap after a dry-run patch")?;
+    anyhow::ensure!(
+        stored.data.is_none(),
+        "nodeapiserver persisted a dry-run patch: {:?}",
+        stored.data
+    );
+    configmaps
+        .delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the dry-run probe ConfigMap")?;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
     context: &E2eContext,
 ) -> Result<()> {
@@ -1868,6 +1931,195 @@ pub(super) async fn nodeapiserver_validates_crd_status_subresource(
     result
 }
 
+fn serve_webhook_connection(
+    mut stream: std::net::TcpStream,
+    calls: &AtomicUsize,
+) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let content_length = loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let Some(headers_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&request[..headers_end]);
+        break headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Content-Length:")
+                    .or_else(|| line.strip_prefix("content-length:"))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+    };
+    let headers_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP headers were found above")
+        + 4;
+    while request.len() < headers_end + content_length {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    let review: Value = serde_json::from_slice(&request[headers_end..headers_end + content_length])
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let uid = review
+        .pointer("/request/uid")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let body = serde_json::to_vec(&json!({
+        "apiVersion": "admission.k8s.io/v1",
+        "kind": "AdmissionReview",
+        "response": {"uid": uid, "allowed": true}
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(&body)?;
+    calls.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_honors_webhook_match_conditions(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "admission webhook checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("binding the e2e admission webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_calls = calls.clone();
+    let server_stopping = stopping.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_webhook_connection(stream, &server_calls);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let suffix = std::process::id();
+    let configuration_name = format!("nodeapiserver-webhook-{suffix}");
+    let skip_name = format!("nodeapiserver-webhook-skip-{suffix}");
+    let match_name = format!("nodeapiserver-webhook-match-{suffix}");
+    let configuration = json!({
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingWebhookConfiguration",
+        "metadata": {"name": configuration_name},
+        "webhooks": [{
+            "name": "matchconditions.nodeapiserver.test",
+            "admissionReviewVersions": ["v1"],
+            "sideEffects": "None",
+            "failurePolicy": "Fail",
+            "timeoutSeconds": 5,
+            "clientConfig": {"url": format!("http://{}", address)},
+            "rules": [{
+                "operations": ["CREATE"],
+                "apiGroups": [""],
+                "apiVersions": ["v1"],
+                "resources": ["configmaps"],
+                "scope": "Namespaced"
+            }],
+            "matchConditions": [{
+                "name": "only-the-canary",
+                "expression": format!("object.metadata.name == '{match_name}'")
+            }]
+        }]
+    });
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let create_configuration = Request::builder()
+        .method("POST")
+        .uri("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&configuration)?)?;
+    let result = async {
+        context
+            .client
+            .request::<Value>(create_configuration)
+            .await
+            .context("creating the matchConditions webhook configuration")?;
+        configmaps
+            .create(
+                &PostParams::default(),
+                &ConfigMap {
+                    metadata: kube::core::ObjectMeta {
+                        name: Some(skip_name.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the nonmatching webhook ConfigMap")?;
+        anyhow::ensure!(
+            calls.load(Ordering::SeqCst) == 0,
+            "matchConditions webhook was invoked for a nonmatching object"
+        );
+        configmaps
+            .create(
+                &PostParams::default(),
+                &ConfigMap {
+                    metadata: kube::core::ObjectMeta {
+                        name: Some(match_name.clone()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the matching webhook ConfigMap")?;
+        context
+            .wait_until("matchConditions webhook invocation", Duration::from_secs(30), || {
+                let calls = calls.clone();
+                async move { Ok(calls.load(Ordering::SeqCst) == 1) }
+            })
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = configmaps.delete(&skip_name, &DeleteParams::default()).await;
+    let _ = configmaps.delete(&match_name, &DeleteParams::default()).await;
+    let delete_configuration = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/{configuration_name}"
+        ))
+        .body(Vec::new())?;
+    let _ = context.client.request::<Value>(delete_configuration).await;
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    result
+}
+
 pub(super) async fn nodeapiserver_honors_resource_version_snapshot(
     context: &E2eContext,
 ) -> Result<()> {
@@ -2083,7 +2335,37 @@ pub(super) async fn nodeapiserver_honors_dry_run_and_delete_preconditions(contex
         )
         .await
         .context("creating the delete-precondition fixture")?;
-    let resource_version = created.metadata.resource_version.context("delete-precondition fixture had no resourceVersion")?;
+    let resource_version = created
+        .metadata
+        .resource_version
+        .context("delete-precondition fixture had no resourceVersion")?;
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/api/v1/namespaces/{}/configmaps?fieldSelector=metadata.name%3D{name}&dryRun=All",
+            context.namespace
+        ))
+        .body(Vec::new())?;
+    let dry_collection: Value = context
+        .client
+        .request(request)
+        .await
+        .context("dry-running a ConfigMap collection delete")?;
+    anyhow::ensure!(
+        dry_collection["items"]
+            .as_array()
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.pointer("/metadata/name").and_then(Value::as_str)
+                        == Some(name.as_str())
+                })
+            }),
+        "dry-run collection delete did not return the matching ConfigMap: {dry_collection}"
+    );
+    anyhow::ensure!(
+        configmaps.get(&name).await.is_ok(),
+        "dry-run collection delete removed the ConfigMap"
+    );
     let wrong = json!({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"resourceVersion": "0"}});
     let request = Request::builder()
         .method("DELETE")

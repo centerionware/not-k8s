@@ -13,9 +13,9 @@
 //! real `false` result does, immediately, even past conditions that
 //! already errored).
 //!
-//! The storage-backed `ValidatingAdmissionPolicy` adapter now consumes this
-//! pure primitive for real admission requests; webhook integration remains
-//! separate work. Real upstream's own
+//! The storage-backed `ValidatingAdmissionPolicy` adapter and webhook
+//! dispatcher consume this pure primitive for real admission requests. Real
+//! upstream's own
 //! `object`/`oldObject`/`request`/`params`/`authorizer` CEL variable
 //! bindings aren't built here either — this module takes an already-
 //! bound `vars` slice (`cel_ext::eval_bool_with_vars`'s own shape),

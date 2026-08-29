@@ -56,7 +56,7 @@ pub async fn reconcile_once(storage: &mut StorageClient) -> Result<usize, rest::
         }
         let condition = compute_condition(storage, &item).await;
         item["status"] = json!({ "conditions": [condition_to_json(&condition)] });
-        match rest::update_status(storage, "apiregistration.k8s.io", "v1", "apiservices", None, &name, &item).await {
+        match rest::update_status(storage, "apiregistration.k8s.io", "v1", "apiservices", None, &name, &item, false).await {
             Ok(rest::UpdateOutcome::Updated(_)) => reconciled += 1,
             Ok(other) => {
                 tracing::warn!(name = %name, outcome = ?other, "aggregator::reconcile: writing the Available condition was not accepted");

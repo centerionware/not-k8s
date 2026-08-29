@@ -297,7 +297,7 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
         rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
         other => panic!("expected Ready, got {other:?}"),
     };
-    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate).await.expect("rest::patch_persist must not itself error") {
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate, false).await.expect("rest::patch_persist must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
@@ -312,7 +312,7 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
         rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
         other => panic!("expected Ready, got {other:?}"),
     };
-    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate).await.expect("rest::patch_persist must not itself error") {
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate, false).await.expect("rest::patch_persist must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
@@ -330,7 +330,7 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
         rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
         other => panic!("expected Ready, got {other:?}"),
     };
-    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate).await.expect("rest::patch_persist must not itself error") {
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate, false).await.expect("rest::patch_persist must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
@@ -410,7 +410,7 @@ async fn strategic_merge_patch_merges_a_crd_list_field_by_its_own_x_kubernetes_l
         rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
         other => panic!("expected Ready, got {other:?}"),
     };
-    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "services", Some("default"), "svc", context, candidate).await.expect("rest::patch_persist must not itself error") {
+    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "services", Some("default"), "svc", context, candidate, false).await.expect("rest::patch_persist must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
@@ -674,11 +674,11 @@ async fn status_subresource_is_gated_on_the_crd_declaring_it() {
     // real UnknownResource, not a silent write.
     let mut with_status = created.clone();
     with_status["status"] = json!({"phase": "Ready"});
-    let outcome = rest::update_status(&mut storage, "example.com", "v1", "widgets", Some("default"), "no-status-widget", &with_status).await.expect("rest::update_status must not itself error");
+    let outcome = rest::update_status(&mut storage, "example.com", "v1", "widgets", Some("default"), "no-status-widget", &with_status, false).await.expect("rest::update_status must not itself error");
     assert_eq!(outcome, rest::UpdateOutcome::UnknownResource);
 
     let status_patch = json!({"status": {"phase": "Ready"}});
-    let outcome = rest::patch_status(&mut storage, "example.com", "v1", "widgets", Some("default"), "no-status-widget", rest::PatchKind::Merge, &status_patch)
+    let outcome = rest::patch_status(&mut storage, "example.com", "v1", "widgets", Some("default"), "no-status-widget", rest::PatchKind::Merge, &status_patch, false)
         .await
         .expect("rest::patch_status must not itself error");
     assert_eq!(outcome, rest::UpdateOutcome::UnknownResource);
@@ -715,7 +715,7 @@ async fn status_subresource_is_gated_on_the_crd_declaring_it() {
     };
     let mut tracker_with_status = created_tracker.clone();
     tracker_with_status["status"] = json!({"phase": "Running"});
-    let updated = match rest::update_status(&mut storage, "example.com", "v1", "trackers", Some("default"), "t1", &tracker_with_status).await.expect("rest::update_status must not itself error") {
+    let updated = match rest::update_status(&mut storage, "example.com", "v1", "trackers", Some("default"), "t1", &tracker_with_status, false).await.expect("rest::update_status must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };

@@ -583,8 +583,9 @@ assumed) rather than a plain `Put` that could silently clobber an
 existing object. Request bodies are decoded generically by negotiated
 `Content-Type` (JSON/YAML and Kubernetes' `k8s\0`-framed protobuf envelope
 for built-in resources; CRD bodies use the envelope's raw JSON because they
-have no generated schema). `dryRun=All`
-performs the same resolution, admission, validation, defaulting, and
+have no generated schema). `dryRun=All` is honored for create, update,
+patch, apply, and status-subresource writes, performing the same resolution,
+admission, validation, defaulting, and
 conflict checks without persisting the object. Real,
 distinct `Status` responses per outcome: `201` created, `409
 AlreadyExists` (lost the create race), `422 Invalid` (validation

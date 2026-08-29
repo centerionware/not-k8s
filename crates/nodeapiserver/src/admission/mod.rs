@@ -114,7 +114,7 @@
 //! admission webhooks' own `spec.matchConditions` and
 //! `ValidatingAdmissionPolicy`'s own `spec.matchConditions`), landed as
 //! a pure, standalone primitive consumed by the storage-backed policy
-//! enforcement adapter. Webhooks still do not call it.
+//! enforcement adapter and the webhook dispatcher.
 //!
 //! `policy_matching` — the other half of "does this policy even apply to
 //! this request": real upstream's own `resourceRules`/

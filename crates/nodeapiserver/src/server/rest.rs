@@ -1292,7 +1292,8 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
 /// unaffected: `resolve_resource` always reports `true` for one, the
 /// same "not modeled per-type yet" scope this crate's own discovery
 /// already has for built-in subresources generally.
-pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
+/// `dry_run` validates and returns the status candidate without persisting it.
+pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -1330,7 +1331,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, false).await
+    persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run).await
 }
 
 /// Applies a CRD version's `properties.status` schema to a status-subresource
@@ -1612,8 +1613,9 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
 /// concurrency [`update`] uses (`Txn`-compared-against-`ModRevision`,
 /// via the shared [`persist_update`] tail) — no client-submitted
 /// `resourceVersion` needed, since the object being patched *is* the one
-/// [`patch_prepare`] already read.
-pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value) -> Result<UpdateOutcome, Error> {
+/// [`patch_prepare`] already read. With `dry_run`, it performs all of the
+/// same validation/defaulting and returns the candidate without writing.
+pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
     // Group K: same pruning `create`/`update` run, same order (before
     // validation/defaulting) — `candidate` is already owned, so this
     // just reassigns it rather than needing the borrow-juggling
@@ -1657,7 +1659,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, false).await
+    persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -1675,8 +1677,9 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
 /// strategies remain the generic, untyped path. There is still no Group J
 /// admission here — and the same
 /// `subresources.status`-must-be-declared gate for a CRD-defined
-/// resource (`update_status`'s own doc comment covers why).
-pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
+/// resource (`update_status`'s own doc comment covers why). `dry_run` keeps
+/// the same validation path while skipping the write.
+pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -1711,7 +1714,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, false).await
+    persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
@@ -1720,7 +1723,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
 /// doesn't need to run admission in the middle (this crate's own tests).
 pub async fn patch(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
     match patch_prepare(storage, group, version, resource, namespace, name, kind_of_patch, patch_doc).await? {
-        PatchPrepareOutcome::Ready(candidate, context) => patch_persist(storage, group, version, resource, namespace, name, context, candidate).await,
+        PatchPrepareOutcome::Ready(candidate, context) => patch_persist(storage, group, version, resource, namespace, name, context, candidate, false).await,
         PatchPrepareOutcome::UnknownResource => Ok(UpdateOutcome::UnknownResource),
         PatchPrepareOutcome::ObjectNotFound => Ok(UpdateOutcome::ObjectNotFound),
         PatchPrepareOutcome::Invalid(v) => Ok(UpdateOutcome::Invalid(v)),
@@ -1780,7 +1783,7 @@ pub enum ApplyOutcome {
 /// the three-patch-kind `PATCH` path.
 pub async fn server_side_apply(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, manager: &str, force: bool, config: &Value) -> Result<ApplyOutcome, Error> {
     match apply_prepare(storage, group, version, resource, namespace, name, manager, force, config).await? {
-        ApplyPrepareOutcome::Ready(candidate, context) => apply_persist(storage, group, version, resource, namespace, context, candidate).await,
+        ApplyPrepareOutcome::Ready(candidate, context) => apply_persist(storage, group, version, resource, namespace, context, candidate, false).await,
         ApplyPrepareOutcome::UnknownResource => Ok(ApplyOutcome::UnknownResource),
         ApplyPrepareOutcome::Conflict(c) => Ok(ApplyOutcome::Conflict(c)),
         ApplyPrepareOutcome::Invalid(v) => Ok(ApplyOutcome::Invalid(v)),
@@ -2015,8 +2018,11 @@ async fn apply_prepare_crd(
 /// candidate [`apply_prepare`] produced, possibly further mutated by
 /// admission in between) with whichever real `Txn` idiom
 /// [`ApplyContext::existing`] calls for.
-pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value) -> Result<ApplyOutcome, Error> {
+pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value, dry_run: bool) -> Result<ApplyOutcome, Error> {
     let Some((existing_kv, live)) = context.existing else {
+        if dry_run {
+            return Ok(ApplyOutcome::Applied(object));
+        }
         let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
         let object_bytes = match context.schema {
             Some(schema) => protobuf::encode_message(schema, &object)?,
@@ -2048,7 +2054,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, false).await? {
+    match persist_update(storage, context.schema, &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
