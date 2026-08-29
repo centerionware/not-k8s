@@ -69,11 +69,11 @@ fn format_ref(value: &Value) -> Option<&'static str> {
     }
 }
 
-pub fn named_binding(name: Arc<String>) -> Value {
-    match spec(&name) {
+pub fn named_binding(name: Arc<String>) -> Result<Value, ExecutionError> {
+    Ok(match spec(&name) {
         Some(spec) => optional(Some(format_value(spec.name))),
         None => optional(None),
-    }
+    })
 }
 
 pub fn validate_binding(
@@ -98,8 +98,8 @@ pub fn validate_binding(
 
 macro_rules! format_binding {
     ($name:ident, $format:literal) => {
-        pub fn $name() -> Value {
-            format_value($format)
+        pub fn $name() -> Result<Value, ExecutionError> {
+            Ok(format_value($format))
         }
     };
 }
