@@ -197,6 +197,7 @@ impl Authenticator {
             crate::authn::x509::Identity {
                 name: username,
                 groups,
+                uid: None,
                 credential_id: (String::new(), Vec::new()),
             }
         })

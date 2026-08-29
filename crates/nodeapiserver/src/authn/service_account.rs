@@ -212,6 +212,7 @@ impl Authenticator {
                     "system:serviceaccounts".to_string(),
                     format!("system:serviceaccounts:{namespace}"),
                 ],
+                uid: Some(uid.clone()),
                 credential_id: (String::new(), Vec::new()),
             },
             service_account_uid: uid,

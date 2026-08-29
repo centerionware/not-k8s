@@ -1223,9 +1223,9 @@ fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option
 /// `tracing`'s own log output.
 fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16) -> serde_json::Value {
     let info = path::parse(method, path_str, query);
-    let (user_name, user_groups): (&str, Vec<String>) = match identity {
-        Some(id) => (id.name.as_str(), id.groups.clone()),
-        None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+    let (user_name, user_uid, user_groups): (&str, Option<&str>, Vec<String>) = match identity {
+        Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
+        None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()]),
     };
     let object_ref = info.is_resource_request.then(|| crate::audit::event::ObjectRef { group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name, api_version: &info.api_version });
     let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
@@ -1237,6 +1237,7 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
         request_uri: &request_uri,
         verb: &info.verb,
         user_name,
+        user_uid,
         user_groups: user_groups.as_slice(),
         source_ip: Some(&source_ip),
         user_agent,
@@ -1999,12 +2000,12 @@ async fn handle(
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
-        let (username, groups): (&str, Vec<String>) = match &identity {
-            Some(id) => (id.name.as_str(), id.groups.clone()),
-            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        let (username, uid, groups): (&str, Option<&str>, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
         let mut response_body = body_value;
-        response_body["status"] = crate::authn::self_review::build_status(username, &groups);
+        response_body["status"] = crate::authn::self_review::build_status(username, uid, &groups);
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
     // Group H: TokenReview is the webhook endpoint nodelet uses when a pod
@@ -3159,7 +3160,7 @@ async fn handle(
     // enforce it against. `rest::get`/`list` above don't take it either,
     // for the same reason: nothing yet checks a caller's identity before
     // serving a read.
-    let user = identity.as_ref().map(|i| serde_json::json!({"username": i.name, "groups": i.groups}));
+    let user = identity.as_ref().map(|i| serde_json::json!({"username": i.name, "uid": i.uid, "groups": i.groups}));
     let value = serde_json::json!({
         "isResourceRequest": info.is_resource_request,
         "verb": info.verb,
@@ -3672,7 +3673,7 @@ mod tests {
 
     #[test]
     fn build_audit_event_carries_the_real_identity_when_present() {
-        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], credential_id: (String::new(), Vec::new()) };
+        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], uid: None, credential_id: (String::new(), Vec::new()) };
         let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200);
         assert_eq!(event["user"]["username"], "alice");
         assert_eq!(event["user"]["groups"], serde_json::json!(["developers"]));

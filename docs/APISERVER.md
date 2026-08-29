@@ -942,8 +942,9 @@ optimistic-concurrency persistence behavior.
 Explicit and default patch-strategy selection both honor the directive set;
 the default is strategic merge for built-ins and JSON merge patch for CRDs.
 
-**H. Authentication** — **started**. `authn::x509::identity_from_der`
-derives an `Identity{name, groups, credential_id}` from a client
+**H. Authentication** — **complete for the supported authentication
+paths**. `authn::x509::identity_from_der`
+derives an `Identity{name, groups, uid, credential_id}` from a client
 certificate's Subject — Common Name as username, every Organization
 value as a group, real upstream's own generic x509 authenticator
 convention (`authentication/request/x509/x509.go`'s
@@ -983,9 +984,14 @@ for issuer requests, and a rotated JWKS is refreshed once on verification
 failure. `NODEAPISERVER_ANONYMOUS_AUTH` now controls the upstream-compatible
 boolean anonymous-authentication switch (enabled by default, matching
 `--anonymous-auth=true`); disabling it returns `401 Unauthorized` for a
-request with neither a client certificate nor a bearer token. Structured
-anonymous-authentication conditions and bootstrap-token files remain separate
-follow-up work.
+request with neither a client certificate nor a bearer token. The standard
+`--token-auth-file` CSV shape is available through
+`NODEAPISERVER_TOKEN_AUTH_FILE`; it is loaded at listener startup and its
+username, UID, and groups flow through request identity and
+`SelfSubjectReview`. A real e2e probe exercises both paths by restarting the
+service with a temporary token file. Structured anonymous-authentication
+conditions and live reload of authentication files remain intentionally
+outside this implementation's supported scope.
 
 **I. Authorization** — **in progress**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own

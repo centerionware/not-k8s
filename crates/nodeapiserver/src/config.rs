@@ -443,6 +443,15 @@ mod tests {
     }
 
     #[test]
+    fn static_token_auth_file_is_read_from_its_own_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_TOKEN_AUTH_FILE", "/tmp/tokens.csv");
+        let _cleanup = EnvGuard(&["NODEAPISERVER_TOKEN_AUTH_FILE"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.bootstrap_token_file, Some(PathBuf::from("/tmp/tokens.csv")));
+    }
+
+    #[test]
     fn encryption_config_file_defaults_to_none_and_is_read_from_its_own_env_var() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(Config::default().encryption_config_file, None);

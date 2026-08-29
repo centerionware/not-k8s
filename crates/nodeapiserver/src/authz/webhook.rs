@@ -90,12 +90,14 @@ fn build_review(info: &RequestInfo, identity: Option<&Identity>) -> Value {
     let spec = if info.is_resource_request {
         json!({
             "user": user,
+            "uid": identity.and_then(|identity| identity.uid.as_deref()),
             "groups": groups,
             "resourceAttributes": attributes,
         })
     } else {
         json!({
             "user": user,
+            "uid": identity.and_then(|identity| identity.uid.as_deref()),
             "groups": groups,
             "nonResourceAttributes": attributes,
         })

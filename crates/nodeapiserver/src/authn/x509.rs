@@ -27,6 +27,10 @@ use ring::digest::{digest, SHA256};
 pub struct Identity {
     pub name: String,
     pub groups: Vec<String>,
+    /// The authenticated user's UID when the authenticator has one. X.509
+    /// identities normally do not, while static-token and ServiceAccount
+    /// authenticators do.
+    pub uid: Option<String>,
     /// `user.CredentialIDKey` (`"authentication.kubernetes.io/credential-id"`)
     /// -> `["X509SHA256=<hex>"]`, real upstream's own key/value shape —
     /// kept as a `(key, values)` pair rather than a full extra map since
@@ -49,7 +53,7 @@ pub fn identity_from_der(der: &[u8]) -> Option<Identity> {
     let groups = subject.iter_organization().filter_map(|o| o.as_str().ok().map(str::to_string)).collect();
     let fingerprint = digest(&SHA256, der);
     let credential_id = (CREDENTIAL_ID_KEY.to_string(), vec![format!("X509SHA256={}", hex_encode(fingerprint.as_ref()))]);
-    Some(Identity { name, groups, credential_id })
+    Some(Identity { name, groups, uid: None, credential_id })
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -90,6 +94,7 @@ mod tests {
         let identity = identity_from_der(&der).expect("a cert with a CN should yield an identity");
         assert_eq!(identity.name, "test-user");
         assert_eq!(identity.groups, vec!["group-a".to_string()]);
+        assert_eq!(identity.uid, None);
     }
 
     #[test]
