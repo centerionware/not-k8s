@@ -1282,7 +1282,9 @@ async fn handle_with_audit(
             return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "API request concurrency limiter is unavailable")));
         }
     };
-    let _inflight = _permit.as_ref().map(|_| metrics::begin_inflight(is_mutating_request(&request_info)));
+    let _inflight = _permit
+        .as_ref()
+        .map(|_| metrics::begin_inflight(is_mutating_request(&request_info)));
 
     // Group M: `apiserver_request_duration_seconds`'s own start time —
     // measured around the exact same `handle()` call the audit event and
@@ -1338,7 +1340,10 @@ async fn handle_with_audit(
 }
 
 fn is_mutating_request(info: &path::RequestInfo) -> bool {
-    matches!(info.verb.as_str(), "create" | "update" | "patch" | "delete" | "deletecollection")
+    matches!(
+        info.verb.as_str(),
+        "create" | "update" | "patch" | "delete" | "deletecollection"
+    )
 }
 
 fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, audit_sink: Option<&crate::audit::sink::AuditSink>) {

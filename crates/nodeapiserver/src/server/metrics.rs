@@ -56,8 +56,8 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 static INFLIGHT_READONLY: AtomicUsize = AtomicUsize::new(0);
 static INFLIGHT_MUTATING: AtomicUsize = AtomicUsize::new(0);
@@ -71,7 +71,11 @@ pub struct InFlightGuard {
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        let counter = if self.mutating { &INFLIGHT_MUTATING } else { &INFLIGHT_READONLY };
+        let counter = if self.mutating {
+            &INFLIGHT_MUTATING
+        } else {
+            &INFLIGHT_READONLY
+        };
         counter.fetch_sub(1, Ordering::Release);
     }
 }
@@ -80,22 +84,38 @@ impl Drop for InFlightGuard {
 /// Exempt and long-running requests do not acquire a seat and must not call
 /// this function.
 pub fn begin_inflight(mutating: bool) -> InFlightGuard {
-    let counter = if mutating { &INFLIGHT_MUTATING } else { &INFLIGHT_READONLY };
+    let counter = if mutating {
+        &INFLIGHT_MUTATING
+    } else {
+        &INFLIGHT_READONLY
+    };
     counter.fetch_add(1, Ordering::AcqRel);
     InFlightGuard { mutating }
 }
 
 fn render_inflight_counts(readonly: usize, mutating: usize) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# HELP apiserver_current_inflight_requests Maximum number of currently used inflight request seats.");
+    let _ = writeln!(
+        out,
+        "# HELP apiserver_current_inflight_requests Maximum number of currently used inflight request seats."
+    );
     let _ = writeln!(out, "# TYPE apiserver_current_inflight_requests gauge");
-    let _ = writeln!(out, "apiserver_current_inflight_requests{{request_kind=\"mutating\"}} {mutating}");
-    let _ = writeln!(out, "apiserver_current_inflight_requests{{request_kind=\"readonly\"}} {readonly}");
+    let _ = writeln!(
+        out,
+        "apiserver_current_inflight_requests{{request_kind=\"mutating\"}} {mutating}"
+    );
+    let _ = writeln!(
+        out,
+        "apiserver_current_inflight_requests{{request_kind=\"readonly\"}} {readonly}"
+    );
     out
 }
 
 fn render_inflight() -> String {
-    render_inflight_counts(INFLIGHT_READONLY.load(Ordering::Acquire), INFLIGHT_MUTATING.load(Ordering::Acquire))
+    render_inflight_counts(
+        INFLIGHT_READONLY.load(Ordering::Acquire),
+        INFLIGHT_MUTATING.load(Ordering::Acquire),
+    )
 }
 
 /// `(verb, resource, code)` — deliberately not `String` per axis to keep
