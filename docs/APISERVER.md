@@ -997,17 +997,12 @@ same shape `patch_prepare`/`patch_persist` already has) lets both
 candidate object, matching the ordinary three-patch-kind `PATCH`
 branch's own coverage exactly. **Named, honest scope remaining**:
 `updater`'s compiled `FIELD_META` path still applies only to built-in
-resources; CRD-defined resources use the runtime-schema sibling
-`apiextensions::schema_apply`, including `managedFields`, associative-list
-ownership, and real conflict detection. Both paths share the same
+resources; CRD-defined resources use the matching runtime-schema SSA
+implementation (`patch::crd_apply`) against each established version's
+`openAPIV3Schema`, including managed-field ownership, conflict detection,
+structural list/map merge behavior, pruning, and create-on-apply. This build
+still has no multi-version CRD conversion. Both paths share the same
 optimistic-concurrency persistence behavior.
-Explicit and default patch-strategy selection both honor the directive set;
-the default is strategic merge for built-ins and JSON merge patch for CRDs.
-branch's own coverage exactly. CRD-defined resources use the matching
-runtime-schema SSA implementation (`patch::crd_apply`) against each
-established version's `openAPIV3Schema`, including managed-field ownership,
-conflict detection, structural list/map merge behavior, pruning, and
-create-on-apply. This build still has no multi-version CRD conversion.
 Explicit and default patch-strategy selection both honor the directive set;
 the default is strategic merge for built-ins and JSON merge patch for CRDs.
 
