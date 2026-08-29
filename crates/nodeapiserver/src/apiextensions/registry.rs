@@ -41,10 +41,13 @@ pub struct CrdResource {
     /// version served via `apiextensions.k8s.io/v1` — `None` here is
     /// this build's own defensive fallback for a malformed/legacy
     /// document, not a real case a validated CRD produces). Consulted by
-    /// `apiextensions::schema_defaults` for structural-schema defaulting;
-    /// full type/required validation against it isn't done yet (Group
-    /// K's own doc comment in `docs/APISERVER.md` names this honestly).
+    /// `apiextensions::schema_defaults` for structural-schema defaulting and
+    /// by the request-side structural validation walk.
     pub open_api_schema: Option<Value>,
+    /// The storage version's schema, used to revalidate the result of a
+    /// conversion webhook before it is persisted. A webhook can return a
+    /// shape that is valid for the requested version but not for storage.
+    pub storage_open_api_schema: Option<Value>,
     /// Whether the matched version's own `subresources.status` is
     /// present — real upstream only serves `GET`/`PUT`/`PATCH .../status`
     /// for a CRD version that opts in this way (`spec.versions[].
@@ -107,9 +110,15 @@ pub fn resolve(crd: &Value, group: &str, version: &str, resource: &str) -> Optio
     let kind = crd.pointer("/spec/names/kind").and_then(Value::as_str)?.to_string();
     let namespaced = crd.pointer("/spec/scope").and_then(Value::as_str) == Some("Namespaced");
     let open_api_schema = matched_version.pointer("/schema/openAPIV3Schema").cloned();
+    let storage_open_api_schema = crd
+        .pointer("/spec/versions")
+        .and_then(Value::as_array)
+        .and_then(|versions| versions.iter().find(|version| version.get("storage").and_then(Value::as_bool) == Some(true)))
+        .and_then(|version| version.pointer("/schema/openAPIV3Schema"))
+        .cloned();
     let has_status_subresource = matched_version.pointer("/subresources/status").is_some();
     let conversion_webhook = conversion_webhook(crd);
-    Some(CrdResource { kind, namespaced, open_api_schema, has_status_subresource, conversion_webhook })
+    Some(CrdResource { kind, namespaced, open_api_schema, storage_open_api_schema, has_status_subresource, conversion_webhook })
 }
 
 fn conversion_webhook(crd: &Value) -> Option<ConversionWebhook> {
@@ -223,6 +232,7 @@ mod tests {
         assert_eq!(resolved.kind, "Widget");
         assert!(resolved.namespaced);
         assert!(resolved.open_api_schema.is_some());
+        assert!(resolved.storage_open_api_schema.is_some());
         assert!(!resolved.has_status_subresource, "established_crd()'s own fixture never declares subresources.status");
     }
 
