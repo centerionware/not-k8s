@@ -59,20 +59,14 @@
 //! `/apis/{group}/{version}` and their aggregated-v2 counterparts, not
 //! just at their own already-known URL.
 //!
-//! **Not yet landed, named honestly**: enum membership, numeric ranges,
-//! format checks (RFC 1123 labels, ...) and any cross-field consistency
-//! rule (`x-kubernetes-validations` CEL is a CRD schema's real mechanism
-//! for all of that — its static and shared request-side budget checks are
-//! now wired, while interpreter-level fuel remains a named DoS-hardening
-//! limitation); conversion webhooks;
+//! **Not yet landed, named honestly**: conversion webhooks;
 //! reacting to a CRD's own lifecycle (a lazily-spawned watch reflector
 //! keeps running even after its CRD is deleted, and a newly
 //! `Established` CRD is only discovered by the next watch/discovery
-//! request for its resource, not eagerly); pruning/validation on the
-//! `status` subresource write itself (`update_status`/`patch_status`
-//! keep the same "no structural checks on status" scope real upstream's
-//! own generic status strategy has for built-ins too). **Done, not a
-//! gap**: the `status` subresource is now genuinely gated on a CRD's own
+//! request for its resource, not eagerly); the `status` subresource is now
+//! schema-pruned and validated on `update_status`/`patch_status`, using the
+//! matched version's `properties.status` schema. **Done, not a gap**: the
+//! `status` subresource is genuinely gated on a CRD's own
 //! `spec.versions[].subresources.status` (`registry::CrdResource::
 //! has_status_subresource`) — a version that never declares it gets a
 //! real `UnknownResource` from `update_status`/`patch_status`, not a

@@ -1059,16 +1059,15 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
 /// enforces for a plain `update`. Same real optimistic concurrency as
 /// `update` (submitted `metadata.resourceVersion` must match).
 ///
-/// **Named, honest scope narrowing**: this build runs no
-/// structural/type validation on the status write at all (real
-/// upstream's own per-type status strategies — e.g. Pod's
-/// `ValidatePodStatusUpdate` — are genuinely hand-written Go with no
-/// generic table to derive them from, the same "no vendored enum
-/// constraints" finding that already scoped `scheme::validation` down
-/// elsewhere), and the namespace-mismatch check `update` runs against
-/// the body is skipped (moot here — the body's own `metadata`/`spec` are
-/// never read for anything but `resourceVersion`). [`patch_status`] is
-/// this function's `PATCH` counterpart.
+/// For a CRD-defined resource, the matched version's `status` schema is
+/// applied to the replacement status: unknown fields are pruned and the
+/// schema's required/type/local constraints are validated, just as for the
+/// main resource. Built-in status strategies remain the generic, untyped
+/// path because their per-kind status rules are hand-written upstream and
+/// are not represented by this crate's generic discovery table. The
+/// namespace-mismatch check `update` runs against the body is skipped (moot
+/// here — the body's own `metadata`/`spec` are never read for anything but
+/// `resourceVersion`). [`patch_status`] is this function's `PATCH` counterpart.
 ///
 /// A CRD-defined resource whose matched version never declared
 /// `subresources.status` has no `status` subresource at all — real
@@ -1112,7 +1111,47 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
+    let violations = validate_crd_status(&resolved.open_api_schema, &mut object);
+    if !violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(violations));
+    }
+
     persist_update(storage, resolved.schema, &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, false).await
+}
+
+/// Applies a CRD version's `properties.status` schema to a status-subresource
+/// candidate. Wrapping the status value in a synthetic top-level object lets
+/// the existing schema walkers report the correct `status.foo` paths and
+/// check the status root's own type without duplicating their logic. The
+/// returned value is already pruned; it is only written when validation
+/// succeeds.
+fn validate_crd_status(open_api_schema: &Option<Value>, object: &mut Value) -> Vec<String> {
+    let Some(schema) = open_api_schema.as_ref() else { return Vec::new() };
+    let Some(status_schema) = schema.pointer("/properties/status") else { return Vec::new() };
+    let Some(status) = object.get("status").cloned() else { return Vec::new() };
+
+    let wrapper_schema = json!({
+        "type": "object",
+        "properties": {"status": status_schema}
+    });
+    let candidate = json!({"status": status});
+    let pruned = apiextensions::schema_pruning::prune(&wrapper_schema, &candidate);
+    let mut violations: Vec<String> = apiextensions::schema_validation::validate_required(&wrapper_schema, &pruned)
+        .into_iter()
+        .map(|violation| format!("{}: Required value", violation.path))
+        .collect();
+    violations.extend(
+        apiextensions::schema_validation::validate_types(&wrapper_schema, &pruned)
+            .into_iter()
+            .map(|violation| format!("{}: expected type {}, got {}", violation.path, violation.expected, violation.actual_kind)),
+    );
+    violations.extend(apiextensions::schema_validation::validate_constraints(&wrapper_schema, &pruned));
+    if violations.is_empty() {
+        if let Some(status) = pruned.get("status") {
+            object["status"] = status.clone();
+        }
+    }
+    violations
 }
 
 /// The tail [`update`] and [`patch`] share once each has its own
@@ -1417,8 +1456,10 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
 /// `strategic-merge-patch+json` `{"status": {...}}` document behaves the
 /// same whether it arrives via `PUT` (full replace) or `PATCH` (merged).
 /// No client-submitted `resourceVersion` needed, same as `patch_persist`.
-/// Same scope narrowing `update_status` already named: no structural
-/// validation, no Group J admission — and the same
+/// The CRD status schema is applied to the patched status with the same
+/// pruning and local validation as [`update_status`]. Built-in status
+/// strategies remain the generic, untyped path. There is still no Group J
+/// admission here — and the same
 /// `subresources.status`-must-be-declared gate for a CRD-defined
 /// resource (`update_status`'s own doc comment covers why).
 pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value) -> Result<UpdateOutcome, Error> {
@@ -1449,6 +1490,11 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
                 map.remove("status");
             }
         }
+    }
+
+    let violations = validate_crd_status(&resolved.open_api_schema, &mut object);
+    if !violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(violations));
     }
 
     persist_update(storage, resolved.schema, &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, false).await
