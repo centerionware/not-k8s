@@ -325,9 +325,11 @@ single-resource cache-registration primitive —
 `CacheRegistry::spawn(storage, group, version, resource)` starts a
 background `driver::reflect()` loop for one resource and hands back the
 `SharedCache` it keeps live, `get()` looks one up by `(group, version,
-resource)`. The listener registers every built-in resource from the
-generated discovery table at boot; CRD-defined resources are registered
-lazily once their Established CRD is discovered. `server::rest::get` now
+resource)`, and `remove()` stops and forgets one. The listener registers
+every built-in resource from the generated discovery table at boot, then
+reconciles CRD-defined caches from the live CRD cache as versions become
+Established/served or are removed. A first watch still has a live-discovery
+fallback if that asynchronous reconciliation has not caught up. `server::rest::get` now
 *can* consult a `SharedCache` if
 handed one (`cache.get(key)`, a hit skips nodestore entirely; a miss
 always falls through to a real `Range` rather than trusting the cache's
@@ -335,12 +337,14 @@ absence of an entry to mean "not found," since a not-yet-synced or
 never-registered cache is indistinguishable from a genuinely empty one
 using only what `SharedCache` exposes today — a pure latency win on the
 hit path, never a correctness risk on the miss path). `GET`/`LIST` use
-that cache for every built-in GVR, while dynamic CRD GVRs are registered
-on first discovery/use. **Per-Kind `SelectableFields` is now enforced**:
+that cache for every built-in GVR and for dynamically reconciled CRD GVRs.
+**Per-Kind `SelectableFields` is now enforced**:
 built-in registries accept their verified metadata and resource-specific
 fields, while CRDs accept only the universal metadata fields; unsupported
 field paths return `400 BadRequest` instead of silently matching no objects.
-The remaining cache gap is registering a cache for every resource at boot.
+CRD GVRs cannot be registered before their definitions exist; Group K's live
+CRD-cache reconciler registers and retires those caches as the definitions
+change, with a first-watch fallback for the startup race.
 
 **Follow-up**: `server::rest::list` now also consults a cache when
 handed one, closing the gap the paragraph above used to name — but it
@@ -1478,20 +1482,10 @@ CRD support for free — it already delegates to `list`/`delete`) for a
 CRD-defined resource, with real schema-driven defaulting on `CREATE`.
 **`WATCH` for CR objects is real too now** — `server::rest::
 resolve_dynamic_kind` exposes Group K's registry directly to
-`server::listener`'s own `WATCH` dispatch, which, on a cache miss for a
-resource its static table has never heard of (never for one it knows but
-simply isn't boot-cached — that still gets no watch support, unchanged),
-resolves it dynamically and lazily spawns a
-`cacher::registry::CacheRegistry` reflector for it right then, on this,
-the resource's own first-ever watch request — `CacheRegistry::spawn` was
-already callable at any time, not just at boot, so this needed no new
-primitive, only the dynamic resolve step in front of it. **Named, honest
-scope**: nothing proactively reacts to a CRD's own lifecycle — a
-reflector spawned this way keeps running for the rest of the process's
-life even if the CRD is later deleted (real upstream's own per-CRD
-informer teardown on deletion isn't modeled), and a CRD that becomes
-`Established` is only ever discovered by the *next* watch request for
-its resource, not eagerly the moment it's created.
+`server::listener`'s own `WATCH` dispatch. A live CRD-cache reconciler now
+registers every served version of an Established CRD and removes the
+reflector when that version is no longer served or the CRD is deleted; the
+first-watch dynamic resolve remains as a bounded startup-race fallback.
 
 **`UPDATE`/`PATCH` are real for CR objects now — all three real patch
 kinds, `strategic-merge-patch` included** — `update`/`patch_prepare`/

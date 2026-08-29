@@ -107,6 +107,24 @@ impl CacheRegistry {
 
         cache
     }
+
+    /// Stops and removes a resource cache. Returns whether a registration
+    /// existed. A later watch can register the resource again with a fresh
+    /// reflector after its CRD is recreated.
+    pub fn remove(&self, group: &str, version: &str, resource: &str) -> bool {
+        let key = (group.to_string(), version.to_string(), resource.to_string());
+        let registration = self
+            .caches
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key);
+        if let Some(registration) = registration {
+            let _ = registration.stop.send(true);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,5 +150,21 @@ mod tests {
         );
         assert!(registry.get("", "v1", "nodes").is_none());
         assert!(registry.get("", "v1", "pods").is_some());
+    }
+
+    #[test]
+    fn remove_forgets_a_registered_resource() {
+        let registry = CacheRegistry::new();
+        registry.caches.write().unwrap().insert(
+            ("apps".to_string(), "v1".to_string(), "widgets".to_string()),
+            Registration {
+                cache: SharedCache::new(WatchCache::new(Vec::new(), 0, 8, 8)),
+                stop: watch::channel(false).0,
+            },
+        );
+
+        assert!(registry.remove("apps", "v1", "widgets"));
+        assert!(!registry.remove("apps", "v1", "widgets"));
+        assert!(registry.get("apps", "v1", "widgets").is_none());
     }
 }

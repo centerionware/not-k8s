@@ -23,10 +23,11 @@
 //! Kind), and field selectors are checked against the built-in per-Kind
 //! `SelectableFields` allowlist before the generic dotted-JSON-path lookup
 //! runs. CRDs accept only the universal metadata fields.
-//! `registry` — starts a `driver::reflect()` background loop for one
-//! resource and hands back the `SharedCache` it keeps live
-//! (`CacheRegistry::spawn`). The listener invokes it for every built-in
-//! resource at boot and lazily for CRD-defined resources.
+//! `registry` — starts or stops a `driver::reflect()` background loop for
+//! one resource and hands back the `SharedCache` it keeps live
+//! (`CacheRegistry::spawn`/`remove`). The listener invokes it for every
+//! built-in resource at boot and reconciles CRD-defined resources from the
+//! live CRD cache.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the cache core,
 //! `SharedCache` (including `has_synced()` — real `client-go`
@@ -38,7 +39,8 @@
 //! generation, label/field selector parsing+matching, the adapter onto a
 //! decoded `serde_json::Value` object (`object_matches` is called for
 //! real, from `server::rest::list`, Group E), a single-resource
-//! cache-registration primitive (`registry::CacheRegistry`), and
+//! cache-registration primitive (`registry::CacheRegistry`), including
+//! CRD lifecycle registration/teardown, and
 //! `server::rest::get`/`list` both now consulting a cache when one is
 //! passed in (`get`: a hit skips nodestore, a miss always falls through;
 //! `list`: only once `has_synced()`, for the reason above — see `rest`'s

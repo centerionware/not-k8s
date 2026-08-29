@@ -15,7 +15,8 @@
 //! exactly what's in and out of scope). `run()` also spawns a real
 //! `cacher::registry::CacheRegistry` cache for every built-in resource in
 //! the generated discovery table; CRD-defined resources are registered
-//! lazily after their Established CRD is discovered. `GET`/`LIST`
+//! from the live CustomResourceDefinition cache after their Established
+//! CRD is discovered. `GET`/`LIST`
 //! consult one whenever the request targets a registered resource.
 //! `WATCH` against a resource with a
 //! registered cache is real too now (`is_watch`'s own doc comment, and
@@ -104,6 +105,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -113,6 +115,88 @@ use tracing::{info, warn};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type BoxedBody = http_body_util::combinators::BoxBody<hyper::body::Bytes, BoxError>;
+
+type DynamicCacheState = HashMap<Vec<u8>, HashSet<crate::cacher::registry::ResourceKey>>;
+
+fn crd_cache_keys(crd: &serde_json::Value) -> HashSet<crate::cacher::registry::ResourceKey> {
+    crate::apiextensions::registry::discoverable_resources(std::iter::once(crd))
+        .into_iter()
+        .map(|resource| (resource.group, resource.version, resource.resource))
+        .collect()
+}
+
+fn reconcile_crd_cache(
+    storage: &StorageClient,
+    registry: &crate::cacher::CacheRegistry,
+    state: &mut DynamicCacheState,
+    crd_key: Vec<u8>,
+    crd: Option<&serde_json::Value>,
+) {
+    let previous = state.remove(&crd_key).unwrap_or_default();
+    let desired = crd.map(crd_cache_keys).unwrap_or_default();
+
+    for (group, version, resource) in previous.difference(&desired) {
+        registry.remove(group, version, resource);
+    }
+    for (group, version, resource) in desired.difference(&previous) {
+        registry.spawn(storage.clone(), group, version, resource);
+    }
+
+    if crd.is_some() {
+        state.insert(crd_key, desired);
+    }
+}
+
+async fn reconcile_crd_caches(
+    storage: StorageClient,
+    crd_cache: crate::cacher::SharedCache,
+    registry: crate::cacher::CacheRegistry,
+) {
+    crd_cache.wait_until_synced().await;
+    let (entries, mut events) = crd_cache.snapshot_and_watch();
+    let mut state = DynamicCacheState::new();
+
+    for (key, entry) in entries {
+        match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &key, &entry.value) {
+            Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd)),
+            Err(error) => warn!(error = ?error, "crd cache: failed to decode an initial CRD"),
+        }
+    }
+
+    loop {
+        match events.recv().await {
+            Ok(event) => match event.kind {
+                crate::cacher::EventKind::Added | crate::cacher::EventKind::Modified => {
+                    match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &event.key, &event.value) {
+                        Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, event.key, Some(&crd)),
+                        Err(error) => warn!(error = ?error, "crd cache: failed to decode a changed CRD"),
+                    }
+                }
+                crate::cacher::EventKind::Deleted => {
+                    reconcile_crd_cache(&storage, &registry, &mut state, event.key, None);
+                }
+                crate::cacher::EventKind::Bookmark => {}
+            },
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                warn!(skipped, "crd cache: event stream lagged; rebuilding dynamic cache registrations");
+                let (entries, next_events) = crd_cache.snapshot_and_watch();
+                let current_keys: HashSet<Vec<u8>> = entries.iter().map(|(key, _)| key.clone()).collect();
+                let stale_keys: Vec<Vec<u8>> = state.keys().filter(|key| !current_keys.contains(*key)).cloned().collect();
+                for key in stale_keys {
+                    reconcile_crd_cache(&storage, &registry, &mut state, key, None);
+                }
+                for (key, entry) in entries {
+                    match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &key, &entry.value) {
+                        Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd)),
+                        Err(error) => warn!(error = ?error, "crd cache: failed to decode a CRD while rebuilding registrations"),
+                    }
+                }
+                events = next_events;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
 
 fn body_from_bytes(bytes: Vec<u8>) -> BoxedBody {
     use http_body_util::{BodyExt, Full};
@@ -602,12 +686,26 @@ pub async fn run(cfg: Config) {
     // generated discovery table. `StorageClient::clone()` is cheap (a
     // `tonic::transport::Channel` clone), and each reflector shares the
     // same nodestore connection pool while keeping one cache per GVR, like
-    // a real informer factory. CRD-defined resources remain lazy because
-    // their GVRs do not exist until an Established CRD is stored.
+    // a real informer factory.
     let cache_registry = crate::cacher::CacheRegistry::new();
     if let Some(s) = storage.as_ref() {
         for resource in crate::codegen::api_resources::API_RESOURCES {
             cache_registry.spawn(s.clone(), resource.group, resource.version, resource.resource);
+        }
+
+        // Group K: CRD-backed caches follow the CRD watch rather than
+        // waiting for a client to issue the first watch against each new
+        // resource. This also retires reflectors when a CRD is removed or
+        // stops serving a version, so a deleted definition cannot leave a
+        // stale resource cache alive in this process.
+        if let Some(crd_cache) = cache_registry.get("apiextensions.k8s.io", "v1", "customresourcedefinitions") {
+            let crd_storage = s.clone();
+            let crd_registry = cache_registry.clone();
+            tokio::spawn(async move {
+                reconcile_crd_caches(crd_storage, crd_cache, crd_registry).await;
+            });
+        } else {
+            warn!("crd cache: built-in CustomResourceDefinition cache was not registered");
         }
     }
 
@@ -2924,7 +3022,9 @@ async fn handle(
             }
 
             // Built-in resources have a real cache registered at startup;
-            // dynamically discovered CRD resources are registered lazily.
+            // dynamically discovered CRD resources are registered by the
+            // CRD lifecycle reconciler and can still be registered lazily
+            // by the first watch if startup discovery has not caught up.
             // Shared by both verbs below; `rest::list`'s own doc
             // comment covers why an unsynced cache is safe to pass here
             // too (it just falls through, same as `None`).
@@ -3106,7 +3206,20 @@ async fn handle(
         // process's life, real upstream's own per-CRD informer teardown
         // isn't modeled yet.
         let cache_and_kind: Option<(crate::cacher::store::SharedCache, String)> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
-            rest::resolve_kind(&info.api_group, &info.api_version, &info.resource).map(|kind| (cache, kind.to_string()))
+            if let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) {
+                Some((cache, kind.to_string()))
+            } else if let Some(mut client) = storage.clone() {
+                match rest::resolve_dynamic_kind(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                    Ok(Some(kind)) => Some((cache, kind)),
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "watch: resolving the registered CRD-defined resource failed");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
         } else if rest::resolve_kind(&info.api_group, &info.api_version, &info.resource).is_some() {
             None
         } else if let Some(mut client) = storage.clone() {

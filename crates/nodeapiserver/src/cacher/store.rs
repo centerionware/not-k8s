@@ -342,6 +342,16 @@ impl SharedCache {
         self.read().watch_from(start_revision)
     }
 
+    /// Takes an atomic snapshot of the current cache and subscribes to
+    /// subsequent events. The CRD lifecycle reconciler uses this to seed its
+    /// registration map without a gap between the initial snapshot and the
+    /// live watch.
+    pub fn snapshot_and_watch(&self) -> (Vec<(Vec<u8>, CacheEntry)>, broadcast::Receiver<WatchEvent>) {
+        let cache = self.read();
+        let (items, _) = cache.list();
+        (items, cache.events.subscribe())
+    }
+
     pub fn apply(&self, kind: EventKind, key: Vec<u8>, value: Vec<u8>, revision: i64) {
         self.write().apply(kind, key, value, revision)
     }
