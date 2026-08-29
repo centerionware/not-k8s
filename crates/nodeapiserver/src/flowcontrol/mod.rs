@@ -18,7 +18,8 @@
 //! from the finite request budget. Selected limited levels receive their
 //! own nominal-share concurrency cap and configured shuffle-sharded queue/
 //! reject policy before the global request and mutating-request budgets are
-//! applied. Seat borrowing remains a separate refinement.
+//! applied. Limited levels can borrow currently idle lendable seats from other
+//! limited levels, subject to each borrower's configured borrowing limit.
 //!
 //! Status: in progress (Group M — see docs/APISERVER.md).
 

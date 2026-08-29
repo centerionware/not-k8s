@@ -7,9 +7,9 @@
 //! budget so one watch or upgrade cannot consume all ordinary request seats.
 //! Limited levels use the configured queue count and hand size to assign each
 //! flow to the shortest queue in a deterministic shuffle-shard hand. The
-//! seat-borrowing adjustment is a separate refinement; this gate still
-//! enforces the important safety property that ordinary requests cannot grow
-//! without bound.
+//! limited levels can borrow currently idle lendable seats from other limited
+//! levels, subject to their borrowing limit. The gate still enforces the
+//! important safety property that ordinary requests cannot grow without bound.
 
 use crate::flowcontrol::resolve::PriorityLevelConfig;
 use crate::server::path::RequestInfo;
@@ -596,5 +596,48 @@ mod tests {
             .unwrap()
             .unwrap();
         drop((first, second));
+    }
+
+    #[tokio::test]
+    async fn a_limited_level_respects_its_borrowing_limit() {
+        let limiter = ConcurrencyLimiter::new(2, 2, 0);
+        let lender = PriorityLevelConfig {
+            uid: "lender".to_string(),
+            exempt: false,
+            nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
+            queues: 1,
+            hand_size: 1,
+            queue_length_limit: 2,
+            lendable_percent: 100,
+            borrowing_limit_percent: None,
+            reject: false,
+        };
+        let borrower = PriorityLevelConfig {
+            uid: "borrower".to_string(),
+            exempt: false,
+            nominal_concurrency_shares: 1,
+            total_nominal_concurrency_shares: 2,
+            queues: 1,
+            hand_size: 1,
+            queue_length_limit: 0,
+            lendable_percent: 0,
+            borrowing_limit_percent: Some(0),
+            reject: false,
+        };
+        let priorities = vec![lender, borrower.clone()];
+        let first = limiter
+            .acquire_with_priorities(&request("get"), "", Some(&borrower), &priorities, "borrower")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            limiter
+                .acquire_with_priorities(&request("get"), "", Some(&borrower), &priorities, "borrower")
+                .await
+                .unwrap_err(),
+            Error::QueueFull
+        );
+        drop(first);
     }
 }

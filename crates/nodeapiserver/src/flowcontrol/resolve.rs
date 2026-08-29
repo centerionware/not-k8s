@@ -4,7 +4,7 @@
 //!
 //! The request gate receives the selected limited level's nominal
 //! concurrency shares, aggregate share total, queue shape, queue length,
-//! lending, and reject policy. Seat borrowing remains a separate refinement.
+//! lending, borrowing, and reject policy.
 //! This module labels every response with
 //! the selected pair through the same real response headers upstream sets
 //! (`k8s.io/api/flowcontrol/v1/types.go`'s own
