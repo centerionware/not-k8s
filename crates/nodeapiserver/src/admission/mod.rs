@@ -154,12 +154,11 @@
 //! evaluation error, or the per-rule `Decided` result). Still no I/O of
 //! its own — same standalone-primitive posture as everything else in
 //! this arc. `PolicyOutcome::is_denial`/`denial_message` and the
-//! standalone `validation_actions_deny` round out the decision side: the
-//! real "should a caller actually reject this request" question,
+//! standalone `validation_actions_deny`/`validation_actions_warn`/
+//! `validation_actions_audit` primitives round out the decision side: the
+//! real "should a caller reject, warn, or audit this request" question,
 //! gated on a `ValidatingAdmissionPolicyBinding`'s own
-//! `validationActions` (`"Deny"` only — `"Warn"`/`"Audit"` are a named,
-//! honest gap, this crate having no warning-header/audit-event plumbing
-//! to report them through yet).
+//! `validationActions`.
 //!
 //! `policy_decode` — decodes a real `ValidatingAdmissionPolicy` object's
 //! own `spec` (wire JSON, field names verified against the vendored
@@ -175,16 +174,16 @@
 //!
 //! `policy_enforcement` is the storage-backed adapter for
 //! `ValidatingAdmissionPolicy`/`ValidatingAdmissionPolicyBinding`: it loads
-//! deny-capable bindings, resolves named or selector-based parameter
-//! references, evaluates the decoded policy against the final candidate
-//! object, and rejects the request before persistence. Warn/Audit reporting
-//! remains an explicit gap.
+//! matching bindings, resolves named or selector-based parameter references,
+//! evaluates the decoded policy against the final candidate object, and
+//! returns denial, warning, and audit results for the request wrapper to
+//! publish before persistence.
 //!
 //! Status: started (see docs/APISERVER.md). **Not yet landed**: every
 //! other built-in plugin, a complete async plugin-chain/registry covering
 //! storage-backed mutators and validators, mutating/validating
 //! admission webhooks themselves, `MutatingAdmissionPolicy` itself as
-//! actual enforcement, and Warn/Audit reporting — every real decision primitive
+//! actual enforcement — every real decision primitive
 //! `server::listener` would need now exists
 //! standalone, `match_conditions` through `validating_admission_policy`
 //! above (`policy_matching::build_eval_vars` is the real `object`/

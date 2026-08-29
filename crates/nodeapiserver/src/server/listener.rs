@@ -101,7 +101,7 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -117,6 +117,46 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type BoxedBody = http_body_util::combinators::BoxBody<hyper::body::Bytes, BoxError>;
 
 type DynamicCacheState = HashMap<Vec<u8>, HashSet<crate::cacher::registry::ResourceKey>>;
+
+#[derive(Debug, Clone, Default)]
+struct AdmissionMetadata {
+    warnings: Vec<String>,
+    audit_failures: Vec<Value>,
+}
+
+type SharedAdmissionMetadata = Arc<Mutex<AdmissionMetadata>>;
+
+fn record_admission_outcome(metadata: Option<&SharedAdmissionMetadata>, outcome: &admission::policy_enforcement::ValidationOutcome) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let Ok(mut metadata) = metadata.lock() else {
+        return;
+    };
+    metadata.warnings.extend(outcome.warnings.iter().cloned());
+    metadata.audit_failures.extend(outcome.audit_failures.iter().cloned());
+}
+
+fn audit_annotations(metadata: &AdmissionMetadata) -> BTreeMap<String, String> {
+    if metadata.audit_failures.is_empty() {
+        return BTreeMap::new();
+    }
+    let value = serde_json::to_string(&metadata.audit_failures).unwrap_or_else(|_| "[]".to_string());
+    BTreeMap::from([(admission::policy_enforcement::VALIDATION_FAILURE_AUDIT_ANNOTATION.to_string(), value)])
+}
+
+fn apply_admission_warnings(response: &mut Response<BoxedBody>, warnings: &[String]) {
+    let warning_header = hyper::header::HeaderName::from_static("warning");
+    for warning in warnings {
+        // RFC 7234's warning-text is quoted; sanitize control characters so
+        // a policy cannot inject a second header into the response.
+        let escaped = warning.replace('\\', "\\\\").replace('"', "\\\"").replace('\r', " ").replace('\n', " ");
+        let Ok(value) = hyper::header::HeaderValue::from_str(&format!("299 - \"{escaped}\"")) else {
+            continue;
+        };
+        response.headers_mut().append(warning_header.clone(), value);
+    }
+}
 
 fn crd_cache_keys(crd: &serde_json::Value) -> HashSet<crate::cacher::registry::ResourceKey> {
     crate::apiextensions::registry::discoverable_resources(std::iter::once(crd))
@@ -1422,6 +1462,9 @@ async fn handle_with_audit(
     peer: SocketAddr,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {
+    let admission_metadata = Arc::new(Mutex::new(AdmissionMetadata::default()));
+    let mut req = req;
+    req.extensions_mut().insert(admission_metadata.clone());
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -1521,9 +1564,12 @@ async fn handle_with_audit(
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
+        let metadata = admission_metadata.lock().map(|metadata| metadata.clone()).unwrap_or_default();
+        apply_admission_warnings(resp, &metadata.warnings);
+        let audit_annotations = audit_annotations(&metadata);
         let status = resp.status().as_u16();
         if audit_response_complete {
-            log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref());
+            log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref(), &audit_annotations);
         }
         // Group M: `/metrics`'s own request counter (`server::metrics`) —
         // recorded from the exact same parsed `RequestInfo` the audit
@@ -1570,8 +1616,8 @@ fn is_mutating_request(info: &path::RequestInfo) -> bool {
     )
 }
 
-fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, audit_sink: Option<&crate::audit::sink::AuditSink>) {
-    let event = build_audit_event(method, path_str, query, user_agent, identity, peer, status);
+fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, audit_sink: Option<&crate::audit::sink::AuditSink>, annotations: &BTreeMap<String, String>) {
+    let event = build_audit_event(method, path_str, query, user_agent, identity, peer, status, annotations);
     if let Some(sink) = audit_sink {
         if let Err(error) = sink.write(&event) {
             warn!(error = ?error, "nodeapiserver: failed to write audit event");
@@ -1583,7 +1629,7 @@ fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option
 /// The pure half of [`log_audit_event`] — everything up to the built
 /// `Value`, factored out so it's unit-testable without capturing
 /// `tracing`'s own log output.
-fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16) -> serde_json::Value {
+fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, annotations: &BTreeMap<String, String>) -> serde_json::Value {
     let info = path::parse(method, path_str, query);
     let (user_name, user_uid, user_groups): (&str, Option<&str>, Vec<String>) = match identity {
         Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
@@ -1605,6 +1651,7 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
         user_agent,
         object_ref,
         response_code: status,
+        annotations: (!annotations.is_empty()).then_some(annotations),
         timestamp: &timestamp,
     })
 }
@@ -1664,6 +1711,7 @@ async fn handle(
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
+    let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
 
     if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
         let verbose = path::parse_query(&query).iter().any(|(k, _)| k == "verbose");
@@ -2379,8 +2427,12 @@ async fn handle(
             )
             .await
             {
-                Ok(Some(message)) => return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message))),
-                Ok(None) => {}
+                Ok(outcome) => {
+                    record_admission_outcome(admission_metadata.as_ref(), &outcome);
+                    if let Some(message) = outcome.denial {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                    }
+                }
                 Err(error) => {
                     warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed for deletecollection");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -3298,10 +3350,12 @@ async fn handle(
                     None
                 };
                 match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), old_object.as_ref(), dry_run).await {
-                    Ok(Some(message)) => {
-                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                    Ok(outcome) => {
+                        record_admission_outcome(admission_metadata.as_ref(), &outcome);
+                        if let Some(message) = outcome.denial {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                        }
                     }
-                    Ok(None) => {}
                     Err(error) => {
                         warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed");
                         return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -4444,7 +4498,7 @@ mod tests {
 
     #[test]
     fn build_audit_event_carries_the_real_request_shape_for_an_anonymous_user() {
-        let event = build_audit_event("GET", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 200);
+        let event = build_audit_event("GET", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 200, &BTreeMap::new());
         assert_eq!(event["verb"], "get");
         assert_eq!(event["user"]["username"], "system:anonymous");
         assert_eq!(event["responseStatus"]["code"], 200);
@@ -4457,7 +4511,7 @@ mod tests {
     #[test]
     fn build_audit_event_carries_the_real_identity_when_present() {
         let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], uid: None, credential_id: (String::new(), Vec::new()) };
-        let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200);
+        let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200, &BTreeMap::new());
         assert_eq!(event["user"]["username"], "alice");
         assert_eq!(event["user"]["groups"], serde_json::json!(["developers"]));
         assert_eq!(event["verb"], "watch");
@@ -4466,14 +4520,21 @@ mod tests {
 
     #[test]
     fn build_audit_event_has_no_object_ref_for_a_non_resource_request() {
-        let event = build_audit_event("GET", "/version", "", None, None, &test_peer(), 200);
+        let event = build_audit_event("GET", "/version", "", None, None, &test_peer(), 200, &BTreeMap::new());
         assert!(event.get("objectRef").is_none());
     }
 
     #[test]
     fn build_audit_event_carries_a_denied_response_code() {
-        let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403);
+        let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403, &BTreeMap::new());
         assert_eq!(event["responseStatus"]["code"], 403);
+    }
+
+    #[test]
+    fn admission_warnings_use_warning_code_299_and_are_header_safe() {
+        let mut response = Response::new(body_from_bytes(Vec::new()));
+        apply_admission_warnings(&mut response, &["policy \"failed\"\nnext".to_string()]);
+        assert_eq!(response.headers().get("warning").unwrap(), "299 - \"policy \\\"failed\\\" next\"");
     }
 
     #[test]
