@@ -29,9 +29,9 @@
 //! `Store.DeleteCollection` returns) — `watch` remains the only verb this
 //! build knows about that isn't a generic REST dispatch (a real
 //! streaming response instead, `server::listener`'s own doc comment).
-//! **`DELETECOLLECTION` alone still doesn't run through Group J
-//! admission**, a small named gap — see `server::listener`'s own doc
-//! comment for why it's small in practice. `get` and `list` can both
+//! `DELETECOLLECTION` is also passed through Group J admission one matched
+//! object at a time by `server::listener`, matching the generic upstream
+//! store's validation callback. `get` and `list` can both
 //! consult a `cacher::store::SharedCache` if the caller passes one — see
 //! each function's own doc comment for its exact contract (`get`: a hit
 //! skips nodestore, a miss always falls through to a real `Range` rather
@@ -2312,6 +2312,37 @@ pub enum DeleteCollectionOutcome {
     UnknownResource,
 }
 
+/// Lists the objects selected by a collection delete without changing them.
+/// The listener uses this first so it can run admission against each matched
+/// object before calling [`delete`].
+pub async fn list_delete_collection(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    label_selector: &str,
+    field_selector: &str,
+) -> Result<DeleteCollectionOutcome, Error> {
+    let listed = list(
+        storage,
+        None,
+        group,
+        version,
+        resource,
+        namespace,
+        label_selector,
+        field_selector,
+        0,
+        "",
+    )
+    .await?;
+    let ListOutcome::Found(list_value) = listed else {
+        return Ok(DeleteCollectionOutcome::UnknownResource);
+    };
+    Ok(DeleteCollectionOutcome::Deleted(list_value))
+}
+
 /// Real upstream's own `Store.DeleteCollection`
 /// (`k8s.io/apiserver/pkg/registry/generic/registry/store.go`, fetched
 /// and read directly), scoped down: lists every object matching
@@ -2334,14 +2365,17 @@ pub enum DeleteCollectionOutcome {
 /// `500` — real upstream's own posture too (`errs <- err` stops the
 /// collection short).
 pub async fn delete_collection(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, label_selector: &str, field_selector: &str) -> Result<DeleteCollectionOutcome, Error> {
-    let listed = list(storage, None, group, version, resource, namespace, label_selector, field_selector, 0, "").await?;
-    let ListOutcome::Found(list_value) = listed else {
+    let listed = list_delete_collection(storage, group, version, resource, namespace, label_selector, field_selector).await?;
+    let DeleteCollectionOutcome::Deleted(list_value) = listed else {
         return Ok(DeleteCollectionOutcome::UnknownResource);
     };
     let items = list_value["items"].as_array().cloned().unwrap_or_default();
     for item in &items {
         let Some(name) = item.pointer("/metadata/name").and_then(Value::as_str) else { continue };
-        delete(storage, group, version, resource, namespace, name).await?;
+        match delete(storage, group, version, resource, namespace, name).await? {
+            DeleteOutcome::ObjectNotFound => {}
+            DeleteOutcome::Deleted(_) | DeleteOutcome::UnknownResource | DeleteOutcome::PreconditionFailed => {}
+        }
     }
     Ok(DeleteCollectionOutcome::Deleted(list_value))
 }
