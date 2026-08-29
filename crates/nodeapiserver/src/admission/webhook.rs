@@ -353,6 +353,8 @@ fn matches_webhook(
             name,
             operation: operation_name(operation),
             dry_run,
+            kind: object.get("kind").and_then(Value::as_str).unwrap_or(""),
+            user_info: None,
         },
     );
     let kind = object

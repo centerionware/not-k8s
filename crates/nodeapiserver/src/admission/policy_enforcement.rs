@@ -78,6 +78,8 @@ pub async fn validate(
     };
     let authorizer_vars = authorizer.as_ref().map(|authorizer| vec![("authorizer", authorizer.clone())]).unwrap_or_default();
 
+    let namespaced = rest::resource_is_namespaced(storage, group, version, resource).await.map_err(|error| error.to_string())?;
+
     let (namespace_object, namespace_labels) = if namespace.is_empty() {
         (None, BTreeMap::new())
     } else {
@@ -93,6 +95,16 @@ pub async fn validate(
     // On DELETE, Kubernetes evaluates object selectors against the existing
     // object (`oldObject`); the request object itself is intentionally null.
     let object_labels = object.or(old_object).map(crate::cacher::selector::object_labels).unwrap_or_default();
+    let kind = object
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .or_else(|| old_object.and_then(|value| value.get("kind")).and_then(Value::as_str))
+        .unwrap_or("");
+    let user_info = identity.map(|identity| policy_matching::RequestUserInfo {
+        username: &identity.name,
+        uid: identity.uid.as_deref(),
+        groups: &identity.groups,
+    });
     let request = policy_matching::build_request_object(&RequestVariable {
         uid: "",
         group,
@@ -103,6 +115,8 @@ pub async fn validate(
         name,
         operation,
         dry_run,
+        kind,
+        user_info,
     });
 
     for policy in &policies {
@@ -147,7 +161,7 @@ pub async fn validate(
                     validations: &decoded.validations,
                     failure_policy: decoded.failure_policy,
                 };
-                let outcome = validating_admission_policy::evaluate_with_composed_cel_vars(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars, &decoded.variables, &authorizer_vars);
+                let outcome = validating_admission_policy::evaluate_with_composed_cel_vars_and_scope(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars, &decoded.variables, namespaced, &authorizer_vars);
                 match outcome {
                     validating_admission_policy::PolicyOutcome::MatchConditionsError { errors } => {
                         record_failure(&mut result, policy_name, binding, &actions, errors.join("; "), None);

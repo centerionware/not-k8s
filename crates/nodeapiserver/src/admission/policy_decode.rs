@@ -47,15 +47,22 @@ struct DecodedResourceRule<'b> {
     api_groups: Vec<&'b str>,
     api_versions: Vec<&'b str>,
     resources: Vec<&'b str>,
+    scope: &'b str,
 }
 
 impl<'b> DecodedResourceRule<'b> {
     fn decode(rule: &'b Value) -> Self {
-        DecodedResourceRule { operations: str_array(rule, "operations"), api_groups: str_array(rule, "apiGroups"), api_versions: str_array(rule, "apiVersions"), resources: str_array(rule, "resources") }
+        DecodedResourceRule {
+            operations: str_array(rule, "operations"),
+            api_groups: str_array(rule, "apiGroups"),
+            api_versions: str_array(rule, "apiVersions"),
+            resources: str_array(rule, "resources"),
+            scope: rule.get("scope").and_then(Value::as_str).unwrap_or("*"),
+        }
     }
 
     fn as_rule(&self) -> ResourceRule<'_, 'b> {
-        ResourceRule { operations: &self.operations, api_groups: &self.api_groups, api_versions: &self.api_versions, resources: &self.resources }
+        ResourceRule { operations: &self.operations, api_groups: &self.api_groups, api_versions: &self.api_versions, resources: &self.resources, scope: self.scope }
     }
 }
 

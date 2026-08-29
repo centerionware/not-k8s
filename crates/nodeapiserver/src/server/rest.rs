@@ -197,6 +197,23 @@ pub async fn resolve_resource_for_kind(storage: &mut StorageClient, group: &str,
     Ok(dynamic_matches.into_iter().next().map(|resource| (resource.group, resource.version, resource.resource, resource.namespaced)))
 }
 
+/// Resolve the served resource's namespacedness for admission matching. The
+/// static discovery table handles built-ins without I/O; a CRD lookup uses
+/// the same established definitions as ordinary REST resolution.
+pub async fn resource_is_namespaced(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<bool>, Error> {
+    if let Some(found) = codegen::api_resources_by_group_version()
+        .get(&(group, version))
+        .and_then(|resources| resources.iter().find(|candidate| candidate.resource == resource))
+    {
+        return Ok(Some(found.namespaced));
+    }
+    let crds = list_stored_crds(storage).await?;
+    Ok(apiextensions::registry::discoverable_resources(crds.iter())
+        .into_iter()
+        .find(|candidate| candidate.group == group && candidate.version == version && candidate.resource == resource)
+        .map(|candidate| candidate.namespaced))
+}
+
 /// What [`resolve_resource`] found `(group, version, resource)` to be —
 /// either a built-in with a compiled proto schema (`resolve_kind`/
 /// `schema_for_gvk`, unchanged from before Group K existed), or a
