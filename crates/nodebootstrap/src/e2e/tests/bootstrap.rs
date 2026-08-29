@@ -2667,6 +2667,79 @@ pub(super) async fn nodeapiserver_runs_webhook_for_delete_collection(
     result
 }
 
+pub(super) async fn nodeapiserver_honors_finalizers(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("finalizer semantics are a nodeapiserver-only check"));
+    }
+
+    let name = format!("nodeapiserver-finalizer-{}", std::process::id());
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    let configmap = ConfigMap {
+        metadata: kube::api::ObjectMeta {
+            name: Some(name.clone()),
+            finalizers: Some(vec!["nodeapiserver.test/finalizer".to_string()]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let result = async {
+        configmaps
+            .create(&PostParams::default(), &configmap)
+            .await
+            .context("creating the finalizer ConfigMap")?;
+        configmaps
+            .delete(&name, &DeleteParams::default())
+            .await
+            .context("deleting the finalizer ConfigMap")?;
+        context
+            .wait_until("nodeapiserver finalizer deletion timestamp", Duration::from_secs(30), || {
+                let configmaps = configmaps.clone();
+                let name = name.clone();
+                async move {
+                    let object = configmaps.get(&name).await?;
+                    Ok(object.metadata.deletion_timestamp.is_some()
+                        && object
+                            .metadata
+                            .finalizers
+                            .as_deref()
+                            .is_some_and(|finalizers| {
+                                finalizers.len() == 1
+                                    && finalizers[0] == "nodeapiserver.test/finalizer"
+                            }))
+                }
+            })
+            .await?;
+        configmaps
+            .patch(
+                &name,
+                &PatchParams::default(),
+                &Patch::Merge(&json!({"metadata": {"finalizers": null}})),
+            )
+            .await
+            .context("removing the finalizer")?;
+        context
+            .wait_until("nodeapiserver finalizer deletion", Duration::from_secs(30), || {
+                let configmaps = configmaps.clone();
+                let name = name.clone();
+                async move { Ok(configmaps.get_opt(&name).await?.is_none()) }
+            })
+            .await
+    }
+    .await;
+
+    let _ = configmaps
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({"metadata": {"finalizers": null}})),
+        )
+        .await;
+    let _ = configmaps.delete(&name, &DeleteParams::default()).await;
+    result
+}
+
 pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
     context: &E2eContext,
 ) -> Result<()> {

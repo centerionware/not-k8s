@@ -30,9 +30,9 @@
 //! `scheme::validation`/`defaulting`, sets real `creationTimestamp`/`uid`,
 //! and writes with a real create-only-if-absent `Txn`. `DELETE` reads and
 //! validates optional `resourceVersion`/`uid` preconditions, then uses an
-//! MVCC-guarded delete transaction; propagation and finalizer handling
-//! remain out of scope. `CREATE`/`UPDATE` also support `dryRun=All` without
-//! persisting. `UPDATE` is
+//! MVCC-guarded delete/termination transaction; finalizers are honored,
+//! while propagation remains out of scope. `CREATE`/`UPDATE` also support
+//! `dryRun=All` without persisting. `UPDATE` is
 //! real optimistic concurrency (reads current, requires the submitted
 //! `resourceVersion` to match, writes with a `Txn` compared against that
 //! same revision — a real `Conflict` on a mismatch or a lost race, not a
