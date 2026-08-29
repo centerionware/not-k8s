@@ -46,13 +46,11 @@
 //! actual 3-way merge/conflict-detection algorithm
 //! (`typed.mergingWalker`, schema-driven: atomic vs. associative
 //! lists/maps per the vendored `x-kubernetes-*` annotations Group G's
-//! own `strategic_merge` already reads) is a separate, much larger,
-//! not-yet-started piece** — this module is the land-the-primitive-first
-//! step every other group in this arc has taken, not a claim that
-//! `PATCH`/`APPLY` with `application/apply-patch+yaml` works yet (it
-//! doesn't — `server::rest::patch_kind_for_content_type` still rejects
-//! that media type outright, named honestly in that function's own doc
-//! comment).
+//! own `strategic_merge` already reads) is implemented by
+//! `patch::updater` for compiled schemas and `patch::crd_apply` for
+//! runtime CRD schemas. This module remains the shared field-set
+//! primitive; the ordinary patch-kind parser still deliberately excludes
+//! Apply because the listener routes its distinct media type separately.
 
 use serde_json::{Map, Value};
 use std::cmp::Ordering;

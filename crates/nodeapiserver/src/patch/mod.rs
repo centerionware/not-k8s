@@ -72,11 +72,10 @@
 //! split (the same shape `patch_prepare`/`patch_persist` already has)
 //! lets `namespace_lifecycle` *and* `LimitRanger` admission both run
 //! against the real candidate object, matching the ordinary
-//! three-patch-kind `PATCH` branch's own coverage exactly. **Named,
-//! honest scope remaining** (`rest::server_side_apply`'s own doc
-//! comment): only for a built-in resource, not yet a CRD-defined one
-//! (`updater::apply`'s primitives key off compiled `FIELD_META`, not a
-//! runtime CRD schema).
+//! three-patch-kind `PATCH` branch's own coverage exactly. CRD-defined
+//! resources use the runtime-schema counterpart in [`crd_apply`], with
+//! multi-version conversion and advanced directives remaining separate,
+//! named scope.
 //!
 //! The `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directive set
 //! is supported for both compiled and runtime CRD schemas. When
@@ -84,6 +83,7 @@
 //! built-ins and JSON merge patch for CRD-defined resources.
 
 pub mod fieldset;
+pub mod crd_apply;
 pub mod json_patch;
 pub mod managed_fields;
 pub mod merge_patch;
