@@ -19,10 +19,11 @@
 //! arbitrary-precision fallback; see that module's own doc comment for
 //! why that's a real, narrow, documented gap rather than a silent one).
 //! `conversion` provides the pure JSON boundary conversion used when a
-//! stored object is served through another supported API version. It starts
-//! with compatible-shape GVK rewriting and the autoscaling HPA v1/v2 CPU
-//! metric conversion; additional version pairs remain explicit follow-up
-//! work rather than an implicit lossy transform.
+//! stored object is served through another supported API version. Compatible
+//! fields are projected through the target version's vendored OpenAPI schema,
+//! with semantic shape changes kept as explicit conversions (currently the
+//! autoscaling HPA v1/v2 CPU metric conversion). Unknown target schemas fail
+//! open to the existing GVK rewrite rather than dropping data blindly.
 
 pub mod defaulting;
 pub mod validation;

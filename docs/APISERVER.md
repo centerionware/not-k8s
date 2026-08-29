@@ -863,14 +863,15 @@ this to more resources is real, separate follow-up work, one verified
 entry at a time (the function's own doc comment says so explicitly).
 
 `scheme::conversion::to_version` now runs at the JSON response boundary for
-stored objects served through another API version. Compatible-shape resources
-receive the requested GVK, and the real autoscaling HPA v1/v2 CPU target is
-converted between v1's `targetCPUUtilizationPercentage` and v2's Resource
-metric form (including status). The remaining multi-version groups
-(admissionregistration, certificates, coordination, networking, resource,
-storage, apiserverinternal, storagemigration), plus their version-specific
-field conversions and conversion webhooks, remain explicit follow-up work;
-the converter does not silently claim those shapes are identical.
+stored objects served through another API version. Compatible fields are
+projected through the requested version's vendored OpenAPI schema, including
+nested `$ref` fields, arrays, and maps, so source-version-only fields are not
+leaked to clients. Semantic shape changes remain explicit conversions: the
+real autoscaling HPA v1/v2 CPU target is converted between v1's
+`targetCPUUtilizationPercentage` and v2's Resource metric form (including
+status). Conversion webhooks and the small set of version pairs with
+hand-written semantic renames remain separate work; a missing target schema
+fails open to the existing GVK rewrite rather than silently dropping data.
 
 `scheme::quantity::Quantity` parses real upstream's own resource-quantity
 string format (`100m`, `1.5Gi`, `1e3`, …) — a faithful port of the real

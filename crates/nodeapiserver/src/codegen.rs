@@ -136,6 +136,26 @@ pub fn openapi_v3_doc_index() -> &'static HashMap<&'static str, &'static openapi
     INDEX.get_or_init(|| openapi_v3_docs::OPENAPI_V3_DOCS.iter().map(|d| (d.path, d)).collect())
 }
 
+/// Returns one parsed vendored OpenAPI document by its served `/openapi/v3`
+/// relative path (for example, `apis/apps/v1`). Conversion uses the same
+/// documents that the listener serves, so a version projection cannot drift
+/// from the advertised schema.
+pub fn openapi_v3_document(path: &str) -> Option<&'static serde_json::Value> {
+    static DOCUMENTS: OnceLock<HashMap<String, serde_json::Value>> = OnceLock::new();
+    DOCUMENTS
+        .get_or_init(|| {
+            openapi_v3_docs::OPENAPI_V3_DOCS
+                .iter()
+                .filter_map(|document| {
+                    serde_json::from_slice(document.content)
+                        .ok()
+                        .map(|value| (document.path.to_string(), value))
+                })
+                .collect()
+        })
+        .get(path)
+}
+
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
 /// it — either bare, meaning "same package as the declaring message", or a
 /// fully proto-package-qualified name (with or without protobuf's leading
