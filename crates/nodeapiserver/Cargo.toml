@@ -148,7 +148,7 @@ json-patch = "4"
 # section for the full design — this dependency lands with Phase 1 (a
 # pure compile-and-evaluate wrapper, no cost accounting yet, not wired
 # into any real request path until Phase 2 lands).
-cel = "0.14"
+cel = { version = "0.14", features = ["json", "structs"] }
 # Runtime CRD `pattern` constraints use the same Rust regex engine as the
 # CEL dependency already brings into the lockfile.
 regex = "1"
