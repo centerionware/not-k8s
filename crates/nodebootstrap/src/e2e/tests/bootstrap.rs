@@ -9,7 +9,7 @@ use k8s_openapi::api::authentication::v1::{
     TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec,
 };
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
-use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Pod, Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Node, Pod, Service, ServiceAccount};
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
@@ -570,6 +570,94 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         "nodeapiserver OpenAPI v2 response was not a populated Swagger document"
     );
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "Pod binding is a nodeapiserver-only subresource check",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let pod_name = format!("nodeapiserver-binding-{suffix}");
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let node_name = nodes
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .and_then(|node| node.metadata.name)
+        .context("the cluster has no node for the Pod binding check")?;
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": pod_name.clone(), "namespace": &context.namespace},
+        "spec": {
+            "restartPolicy": "Never",
+            "schedulerName": "nodeapiserver-binding-check",
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "30"]}]
+        }
+    }))?;
+    let created = pods
+        .create(&PostParams::default(), &pod)
+        .await
+        .context("creating an unbound Pod for the binding check")?;
+    let uid = created
+        .metadata
+        .uid
+        .clone()
+        .context("the created Pod has no UID")?;
+    let binding = json!({
+        "apiVersion": "v1",
+        "kind": "Binding",
+        "metadata": {
+            "name": pod_name.clone(),
+            "namespace": &context.namespace,
+            "uid": uid
+        },
+        "target": {"apiVersion": "v1", "kind": "Node", "name": node_name.clone()}
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods/{}/binding",
+            context.namespace, pod_name
+        ))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&binding)?)?;
+    let response = context
+        .client
+        .request::<Value>(request)
+        .await
+        .context("binding a Pod through nodeapiserver")?;
+    anyhow::ensure!(
+        response["status"] == "Success",
+        "Pod binding did not return a successful Status: {response}"
+    );
+
+    let result = context
+        .wait_until("nodeapiserver-bound Pod to record its node", Duration::from_secs(30), || {
+            let pods = pods.clone();
+            let pod_name = pod_name.clone();
+            let node_name = node_name.clone();
+            async move {
+                Ok(pods
+                    .get(&pod_name)
+                    .await?
+                    .spec
+                    .and_then(|spec| spec.node_name)
+                    == Some(node_name))
+            }
+        })
+        .await;
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> Result<()> {
