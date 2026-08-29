@@ -89,6 +89,8 @@
 //! comparison member functions.
 //! `kubernetes_ip` is the corresponding strict IP parser and classifier
 //! surface from upstream's `kubernetes.net.ip` library.
+//! `kubernetes_cidr` builds on that value for upstream's `kubernetes.net.cidr`
+//! parser, containment, masking, and prefix-length helpers.
 //! `register_kubernetes_extensions` wires every one of them onto
 //! every `Context` this module builds via `cel::Context::add_function`
 //! (`cel-rust`'s own real custom-function registration API, confirmed
@@ -118,9 +120,10 @@ pub mod cost;
 pub mod cost_walk;
 pub mod decl_type;
 pub mod authorizer;
+pub mod kubernetes_cidr;
+pub mod kubernetes_ip;
 pub mod kubernetes_lists;
 pub mod kubernetes_quantity;
-pub mod kubernetes_ip;
 pub mod path;
 
 use cel::{Context, Program, Value as CelValue};
@@ -216,7 +219,6 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("isLessThan", kubernetes_quantity::is_less_than_binding);
     ctx.add_function("isGreaterThan", kubernetes_quantity::is_greater_than_binding);
     ctx.add_function("compareTo", kubernetes_quantity::compare_to_binding);
-    ctx.add_function("ip", kubernetes_ip::ip_binding);
     ctx.add_function("ip.isCanonical", kubernetes_ip::is_canonical_binding);
     ctx.add_function("isIP", kubernetes_ip::is_ip_binding);
     ctx.add_function("family", kubernetes_ip::family_binding);
@@ -225,7 +227,14 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("isLinkLocalMulticast", kubernetes_ip::is_link_local_multicast_binding);
     ctx.add_function("isLinkLocalUnicast", kubernetes_ip::is_link_local_unicast_binding);
     ctx.add_function("isGlobalUnicast", kubernetes_ip::is_global_unicast_binding);
-    ctx.add_function("string", kubernetes_ip::string_binding);
+    ctx.add_function("cidr", kubernetes_cidr::cidr_binding);
+    ctx.add_function("isCIDR", kubernetes_cidr::is_cidr_binding);
+    ctx.add_function("containsIP", kubernetes_cidr::contains_ip_binding);
+    ctx.add_function("containsCIDR", kubernetes_cidr::contains_cidr_binding);
+    ctx.add_function("ip", kubernetes_cidr::ip_binding);
+    ctx.add_function("prefixLength", kubernetes_cidr::prefix_length_binding);
+    ctx.add_function("masked", kubernetes_cidr::masked_binding);
+    ctx.add_function("string", kubernetes_cidr::string_binding);
     authorizer::register(ctx);
 }
 
@@ -620,6 +629,16 @@ mod tests {
         assert_eq!(eval_bool_with_vars("ip('2001:DB8::ABCD').string() == '2001:db8::abcd'", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("ip.isCanonical('2001:db8::abcd')", &[]).unwrap(), true);
         assert_eq!(eval_bool_with_vars("ip.isCanonical('2001:DB8::ABCD')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("isCIDR('192.168.0.0/24')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("isCIDR('192.168.0.0/33')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("cidr('192.168.0.1/24').containsIP('192.168.0.10')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("cidr('192.168.0.0/24').containsIP(ip('192.168.0.10'))", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("cidr('192.168.0.0/16').containsCIDR('192.168.10.0/24')", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("cidr('192.168.0.0/24').containsCIDR('192.168.1.0/24')", &[]).unwrap(), false);
+        assert_eq!(eval_bool_with_vars("cidr('192.168.0.1/24').masked().string() == '192.168.0.0/24'", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("cidr('192.168.0.1/24').prefixLength() == 24", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("cidr('::1/128').ip().family() == 6", &[]).unwrap(), true);
+        assert_eq!(eval_bool_with_vars("string(cidr('192.168.0.1/24')) == '192.168.0.1/24'", &[]).unwrap(), true);
     }
 
     #[test]
