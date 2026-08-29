@@ -2246,18 +2246,17 @@ recorded from `http_body::Body::size_hint().exact()` — not recorded for
 `apiserver_watch_events_total` (`group`/`version`/`resource` labels,
 incremented once per event actually encoded and written to a client) are
 now ported too — see `server::metrics`'s own module doc for the exact
-scope. **`apiserver_current_inflight_requests` is deliberately NOT
-ported**, checked and rejected rather than skipped by omission: its real
-semantics measure the sampled utilization of real upstream's own APF
-concurrency limits, not a plain in-flight count. **APF
+scope. `apiserver_current_inflight_requests` is now exposed with the
+upstream `request_kind` labels (`readonly`/`mutating`) and tracks requests
+holding this build's bounded APF seat; exempt and long-running requests
+that bypass the gate are not counted. **APF
 (FlowSchema/PriorityLevelConfiguration queueing) now has a bounded request
 gate**: in addition to the global ordinary and mutating budgets, selected
 limited priority levels enforce nominal-share concurrency caps and their
 `Reject`/queue-length policy, while exempt levels and long-running streams
 remain outside the finite budgets. **The full upstream shuffle-sharded fair
-queue, seat borrowing, distinguisher handling, and the sampled
-`apiserver_current_inflight_requests` metric remain separate refinements.**
-`flowcontrol::flow_schema` ports real upstream's own
+queue, seat borrowing, and distinguisher handling remain separate
+refinements.** `flowcontrol::flow_schema` ports real upstream's own
 `FlowSchema` matching (`pkg/util/flowcontrol/rule.go`, fetched and read
 directly) — `matches_flow_schema`/`matches_policy_rule`/`matches_subject`
 (all three real subject kinds, `User`/`Group`/`ServiceAccount`,
