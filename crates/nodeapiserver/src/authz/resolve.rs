@@ -100,9 +100,9 @@ fn binding_namespace(binding: &Value) -> &str {
     binding.get("metadata").and_then(|metadata| metadata.get("namespace")).and_then(Value::as_str).unwrap_or("")
 }
 
-fn accumulate_snapshot_binding(snapshot: &Snapshot, binding: &Value, user_name: &str, user_groups: &[String], binding_namespace: &str, resolved: &mut Resolved) {
+fn accumulate_snapshot_binding(snapshot: &Snapshot, binding: &Value, user_name: &str, user_groups: &[String], binding_ns: &str, resolved: &mut Resolved) {
     let subjects = parse_subjects(binding);
-    if first_applicable_subject(user_name, user_groups, &subjects, binding_namespace).is_none() {
+    if first_applicable_subject(user_name, user_groups, &subjects, binding_ns).is_none() {
         return;
     }
 
@@ -116,7 +116,7 @@ fn accumulate_snapshot_binding(snapshot: &Snapshot, binding: &Value, user_name: 
         "Role" => snapshot
             .roles
             .iter()
-            .find(|role| binding_namespace(role) == binding_namespace && object_name(role) == name),
+            .find(|role| binding_namespace(role) == binding_ns && object_name(role) == name),
         "ClusterRole" => snapshot.cluster_roles.iter().find(|role| object_name(role) == name),
         other => {
             resolved.errors.push(format!("unsupported roleRef kind {other:?}"));

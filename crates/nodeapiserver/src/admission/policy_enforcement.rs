@@ -76,6 +76,7 @@ pub async fn validate(
     } else {
         None
     };
+    let authorizer_vars = authorizer.as_ref().map(|authorizer| vec![("authorizer", authorizer.clone())]).unwrap_or_default();
 
     let (namespace_object, namespace_labels) = if namespace.is_empty() {
         (None, BTreeMap::new())
@@ -135,14 +136,8 @@ pub async fn validate(
                 }
             };
             for params in parameter_values {
-                let mut match_vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
-                if let Some(authorizer) = authorizer.as_ref() {
-                    match_vars.push(("authorizer", authorizer));
-                }
-                let mut validation_vars = policy_matching::build_eval_vars_with_namespace(object, old_object, &request, params.as_ref(), namespace_object.as_ref());
-                if let Some(authorizer) = authorizer.as_ref() {
-                    validation_vars.push(("authorizer", authorizer));
-                }
+                let match_vars = policy_matching::build_eval_vars(object, old_object, &request, params.as_ref());
+                let validation_vars = policy_matching::build_eval_vars_with_namespace(object, old_object, &request, params.as_ref(), namespace_object.as_ref());
                 let definition = validating_admission_policy::PolicyDefinition {
                     resource_rules: &resource_rules,
                     exclude_resource_rules: &exclude_resource_rules,
@@ -152,7 +147,7 @@ pub async fn validate(
                     validations: &decoded.validations,
                     failure_policy: decoded.failure_policy,
                 };
-                let outcome = validating_admission_policy::evaluate_with_composed_variables(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars, &decoded.variables);
+                let outcome = validating_admission_policy::evaluate_with_composed_cel_vars(&definition, operation, group, version, resource, subresource, &namespace_labels, &object_labels, &match_vars, &validation_vars, &decoded.variables, &authorizer_vars);
                 match outcome {
                     validating_admission_policy::PolicyOutcome::MatchConditionsError { errors } => {
                         record_failure(&mut result, policy_name, binding, &actions, errors.join("; "), None);

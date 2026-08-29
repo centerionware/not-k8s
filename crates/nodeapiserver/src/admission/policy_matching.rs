@@ -299,12 +299,17 @@ pub fn build_eval_vars_with_namespace<'a>(object: Option<&'a Value>, old_object:
 /// matching the API contract that later declarations cannot be referenced.
 /// The existing request-side CEL deadline also bounds each composition step.
 pub fn compose_variables(variables: &[Variable<'_>], base_vars: &[(&'static str, &Value)]) -> Result<Value, String> {
+    compose_variables_with_cel_vars(variables, base_vars, &[])
+}
+
+/// [`compose_variables`] with native CEL values in addition to JSON values.
+pub fn compose_variables_with_cel_vars(variables: &[Variable<'_>], base_vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, cel::Value)]) -> Result<Value, String> {
     let mut values = serde_json::Map::new();
     for variable in variables {
         let available = Value::Object(values.clone());
         let mut eval_vars = base_vars.to_vec();
         eval_vars.push(("variables", &available));
-        let value = crate::cel_ext::eval_json_with_vars_and_deadline(variable.expression, &eval_vars, std::time::Duration::from_millis(100))
+        let value = crate::cel_ext::eval_json_with_vars_and_cel_vars_and_deadline(variable.expression, &eval_vars, cel_vars, std::time::Duration::from_millis(100))
             .map_err(|error| format!("composing policy variable {:?}: {error}", variable.name))?;
         values.insert(variable.name.to_string(), value);
     }
