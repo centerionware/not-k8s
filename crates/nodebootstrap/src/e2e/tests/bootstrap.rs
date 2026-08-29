@@ -660,6 +660,51 @@ pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     result
 }
 
+pub(super) async fn nodeapiserver_advertises_subresources(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("subresource discovery is a nodeapiserver-only check"));
+    }
+
+    let core_request = Request::builder().uri("/api/v1").body(Vec::new())?;
+    let core: Value = context.client.request(core_request).await.context("reading core/v1 discovery")?;
+    let core_resources = core
+        .get("resources")
+        .and_then(Value::as_array)
+        .context("core/v1 discovery did not contain resources")?;
+    let has_subresource = |name: &str| {
+        core_resources.iter().any(|resource| resource.get("name").and_then(Value::as_str) == Some(name))
+    };
+    anyhow::ensure!(has_subresource("pods/status"), "core/v1 discovery omitted pods/status");
+    anyhow::ensure!(has_subresource("pods/log"), "core/v1 discovery omitted pods/log");
+    let pods_exec = core_resources
+        .iter()
+        .find(|resource| resource.get("name").and_then(Value::as_str) == Some("pods/exec"))
+        .context("core/v1 discovery omitted pods/exec")?;
+    anyhow::ensure!(
+        pods_exec
+            .get("verbs")
+            .and_then(Value::as_array)
+            .is_some_and(|verbs| verbs.iter().any(|verb| verb.as_str() == Some("connect"))),
+        "core/v1 discovery omitted the connect verb for pods/exec"
+    );
+
+    let apps_request = Request::builder().uri("/apis/apps/v1").body(Vec::new())?;
+    let apps: Value = context.client.request(apps_request).await.context("reading apps/v1 discovery")?;
+    let apps_resources = apps
+        .get("resources")
+        .and_then(Value::as_array)
+        .context("apps/v1 discovery did not contain resources")?;
+    let deployment_scale = apps_resources
+        .iter()
+        .find(|resource| resource.get("name").and_then(Value::as_str) == Some("deployments/scale"))
+        .context("apps/v1 discovery omitted deployments/scale")?;
+    anyhow::ensure!(deployment_scale.get("kind").and_then(Value::as_str) == Some("Scale"), "apps/v1 deployments/scale did not report kind Scale");
+    anyhow::ensure!(deployment_scale.get("group").and_then(Value::as_str) == Some("autoscaling"), "apps/v1 deployments/scale omitted response group autoscaling");
+    anyhow::ensure!(deployment_scale.get("version").and_then(Value::as_str) == Some("v1"), "apps/v1 deployments/scale omitted response version v1");
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
