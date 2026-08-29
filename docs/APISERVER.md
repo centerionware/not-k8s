@@ -1,5 +1,29 @@
 # nodeapiserver — design
 
+| GROUPNAME | STATUS | COMPLETED |
+| --- | --- | --- |
+| Phase 0 — prerequisites | in progress | 0/2 completed |
+| A — Vendoring + build-time codegen | done | 5/5 completed |
+| B — Wire formats | in progress | 5/7 completed |
+| C — Storage over nodestore | in progress | 5/7 completed |
+| D — Watch cache | done for current scope | 7/7 completed |
+| E — Generic server, handler chain, and REST | in progress | 8/10 completed |
+| F — Scheme, conversion, defaulting, and validation | in progress | 5/8 completed |
+| G — Patch and Server-Side Apply | in progress | 4/6 completed |
+| H — Authentication | done for supported paths | 6/7 completed |
+| I — Authorization | in progress | 4/6 completed |
+| J — Admission | in progress | 5/8 completed |
+| K — CustomResourceDefinitions | in progress | 6/7 completed |
+| L — Aggregation | done for current scope | 4/4 completed |
+| M — APF, audit, and observability | in progress | 4/8 completed |
+| N — Streaming and proxy subresources | in progress | 3/5 completed |
+| O — Cluster bootstrap | in progress | 2/5 completed |
+
+The `COMPLETED` values are high-level tracked milestones from each delivery
+group, not individual API endpoints. They are updated as slices land; a
+group can remain **in progress** after its current implementation count rises
+when a newly identified compatibility boundary is added to its scope.
+
 kube-apiserver's job: the one thing every other component in this project
 talks to — REST + watch over every built-in and CRD-defined resource, backed
 by `nodestore`. This is the last k3s component. Full research and the
@@ -12,6 +36,32 @@ the plan file.
 
 Status legend: **not started**, **in progress**, **done** (e2e-verified, per
 group where the throwaway rig described below can reach it), **deferred**.
+
+## Current status snapshot
+
+This snapshot is checked against `origin/nodeapiserver` at `4ff9e91f` on
+2026-08-29. It describes what is integrated on that branch; open child PRs
+are not counted until they merge. The detailed sections below remain the
+explanation of each boundary.
+
+| Area | Status | What remains before this area is complete |
+| --- | --- | --- |
+| Phase 0 prerequisites | **in progress** | The workspace still uses the pinned `k8s-openapi` v1_33 schema; the v1_34 and related dependency migration is not integrated. |
+| A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
+| B. Wire formats | **in progress** | Generic protobuf/JSON/YAML, Table, and partial-object support are integrated; per-resource printer behavior and remaining wire edge cases remain. |
+| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; key-rotation migration and remaining provider compatibility are open. |
+| D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
+| E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
+| F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
+| G. Patch/SSA | **in progress** | JSON/merge/strategic patch and CRD-aware Server-Side Apply are present; remaining upstream directive and managed-fields edge cases need coverage. |
+| H. Authentication | **done for supported paths** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, and TokenReview are integrated; live reload and some upstream diagnostics remain out of scope. |
+| I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
+| J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
+| K. CRDs | **in progress** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, and proactive lifecycle cache refresh are integrated; conversion webhooks remain. |
+| L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
+| M. APF/audit/observability | **in progress** | Audit, health, metrics, and bounded APF plumbing are present; full fair queueing, seat borrowing, distinguishers, and sampled inflight semantics remain. |
+| N. Streaming/proxy | **in progress** | Pod log/exec/attach/port-forward are live; node and Service proxy subresources remain in the child slice currently under validation. |
+| O. Cluster bootstrap | **in progress** | `nodebootstrap` can target nodeapiserver, but the default install still needs the no-k3s cutover and the full unfiltered e2e gate. |
 
 Branching: `nodeapiserver` is a long-lived integration branch (pushed to
 `origin/nodeapiserver`). Every group below is its own sub-branch and PR
@@ -113,8 +163,8 @@ like, added for Group G's Strategic Merge Patch recursion), and the
 discovery GVK map; `src/codegen.rs` builds runtime indexes over them plus
 the proto-style<->openapi-style message-name resolver (`resolve_message_ref`)
 Group B's codec depends on. Not wired into `deploy/lib/components.sh` or
-`notk8s`'s `APPLETS` table yet — correctly Group O's job, per this doc's own
-delivery-group split, since there is no listener until Group E.
+`notk8s`'s `APPLETS` table yet — packaging and bootstrap integration remain
+Group O's job now that the listener exists.
 
 **B. Wire formats** — **in progress**. `codec::protobuf` is a generic
 protobuf encode/decode over `serde_json::Value`, driven entirely by Group
@@ -360,10 +410,9 @@ revision `0` (an empty store has never advanced its revision), which
 would be indistinguishable from "not synced yet" if synced-ness were
 inferred from the revision alone. `list` checks `has_synced()` before
 trusting the cache; an unsynced cache falls through to nodestore exactly
-as `cache: None` would. `server::listener` passes the same
-`namespaces` proof-of-concept cache to `list` that it already passed to
-`get` — no new resource gained caching from this change, just closed
-the `get`/`list` asymmetry for the one resource that already had one.
+as `cache: None` would. `server::listener` uses the same registry for every
+built-in resource, while dynamic CRD registrations remain the lifecycle
+follow-up described above.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
@@ -1413,14 +1462,15 @@ The current CEL adapter accepts JSON-shaped mutation results; typed
 `JSONPatch{}`/`Object{}` declarations and the additional `namespaceObject`,
 `variables`, and `authorizer` bindings remain explicit follow-up work.
 
-**Not yet landed**: every other built-in plugin, `ResourceQuota`'s own
-persisted usage counter (above), a
-generic plugin-chain/registry abstraction (today `server::listener`
-hand-calls each plugin directly, not through
-any dispatch table), mutating/validating webhooks, and
-the remaining typed-CEL/variable surface of MutatingAdmissionPolicy. The ValidatingAdmissionPolicy path uses the
-existing per-expression deadline and the shared request-side CEL budget;
-interpreter-level fuel accounting remains a follow-up hardening item.
+**Not yet landed**: every other built-in plugin, a generic
+plugin-chain/registry abstraction (today `server::listener` hand-calls each
+plugin directly, not through any dispatch table), the remaining typed-CEL /
+variable surface of MutatingAdmissionPolicy, and interpreter-level fuel
+accounting. The ValidatingAdmissionPolicy path uses the existing
+per-expression deadline and shared request-side CEL budget. Admission
+webhooks, validating/mutating admission policies, and ResourceQuota's
+persisted usage counter are integrated; their remaining compatibility edges
+are tracked in the paragraphs above.
 
 **K. CRDs (apiextensions)** — **in progress**. Found on inspection, not
 assumed: `CustomResourceDefinition` itself needed *zero* new plumbing —
@@ -2286,8 +2336,9 @@ kubelet-style routes, and `proxy::http_client::upgrade` forwards the
 upgrade headers before splicing both upgraded connections. The listener is
 served with hyper's upgrade-aware connection path. Existing streaming e2e
 cases for exec, attach, and port-forward exercise these routes against a
-real CRI runtime. Node and service proxy subresources remain entirely
-unstarted.
+real CRI runtime. Node and Service proxy subresources are implemented in a
+child slice, but that slice is not yet integrated into `nodeapiserver`; its
+focused e2e check must pass after rebase before N can be marked done.
 
 **O. Cluster bootstrap — the k3s replacement half** — **owned by
 `nodebootstrap`, deliberately not `nodeapiserver`'s own code.** The 2026-08-21 entry below is
