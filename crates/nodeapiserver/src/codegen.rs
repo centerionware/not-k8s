@@ -344,10 +344,10 @@ mod tests {
             .expect("pods/exec should be discoverable");
         assert!(pod_exec.verbs.contains(&"connect"));
 
-        let apps_v1 = api_resources_by_group_version()
-            .get(&("apps", "v1"))
-            .expect("apps/v1 should have discovered resources");
-        let deployment_scale = apps_v1
+        let autoscaling_v1 = api_resources_by_group_version()
+            .get(&("autoscaling", "v1"))
+            .expect("autoscaling/v1 should have discovered resources");
+        let deployment_scale = autoscaling_v1
             .iter()
             .find(|r| r.resource == "deployments/scale")
             .expect("deployments/scale should be discoverable");
