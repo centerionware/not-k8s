@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | Phase 0 — prerequisites | done | 2/2 |
 | A — Vendoring + build-time codegen | done | 5/5 |
-| B — Wire formats | in progress | 5/7 |
+| B — Wire formats | in progress | 6/7 |
 | C — Storage over nodestore | in progress | 5/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 9/10 |
@@ -208,8 +208,8 @@ real `kubectl get pods` against a live nodeapiserver got raw JSON
 instead of the columnar `Table` output every `kubectl get` actually
 negotiates by default. Not yet done: any per-type printer. The standard
 `meta.k8s.io/v1` `PartialObjectMetadata` and `PartialObjectMetadataList`
-representations are now served for negotiated `GET` and `LIST` responses;
-watch-response conversion remains separate work.
+representations are now served for negotiated `GET`, `LIST`, and `WATCH`
+responses; per-resource printer behavior remains separate work.
 
 **C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
 is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
