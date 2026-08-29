@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | Phase 0 — prerequisites | done | 2/2 |
 | A — Vendoring + build-time codegen | done | 5/5 |
-| B — Wire formats | in progress | 6/7 |
+| B — Wire formats | done for current scope | 7/7 |
 | C — Storage over nodestore | in progress | 5/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `6d53d13` on
+This snapshot is checked against `origin/nodeapiserver` at `73921e6` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -43,7 +43,7 @@ explanation of each boundary.
 | --- | --- | --- |
 | Phase 0 prerequisites | **done** | The workspace uses `k8s-openapi` v1_34 and the related dependency migration is integrated. |
 | A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
-| B. Wire formats | **in progress** | Generic protobuf/JSON/YAML, Table, partial-object support, and common built-in printers are integrated; remaining per-resource printers and wire edge cases remain. |
+| B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
 | C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; remaining provider compatibility is open. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
@@ -159,7 +159,7 @@ Group B's codec depends on. Not wired into `deploy/lib/components.sh` or
 `notk8s`'s `APPLETS` table yet — packaging and bootstrap integration remain
 Group O's job now that the listener exists.
 
-**B. Wire formats** — **in progress**. `codec::protobuf` is a generic
+**B. Wire formats** — **done for the current scope**. `codec::protobuf` is a generic
 protobuf encode/decode over `serde_json::Value`, driven entirely by Group
 A's field table (`codec::wire` has the raw varint/tag primitives) — no
 prost-generated struct universe, per finding 6. Handles all six scalar
@@ -196,13 +196,17 @@ one row per item for a List-shaped input, `ResourceVersion`/`Continue`/
 `RemainingItemCount` carried through from the List's own metadata. The
 verified built-in set now includes the standard Pod, Deployment, ReplicaSet,
 StatefulSet, DaemonSet, Service, Node, and Namespace printers, including
-their common wide-mode columns. Named honestly: real kube-apiserver's much
+their common wide-mode columns. CRD `additionalPrinterColumns` are resolved
+from the negotiated served version and evaluated for dynamic Table responses,
+with the implicit Name column and upstream-compatible default Age column when
+no custom columns are declared. Named honestly: real kube-apiserver's much
 larger *per-type* printer set is only partly started — resources without a
 registered printer get the generic table, same as a fresh CRD does in real
 kube-apiserver until it earns its own printer. **Now actually wired into
 `GET`/`LIST`** (`server::listener`
-checks `Accepted::wants_table()` from the request's own `Accept` header
-and runs the response through `convert_to_table` when set) — a real gap
+checks `Accepted::wants_table()` from the request's own `Accept` header,
+resolves the matching CRD version when needed, and runs the response through
+the appropriate table converter when set) — a real gap
 found this session: the converter had been landed and correctly
 documented for a while, but nothing in `server/` ever called it, so a
 real `kubectl get pods` against a live nodeapiserver got raw JSON
