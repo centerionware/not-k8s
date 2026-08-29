@@ -3,11 +3,13 @@
 //! The generated `k8s-openapi` types intentionally expose only one Kubernetes
 //! release API surface, so they cannot be used as a second internal type
 //! universe for older served versions. Conversion therefore happens at the
-//! JSON boundary. The common case is a compatible object shape: its GVK is
-//! rewritten to the requested version. Autoscaling HPA is the first version
-//! pair with a real field-shape conversion, because v1's single CPU target
-//! became v2's metrics list.
+//! JSON boundary. Compatible fields are projected through the target
+//! version's vendored OpenAPI schema, while semantic shape changes remain
+//! explicit conversions. Autoscaling HPA is the first version pair with a
+//! real field-shape conversion, because v1's single CPU target became v2's
+//! metrics list.
 
+use crate::codegen;
 use serde_json::{json, Map, Value};
 
 /// Convert a stored object to the version requested by the client.
@@ -17,9 +19,9 @@ use serde_json::{json, Map, Value};
 /// deliberately a pure function so each REST and watch response can use the
 /// same conversion path without another storage read.
 pub fn to_version(group: &str, version: &str, kind: &str, mut object: Value) -> Value {
-    let Some(map) = object.as_object_mut() else {
+    if !object.is_object() {
         return object;
-    };
+    }
     let requested_api_version = if group.is_empty() {
         version.to_string()
     } else {
@@ -30,15 +32,115 @@ pub fn to_version(group: &str, version: &str, kind: &str, mut object: Value) -> 
         let source_version = source_api_version.rsplit_once('/').map_or(source_api_version, |(_, version)| version);
         if group == "autoscaling" && kind == "HorizontalPodAutoscaler" {
             match (source_version, version) {
-                ("v1", "v2") => hpa_v1_to_v2(map),
-                ("v2", "v1") => hpa_v2_to_v1(map),
+                ("v1", "v2") => hpa_v1_to_v2(object.as_object_mut().expect("object was checked above")),
+                ("v2", "v1") => hpa_v2_to_v1(object.as_object_mut().expect("object was checked above")),
                 _ => {}
             }
         }
     }
+    if source_api_version.as_deref().is_some_and(|source| {
+        let source_version = source.rsplit_once('/').map_or(source, |(_, version)| version);
+        source_version != version
+    }) {
+        project_to_version(group, version, kind, object.as_object_mut().expect("object was checked above"));
+    }
+    let map = object.as_object_mut().expect("object was checked above");
     map.insert("apiVersion".to_string(), Value::String(requested_api_version));
     map.insert("kind".to_string(), Value::String(kind.to_string()));
     object
+}
+
+/// Projects a decoded object through the target version's published OpenAPI
+/// schema. Kubernetes conversion must not leak fields that only exist in the
+/// source version; using the target document also covers nested references,
+/// associative lists, and map values without maintaining a second handwritten
+/// field inventory. Semantic renames remain explicit conversions (HPA above),
+/// while a field with the same JSON shape is handled by this common path.
+fn project_to_version(group: &str, version: &str, kind: &str, object: &mut Map<String, Value>) {
+    let path = if group.is_empty() { format!("api/{version}") } else { format!("apis/{group}/{version}") };
+    let Some(document) = codegen::openapi_v3_document(&path) else { return };
+    let Some(schema) = document
+        .get("components")
+        .and_then(|components| components.get("schemas"))
+        .and_then(Value::as_object)
+        .and_then(|schemas| {
+            schemas.values().find(|schema| {
+                schema
+                    .get("x-kubernetes-group-version-kind")
+                    .and_then(Value::as_array)
+                    .is_some_and(|gvks| {
+                        gvks.iter().any(|gvk| {
+                            gvk.get("group").and_then(Value::as_str) == Some(group)
+                                && gvk.get("version").and_then(Value::as_str) == Some(version)
+                                && gvk.get("kind").and_then(Value::as_str) == Some(kind)
+                        })
+                    })
+            })
+        })
+    else {
+        return;
+    };
+
+    let projected = project_value(document, schema, &Value::Object(std::mem::take(object)));
+    if let Value::Object(projected) = projected {
+        *object = projected;
+    }
+}
+
+fn project_value(document: &Value, schema: &Value, value: &Value) -> Value {
+    let Some(schema) = resolve_schema(document, schema) else { return value.clone() };
+    match value {
+        Value::Object(fields) => {
+            let preserve_unknown = schema
+                .get("x-kubernetes-preserve-unknown-fields")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let additional = schema.get("additionalProperties");
+            let mut projected = Map::new();
+            for (name, field) in fields {
+                if let Some(field_schema) = property_schema(document, schema, name) {
+                    projected.insert(name.clone(), project_value(document, field_schema, field));
+                } else if preserve_unknown {
+                    projected.insert(name.clone(), field.clone());
+                } else if let Some(additional_schema) = additional.and_then(|value| value.as_object().map(|_| value)) {
+                    projected.insert(name.clone(), project_value(document, additional_schema, field));
+                } else if additional.and_then(Value::as_bool).unwrap_or(false) {
+                    projected.insert(name.clone(), field.clone());
+                }
+            }
+            Value::Object(projected)
+        }
+        Value::Array(items) => {
+            let Some(item_schema) = schema.get("items") else { return value.clone() };
+            Value::Array(items.iter().map(|item| project_value(document, item_schema, item)).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn resolve_schema<'a>(document: &'a Value, schema: &'a Value) -> Option<&'a Value> {
+    match schema.get("$ref").and_then(Value::as_str) {
+        Some(reference) => document
+            .pointer(&format!("/{}", reference.strip_prefix("#/")?)),
+        None => Some(schema),
+    }
+}
+
+fn property_schema<'a>(document: &'a Value, schema: &'a Value, name: &str) -> Option<&'a Value> {
+    let schema = resolve_schema(document, schema)?;
+    if let Some(property) = schema.get("properties").and_then(Value::as_object).and_then(|properties| properties.get(name)) {
+        return Some(property);
+    }
+    for combinator in ["allOf", "oneOf", "anyOf"] {
+        if let Some(property) = schema
+            .get(combinator)
+            .and_then(Value::as_array)
+            .and_then(|schemas| schemas.iter().find_map(|schema| property_schema(document, schema, name)))
+        {
+            return Some(property);
+        }
+    }
+    None
 }
 
 fn hpa_v1_to_v2(object: &mut Map<String, Value>) {
@@ -157,5 +259,20 @@ mod tests {
         assert_eq!(object["status"]["currentCPUUtilizationPercentage"], 60);
         assert!(object["spec"].get("metrics").is_none());
         assert!(object["status"].get("currentMetrics").is_none());
+    }
+
+    #[test]
+    fn version_projection_drops_fields_absent_from_the_target_schema() {
+        let object = to_version("resource.k8s.io", "v1beta1", "ResourceClaim", json!({
+            "apiVersion": "resource.k8s.io/v1",
+            "kind": "ResourceClaim",
+            "metadata": {"name": "claim"},
+            "spec": {"devices": {}, "fieldOnlyInTheSource": true},
+            "fieldOnlyInTheSource": true,
+        }));
+        assert_eq!(object["apiVersion"], "resource.k8s.io/v1beta1");
+        assert!(object.get("fieldOnlyInTheSource").is_none());
+        assert!(object["spec"].get("fieldOnlyInTheSource").is_none());
+        assert!(object["spec"].get("devices").is_some());
     }
 }
