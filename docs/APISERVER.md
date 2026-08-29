@@ -2,7 +2,7 @@
 
 | GROUPNAME | STATUS | COMPLETED |
 | --- | --- | --- |
-| Phase 0 — prerequisites | in progress | 0/2 |
+| Phase 0 — prerequisites | done | 2/2 |
 | A — Vendoring + build-time codegen | done | 5/5 |
 | B — Wire formats | in progress | 5/7 |
 | C — Storage over nodestore | in progress | 5/7 |
@@ -34,17 +34,17 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `5356bafe` on
+This snapshot is checked against `origin/nodeapiserver` at `55b1b352` on
 2026-08-29. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
 
 | Area | Status | What remains before this area is complete |
 | --- | --- | --- |
-| Phase 0 prerequisites | **in progress** | The workspace still uses the pinned `k8s-openapi` v1_33 schema; the v1_34 and related dependency migration is not integrated. |
+| Phase 0 prerequisites | **done** | The workspace uses `k8s-openapi` v1_34 and the related dependency migration is integrated. |
 | A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
 | B. Wire formats | **in progress** | Generic protobuf/JSON/YAML, Table, and partial-object support are integrated; per-resource printer behavior and remaining wire edge cases remain. |
-| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; key-rotation migration and remaining provider compatibility are open. |
+| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; remaining provider compatibility is open. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
@@ -55,7 +55,7 @@ explanation of each boundary.
 | K. CRDs | **in progress** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, and proactive lifecycle cache refresh are integrated; conversion webhooks remain. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, and bounded APF plumbing are present; full fair queueing, seat borrowing, distinguishers, and sampled inflight semantics remain. |
-| N. Streaming/proxy | **in progress** | Pod log/exec/attach/port-forward are live; node and Service proxy subresources remain in the child slice currently under validation. |
+| N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The existing nodebootstrap path can select and install nodeapiserver; nodebootstrap's own bootstrap features are tracked separately. |
 
 Branching: `nodeapiserver` is a long-lived integration branch (pushed to
@@ -140,13 +140,11 @@ exists.
 Ordered by dependency (Group A unblocks everything), not by value. Each
 status line is updated as its own PR merges into `nodeapiserver`.
 
-**Phase 0 — prerequisites** — **in progress**. Bump `k8s-openapi` v1_33 →
-v1_34 workspace-wide (additive per `APISERVER_PLAN.md` finding 10 — zero
-field removals across 572 shared structs). Migrate `crates/nodescheduler`
-from `cel-interpreter = "0.10"` to `cel = "0.14"` (the crate was renamed and
-reworked — `Val` trait, `Env` overload resolution — so
-`dynamic_resources.rs`'s compile/execute path needs real changes, not a
-version bump; `dynamic_resources_tests.rs` is the safety net).
+**Phase 0 — prerequisites** — **done**. The workspace now uses
+`k8s-openapi` v1_34 (additive per `APISERVER_PLAN.md` finding 10 — zero
+field removals across 572 shared structs), and `crates/nodescheduler` now
+uses `cel = "0.14"` with its migrated dynamic-resource execution path and
+regression tests.
 
 **A. Vendoring + build-time codegen** — **done**. `crates/nodeapiserver`
 exists; `vendor/refresh.sh` vendored `release-1.34`'s 64 openapi-spec v3
@@ -291,7 +289,7 @@ every nodestore-backed read. The rewrite is guarded by an MVCC compare
 against the revision that was read, so concurrent updates win and a
 failed rotation never breaks the successful read.
 
-**D. Watch cache** — **in progress**. `cacher::store::WatchCache` is the
+**D. Watch cache** — **done for current scope**. `cacher::store::WatchCache` is the
 cache core: apply/list/watch_from, bookmarks, RV=0 reads, and consistent
 reads (`wait_for_revision`, a free function operating on a cloneable
 `watch::Receiver` rather than a method on the exclusively-owned cache — a
@@ -2185,7 +2183,7 @@ current scope of each piece; summarized here:
    exec/attach still has).
 
 
-**M. APF, audit, observability** — **started**. `audit::event::build_event`
+**M. APF, audit, observability** — **in progress**. `audit::event::build_event`
 is a pure builder for one real `audit.k8s.io/v1` `Event` document
 (`staging/src/k8s.io/apiserver/pkg/apis/audit/v1/types.go`, fetched and
 read directly), `Metadata` level (who did what to which object — not
