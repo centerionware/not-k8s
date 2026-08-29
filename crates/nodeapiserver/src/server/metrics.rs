@@ -29,9 +29,10 @@
 //! client's connection (`server::listener::encode_watch_event`), not per
 //! event this build merely considered and filtered out by a selector.
 //! `apiserver_current_inflight_requests` is also exposed for the two
-//! request kinds (`readOnly` and `mutating`). It measures seats held by
-//! this build's APF gate while a request is being handled, rather than
-//! counting long-running requests that deliberately bypass that gate.
+//! request kinds (`readOnly` and `mutating`). It reports the maximum number
+//! of seats observed in the preceding one-second sample window, matching
+//! upstream's pre-aggregated gauge, rather than counting long-running
+//! requests that deliberately bypass this build's APF gate.
 //! `apiserver_response_sizes` (real upstream's own exponential-bucket
 //! histogram, `compbasemetrics.ExponentialBuckets(1000, 10.0, 7)` — 1KB
 //! to 1GB, confirmed directly) is ported too, from `http_body::Body::
@@ -56,11 +57,51 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-static INFLIGHT_READONLY: AtomicUsize = AtomicUsize::new(0);
-static INFLIGHT_MUTATING: AtomicUsize = AtomicUsize::new(0);
+struct InflightWindow {
+    started: Instant,
+    current: [usize; 2],
+    peak: [usize; 2],
+}
+
+impl InflightWindow {
+    fn new(started: Instant) -> Self {
+        Self { started, current: [0; 2], peak: [0; 2] }
+    }
+
+    fn roll_if_needed(&mut self, now: Instant) {
+        if now.duration_since(self.started) < Duration::from_secs(1) {
+            return;
+        }
+        self.started = now;
+        self.peak = self.current;
+    }
+
+    fn begin(&mut self, mutating: bool, now: Instant) {
+        self.roll_if_needed(now);
+        let index = if mutating { 1 } else { 0 };
+        self.current[index] += 1;
+        self.peak[index] = self.peak[index].max(self.current[index]);
+    }
+
+    fn finish(&mut self, mutating: bool, now: Instant) {
+        self.roll_if_needed(now);
+        let index = if mutating { 1 } else { 0 };
+        self.current[index] = self.current[index].saturating_sub(1);
+    }
+
+    fn peaks(&mut self, now: Instant) -> [usize; 2] {
+        self.roll_if_needed(now);
+        self.peak
+    }
+}
+
+fn inflight_window() -> &'static Mutex<InflightWindow> {
+    static WINDOW: OnceLock<Mutex<InflightWindow>> = OnceLock::new();
+    WINDOW.get_or_init(|| Mutex::new(InflightWindow::new(Instant::now())))
+}
 
 /// A request's APF seat accounting. Dropping it at the same scope as the
 /// limiter permit keeps the gauge aligned with the actual bounded request
@@ -71,12 +112,8 @@ pub struct InFlightGuard {
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        let counter = if self.mutating {
-            &INFLIGHT_MUTATING
-        } else {
-            &INFLIGHT_READONLY
-        };
-        counter.fetch_sub(1, Ordering::Release);
+        let mut window = inflight_window().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        window.finish(self.mutating, Instant::now());
     }
 }
 
@@ -84,12 +121,8 @@ impl Drop for InFlightGuard {
 /// Exempt and long-running requests do not acquire a seat and must not call
 /// this function.
 pub fn begin_inflight(mutating: bool) -> InFlightGuard {
-    let counter = if mutating {
-        &INFLIGHT_MUTATING
-    } else {
-        &INFLIGHT_READONLY
-    };
-    counter.fetch_add(1, Ordering::AcqRel);
+    let mut window = inflight_window().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    window.begin(mutating, Instant::now());
     InFlightGuard { mutating }
 }
 
@@ -97,7 +130,7 @@ fn render_inflight_counts(readonly: usize, mutating: usize) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "# HELP apiserver_current_inflight_requests Maximum number of currently used inflight request seats."
+        "# HELP apiserver_current_inflight_requests Maximal number of currently used inflight request limit of this apiserver per request kind in last second."
     );
     let _ = writeln!(out, "# TYPE apiserver_current_inflight_requests gauge");
     let _ = writeln!(
@@ -112,10 +145,9 @@ fn render_inflight_counts(readonly: usize, mutating: usize) -> String {
 }
 
 fn render_inflight() -> String {
-    render_inflight_counts(
-        INFLIGHT_READONLY.load(Ordering::Acquire),
-        INFLIGHT_MUTATING.load(Ordering::Acquire),
-    )
+    let mut window = inflight_window().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let [readonly, mutating] = window.peaks(Instant::now());
+    render_inflight_counts(readonly, mutating)
 }
 
 /// `(verb, resource, code)` — deliberately not `String` per axis to keep
@@ -498,11 +530,28 @@ mod tests {
 
     #[test]
     fn inflight_guard_decrements_the_matching_kind() {
-        let before = INFLIGHT_READONLY.load(Ordering::Acquire);
+        let before = {
+            let mut window = inflight_window().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            window.roll_if_needed(Instant::now());
+            window.current[0]
+        };
         {
             let _guard = begin_inflight(false);
-            assert_eq!(INFLIGHT_READONLY.load(Ordering::Acquire), before + 1);
+            let window = inflight_window().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(window.current[0], before + 1);
         }
-        assert_eq!(INFLIGHT_READONLY.load(Ordering::Acquire), before);
+        let window = inflight_window().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(window.current[0], before);
+    }
+
+    #[test]
+    fn inflight_window_reports_the_peak_for_one_second() {
+        let started = Instant::now();
+        let mut window = InflightWindow::new(started);
+        window.begin(false, started);
+        window.begin(false, started);
+        window.finish(false, started);
+        assert_eq!(window.peaks(started), [2, 0]);
+        assert_eq!(window.peaks(started + Duration::from_secs(1)), [1, 0]);
     }
 }
