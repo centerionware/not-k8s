@@ -203,6 +203,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_advertises_subresources",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_authentication_modes",
         group: TestGroup::General,
     },
@@ -1583,6 +1587,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
             bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await
+        }
+        "test_nodeapiserver_advertises_subresources" => {
+            bootstrap::nodeapiserver_advertises_subresources(context).await
         }
         "test_nodeapiserver_authentication_modes" => {
             bootstrap::nodeapiserver_authentication_modes(context).await

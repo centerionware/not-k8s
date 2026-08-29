@@ -344,15 +344,17 @@ mod tests {
             .expect("pods/exec should be discoverable");
         assert!(pod_exec.verbs.contains(&"connect"));
 
-        let autoscaling_v1 = api_resources_by_group_version()
-            .get(&("autoscaling", "v1"))
-            .expect("autoscaling/v1 should have discovered resources");
-        let deployment_scale = autoscaling_v1
+        let apps_v1 = api_resources_by_group_version()
+            .get(&("apps", "v1"))
+            .expect("apps/v1 should have discovered resources");
+        let deployment_scale = apps_v1
             .iter()
             .find(|r| r.resource == "deployments/scale")
             .expect("deployments/scale should be discoverable");
         assert_eq!(deployment_scale.kind, "Scale");
         assert!(deployment_scale.namespaced);
+        assert_eq!(deployment_scale.response_group, "autoscaling");
+        assert_eq!(deployment_scale.response_version, "v1");
     }
 
     /// A subresource path (`pods/{name}/status`) must not produce its own

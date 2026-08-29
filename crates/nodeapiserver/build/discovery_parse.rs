@@ -52,6 +52,8 @@ use std::path::Path;
 pub struct ResourceEntry {
     pub group: String,
     pub version: String,
+    pub response_group: String,
+    pub response_version: String,
     pub resource: String,
     pub kind: String,
     pub namespaced: bool,
@@ -59,8 +61,12 @@ pub struct ResourceEntry {
 }
 
 pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
-    // (group, version, resource) -> (kind, namespaced-any, verbs)
-    let mut acc: BTreeMap<(String, String, String), (String, bool, BTreeSet<String>)> = BTreeMap::new();
+    // (API group, version, resource) -> (response group, response version,
+    // kind, namespaced-any, verbs). A subresource can use a response GVK
+    // from another group/version (for example apps/v1 deployments/scale
+    // returns autoscaling/v1 Scale) while remaining in its parent resource
+    // list.
+    let mut acc: BTreeMap<(String, String, String), (String, String, String, bool, BTreeSet<String>)> = BTreeMap::new();
 
     let mut files: Vec<_> = std::fs::read_dir(root)
         .unwrap_or_else(|e| panic!("reading {}: {e}", root.display()))
@@ -76,7 +82,7 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
         let Some(paths) = doc.get("paths").and_then(Value::as_object) else { continue };
 
         for (path_str, path_obj) in paths {
-            let Some((namespaced, resource_segs)) = classify_path(path_str) else { continue };
+            let Some((group, version, namespaced, resource_segs)) = classify_path(path_str) else { continue };
             // Collection, single-item, and single-item-subresource paths
             // contribute verbs to the same resource entry.
             let Some(resource) = resource_shape(resource_segs) else { continue };
@@ -86,7 +92,7 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
                 let Some(action) = verb_obj.get("x-kubernetes-action").and_then(Value::as_str) else { continue };
                 let Some(verb) = normalize_verb(action) else { continue };
                 let Some(gvk) = verb_obj.get("x-kubernetes-group-version-kind") else { continue };
-                let (Some(group), Some(version), Some(kind)) = (
+                let (Some(gvk_group), Some(gvk_version), Some(kind)) = (
                     gvk.get("group").and_then(Value::as_str),
                     gvk.get("version").and_then(Value::as_str),
                     gvk.get("kind").and_then(Value::as_str),
@@ -96,15 +102,15 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
 
                 let entry = acc
                     .entry((group.to_string(), version.to_string(), resource.to_string()))
-                    .or_insert_with(|| (kind.to_string(), false, BTreeSet::new()));
-                entry.1 |= namespaced;
-                entry.2.insert(verb.to_string());
+                    .or_insert_with(|| (gvk_group.to_string(), gvk_version.to_string(), kind.to_string(), false, BTreeSet::new()));
+                entry.3 |= namespaced;
+                entry.4.insert(verb.to_string());
             }
         }
     }
 
     acc.into_iter()
-        .map(|((group, version, resource), (kind, namespaced, mut verbs))| {
+        .map(|((group, version, resource), (response_group, response_version, kind, namespaced, mut verbs))| {
             // "watch" never appears on the modern GET-collection route's
             // own x-kubernetes-action (confirmed against the vendored
             // spec directly: that route's action is "list"; "watch" only
@@ -120,28 +126,37 @@ pub fn parse_all(root: &Path) -> Vec<ResourceEntry> {
             if verbs.contains("list") {
                 verbs.insert("watch".to_string());
             }
-            ResourceEntry { group, version, resource, kind, namespaced, verbs: verbs.into_iter().collect() }
+            ResourceEntry {
+                group,
+                version,
+                response_group,
+                response_version,
+                resource,
+                kind,
+                namespaced,
+                verbs: verbs.into_iter().collect(),
+            }
         })
         .collect()
 }
 
-/// Splits a path into `(namespaced, remaining_segments)`, or `None` to
+/// Splits a path into `(group, version, namespaced, remaining_segments)`, or `None` to
 /// skip it entirely (root document paths, the deprecated `/watch/` family,
 /// or anything not under `/api`/`/apis`).
-fn classify_path(path_str: &str) -> Option<(bool, Vec<&str>)> {
+fn classify_path(path_str: &str) -> Option<(&str, &str, bool, Vec<&str>)> {
     let segs: Vec<&str> = path_str.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
-    let rest: &[&str] = match segs.first().copied() {
-        Some("api") => &segs[2.min(segs.len())..], // "api", version
-        Some("apis") => &segs[3.min(segs.len())..], // "apis", group, version
+    let (group, version, rest): (&str, &str, &[&str]) = match segs.as_slice() {
+        ["api", version, rest @ ..] => ("", version, rest),
+        ["apis", group, version, rest @ ..] => (group, version, rest),
         _ => return None,
     };
     if rest.is_empty() || rest[0] == "watch" {
         return None;
     }
     if rest[0] == "namespaces" && rest.get(1) == Some(&"{namespace}") {
-        Some((true, rest[2..].to_vec()))
+        Some((group, version, true, rest[2..].to_vec()))
     } else {
-        Some((false, rest.to_vec()))
+        Some((group, version, false, rest.to_vec()))
     }
 }
 
@@ -190,6 +205,8 @@ pub fn render(entries: &[ResourceEntry]) -> String {
     out.push_str("pub struct ApiResource {\n");
     out.push_str("    pub group: &'static str,\n");
     out.push_str("    pub version: &'static str,\n");
+    out.push_str("    pub response_group: &'static str,\n");
+    out.push_str("    pub response_version: &'static str,\n");
     out.push_str("    pub resource: &'static str,\n");
     out.push_str("    pub kind: &'static str,\n");
     out.push_str("    pub namespaced: bool,\n");
@@ -200,9 +217,11 @@ pub fn render(entries: &[ResourceEntry]) -> String {
     for e in &sorted {
         let verbs: Vec<String> = e.verbs.iter().map(|v| format!("{v:?}")).collect();
         out.push_str(&format!(
-            "    ApiResource {{ group: {:?}, version: {:?}, resource: {:?}, kind: {:?}, namespaced: {}, verbs: &[{}] }},\n",
+            "    ApiResource {{ group: {:?}, version: {:?}, response_group: {:?}, response_version: {:?}, resource: {:?}, kind: {:?}, namespaced: {}, verbs: &[{}] }},\n",
             e.group,
             e.version,
+            e.response_group,
+            e.response_version,
             e.resource,
             e.kind,
             e.namespaced,
