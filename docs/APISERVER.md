@@ -15,7 +15,7 @@
 | J — Admission | in progress | 7/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
-| M — APF, audit, and observability | in progress | 4/8 |
+| M — APF, audit, and observability | in progress | 5/8 |
 | N — Streaming and proxy subresources | done for current scope | 5/5 |
 | O — nodebootstrap integration | done for current scope | 1/1 |
 
@@ -54,7 +54,7 @@ explanation of each boundary.
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, and REST/watch conversion webhooks are integrated; full storage-version schema revalidation remains. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
-| M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, and flow distinguishers are present; full fair queueing, seat borrowing, and sampled inflight semantics remain. |
+| M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, and shuffle-sharded queues are present; seat borrowing and sampled inflight semantics remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The existing nodebootstrap path can select and install nodeapiserver; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -2290,9 +2290,9 @@ that bypass the gate are not counted. **APF
 gate**: in addition to the global ordinary and mutating budgets, selected
 limited priority levels enforce nominal-share concurrency caps and their
 `Reject`/queue-length policy, while exempt levels and long-running streams
-remain outside the finite budgets. **The full upstream shuffle-sharded fair
-queue, seat borrowing, and distinguisher handling remain separate
-refinements.** `flowcontrol::flow_schema` ports real upstream's own
+remain outside the finite budgets. **Seat borrowing and sampled inflight
+semantics remain separate refinements.** `flowcontrol::flow_schema` ports real
+upstream's own
 `FlowSchema` matching (`pkg/util/flowcontrol/rule.go`, fetched and read
 directly) — `matches_flow_schema`/`matches_policy_rule`/`matches_subject`
 (all three real subject kinds, `User`/`Group`/`ServiceAccount`,
@@ -2316,9 +2316,10 @@ and read directly) on every response that reaches a storage connection.
 Fails open (no header) on resolution failure, while the listener still
 applies its bounded ordinary/mutating request budgets. The
 `distinguisherMethod` now computes upstream-compatible `ByUser` and
-`ByNamespace` keys, and limited-level state is isolated by the selected
-`(PriorityLevelConfiguration, flow distinguisher)` pair. The full upstream
-shuffle-sharded queue and seat borrowing remain separate refinements, as do the two mandatory
+`ByNamespace` keys. Each limited level has one shared queue set; the
+distinguisher selects a deterministic shuffle-shard hand within that set
+instead of incorrectly creating an independent concurrency budget per flow.
+Seat borrowing remains a separate refinement, as do the two mandatory
 bootstrap `FlowSchema`s real upstream always synthesizes (Group O's job).
 
 **N. Streaming and proxy subresources** — **`pods/log` is a genuine live
