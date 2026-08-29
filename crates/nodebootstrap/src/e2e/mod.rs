@@ -283,6 +283,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_finalizers",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_honors_authorization_webhook_decisions",
         group: TestGroup::General,
     },
@@ -1692,6 +1696,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_runs_webhook_for_delete_collection" => {
             bootstrap::nodeapiserver_runs_webhook_for_delete_collection(context).await
+        },
+        "test_nodeapiserver_honors_finalizers" => {
+            bootstrap::nodeapiserver_honors_finalizers(context).await
         },
         "test_nodeapiserver_honors_authorization_webhook_decisions" => {
             bootstrap::nodeapiserver_honors_authorization_webhook_decisions(context).await
