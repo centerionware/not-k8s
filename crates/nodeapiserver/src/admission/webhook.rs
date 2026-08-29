@@ -69,6 +69,7 @@ pub async fn admit(
     object: Value,
     old_object: Option<Value>,
     identity: Option<&Identity>,
+    dry_run: bool,
 ) -> Result<Outcome, Error> {
     let mutating = list_configurations(storage, "mutatingwebhookconfigurations").await?;
     let validating = list_configurations(storage, "validatingwebhookconfigurations").await?;
@@ -100,6 +101,7 @@ pub async fn admit(
                 &uid,
                 name,
                 identity,
+                dry_run,
             )? {
                 continue;
             }
@@ -118,6 +120,7 @@ pub async fn admit(
                 &object,
                 old_object.as_ref(),
                 identity,
+                dry_run,
             )
             .await
             {
@@ -148,6 +151,7 @@ pub async fn admit(
                 &uid,
                 name,
                 identity,
+                dry_run,
             )? {
                 continue;
             }
@@ -166,6 +170,7 @@ pub async fn admit(
                 &object,
                 old_object.as_ref(),
                 identity,
+                dry_run,
             )
             .await
             {
@@ -248,6 +253,7 @@ fn matches_webhook(
     uid: &str,
     name: &str,
     identity: Option<&Identity>,
+    dry_run: bool,
 ) -> Result<bool, Error> {
     let Some(rules) = webhook.get("rules").and_then(Value::as_array) else {
         return Ok(false);
@@ -323,7 +329,7 @@ fn matches_webhook(
             namespace,
             name,
             operation: operation_name(operation),
-            dry_run: false,
+            dry_run,
         },
     );
     let kind = object.get("kind").cloned().unwrap_or(Value::Null);
@@ -498,6 +504,7 @@ async fn invoke(
     object: &Value,
     old_object: Option<&Value>,
     identity: Option<&Identity>,
+    dry_run: bool,
 ) -> Result<Invocation, Error> {
     let webhook_name = object_name(webhook);
     let review_version = review_version(webhook, &webhook_name)?;
@@ -521,7 +528,7 @@ async fn invoke(
         "userInfo": user_info(identity),
         "object": object,
         "oldObject": old_object.filter(|_| operation == Operation::Update).cloned().unwrap_or(Value::Null),
-        "dryRun": false,
+        "dryRun": dry_run,
         "options": {"apiVersion": "meta.k8s.io/v1", "kind": "CreateOptions"}
     });
     let payload = json!({"apiVersion": format!("admission.k8s.io/{review_version}"), "kind": "AdmissionReview", "request": admission_request});

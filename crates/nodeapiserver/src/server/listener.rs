@@ -1177,7 +1177,7 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
             let mut status_body = current.clone();
             status_body["status"]["used"] = serde_json::Value::Object(merged.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string()))).collect());
 
-            match rest::update_status(client, "", "v1", "resourcequotas", Some(namespace), &quota_name, &status_body).await {
+            match rest::update_status(client, "", "v1", "resourcequotas", Some(namespace), &quota_name, &status_body, false).await {
                 Ok(rest::UpdateOutcome::Updated(_)) => break,
                 Ok(rest::UpdateOutcome::Conflict) => continue,
                 Ok(_) => break,
@@ -1689,6 +1689,10 @@ async fn handle(
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "the fieldManager query parameter is required for Server-Side Apply")));
             };
             let force = force_query(&query);
+            let dry_run = match dry_run_query(&query) {
+                Ok(value) => value,
+                Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+            };
             let body_bytes = match read_body_bytes(req).await {
                 Ok(b) => b,
                 Err(e) => {
@@ -1790,6 +1794,7 @@ async fn handle(
                 candidate.clone(),
                 old_object,
                 identity.as_ref(),
+                dry_run,
             )
             .await
             {
@@ -1803,7 +1808,7 @@ async fn handle(
                 }
             }
 
-            return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate).await {
+            return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate, dry_run).await {
                 Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -1818,6 +1823,10 @@ async fn handle(
 
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
         };
         let kind_of_patch = match content_type.as_deref() {
             Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
@@ -1938,6 +1947,7 @@ async fn handle(
             candidate.clone(),
             old_object,
             identity.as_ref(),
+            dry_run,
         )
         .await
         {
@@ -1951,7 +1961,7 @@ async fn handle(
             }
         }
 
-        return match rest::patch_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, context, candidate).await {
+        return match rest::patch_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, context, candidate, dry_run).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
@@ -1989,6 +1999,10 @@ async fn handle(
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+        };
         let body_bytes = match read_body_bytes(req).await {
             Ok(b) => b,
             Err(e) => {
@@ -2001,7 +2015,7 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-        return match rest::update_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value).await {
+        return match rest::update_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::MissingResourceVersion) => {
@@ -2032,6 +2046,10 @@ async fn handle(
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
         };
         let kind_of_patch = match content_type.as_deref() {
             Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
@@ -2064,7 +2082,7 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-        return match rest::patch_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+        return match rest::patch_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
@@ -3100,6 +3118,7 @@ async fn handle(
                         webhook_object,
                         old_object,
                         identity.as_ref(),
+                        dry_run,
                     )
                     .await
                     {
