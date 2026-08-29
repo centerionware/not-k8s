@@ -2879,6 +2879,18 @@ async fn handle(
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+            let crd_printer_columns = if wants_table {
+                match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                    Ok(Some(resolved)) => Some(resolved.additional_printer_columns),
+                    Ok(None) => None,
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "table response: failed to resolve CRD printer columns");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             let dry_run = if is_create || is_update || is_delete {
                 match dry_run_query(&query) {
@@ -3419,7 +3431,7 @@ async fn handle(
                 match rest::get_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, resource_version_query(&query)).await {
                     Ok(rest::GetOutcome::Found(object)) => {
                         let body = if wants_table {
-                            crate::codec::table::convert_to_table_for_resource(&info.api_group, &info.api_version, &info.resource, &object)
+                            crate::codec::table::convert_to_table_for_resource_with_crd_columns(&info.api_group, &info.api_version, &info.resource, crd_printer_columns.as_deref(), &object)
                         } else if wants_partial_metadata {
                             crate::codec::partial_metadata::object(&object)
                         } else {
@@ -3449,7 +3461,7 @@ async fn handle(
                 match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table {
-                            crate::codec::table::convert_to_table_for_resource(&info.api_group, &info.api_version, &info.resource, &list)
+                            crate::codec::table::convert_to_table_for_resource_with_crd_columns(&info.api_group, &info.api_version, &info.resource, crd_printer_columns.as_deref(), &list)
                         } else if wants_partial_metadata {
                             crate::codec::partial_metadata::list(&list)
                         } else {
