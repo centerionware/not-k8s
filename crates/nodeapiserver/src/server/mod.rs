@@ -20,11 +20,10 @@
 //! left — see that module's own doc comment.
 //! `rest` — the real, generic REST verbs so far: `GET`/`LIST`/`CREATE`/
 //! `DELETE`/`UPDATE`/`PATCH`/`DELETECOLLECTION`, resolving a resource's
-//! Kind from Group A's
-//! discovery table, reading straight from nodestore (bypassing the watch
-//! cache — named honestly as a real, valid read strategy, not a
-//! shortcut; see that module's own doc comment for exactly what's in and
-//! out of scope). `LIST` filters by label/field selector for real
+//! Kind from Group A's discovery table. `GET`/`LIST` consult a synchronized
+//! watch cache when the listener provides one, falling back to nodestore
+//! for misses, unsynchronized caches, paginated reads, and callers without
+//! a cache. `LIST` filters by label/field selector for real
 //! (`cacher::selector::object_matches`, Group D's own generic adapter,
 //! wired in unchanged). `CREATE` runs Group F's
 //! `scheme::validation`/`defaulting`, sets real `creationTimestamp`/`uid`,

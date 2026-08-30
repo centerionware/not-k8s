@@ -3657,12 +3657,10 @@ async fn handle(
         // time, not just at boot — see its own doc comment). Only
         // a resource the static table has never heard of falls through to
         // the dynamic check, so this never masks a genuine 404 as "maybe
-        // a CRD." **Named, honest scope**: nothing proactively reacts to
-        // a CRD's own lifecycle (becoming `Established`, or being
-        // deleted) — a CRD deleted after its resource was ever watched
-        // once leaves an idle reflector running for the rest of this
-        // process's life, real upstream's own per-CRD informer teardown
-        // isn't modeled yet.
+        // a CRD." Proactive CRD lifecycle reconciliation is started with
+        // the listener's built-in CRD cache above; this lazy path remains
+        // only as a bounded startup-race fallback for a CRD that is
+        // discovered before that reconciler has registered its cache.
         let cache_and_kind: Option<(
             crate::cacher::store::SharedCache,
             String,
