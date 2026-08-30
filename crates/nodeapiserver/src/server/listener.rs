@@ -23,8 +23,8 @@
 //! `watch_response_body`): the cache's own retained history replays
 //! first, then live events stream as they happen, real `Transfer-Encoding`
 //! framing handled by hyper's own h1/h2 connection layer. A resource with
-//! no registered cache still falls through to the echo stub, same as a
-//! resource `GET`/`LIST` can't yet serve from a cache. `PATCH` is real
+//! no registered cache returns a real Kubernetes error instead of a false
+//! success, same as an unsupported resource verb. `PATCH` is real
 //! too now (`rest::patch_prepare`/`patch_persist`, reusing Group G's
 //! already-landed `patch::json_patch`/`merge_patch`/`strategic_merge`,
 //! selected by the real `Content-Type` —
@@ -44,8 +44,8 @@
 //! above).
 //! Client certificate authentication is real (`super::tls`'s optional
 //! `client_ca`, `authn::x509::identity_from_der` on the verified peer
-//! cert), surfaced in the echo response's own `user` field for
-//! observability. Authorization is real too, but **opt-in and off by
+//! cert), used for authentication and audit identity. Authorization is real
+//! too, but **opt-in and off by
 //! default** (`config::Config::enforce_rbac`/`NODEAPISERVER_ENFORCE_RBAC`
 //! — see that field's own doc comment for why: enabling RBAC enforcement
 //! before Group O's bootstrap `ClusterRole`/`ClusterRoleBinding` set
@@ -72,7 +72,7 @@
 //! `/apis/{group}/{version}`, `/openapi/v2`, `/openapi/v3(/...)`, `/version`) is answered
 //! by `server::discovery`/`openapi`/`version`'s real document builders
 //! (`route_discovery`, pure and unit-tested below) rather than falling
-//! into the generic echo — these are the routes `kubectl` itself calls
+//! into a false-success response — these are the routes `kubectl` itself calls
 //! first (RESTMapper discovery) before it can even shape a request for an
 //! actual resource, so wiring them is what makes the listener minimally
 //! useful to a real client rather than just a path-grammar demo. `/api`
@@ -2209,6 +2209,17 @@ async fn handle(
         }
     }
 
+    // Resource requests cannot be classified as found or missing without a
+    // nodestore connection. Report the unavailable backend instead of
+    // allowing the generic not-found path to turn an outage into a false
+    // successful server response.
+    if info.is_resource_request && storage.is_none() {
+        return Ok(json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &service_unavailable_status(&path_str, "storage backend unavailable"),
+        ));
+    }
+
     // Group N: the core node and Service proxy subresources are ordinary
     // request/response relays.  Keep them ahead of the generic REST
     // branches below: `GET .../services/name/proxy` otherwise looks like a
@@ -2233,8 +2244,7 @@ async fn handle(
     // required — a PUT). The scheduler's core `pods/binding` and Pod
     // `pods/ephemeralcontainers` subresources are handled separately below;
     // the remaining subresources still fall through (see `rest`'s own doc
-    // comment). Everything else still falls through to the RequestInfo echo
-    // below. `storage` is only
+    // comment). Everything else returns a real Kubernetes error below. `storage` is only
     // ever consumed once (moved into `client` here), which is why all
     // five verbs share this one `if let` rather than each checking it
     // separately.
@@ -4243,18 +4253,15 @@ async fn handle(
             }
         }
         // No nodestore connection at all (failed at startup, or not yet
-        // reconnected) — falls through to the echo stub below rather than
-        // claiming a 503 for a request this build genuinely can't judge
-        // "not found" vs. "unreachable" for yet.
+        // reconnected) — handled by the real unavailable/not-found response below.
     }
 
     // Group D/E: real `WATCH`, served purely from an already-registered
     // `cacher::CacheRegistry` cache. A live cache already holds
     // everything the read side of this handler needs (a snapshot to
-    // replay from, a live event subscription), and if a resource has no
-    // registered cache, this falls through to the RequestInfo echo below
-    // exactly like the "no nodestore connection" case above, rather than
-    // claiming a real watch this build can't actually serve.
+    // replay from, a live event subscription). If a resource has no
+    // registered cache, the handler returns a real Kubernetes error below
+    // rather than claiming a successful watch this build cannot serve.
     //
     // Group I: RBAC, gated by `enforce_rbac` same as every other verb —
     // resolved against a fresh `storage.clone()` (cheap — a
@@ -4388,40 +4395,20 @@ async fn handle(
             }
         }
         // No cache registered (or spawnable) for this resource — falls
-        // through to the echo stub below, same posture as every other
-        // not-yet-served case in this handler.
+        // through to the real not-found response below.
     }
 
     // A resource-shaped request that reached this point targeted a verb or
-    // subresource this server does not serve. Returning the request-info
-    // echo with HTTP 200 makes kubectl treat an unsupported route as a
-    // successful API response. Real kube-apiserver returns a Kubernetes
-    // NotFound status for an unknown subresource, so keep the bring-up echo
-    // limited to non-resource requests.
+    // subresource this server does not serve. Real kube-apiserver returns a
+    // Kubernetes NotFound status for an unknown subresource.
     if info.is_resource_request {
         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
     }
 
-    // Surfaced for real observability (this is the only response shape
-    // that ever includes it today), not consulted for any access-control
-    // decision anywhere yet — there is no authorization (Group I) to
-    // enforce it against. `rest::get`/`list` above don't take it either,
-    // for the same reason: nothing yet checks a caller's identity before
-    // serving a read.
-    let user = identity.as_ref().map(|i| serde_json::json!({"username": i.name, "uid": i.uid, "groups": i.groups}));
-    let value = serde_json::json!({
-        "isResourceRequest": info.is_resource_request,
-        "verb": info.verb,
-        "apiPrefix": info.api_prefix,
-        "apiGroup": info.api_group,
-        "apiVersion": info.api_version,
-        "namespace": info.namespace,
-        "resource": info.resource,
-        "subresource": info.subresource,
-        "name": info.name,
-        "user": user,
-    });
-    Ok(json_response(StatusCode::OK, &value))
+    // Unknown non-resource paths are also real API errors. The old bring-up
+    // echo made a typo look like a successful request and was incompatible
+    // with kubectl/client-go error handling.
+    Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)))
 }
 
 /// Request headers this build never forwards to an aggregated backend —
