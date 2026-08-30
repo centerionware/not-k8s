@@ -1672,23 +1672,19 @@ pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_conta
         "/api/v1/namespaces/{}/pods/{pod_name}/ephemeralcontainers",
         context.namespace
     );
-    let denied = context
-        .client
-        .request::<Value>(
-            Request::builder()
-                .method("PATCH")
-                .uri(ephemeral_uri.as_str())
-                .header("Content-Type", "application/strategic-merge-patch+json")
-                .body(serde_json::to_vec(&json!({
-                    "spec": {"ephemeralContainers": [{
-                        "name": "denied-debugger",
-                        "image": "busybox:latest",
-                        "command": ["sleep", "3600"],
-                        "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}]
-                    }]}
-                }))?,
-        ))
-        .await;
+    let denied_request = Request::builder()
+        .method("PATCH")
+        .uri(ephemeral_uri.as_str())
+        .header("Content-Type", "application/strategic-merge-patch+json")
+        .body(serde_json::to_vec(&json!({
+            "spec": {"ephemeralContainers": [{
+                "name": "denied-debugger",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}]
+            }]}
+        }))?)?;
+    let denied = context.client.request::<Value>(denied_request).await;
     match denied {
         Err(KubeError::Api(error)) if error.code == 403 => {}
         Err(error) => anyhow::bail!(
@@ -1699,22 +1695,21 @@ pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_conta
         ),
     }
 
+    let allowed_request = Request::builder()
+        .method("PATCH")
+        .uri(ephemeral_uri.as_str())
+        .header("Content-Type", "application/strategic-merge-patch+json")
+        .body(serde_json::to_vec(&json!({
+            "spec": {"ephemeralContainers": [{
+                "name": "allowed-debugger",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": secret_name, "key": "token"}}}]
+            }]}
+        }))?)?;
     let allowed = context
         .client
-        .request::<Value>(
-            Request::builder()
-                .method("PATCH")
-                .uri(ephemeral_uri.as_str())
-                .header("Content-Type", "application/strategic-merge-patch+json")
-                .body(serde_json::to_vec(&json!({
-                    "spec": {"ephemeralContainers": [{
-                        "name": "allowed-debugger",
-                        "image": "busybox:latest",
-                        "command": ["sleep", "3600"],
-                        "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": secret_name, "key": "token"}}}]
-                    }]}
-                }))?,
-        ))
+        .request::<Value>(allowed_request)
         .await
         .context("adding an allowed ephemeral container")?;
     anyhow::ensure!(
