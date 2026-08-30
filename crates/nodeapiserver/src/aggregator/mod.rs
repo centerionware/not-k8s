@@ -84,9 +84,9 @@
 //! Phase 4 landing first is exactly what happened.
 //!
 //! See `docs/APISERVER.md`'s own Group L section (right after Group K)
-//! for the full plan, including how discovery merge (Phase 3) would
-//! likely reuse Group K's own `discovery::*_with_crds` shape as a third
-//! merge input rather than a third parallel implementation.
+//! for the full current behavior, including how discovery merge (Phase 3)
+//! reuses Group K's `discovery::*_with_crds` shape as a third merge input
+//! and obtains aggregated resources from the backend at request time.
 
 pub mod availability;
 pub mod client_tls;
