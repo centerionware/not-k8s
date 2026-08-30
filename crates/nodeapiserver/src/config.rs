@@ -8,6 +8,7 @@ use std::time::Duration;
 
 const DEFAULT_AUTHORIZATION_WEBHOOK_AUTHORIZED_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_AUTHORIZATION_WEBHOOK_UNAUTHORIZED_TTL: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 3 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -96,6 +97,9 @@ pub struct Config {
     pub apf_max_requests_inflight: usize,
     pub apf_max_mutating_requests_inflight: usize,
     pub apf_queue_length_limit: usize,
+    /// Maximum request body accepted by the REST listener, matching
+    /// kube-apiserver's default `--max-request-body-bytes` value.
+    pub max_request_body_bytes: usize,
     /// `NODEAPISERVER_AUDIT_LOG_PATH` selects the append-only JSON-lines
     /// audit sink. The default remains the component's structured log
     /// output, while an explicit path mirrors kube-apiserver's
@@ -177,6 +181,7 @@ impl Default for Config {
             apf_max_requests_inflight: 400,
             apf_max_mutating_requests_inflight: 200,
             apf_queue_length_limit: 1000,
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
             audit_log_path: None,
             audit_log_max_size_bytes: None,
             audit_log_max_backups: 5,
@@ -307,6 +312,10 @@ impl Config {
         cfg.apf_queue_length_limit = usize_env(
             "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
             cfg.apf_queue_length_limit,
+        )?;
+        cfg.max_request_body_bytes = usize_env(
+            "NODEAPISERVER_MAX_REQUEST_BODY_BYTES",
+            cfg.max_request_body_bytes,
         )?;
         cfg.audit_log_path = path_env("NODEAPISERVER_AUDIT_LOG_PATH");
         cfg.audit_log_max_size_bytes = optional_u64_env("NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES")?;
@@ -444,6 +453,7 @@ mod tests {
         assert_eq!(cfg.apf_max_requests_inflight, 400);
         assert_eq!(cfg.apf_max_mutating_requests_inflight, 200);
         assert_eq!(cfg.apf_queue_length_limit, 1000);
+        assert_eq!(cfg.max_request_body_bytes, 3 * 1024 * 1024);
         assert!(cfg.audit_log_path.is_none());
         assert_eq!(cfg.audit_log_max_size_bytes, None);
         assert_eq!(cfg.audit_log_max_backups, 5);
@@ -456,6 +466,7 @@ mod tests {
         std::env::set_var("NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT", "17");
         std::env::set_var("NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT", "9");
         std::env::set_var("NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT", "31");
+        std::env::set_var("NODEAPISERVER_MAX_REQUEST_BODY_BYTES", "8192");
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_PATH", "/tmp/nodeapiserver-audit.log");
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES", "4096");
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS", "3");
@@ -464,6 +475,7 @@ mod tests {
             "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
             "NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT",
             "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
+            "NODEAPISERVER_MAX_REQUEST_BODY_BYTES",
             "NODEAPISERVER_AUDIT_LOG_PATH",
             "NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES",
             "NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS",
@@ -473,6 +485,7 @@ mod tests {
         assert_eq!(cfg.apf_max_requests_inflight, 17);
         assert_eq!(cfg.apf_max_mutating_requests_inflight, 9);
         assert_eq!(cfg.apf_queue_length_limit, 31);
+        assert_eq!(cfg.max_request_body_bytes, 8192);
         assert_eq!(cfg.audit_log_path.as_deref(), Some(std::path::Path::new("/tmp/nodeapiserver-audit.log")));
         assert_eq!(cfg.audit_log_max_size_bytes, Some(4096));
         assert_eq!(cfg.audit_log_max_backups, 3);

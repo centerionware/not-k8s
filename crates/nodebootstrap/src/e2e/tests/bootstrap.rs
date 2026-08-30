@@ -2541,6 +2541,33 @@ pub(super) async fn nodeapiserver_rejects_unsupported_resource_route(
     }
 }
 
+pub(super) async fn nodeapiserver_rejects_oversized_request_body(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "request-body size checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let body = vec![b'x'; 3 * 1024 * 1024 + 1];
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/namespaces/{}/configmaps", context.namespace))
+        .header("content-type", "application/json")
+        .body(body)?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 413 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "oversized request body returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!(
+            "oversized request body was accepted instead of returning 413: {value}"
+        ),
+    }
+}
+
 pub(super) async fn nodeapiserver_validating_admission_policy_denies_create(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
