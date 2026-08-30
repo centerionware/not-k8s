@@ -16,8 +16,16 @@ fn needs_cri() -> Result<()> {
 }
 
 fn active_control_plane_unit() -> Option<&'static str> {
-    ["kube-apiserver.service", "k3s.service"]
+    let configured = crate::config::Config::from_env()
+        .ok()
+        .map(|cfg| cfg.apiserver_service());
+    configured
         .into_iter()
+        .chain([
+            "nodeapiserver.service",
+            "kube-apiserver.service",
+            "k3s.service",
+        ])
         .find(|unit| {
             Command::new("systemctl")
                 .args(["is-active", "--quiet", unit])
@@ -70,7 +78,7 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
     }
     let Some(unit) = active_control_plane_unit() else {
         return Err(skip_test(
-            "no kube-apiserver.service or k3s.service is active to restart",
+            "no configured apiserver, nodeapiserver.service, kube-apiserver.service, or k3s.service is active to restart",
         ));
     };
 
@@ -86,9 +94,11 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
     restart_unit(unit)?;
     let namespaces: Api<Namespace> = Api::all(context.client.clone());
     context
-        .wait_until("the apiserver to become ready after restart", Duration::from_secs(180), || async {
-            Ok(namespaces.list(&ListParams::default()).await.is_ok())
-        })
+        .wait_until(
+            "the apiserver to become ready after restart",
+            Duration::from_secs(180),
+            || async { Ok(namespaces.list(&ListParams::default()).await.is_ok()) },
+        )
         .await?;
 
     let service_accounts: Api<ServiceAccount> =
