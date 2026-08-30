@@ -700,11 +700,11 @@ mod tests {
         assert_eq!(widgets["scope"], "Namespaced");
     }
 
-    /// Group L Phase 3's own remaining gap, closed: an aggregated
-    /// group/version now shows up in the v2 shape too, matching the
-    /// legacy shape's own merge -- with an empty `resources` list, since
-    /// only the backend itself knows what it serves (`aggregator::mod`'s
-    /// own doc comment names the still-not-done live-proxy piece).
+    /// Group L Phase 3's discovery merge: an aggregated group/version now
+    /// shows up in the v2 shape too, matching the legacy shape's own merge.
+    /// The initial group-level merge has an empty `resources` list because
+    /// the backend's live resource enumeration is fetched separately for
+    /// the exact `/apis/{group}/{version}` request.
     #[test]
     fn aggregated_discovery_merges_an_aggregated_apiservice_group_too() {
         let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
