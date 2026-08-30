@@ -168,7 +168,7 @@ mod tests {
             "{\"n\":1}\n{\"n\":2}\n"
         );
 
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(backup_path(&path, 1)).unwrap();
         std::fs::remove_file(backup_path(&path, 2)).unwrap();
     }
