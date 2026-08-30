@@ -137,7 +137,7 @@ mod tests {
                 json!({"requestURI": "/readyz"})
             ]
         );
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

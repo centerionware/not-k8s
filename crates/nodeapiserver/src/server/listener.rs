@@ -1815,6 +1815,7 @@ fn log_audit_event(
 /// The pure half of [`log_audit_event`] — everything up to the built
 /// `Value`, factored out so it's unit-testable without capturing
 /// `tracing`'s own log output.
+#[cfg(test)]
 fn build_audit_event(
     method: &str,
     path_str: &str,
