@@ -36,7 +36,7 @@ impl AuditWebhook {
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err("audit webhook URL scheme must be http or https".to_string());
         }
-        if parsed.host_str().is_none() {
+        if parsed.host_str().map_or(true, str::is_empty) {
             return Err("audit webhook URL must include a host".to_string());
         }
 
