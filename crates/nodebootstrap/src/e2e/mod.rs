@@ -251,6 +251,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_excludes_status_from_main_managed_fields",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_serves_ephemeralcontainers_subresource",
         group: TestGroup::General,
     },
@@ -1700,6 +1704,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeapiserver_serves_generic_status_subresource" => {
             bootstrap::nodeapiserver_serves_generic_status_subresource(context).await
+        }
+        "test_nodeapiserver_excludes_status_from_main_managed_fields" => {
+            bootstrap::nodeapiserver_excludes_status_from_main_managed_fields(context).await
         }
         "test_nodeapiserver_serves_ephemeralcontainers_subresource" => {
             bootstrap::nodeapiserver_serves_ephemeralcontainers_subresource(context).await

@@ -19,9 +19,23 @@ pub fn apply(
     manager: &str,
     force: bool,
 ) -> Result<Applied, Vec<Conflict>> {
+    apply_with_ignored_fields(schema, live, config, managers, manager, force, None)
+}
+
+/// [`apply`] with upstream's server-managed field exclusion applied to the
+/// incoming configuration's ownership set and changed-field comparison.
+pub fn apply_with_ignored_fields(
+    schema: &Value,
+    live: &Value,
+    config: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+    force: bool,
+    ignored_fields: Option<&Set>,
+) -> Result<Applied, Vec<Conflict>> {
     let merged = merge(schema, live, config);
     let last_set = managers.get(manager).cloned();
-    let new_set = set_from_object(schema, config);
+    let new_set = filter_set(set_from_object(schema, config), ignored_fields);
     let mut all = managers.clone();
     all.insert(manager.to_string(), new_set.clone());
 
@@ -36,7 +50,7 @@ pub fn apply(
         merged
     };
 
-    let comparison = compare(schema, live, &pruned);
+    let comparison = filter_comparison(compare(schema, live, &pruned), ignored_fields);
     let changed = comparison.modified.union(&comparison.added);
     let mut conflicts = Vec::new();
     for (name, fields) in &all {
@@ -72,6 +86,24 @@ pub fn apply(
         object: (&pruned != live).then_some(pruned),
         managers: result,
     })
+}
+
+fn filter_set(set: Set, ignored_fields: Option<&Set>) -> Set {
+    match ignored_fields {
+        Some(ignored) => set.recursive_difference(ignored),
+        None => set,
+    }
+}
+
+fn filter_comparison(comparison: Comparison, ignored_fields: Option<&Set>) -> Comparison {
+    match ignored_fields {
+        Some(ignored) => Comparison {
+            removed: comparison.removed.recursive_difference(ignored),
+            modified: comparison.modified.recursive_difference(ignored),
+            added: comparison.added.recursive_difference(ignored),
+        },
+        None => comparison,
+    }
 }
 
 fn schema_property<'a>(schema: &'a Value, name: &str) -> Option<&'a Value> {
@@ -597,6 +629,13 @@ mod tests {
         })
     }
 
+    fn path(fields: &[&str]) -> Vec<PathElement> {
+        fields
+            .iter()
+            .map(|field| PathElement::Field((*field).to_string()))
+            .collect()
+    }
+
     #[test]
     fn merges_a_crd_object_and_tracks_runtime_fields() {
         let result = apply(
@@ -630,6 +669,35 @@ mod tests {
             false,
         );
         assert_eq!(result.unwrap_err().len(), 1);
+    }
+
+    #[test]
+    fn apply_ignores_server_managed_fields() {
+        let mut schema = schema();
+        schema["properties"]["status"] = json!({
+            "type": "object",
+            "properties": {"ready": {"type": "boolean"}}
+        });
+        let mut ignored = Set::new();
+        ignored.insert(&path(&["status"]));
+        let mut status_manager = Set::new();
+        status_manager.insert(&path(&["status", "ready"]));
+        let managers = BTreeMap::from([("status-controller".to_string(), status_manager)]);
+
+        let result = apply_with_ignored_fields(
+            &schema,
+            &json!({"spec": {"color": "red"}, "status": {"ready": false}}),
+            &json!({"spec": {"color": "blue"}, "status": {"ready": true}}),
+            &managers,
+            "kubectl-apply",
+            false,
+            Some(&ignored),
+        )
+        .expect("status is ignored, so it must not conflict");
+
+        assert!(result.managers["status-controller"].has(&path(&["status", "ready"])));
+        assert!(result.managers["kubectl-apply"].has(&path(&["spec", "color"])));
+        assert!(!result.managers["kubectl-apply"].has(&path(&["status", "ready"])));
     }
 
     #[test]

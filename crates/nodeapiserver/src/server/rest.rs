@@ -1141,6 +1141,7 @@ pub async fn create_with_options_and_manager(
         "",
         group,
         version,
+        resolved.has_status_subresource,
     );
 
     // Conversion sees the complete object, including the system metadata
@@ -1640,6 +1641,7 @@ pub async fn bind_pod(
         None,
         "",
         false,
+        false,
     )
     .await?
     {
@@ -1804,6 +1806,7 @@ pub async fn update_ephemeral_containers(
         field_manager,
         "ephemeralcontainers",
         false,
+        false,
     )
     .await
 }
@@ -1860,6 +1863,7 @@ pub async fn patch_ephemeral_containers(
         None,
         field_manager,
         "ephemeralcontainers",
+        false,
         false,
     )
     .await
@@ -1983,7 +1987,28 @@ pub async fn update_with_options_and_manager(
         }
     }
 
-    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "", false).await
+    persist_update(
+        storage,
+        resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        resolved.storage_open_api_schema.as_ref(),
+        &kind,
+        group,
+        version,
+        resource,
+        key,
+        &existing_kv,
+        &existing_object,
+        namespace,
+        object,
+        dry_run,
+        resolved.conversion_webhook.clone(),
+        field_manager,
+        "",
+        resolved.has_status_subresource,
+        false,
+    )
+    .await
 }
 
 /// Real upstream's generic status subresource (`GenericStatusREST`,
@@ -2071,7 +2096,28 @@ pub async fn update_status_with_manager(
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "status", false).await
+    persist_update(
+        storage,
+        resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        resolved.storage_open_api_schema.as_ref(),
+        &kind,
+        group,
+        version,
+        resource,
+        key,
+        &existing_kv,
+        &existing_object,
+        namespace,
+        object,
+        dry_run,
+        resolved.conversion_webhook.clone(),
+        field_manager,
+        "status",
+        false,
+        false,
+    )
+    .await
 }
 
 /// Applies a CRD version's `properties.status` schema to a status-subresource
@@ -2136,6 +2182,7 @@ async fn persist_update(
     conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
     field_manager: Option<&str>,
     managed_subresource: &str,
+    has_status_subresource: bool,
     managed_fields_reconciled: bool,
 ) -> Result<UpdateOutcome, Error> {
     for field in ["creationTimestamp", "uid"] {
@@ -2160,6 +2207,7 @@ async fn persist_update(
             managed_subresource,
             group,
             version,
+            has_status_subresource,
         );
     } else if !managed_fields_reconciled {
         preserve_managed_fields(existing_object, &mut object);
@@ -2332,6 +2380,7 @@ pub struct PatchContext {
     key: String,
     existing_kv: mvccpb::KeyValue,
     existing_object: Value,
+    has_status_subresource: bool,
 }
 
 #[derive(Debug)]
@@ -2413,7 +2462,7 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
 
     Ok(PatchPrepareOutcome::Ready(
         patched,
-        PatchContext { schema: resolved.schema, open_api_schema: resolved.open_api_schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing_kv, existing_object },
+        PatchContext { schema: resolved.schema, open_api_schema: resolved.open_api_schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing_kv, existing_object, has_status_subresource: resolved.has_status_subresource },
     ))
 }
 
@@ -2486,7 +2535,7 @@ pub async fn patch_persist_with_manager(
         }
     }
 
-    persist_update(storage, context.schema, context.open_api_schema.as_ref(), context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run, context.conversion_webhook, field_manager, "", false).await
+    persist_update(storage, context.schema, context.open_api_schema.as_ref(), context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run, context.conversion_webhook, field_manager, "", context.has_status_subresource, false).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -2558,7 +2607,7 @@ pub async fn patch_status_with_manager(
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "status", false).await
+    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "status", false, false).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
@@ -2657,6 +2706,7 @@ pub struct ApplyContext {
     storage_open_api_schema: Option<Value>,
     kind: String,
     conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
+    has_status_subresource: bool,
     key: String,
     /// `Some((existing_kv, live))` for an update-on-apply (persisted via
     /// [`persist_update`]'s update-if-matches `Txn`); `None` for
@@ -2980,6 +3030,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
     let schema = resolved.schema;
     let open_api_schema = resolved.open_api_schema.clone();
+    let ignored_fields = ignored_managed_fields(resolved.has_status_subresource, "");
     // Prune a CRD's apply configuration before field ownership is
     // calculated, so unknown fields cannot become owned. Prune the merged
     // candidate again before validation/defaulting, matching the ordering of
@@ -2998,8 +3049,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         let live = json!({});
         let no_prior_managers = std::collections::BTreeMap::new();
         let applied_result = match (schema, open_api_schema.as_ref()) {
-            (Some(schema), _) => crate::patch::updater::apply(schema, &live, &effective_config, &no_prior_managers, manager, force),
-            (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live, &effective_config, &no_prior_managers, manager, force),
+            (Some(schema), _) => crate::patch::updater::apply_with_ignored_fields(schema, &live, &effective_config, &no_prior_managers, manager, force, Some(&ignored_fields)),
+            (None, Some(schema)) => crate::patch::crd_apply::apply_with_ignored_fields(schema, &live, &effective_config, &no_prior_managers, manager, force, Some(&ignored_fields)),
             (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
         };
         let applied = match applied_result {
@@ -3012,11 +3063,11 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             return Ok(ApplyPrepareOutcome::NoOp(live));
         };
         let request_fields = match (schema, open_api_schema.as_ref()) {
-            (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config),
-            (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config),
+            (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config).recursive_difference(&ignored_fields),
+            (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config).recursive_difference(&ignored_fields),
             (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
         };
-        let applied = crate::patch::updater::reconcile_versioned_apply(
+        let applied = crate::patch::updater::reconcile_versioned_apply_with_ignored_fields(
             &live,
             &candidate,
             &crate::patch::managed_fields::VersionedManagers::new(),
@@ -3025,6 +3076,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             request_fields,
             &BTreeMap::new(),
             force,
+            Some(&ignored_fields),
         )
         .expect("an empty managed-fields map cannot conflict");
         let Some(mut object) = applied.object else {
@@ -3078,7 +3130,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             }
         }
 
-        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing: None }));
+        return Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, has_status_subresource: resolved.has_status_subresource, key, existing: None }));
     };
 
     let live = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
@@ -3115,8 +3167,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let request_managers = managers_for_request(&managers, &api_version);
 
     let applied_result = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => crate::patch::updater::apply(schema, &live_for_request, &effective_config, &request_managers, manager, force),
-        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live_for_request, &effective_config, &request_managers, manager, force),
+        (Some(schema), _) => crate::patch::updater::apply_with_ignored_fields(schema, &live_for_request, &effective_config, &request_managers, manager, force, Some(&ignored_fields)),
+        (None, Some(schema)) => crate::patch::crd_apply::apply_with_ignored_fields(schema, &live_for_request, &effective_config, &request_managers, manager, force, Some(&ignored_fields)),
         (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
     };
     let applied = match applied_result {
@@ -3143,8 +3195,8 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     };
 
     let request_fields = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config),
-        (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config),
+        (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config).recursive_difference(&ignored_fields),
+        (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config).recursive_difference(&ignored_fields),
         (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
     };
     let candidate = if let Some(last_state) = managers
@@ -3186,7 +3238,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         &entries,
     )
     .await?;
-    let applied = match crate::patch::updater::reconcile_versioned_apply(
+    let applied = match crate::patch::updater::reconcile_versioned_apply_with_ignored_fields(
         &live_for_request,
         &candidate,
         &managers,
@@ -3195,6 +3247,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         request_fields,
         &comparisons,
         force,
+        Some(&ignored_fields),
     ) {
         Ok(applied) => applied,
         Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
@@ -3240,7 +3293,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing: Some((existing_kv, live)) }))
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, has_status_subresource: resolved.has_status_subresource, key, existing: Some((existing_kv, live)) }))
 }
 
 fn prune_runtime_schema(schema: Option<&Value>, value: Value) -> Value {
@@ -3298,7 +3351,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, context.schema, None, context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run, context.conversion_webhook, None, "", true).await? {
+    match persist_update(storage, context.schema, None, context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run, context.conversion_webhook, None, "", context.has_status_subresource, true).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
@@ -3454,6 +3507,14 @@ fn strip_managed_field_system_fields(mut object: Value) -> Value {
     object
 }
 
+fn ignored_managed_fields(has_status_subresource: bool, subresource: &str) -> crate::patch::fieldset::Set {
+    let mut ignored = crate::patch::fieldset::Set::new();
+    if has_status_subresource && subresource.is_empty() {
+        ignored.insert(&[crate::patch::fieldset::PathElement::Field("status".to_string())]);
+    }
+    ignored
+}
+
 fn reconcile_managed_fields(
     schema: Option<&str>,
     open_api_schema: Option<&Value>,
@@ -3464,6 +3525,7 @@ fn reconcile_managed_fields(
     subresource: &str,
     group: &str,
     version: &str,
+    has_status_subresource: bool,
 ) -> Value {
     let Some(manager) = field_manager.filter(|manager| !manager.is_empty()) else {
         preserve_managed_fields(existing, &mut object);
@@ -3475,7 +3537,7 @@ fn reconcile_managed_fields(
             preserve_managed_fields(existing, &mut object);
             return object;
         };
-        return reconcile_runtime_managed_fields(manager_schema, existing, object, manager, operation, subresource, group, version);
+        return reconcile_runtime_managed_fields(manager_schema, existing, object, manager, operation, subresource, group, version, has_status_subresource);
     };
 
     let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
@@ -3484,7 +3546,8 @@ fn reconcile_managed_fields(
     let live = strip_managed_field_system_fields(existing.clone());
     let new = strip_managed_field_system_fields(object.clone());
     let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
-    let managers = crate::patch::updater::apply_update(manager_schema, &live, &new, &managers, &manager_key);
+    let ignored = ignored_managed_fields(has_status_subresource, subresource);
+    let managers = crate::patch::updater::apply_update_with_ignored_fields(manager_schema, &live, &new, &managers, &manager_key, Some(&ignored));
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
     set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
@@ -3500,6 +3563,7 @@ fn reconcile_runtime_managed_fields(
     subresource: &str,
     group: &str,
     version: &str,
+    has_status_subresource: bool,
 ) -> Value {
     let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
     let entries = crate::patch::managed_fields::parse_managed_fields(&previous).unwrap_or_default();
@@ -3508,7 +3572,8 @@ fn reconcile_runtime_managed_fields(
     let new = strip_managed_field_system_fields(object.clone());
     let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
     let managers = crate::apiextensions::schema_apply::reconcile_managed_fields_with_schema(schema, &managers);
-    let managers = crate::apiextensions::schema_apply::apply_update(schema, &live, &new, &managers, &manager_key);
+    let ignored = ignored_managed_fields(has_status_subresource, subresource);
+    let managers = crate::apiextensions::schema_apply::apply_update_with_ignored_fields(schema, &live, &new, &managers, &manager_key, Some(&ignored));
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
     set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
