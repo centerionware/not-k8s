@@ -25,29 +25,24 @@ Decided 2026-08-22, replacing that entry:
    Group O's original scope.
 2. **Drop k3s from `nodebootstrap` entirely.** The crate never installs or
    configures k3s. Its own PKI/RBAC/kubeconfig generation is tested against
-   a **real upstream `kube-apiserver`** plus this projects own
-   `nodescheduler` and `nodecontroller` services, not against k3s and not
-   against `nodeapiserver`. This is what breaks the chicken-and-egg problem: the
-   bootstrap artifacts (CA, certs, kubeconfig, RBAC objects, Service
-   reconciler) can be proven correct against a real, spec-compliant
-   apiserver **today**, independent of how far `nodeapiserver` itself has
-   gotten, and that proof merges to `main` now.
+   a **real upstream `kube-apiserver`** and the repository `nodeapiserver`,
+   plus this project's own `nodescheduler` and `nodecontroller` services.
+   The bootstrap artifacts (CA, certs, kubeconfig, RBAC objects, Service
+   reconciler) remain target-agnostic while the repository apiserver is the
+   integration branch's default.
 3. **The apiserver binary `nodebootstrap` points at is a config choice**,
-   not a hardcoded target. `main` gets `nodebootstrap` defaulting to the upstream
-   `kube-apiserver` binary, while this project supplies the scheduler and
-   controller-manager services as the interim control
-   plane. The `nodeapiserver` integration branch then adds `nodeapiserver`
-   itself as a second target and, once its own arc is complete per
-   `APISERVER_PLAN.md`'s acceptance criteria, flips the default — same PKI/
-   RBAC/kubeconfig code, same tests, different binary underneath. This is
-   only possible because point 2 means that code was never coupled to k3s's
-   own bundled PKI in the first place (unlike today's
-   `upstream-kube-apiserver.sh`, which deliberately *borrows* k3s's PKI —
-   see its header comment — precisely because nothing else minted one yet).
+   not a hardcoded target. The `nodeapiserver` integration branch now
+   defaults to the repository `nodeapiserver`; `--apiserver=upstream` remains
+   an explicit comparison mode while compatibility work is completed. Both
+   targets use the same PKI/RBAC/kubeconfig code and the same bootstrap flow,
+   with different binaries underneath. This is only possible because point 2
+   means that code is not coupled to k3s's own bundled PKI (unlike the former
+   `upstream-kube-apiserver.sh`, which deliberately borrowed k3s's PKI).
 
-Net effect: `not-k8s` drops k3s as its control-plane installer on `main`
-*before* `nodeapiserver` is done, running real upstream Kubernetes binaries
-instead, wired up by our own bootstrap tooling instead of k3s's. `nodelet`/
+Net effect: `not-k8s` drops k3s as its control-plane installer, running the
+repository `nodeapiserver` by default on its integration branch and retaining
+the real upstream binary as an explicit comparison target, wired up by our
+own bootstrap tooling instead of k3s's. `nodelet`/
 `nodeproxy`/`nodescheduler`/`nodecontroller`/`nodestore` already don't care
 which apiserver they're talking to as long as it's spec-compliant — this
 makes that true of the bootstrap layer too.
@@ -113,10 +108,10 @@ crates/nodebootstrap/
       upstream.rs             # installs/runs the upstream
                                #   kube-apiserver only; this project
                                #   supplies scheduler/controller services
-                               #   against nodestore (main's default)
+                               #   against nodestore
       nodeapiserver.rs         # integration-branch target, selected with
-                                #   --apiserver=nodeapiserver; upstream remains
-                                #   the default until acceptance is complete
+                                #   --apiserver=nodeapiserver by default;
+                                #   upstream remains available explicitly
 ```
 
 `targets/` is the seam that makes point 3 above real: everything above it
@@ -195,10 +190,10 @@ Standard `CLAUDE.md` merge protocol applies, group by group, same as
    `targets/nodeapiserver.rs`, plus whatever `nodeapiserver`'s own groups
    need from `nodebootstrap` that upstream's binaries didn't exercise
    (anything `nodeapiserver` does differently from real `kube-apiserver`).
-   The target is now wired behind `--apiserver=nodeapiserver`; flipping the
-   default away from `targets/upstream.rs` happens only once
-   `APISERVER_PLAN.md`'s final acceptance criteria are met, per the existing
-   "no partial multi-phase work" standing rule.
+   The target is now the default; `--apiserver=upstream` remains available
+   for explicit comparison until `APISERVER_PLAN.md`'s final acceptance
+   criteria are met, per the existing "no partial multi-phase work" standing
+   rule.
 
 The non-performance shell installer, deployment, diagnostic, and e2e files
 were deleted after the CI/CD cutover. The exact pre-cutover tree is preserved
@@ -221,8 +216,8 @@ comment for the specifics and what's queued next:
 | `containerd.rs` | ✅ real, every tier (package manager -> official prebuilt -> from-source, needs `toolchain::ensure_go`; config.toml + this project's 3 required patches; starts via its own distro unit or `service_mgr.rs`) | n/a |
 | `cni.rs` | ✅ real, every tier (plugin binaries + flannel binary + flannel CNI plugin: package manager -> official prebuilt -> from-source, all needing `toolchain::ensure_go`; starts `flanneld` via `service_mgr.rs` and the Rust `flanneld` service applet) | n/a |
 | `fetch.rs` | ✅ real for source/release/prebuilt selection, including the<br>standalone and combined CLI paths (version-stamp + `cargo build` per layout), `Source::Release` (GitHub Releases API resolution + asset download, confirmed against this repo's own real published release naming), and the prebuilt seam (`NOTK8S_COMBINED_PREBUILT` / per-component `NOTK8S_*_PREBUILT`, checked before `cfg.source` -- same precedence `nodelet-build.sh`'s `build_nodelet()` documents; added 2026-08-22 so `release.yml`'s e2e stage can stage one compiled artifact into 5 shards instead of recompiling per shard) | n/a |
-| `targets/upstream.rs` | ✅ real -- **installs only `kube-apiserver`** now (2026-08-22, user direction: `nodescheduler`/`nodecontroller` are the scheduler/controller-manager, not upstream's binaries -- see `services.rs`), binary fetch + full flag-set construction + `service_mgr.rs` + a best-effort `/readyz` wait. **`K8S_VERSION` bumped `v1.33.13` -> `v1.34.11`**: `nodescheduler` hardcodes `resource.k8s.io/v1`, GA only from 1.34. `--runtime-config=api/all=true` was tried as a hedge and **removed** after it broke `rbac/bootstrap-roles` (`rbac.rs`'s whole finding depends on that PostStartHook succeeding). **`wait_for_nodestore`**: a real startup race found live -- `service_mgr.rs`'s `After=nodestore.service` only guarantees the unit started, not that its gRPC/TLS listener is accepting connections yet, and `rbac/bootstrap-roles` doesn't retry its own initial etcd connection failure. A hard TCP-connect wait before installing kube-apiserver closes it | n/a |
-| `targets/nodeapiserver.rs` | ✅ first integration slice -- installs the repository apiserver against nodestore, reuses bootstrap PKI/kubelet client credentials, bootstraps RBAC before enabling its authorizer, and publishes `default/kubernetes`; selected with `--apiserver=nodeapiserver`, not the default yet | n/a |
+| `targets/upstream.rs` | ✅ real -- **installs only `kube-apiserver`** now (2026-08-22, user direction: `nodescheduler`/`nodecontroller` are the scheduler/controller-manager, not upstream's binaries -- see `services.rs`), binary fetch + full flag-set construction + `service_mgr.rs` + a best-effort `/readyz` wait. **`K8S_VERSION` bumped `v1.33.13` -> `v1.34.11`**: `nodescheduler` hardcodes `resource.k8s.io/v1`, GA only from 1.34. `--runtime-config=api/all=true` was tried as a hedge and **removed** after it broke `rbac/bootstrap-roles` (`rbac.rs`'s whole finding depends on that PostStartHook succeeding). **`wait_for_nodestore`**: a real startup race found live -- `service_mgr.rs`'s `After=nodestore.service` only guarantees the unit started, not that its gRPC/TLS listener is accepting connections yet, and `rbac/bootstrap-roles` doesn't retry its own initial etcd connection failure. A hard TCP-connect wait before installing kube-apiserver closes it. This is the explicit comparison target. | n/a |
+| `targets/nodeapiserver.rs` | ✅ first integration slice -- installs the repository apiserver against nodestore, reuses bootstrap PKI/kubelet client credentials, bootstraps RBAC before enabling its authorizer, and publishes `default/kubernetes`; it is now the default target, with `--apiserver=nodeapiserver` still accepted explicitly | n/a |
 | `components.rs` | ✅ real (static table, mirrors `components.sh`) | n/a |
 | `service_reconciler.rs` | ✅ real -- thin verify for upstream's bootstrap-controller, explicit `default/kubernetes` Service/Endpoints reconciliation for nodeapiserver | n/a |
 | `service_mgr.rs` | ✅ real, all three tiers (systemd -> OpenRC -> self-restart loop + cron `@reboot`), unit-tested. Wired into `containerd.rs`, `targets/upstream.rs`, `cni.rs`, and `services.rs`. | n/a |

@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `9001f59` on
+This snapshot is checked against `origin/nodeapiserver` at `987ce502` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -56,7 +56,7 @@ explanation of each boundary.
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
-| O. nodebootstrap integration | **done for current scope** | The existing nodebootstrap path can select and install nodeapiserver; nodebootstrap's own bootstrap features are tracked separately. |
+| O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
 
 Branching: `nodeapiserver` is a long-lived integration branch (pushed to
 `origin/nodeapiserver`). Every group below is its own sub-branch and PR
@@ -696,6 +696,11 @@ test a selector against); a value this build can't decode also passes
 through unfiltered rather than being silently dropped — filtering
 narrows a watch, it never hides a real event this build failed to
 parse.
+
+The standard watch options are also honored: `allowWatchBookmarks=true`
+opts into cache bookmark events, and a positive `timeoutSeconds` bounds an
+otherwise idle stream. Malformed values return `400`; the live timeout
+behavior is covered by `test_nodeapiserver_honors_watch_options`.
 
 **`PATCH` is real too now** (`rest::patch_prepare`/`patch_persist`,
 reusing Group G's already-landed `patch::json_patch`/`merge_patch`/
@@ -2473,7 +2478,9 @@ policy).
 Nodebootstrap itself is not part of the nodeapiserver implementation. The
 only item tracked here is the API-server-facing integration: the existing
 bootstrap path can select and install nodeapiserver via
-`--apiserver=nodeapiserver`. PKI, RBAC bootstrap policy, the default
+`--apiserver=nodeapiserver` (and uses it when no target is specified). The
+upstream target remains available explicitly for comparison. PKI, RBAC
+bootstrap policy, the default
 `kubernetes` Service, CoreDNS, flannel, and the remaining installer lifecycle
 belong to `docs/NODEBOOTSTRAP_PLAN.md`, not this document.
 
