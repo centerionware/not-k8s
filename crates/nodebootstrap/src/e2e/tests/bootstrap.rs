@@ -956,6 +956,31 @@ pub(super) async fn nodeapiserver_reconciles_managed_fields_across_versions(cont
         Ok(value) => anyhow::bail!("cross-version Apply unexpectedly took ownership: {value}"),
     }
 
+    let third = json!({
+        "apiVersion": "autoscaling/v2",
+        "kind": "HorizontalPodAutoscaler",
+        "metadata": {"name": name.clone(), "namespace": context.namespace.clone()},
+        "spec": {
+            "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "not-required-for-ssa"},
+            "minReplicas": 1,
+            "maxReplicas": 3
+        }
+    });
+    let third_request = Request::builder()
+        .method("PATCH")
+        .uri(format!("{uri_v2}?fieldManager=nodeapiserver-ssa-v1"))
+        .header("Content-Type", "application/apply-patch+yaml")
+        .body(serde_json::to_vec(&third)?)?;
+    let switched: Value = context
+        .client
+        .request(third_request)
+        .await
+        .context("re-applying the HPA through autoscaling/v2 with the original manager")?;
+    anyhow::ensure!(
+        switched.pointer("/spec/metrics").is_none(),
+        "cross-version Apply did not prune the original manager's omitted metric: {switched}"
+    );
+
     let _ = context
         .client
         .request::<Value>(Request::builder().method("DELETE").uri(uri_v1).body(Vec::new())?)
