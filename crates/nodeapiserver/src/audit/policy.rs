@@ -2,8 +2,9 @@
 //!
 //! This is the metadata-selection half of `audit.k8s.io/v1`: rules are
 //! evaluated in order and the first matching rule wins. `None` suppresses
-//! the event, while the other levels currently select this crate's existing
-//! metadata event; request/response object capture remains a separate scope.
+//! the event, while `Metadata`, `Request`, and `RequestResponse` select the
+//! corresponding event level; the listener supplies bounded decoded objects
+//! for the latter two when their bodies are supported.
 //! Stage filtering follows the policy's global and first-matching-rule
 //! `omitStages` values.
 
