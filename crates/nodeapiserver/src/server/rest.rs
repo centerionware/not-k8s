@@ -2755,6 +2755,54 @@ fn managed_field_remove(schema: &ManagedFieldSchema, object: &Value, fields: &cr
     }
 }
 
+/// Reconcile each stored CRD manager's field set with the schema for the API
+/// version that recorded it. Upstream performs this before both Update and
+/// Apply so an atomic/granular CRD schema change cannot leave ownership paths
+/// interpreted under the old relationship.
+async fn reconcile_versioned_managers_with_schema(
+    storage: &mut StorageClient,
+    group: &str,
+    request_api_version: &str,
+    request_open_api_schema: Option<&Value>,
+    request_schema: Option<&str>,
+    resource: &str,
+    kind: &str,
+    managers: &crate::patch::managed_fields::VersionedManagers,
+) -> Result<crate::patch::managed_fields::VersionedManagers, Error> {
+    let mut reconciled = BTreeMap::new();
+    for (manager, state) in managers {
+        let Some(schema) = managed_field_schema(
+            storage,
+            group,
+            request_api_version,
+            request_open_api_schema,
+            request_schema,
+            resource,
+            kind,
+            &state.api_version,
+        )
+        .await?
+        else {
+            // An API version that is no longer served is obsolete managed
+            // field data; upstream drops it during reconciliation.
+            continue;
+        };
+        let fields = match schema {
+            ManagedFieldSchema::Builtin(_) => state.fields.clone(),
+            ManagedFieldSchema::Crd(schema) => crate::apiextensions::schema_apply::reconcile_field_set_with_schema(&schema, &state.fields),
+        };
+        reconciled.insert(
+            manager.clone(),
+            crate::patch::managed_fields::VersionedManager {
+                fields,
+                api_version: state.api_version.clone(),
+                applied: state.applied,
+            },
+        );
+    }
+    Ok(reconciled)
+}
+
 /// Performs Apply's version-aware prune step. The request-schema updater can
 /// only prune a manager's previous fields when that manager used the current
 /// request version; upstream instead converts the merged candidate into the
@@ -3049,6 +3097,17 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     // ownership history is unrecoverable.
     let entries = crate::patch::managed_fields::parse_managed_fields(&stored_managed_fields).unwrap_or_default();
     let managers = crate::patch::managed_fields::to_versioned_managers_map(&entries, &api_version);
+    let managers = reconcile_versioned_managers_with_schema(
+        storage,
+        group,
+        &api_version,
+        open_api_schema.as_ref(),
+        schema,
+        resource,
+        &resolved.kind,
+        &managers,
+    )
+    .await?;
     // The existing single-schema updater remains the request-version merge
     // and prune implementation. Managers recorded under another version are
     // intentionally withheld from it; their ownership is reconciled below
@@ -3448,6 +3507,7 @@ fn reconcile_runtime_managed_fields(
     let live = strip_managed_field_system_fields(existing.clone());
     let new = strip_managed_field_system_fields(object.clone());
     let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
+    let managers = crate::apiextensions::schema_apply::reconcile_managed_fields_with_schema(schema, &managers);
     let managers = crate::apiextensions::schema_apply::apply_update(schema, &live, &new, &managers, &manager_key);
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));

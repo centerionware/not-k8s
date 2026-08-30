@@ -144,6 +144,79 @@ pub fn set_from_object(schema: &Value, value: &Value) -> Set {
     set
 }
 
+/// Reconcile ownership recorded under an older version of a CRD schema with
+/// the current schema. This is the runtime-schema counterpart to upstream's
+/// `typed.ReconcileFieldSetWithSchema`: when a granular map or list becomes
+/// atomic, ownership collapses to the containing field; the reverse change is
+/// intentionally left as a shallow owner, matching upstream's behavior.
+pub fn reconcile_field_set_with_schema(schema: &Value, fields: &Set) -> Set {
+    reconcile_set(Some(schema), fields)
+}
+
+fn reconcile_set(schema: Option<&Value>, fields: &Set) -> Set {
+    let mut elements = BTreeSet::new();
+    elements.extend(fields.members.iter().cloned());
+    elements.extend(fields.children.keys().cloned());
+
+    let mut reconciled = Set::new();
+    for element in elements {
+        let child = fields.children.get(&element);
+        let has_children = child.is_some_and(|child| !child.is_empty());
+        let is_member = fields.members.contains(&element);
+        let was_atomic = is_member && !has_children;
+        let element_schema = schema.and_then(|schema| schema_for_element(schema, &element));
+
+        if element_schema.is_some_and(is_atomic_schema) && !was_atomic {
+            // Upstream treats a granular-to-atomic migration as ownership of
+            // the whole field/list/map, dropping all children.
+            reconciled.members.push(element);
+            continue;
+        }
+
+        if is_member {
+            reconciled.members.push(element.clone());
+        }
+        if let Some(child) = child {
+            let child_schema = element_schema.and_then(schema_for_children);
+            let child = reconcile_set(child_schema, child);
+            if !child.is_empty() {
+                reconciled.children.insert(element, child);
+            }
+        }
+    }
+    reconciled.members.sort();
+    reconciled
+}
+
+fn schema_for_element<'a>(schema: &'a Value, element: &PathElement) -> Option<&'a Value> {
+    match element {
+        PathElement::Field(name) => field_schema(schema, name),
+        PathElement::Key(_) | PathElement::Value(_) | PathElement::Index(_) => Some(schema),
+    }
+}
+
+fn schema_for_children(schema: &Value) -> Option<&Value> {
+    if schema.get("type").and_then(Value::as_str) == Some("array") {
+        schema.get("items")
+    } else {
+        Some(schema)
+    }
+}
+
+fn is_atomic_schema(schema: &Value) -> bool {
+    schema.get("x-kubernetes-map-type").and_then(Value::as_str) == Some("atomic")
+        || schema.get("x-kubernetes-list-type").and_then(Value::as_str) == Some("atomic")
+}
+
+/// Reconcile all stored CRD manager field sets against the current runtime
+/// schema before an ordinary update or Apply compares ownership.
+pub fn reconcile_managed_fields_with_schema(schema: &Value, managers: &BTreeMap<String, Set>) -> BTreeMap<String, Set> {
+    managers
+        .iter()
+        .map(|(manager, fields)| (manager.clone(), reconcile_field_set_with_schema(schema, fields)))
+        .collect()
+}
+
 fn collect_object(schema: &Value, value: &Value, path: &mut Vec<PathElement>, set: &mut Set) {
     let Some(object) = value.as_object() else {
         return;
@@ -213,6 +286,7 @@ fn merge(schema: &Value, live: &Value, config: &Value) -> Value {
         }
         let field_schema = field_schema(schema, key);
         let value = match (merged.get(key), config_value) {
+            (Some(_), Value::Object(_)) if field_schema.is_some_and(is_atomic_map) => config_value.clone(),
             (Some(live_value), Value::Object(_)) => merge(
                 field_schema.unwrap_or(&Value::Null),
                 live_value,
@@ -316,6 +390,10 @@ fn diff_field(
     removed: &mut Set,
 ) {
     if old == new {
+        return;
+    }
+    if schema.is_some_and(is_atomic_map) {
+        changed.insert(path);
         return;
     }
     if let (Some(old_values), Some(new_values)) = (old.as_array(), new.as_array()) {
@@ -457,6 +535,10 @@ fn list_type(schema: &Value) -> Option<&str> {
     schema.get("x-kubernetes-list-type").and_then(Value::as_str)
 }
 
+fn is_atomic_map(schema: &Value) -> bool {
+    schema.get("x-kubernetes-map-type").and_then(Value::as_str) == Some("atomic")
+}
+
 fn list_map_keys(schema: &Value) -> Option<Vec<&str>> {
     schema
         .get("x-kubernetes-list-map-keys")
@@ -490,6 +572,28 @@ mod tests {
                         "ports": {"type": "array", "x-kubernetes-list-type": "map", "x-kubernetes-list-map-keys": ["name"], "items": {"type": "object", "properties": {"name": {"type": "string"}, "port": {"type": "integer"}}}},
                         "finalizers": {"type": "array", "x-kubernetes-list-type": "set", "items": {"type": "string"}}
                     }
+                }
+            }
+        })
+    }
+
+    fn map_schema(map_type: Option<&str>) -> Value {
+        let mut settings = json!({
+            "type": "object",
+            "properties": {
+                "a": {"type": "string"},
+                "b": {"type": "string"}
+            }
+        });
+        if let Some(map_type) = map_type {
+            settings["x-kubernetes-map-type"] = json!(map_type);
+        }
+        json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "properties": {"settings": settings}
                 }
             }
         })
@@ -569,5 +673,39 @@ mod tests {
         assert!(!updated["one"].has(&[PathElement::Field("spec".to_string()), PathElement::Field("color".to_string())]));
         assert!(!updated["one"].is_empty(), "an unchanged CRD field must remain with its original manager");
         assert!(updated["two"].has(&[PathElement::Field("spec".to_string()), PathElement::Field("color".to_string())]));
+    }
+
+    #[test]
+    fn granular_map_ownership_collapses_when_schema_becomes_atomic() {
+        let granular = map_schema(None);
+        let fields = set_from_object(&granular, &json!({"spec": {"settings": {"a": "one"}}}));
+        let reconciled = reconcile_field_set_with_schema(&map_schema(Some("atomic")), &fields);
+
+        assert!(reconciled.has(&[
+            PathElement::Field("spec".to_string()),
+            PathElement::Field("settings".to_string()),
+        ]));
+        assert!(!reconciled.has(&[
+            PathElement::Field("spec".to_string()),
+            PathElement::Field("settings".to_string()),
+            PathElement::Field("a".to_string()),
+        ]));
+    }
+
+    #[test]
+    fn atomic_map_ownership_stays_shallow_when_schema_becomes_granular() {
+        let atomic = map_schema(Some("atomic"));
+        let fields = set_from_object(&atomic, &json!({"spec": {"settings": {"a": "one"}}}));
+        let reconciled = reconcile_field_set_with_schema(&map_schema(None), &fields);
+
+        assert!(reconciled.has(&[
+            PathElement::Field("spec".to_string()),
+            PathElement::Field("settings".to_string()),
+        ]));
+        assert!(!reconciled.has(&[
+            PathElement::Field("spec".to_string()),
+            PathElement::Field("settings".to_string()),
+            PathElement::Field("a".to_string()),
+        ]));
     }
 }
