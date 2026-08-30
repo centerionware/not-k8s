@@ -4229,6 +4229,17 @@ async fn aggregate_proxy(
         }
     };
 
+    if is_connection_upgrade(req.headers()) {
+        let auth_headers = auth_proxy_headers(identity, proxy_identity.is_some());
+        return match proxy::http_client::upgrade_with_headers(req, &target, client_config, Some(&auth_headers)).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!(path = %path_str, host = %target.host, error = ?e, "aggregation: dialing the upgraded backend failed");
+                json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, &e.to_string()))
+            }
+        };
+    }
+
     let headers = aggregation_proxy_headers(req.headers(), identity, proxy_identity.is_some());
     let body = match read_body_bytes(req).await {
         Ok(b) => b,
@@ -4253,6 +4264,14 @@ fn is_auth_proxy_header(name: &str) -> bool {
         || name.eq_ignore_ascii_case("x-remote-uid")
         || name.len() >= "x-remote-extra-".len()
             && name[.."x-remote-extra-".len()].eq_ignore_ascii_case("x-remote-extra-")
+}
+
+fn is_connection_upgrade(headers: &http::HeaderMap) -> bool {
+    let connection_upgrade = headers
+        .get(http::header::CONNECTION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|token| token.trim().eq_ignore_ascii_case("upgrade")));
+    connection_upgrade && headers.contains_key(http::header::UPGRADE)
 }
 
 /// Matches client-go's `headerKeyEscape`: HTTP field names cannot contain
@@ -4282,21 +4301,29 @@ fn aggregation_proxy_headers(
         .filter(|(name, _)| !is_auth_proxy_header(name.as_str()))
         .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
         .collect::<Vec<_>>();
-    if !add_identity {
-        return headers;
-    }
+    headers.extend(auth_proxy_headers(identity, add_identity));
+    headers
+}
 
+fn auth_proxy_headers(
+    identity: Option<&crate::authn::x509::Identity>,
+    add_identity: bool,
+) -> Vec<(String, String)> {
+    if !add_identity {
+        return Vec::new();
+    }
     let anonymous_groups = [UNAUTHENTICATED_GROUP.to_string()];
     let (user, groups, uid, extra) = match identity {
         Some(identity) => (
             identity.name.as_str(),
             identity.groups.as_slice(),
             identity.uid.as_deref(),
-            Some(&identity.credential_id),
+            (!identity.credential_id.0.is_empty() && !identity.credential_id.1.is_empty())
+                .then_some(&identity.credential_id),
         ),
         None => (ANONYMOUS_USERNAME, &anonymous_groups[..], None, None),
     };
-    headers.push(("X-Remote-User".to_string(), user.to_string()));
+    let mut headers = vec![("X-Remote-User".to_string(), user.to_string())];
     headers.extend(groups.iter().cloned().map(|group| ("X-Remote-Group".to_string(), group)));
     if let Some(uid) = uid {
         headers.push(("X-Remote-Uid".to_string(), uid.to_string()));
@@ -4719,6 +4746,34 @@ mod tests {
         incoming.insert("X-Remote-Group", "untrusted".parse().unwrap());
         let headers = aggregation_proxy_headers(&incoming, None, false);
         assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn aggregation_proxy_headers_do_not_emit_an_empty_credential_extra() {
+        let identity = crate::authn::x509::Identity {
+            name: "system:serviceaccount:default:builder".to_string(),
+            groups: vec!["system:serviceaccounts".to_string()],
+            uid: None,
+            credential_id: (String::new(), Vec::new()),
+        };
+        let headers = aggregation_proxy_headers(&http::HeaderMap::new(), Some(&identity), true);
+        assert_eq!(headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-user")).count(), 1);
+        assert!(!headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-remote-extra-")));
+    }
+
+    #[test]
+    fn connection_upgrade_requires_upgrade_token_and_header() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::CONNECTION, "keep-alive, Upgrade".parse().unwrap());
+        headers.insert(http::header::UPGRADE, "websocket".parse().unwrap());
+        assert!(is_connection_upgrade(&headers));
+
+        headers.insert(http::header::CONNECTION, "keep-alive".parse().unwrap());
+        assert!(!is_connection_upgrade(&headers));
+
+        headers.insert(http::header::CONNECTION, "Upgrade".parse().unwrap());
+        headers.remove(http::header::UPGRADE);
+        assert!(!is_connection_upgrade(&headers));
     }
 
     #[test]
