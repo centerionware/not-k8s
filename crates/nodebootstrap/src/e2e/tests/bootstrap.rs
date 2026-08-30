@@ -231,10 +231,15 @@ impl Drop for NodeapiserverAuthorizationWebhookOverride {
 struct NodeapiserverAuditLogOverride {
     drop_in: PathBuf,
     audit_log: PathBuf,
+    max_backups: usize,
 }
 
 impl NodeapiserverAuditLogOverride {
     fn install() -> Result<Self> {
+        Self::install_with_rotation(None, 0)
+    }
+
+    fn install_with_rotation(max_size_bytes: Option<u64>, max_backups: usize) -> Result<Self> {
         if !systemd_service_available("nodeapiserver.service") {
             return Err(skip_test(
                 "nodeapiserver.service is unavailable; audit-log checks need systemd",
@@ -247,11 +252,22 @@ impl NodeapiserverAuditLogOverride {
         let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
         let drop_in = drop_in_dir.join(format!("nodebootstrap-audit-{suffix}.conf"));
         let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-audit-{suffix}.conf"));
-        let contents = format!("[Service]\nEnvironment=NODEAPISERVER_AUDIT_LOG_PATH={}\n", audit_log.display());
+        let mut contents = format!(
+            "[Service]\nEnvironment=NODEAPISERVER_AUDIT_LOG_PATH={}\n",
+            audit_log.display()
+        );
+        if let Some(max_size_bytes) = max_size_bytes {
+            contents.push_str(&format!(
+                "Environment=NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES={max_size_bytes}\n"
+            ));
+            contents.push_str(&format!(
+                "Environment=NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS={max_backups}\n"
+            ));
+        }
         fs::write(&local_drop_in, contents)
             .with_context(|| format!("writing {}", local_drop_in.display()))?;
 
-        let guard = Self { drop_in, audit_log };
+        let guard = Self { drop_in, audit_log, max_backups };
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
@@ -272,6 +288,10 @@ impl Drop for NodeapiserverAuditLogOverride {
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
         let _ = fs::remove_file(&self.audit_log);
+        for index in 1..=self.max_backups {
+            let backup = PathBuf::from(format!("{}.{}", self.audit_log.display(), index));
+            let _ = fs::remove_file(backup);
+        }
     }
 }
 
@@ -1571,6 +1591,74 @@ pub(super) async fn nodeapiserver_writes_audit_log(context: &E2eContext) -> Resu
                         .lines()
                         .any(|line| line.contains("\"requestURI\":\"/version\""))
                 }))
+            },
+        )
+        .await
+}
+
+pub(super) async fn nodeapiserver_rotates_audit_log(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "audit-log rotation checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let audit = NodeapiserverAuditLogOverride::install_with_rotation(Some(512), 2)?;
+    context
+        .wait_until(
+            "nodeapiserver to answer requests after audit rotation configuration",
+            Duration::from_secs(60),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "2",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "https://127.0.0.1:6443/healthz",
+                    ])
+                    .output();
+                Ok(output.is_ok_and(|output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() != "000"
+                }))
+            },
+        )
+        .await?;
+
+    for _ in 0..8 {
+        let response = Command::new("curl")
+            .args([
+                "-k",
+                "-sS",
+                "--max-time",
+                "10",
+                "https://127.0.0.1:6443/version",
+            ])
+            .output()
+            .context("calling nodeapiserver while audit rotation is enabled")?;
+        anyhow::ensure!(
+            response.status.success(),
+            "nodeapiserver request failed: {}",
+            String::from_utf8_lossy(&response.stderr)
+        );
+    }
+
+    context
+        .wait_until(
+            "audit log to rotate into a numbered backup",
+            Duration::from_secs(30),
+            || async {
+                let backup = PathBuf::from(format!("{}.1", audit.audit_log.display()));
+                Ok(backup.is_file()
+                    && fs::metadata(&backup).is_ok_and(|metadata| metadata.len() > 0)
+                    && fs::metadata(&audit.audit_log)
+                        .is_ok_and(|metadata| metadata.len() > 0))
             },
         )
         .await

@@ -912,7 +912,11 @@ pub async fn run(cfg: Config) {
     };
 
     let audit_sink = match cfg.audit_log_path.as_deref() {
-        Some(path) => match crate::audit::sink::AuditSink::open(path) {
+        Some(path) => match crate::audit::sink::AuditSink::open_with_rotation(
+            path,
+            cfg.audit_log_max_size_bytes,
+            cfg.audit_log_max_backups,
+        ) {
             Ok(sink) => {
                 info!(path = %path.display(), "nodeapiserver: opened audit log");
                 Some(Arc::new(sink))
