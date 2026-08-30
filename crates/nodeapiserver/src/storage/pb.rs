@@ -20,3 +20,13 @@ pub mod authpb {
 pub mod etcdserverpb {
     tonic::include_proto!("etcdserverpb");
 }
+
+/// Kubernetes KMS v1 (the deprecated `v1beta1` wire package).
+pub mod kms_v1 {
+    tonic::include_proto!("v1beta1");
+}
+
+/// Kubernetes KMS v2 wire API and its serialized `EncryptedObject`.
+pub mod kms_v2 {
+    tonic::include_proto!("v2");
+}

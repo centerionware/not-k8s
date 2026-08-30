@@ -87,6 +87,14 @@ fn main() {
         .compile_protos(&["proto/rpc.proto"], &["proto"])
         .expect("failed to compile the etcd v3 client protos (is protoc on PATH?)");
 
+    println!("cargo:rerun-if-changed=proto/kms_v1.proto");
+    println!("cargo:rerun-if-changed=proto/kms_v2.proto");
+    tonic_prost_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .compile_protos(&["proto/kms_v1.proto", "proto/kms_v2.proto"], &["proto"])
+        .expect("failed to compile the Kubernetes KMS protos (is protoc on PATH?)");
+
     // `/version` (server::version): a handful of build-time facts real
     // upstream embeds via `-ldflags`, this crate's own equivalent since
     // Cargo has no linker-flag string injection. Every command here
