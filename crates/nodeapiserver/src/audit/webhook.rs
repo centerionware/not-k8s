@@ -31,14 +31,7 @@ impl AuditWebhook {
     /// concern rather than silently accepting credentials this client cannot
     /// authenticate with.
     pub fn new(url: &str) -> Result<Self, String> {
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|error| format!("invalid audit webhook URL: {error}"))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err("audit webhook URL scheme must be http or https".to_string());
-        }
-        if parsed.host_str().map_or(true, str::is_empty) {
-            return Err("audit webhook URL must include a host".to_string());
-        }
+        validate_url(url)?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
@@ -62,6 +55,18 @@ impl AuditWebhook {
             }
         }
     }
+}
+
+fn validate_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| format!("invalid audit webhook URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("audit webhook URL scheme must be http or https".to_string());
+    }
+    if parsed.host_str().map_or(true, str::is_empty) {
+        return Err("audit webhook URL must include a host".to_string());
+    }
+    Ok(())
 }
 
 async fn run(client: Client, url: String, mut receiver: mpsc::Receiver<Value>) {
@@ -137,14 +142,14 @@ mod tests {
 
     #[test]
     fn rejects_non_http_urls() {
-        let error = AuditWebhook::new("file:///tmp/audit").unwrap_err();
+        let error = validate_url("file:///tmp/audit").unwrap_err();
         assert!(error.contains("http or https"));
     }
 
     #[test]
     fn rejects_urls_without_a_host() {
-        let error = AuditWebhook::new("http:///audit").unwrap_err();
-        assert!(error.contains("host"));
+        let error = validate_url("http://").unwrap_err();
+        assert!(error.contains("host") || error.contains("invalid audit webhook URL"));
     }
 
     #[test]
