@@ -3183,6 +3183,9 @@ async fn handle(
                                             let suffix: String = uuid::Uuid::new_v4().to_string().chars().take(5).collect();
                                             format!("{}{suffix}", admission::service_account::SERVICE_ACCOUNT_VOLUME_PREFIX)
                                         });
+                                        if let Err(error) = admission::service_account::validate_secret_references(&sa, pod) {
+                                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                                        }
                                     }
                                     Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                                         return Ok(json_response(
