@@ -676,6 +676,22 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
         "nodeapiserver default/kubernetes has no endpoint"
     );
 
+    let readyz_url = format!(
+        "{}/readyz?verbose",
+        cfg.apiserver_server().trim_end_matches('/')
+    );
+    let readyz = Command::new("curl")
+        .args(["-k", "-sS", "-f", "--max-time", "5", &readyz_url])
+        .output()
+        .context("checking nodeapiserver readiness")?;
+    anyhow::ensure!(
+        readyz.status.success()
+            && String::from_utf8_lossy(&readyz.stdout).contains("[+]storage ok"),
+        "nodeapiserver /readyz did not report a live storage check: {}{}",
+        String::from_utf8_lossy(&readyz.stdout),
+        String::from_utf8_lossy(&readyz.stderr)
+    );
+
     // The target also has to mint the projected token nodelet/CoreDNS use,
     // and accept that token through TokenReview. This catches a listener
     // that merely answers certificate-authenticated bootstrap requests.
