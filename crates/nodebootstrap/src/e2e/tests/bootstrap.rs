@@ -1480,6 +1480,41 @@ pub(super) async fn nodeapiserver_exposes_inflight_metrics(_context: &E2eContext
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_exposes_full_request_metrics(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("request metric labels are a nodeapiserver-only check"));
+    }
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    configmaps
+        .list(&ListParams::default())
+        .await
+        .context("creating a namespaced list request for the nodeapiserver metrics check")?;
+
+    let endpoint = format!("{}/metrics", cfg.apiserver_server().trim_end_matches('/'));
+    let output = Command::new("curl")
+        .args(["-k", "-sS", "--max-time", "10", &endpoint])
+        .output()
+        .context("reading nodeapiserver request metrics")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "nodeapiserver metrics request failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metrics = String::from_utf8_lossy(&output.stdout);
+    let labels = "verb=\"LIST\",dry_run=\"\",group=\"\",version=\"v1\",resource=\"configmaps\",subresource=\"\",scope=\"namespace\",component=\"apiserver\",code=\"200\"";
+    anyhow::ensure!(
+        metrics.contains(&format!("apiserver_request_total{{{labels}}}")),
+        "nodeapiserver request metrics omitted the upstream label set: {metrics}"
+    );
+    anyhow::ensure!(
+        metrics.contains("apiserver_request_duration_seconds_count{verb=\"LIST\",dry_run=\"\",group=\"\",version=\"v1\",resource=\"configmaps\",subresource=\"\",scope=\"namespace\",component=\"apiserver\"}"),
+        "nodeapiserver duration metrics omitted the upstream label set: {metrics}"
+    );
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_honors_patch_dry_run(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
