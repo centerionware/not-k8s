@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `c2042213` on
+This snapshot is checked against `origin/nodeapiserver` at `4f408543` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -54,7 +54,7 @@ explanation of each boundary.
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
-| M. APF/audit/observability | **in progress** | Audit stages, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, and bounded webhook delivery are present; remaining observability refinements remain. |
+| M. APF/audit/observability | **in progress** | Audit stages, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, and policy-selected request/response object capture are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -2334,9 +2334,11 @@ current scope of each piece; summarized here:
 **M. APF, audit, observability** — **in progress**. `audit::event::build_event`
 is a pure builder for real `audit.k8s.io/v1` `Event` documents
 (`staging/src/k8s.io/apiserver/pkg/apis/audit/v1/types.go`, fetched and
-read directly), at `Metadata` level (who did what to which object — not
-request/response bodies, real upstream's own `Request`/
-`RequestResponse` levels). The listener now emits the applicable
+read directly), at the policy-selected `Metadata`, `Request`, or
+`RequestResponse` level. `Request` and `RequestResponse` capture decoded
+JSON/YAML request objects, and `RequestResponse` also captures bounded,
+materialized JSON/YAML response objects; streaming, oversized, and
+protobuf bodies remain uncaptured. The listener now emits the applicable
 `RequestReceived`, `ResponseStarted`, and `ResponseComplete` stages with one
 shared audit ID per request; long-running watches and streaming subresources
 are recorded at `ResponseStarted` rather than falsely marked complete.
@@ -2345,8 +2347,8 @@ Requests rejected before normal handler dispatch are also recorded as
 request-admission failures.
 `NODEAPISERVER_AUDIT_POLICY_FILE` applies upstream-shaped first-match rules,
 including `None` suppression and `omitStages` for those emitted stages;
-request/response body levels and the `Panic` stage remain outside the current
-scope. **The sink is this crate's own `tracing` output**
+the `Panic` stage remains outside the current scope. **The sink is this
+crate's own `tracing` output**
 (`target: "nodeapiserver::audit"`, one JSON line per request) and an
 optional append-only JSON-lines file selected by
 `NODEAPISERVER_AUDIT_LOG_PATH`. When configured with
@@ -2357,8 +2359,7 @@ event would exceed the limit and retains the configured numbered backups via
 asynchronous `audit.k8s.io/v1` `EventList` batches to that HTTP(S) endpoint,
 retrying transient transport, 5xx, and 429 failures without blocking API
 responses. It can be used by itself or alongside the file sink; kubeconfig
-credential-file authentication and the remaining upstream audit body levels
-are still outside the current scope.
+credential-file authentication is still outside the current scope.
 `/healthz`/`/readyz`/`/livez` now have real per-check output too
 (`server::healthz`, a faithful-but-scoped port of real upstream's own
 `k8s.io/apiserver/pkg/server/healthz`, fetched and read directly):
