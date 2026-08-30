@@ -22,6 +22,8 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     for path in [
         cfg.pki_dir().join("apiserver.crt"),
         cfg.pki_dir().join("apiserver.key"),
+        cfg.pki_dir().join("front-proxy-client.crt"),
+        cfg.pki_dir().join("front-proxy-client.key"),
     ] {
         anyhow::ensure!(
             path.is_file(),
@@ -161,6 +163,20 @@ fn install_service(
             "NODEAPISERVER_KUBELET_CLIENT_KEY_FILE",
             pki_dir
                 .join("kube-apiserver.key")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "NODEAPISERVER_PROXY_CLIENT_CERT_FILE",
+            pki_dir
+                .join("front-proxy-client.crt")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "NODEAPISERVER_PROXY_CLIENT_KEY_FILE",
+            pki_dir
+                .join("front-proxy-client.key")
                 .to_string_lossy()
                 .into_owned(),
         ),

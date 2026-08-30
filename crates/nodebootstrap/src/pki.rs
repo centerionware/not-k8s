@@ -62,6 +62,7 @@ pub fn require_existing(cfg: &Config) -> Result<()> {
             dir.join(name).display()
         );
     }
+    ensure_front_proxy_client(&dir)?;
     Ok(())
 }
 
@@ -90,6 +91,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     let present = required.iter().filter(|name| dir.join(name).exists()).count();
     if present == required.len() {
         ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain(), &cfg.service_ips()?)?;
+        ensure_front_proxy_client(&dir)?;
         tracing::info!(dir = %dir.display(), "reusing existing cluster PKI");
         return Ok(());
     }
@@ -149,6 +151,49 @@ fn ensure_existing_pki_matches_domain(
     Ok(())
 }
 
+/// Older bootstrap runs predate the aggregation front-proxy identity. Add a
+/// separate front-proxy CA and leaf without regenerating the cluster CA or
+/// any of the already-distributed identities during this migration.
+fn ensure_front_proxy_client(dir: &std::path::Path) -> Result<()> {
+    let ca_cert_path = dir.join("front-proxy-ca.crt");
+    let ca_key_path = dir.join("front-proxy-ca.key");
+    let cert_path = dir.join("front-proxy-client.crt");
+    let key_path = dir.join("front-proxy-client.key");
+    let paths = [&ca_cert_path, &ca_key_path, &cert_path, &key_path];
+    let present = paths.iter().filter(|path| path.is_file()).count();
+    if present == paths.len() {
+        return Ok(());
+    }
+    if present != 0 {
+        anyhow::bail!(
+            "aggregation front-proxy PKI at {} is incomplete; front-proxy-ca.crt, front-proxy-ca.key, front-proxy-client.crt, and front-proxy-client.key are required",
+            dir.display()
+        )
+    }
+
+    let (ca_cert, ca_key) = generate_ca("not-k8s-front-proxy-ca")
+        .context("generating aggregation front-proxy CA")?;
+    let issued = issue_client_cert(&ca_cert, &ca_key, "front-proxy-client", &[])
+        .context("issuing aggregation front-proxy client certificate")?;
+
+    std::fs::write(&ca_cert_path, ca_cert.pem())
+        .with_context(|| format!("writing {}", ca_cert_path.display()))?;
+    std::fs::write(&ca_key_path, ca_key.serialize_pem())
+        .with_context(|| format!("writing {}", ca_key_path.display()))?;
+    std::fs::write(&cert_path, issued.cert_pem)
+        .with_context(|| format!("writing {}", cert_path.display()))?;
+    std::fs::write(&key_path, issued.key_pem)
+        .with_context(|| format!("writing {}", key_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("restricting permissions on {}", key_path.display()))?;
+    }
+    tracing::info!(path = %cert_path.display(), "migrated cluster PKI with aggregation front-proxy identity");
+    Ok(())
+}
+
 /// A generated cert+key pair, PEM-encoded, ready to write to disk or embed
 /// in a kubeconfig.
 pub struct IssuedCert {
@@ -164,6 +209,12 @@ pub struct ClusterPki {
     /// Client identity the apiserver presents when proxying exec/logs/
     /// attach/port-forward requests to nodelet.
     pub kube_apiserver_client: IssuedCert,
+    /// Client identity the apiserver presents to aggregated API servers as
+    /// their trusted front proxy.
+    pub aggregation_proxy_client: IssuedCert,
+    /// CA that aggregated API servers can trust for the front-proxy client
+    /// certificate.
+    pub aggregation_proxy_ca: IssuedCert,
     /// Private key used by `--service-account-signing-key-file`; the public
     /// half (derived from the same keypair) is `--service-account-key-file`.
     pub sa_signing: IssuedCert,
@@ -200,7 +251,9 @@ impl Default for ClusterPkiSpec {
 }
 
 pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
-    let (ca_cert, ca_key) = generate_ca().context("generating cluster CA")?;
+    let (ca_cert, ca_key) = generate_ca("not-k8s-ca").context("generating cluster CA")?;
+    let (aggregation_proxy_ca_cert, aggregation_proxy_ca_key) =
+        generate_ca("not-k8s-front-proxy-ca").context("generating aggregation front-proxy CA")?;
 
     let mut serving_sans = vec![
         "kubernetes".to_string(),
@@ -226,6 +279,13 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
     .context("issuing apiserver serving cert")?;
     let kube_apiserver_client = issue_client_cert(&ca_cert, &ca_key, "system:kube-apiserver", &[])
         .context("issuing kube-apiserver client cert")?;
+    let aggregation_proxy_client = issue_client_cert(
+        &aggregation_proxy_ca_cert,
+        &aggregation_proxy_ca_key,
+        "front-proxy-client",
+        &[],
+    )
+    .context("issuing aggregation proxy client cert")?;
 
     let sa_signing = generate_sa_signing_keypair().context("generating ServiceAccount signing keypair")?;
 
@@ -246,6 +306,11 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         ca,
         apiserver_serving,
         kube_apiserver_client,
+        aggregation_proxy_client,
+        aggregation_proxy_ca: IssuedCert {
+            cert_pem: aggregation_proxy_ca_cert.pem(),
+            key_pem: aggregation_proxy_ca_key.serialize_pem(),
+        },
         sa_signing,
         kube_controller_manager,
         kube_scheduler,
@@ -253,12 +318,12 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
     })
 }
 
-fn generate_ca() -> Result<(rcgen::Certificate, KeyPair)> {
+fn generate_ca(common_name: &str) -> Result<(rcgen::Certificate, KeyPair)> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "not-k8s-ca");
+    dn.push(DnType::CommonName, common_name);
     params.distinguished_name = dn;
     let key = KeyPair::generate().context("generating CA keypair")?;
     let cert = params.self_signed(&key).context("self-signing CA cert")?;
@@ -355,6 +420,10 @@ impl ClusterPki {
         write("apiserver.key", &self.apiserver_serving.key_pem)?;
         write("kube-apiserver.crt", &self.kube_apiserver_client.cert_pem)?;
         write("kube-apiserver.key", &self.kube_apiserver_client.key_pem)?;
+        write("front-proxy-ca.crt", &self.aggregation_proxy_ca.cert_pem)?;
+        write("front-proxy-ca.key", &self.aggregation_proxy_ca.key_pem)?;
+        write("front-proxy-client.crt", &self.aggregation_proxy_client.cert_pem)?;
+        write("front-proxy-client.key", &self.aggregation_proxy_client.key_pem)?;
         write("sa.pub", &self.sa_signing.cert_pem)?;
         write("sa.key", &self.sa_signing.key_pem)?;
         write("kube-controller-manager.crt", &self.kube_controller_manager.cert_pem)?;
@@ -382,6 +451,7 @@ mod tests {
         for issued in [
             &pki.apiserver_serving,
             &pki.kube_apiserver_client,
+            &pki.aggregation_proxy_client,
             &pki.kube_controller_manager,
             &pki.kube_scheduler,
             &pki.cluster_admin,
@@ -390,6 +460,7 @@ mod tests {
             assert!(issued.key_pem.contains("PRIVATE KEY"));
         }
         assert!(pki.ca.cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(pki.aggregation_proxy_ca.cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(pki.sa_signing.key_pem.contains("PRIVATE KEY"));
     }
 
@@ -452,6 +523,35 @@ mod tests {
         let error = ensure_existing_pki_matches_domain(&dir, "cluster.local", &["10.99.0.1".parse().unwrap()])
             .expect_err("a changed service CIDR must not reuse the existing serving certificate");
         assert!(error.to_string().contains("service CIDR"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_pki_is_migrated_with_a_front_proxy_client_identity() {
+        let dir = std::env::temp_dir().join(format!(
+            "nodebootstrap-pki-front-proxy-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pki = generate(&ClusterPkiSpec::default()).expect("generate cluster PKI");
+        pki.write_to_dir(&dir).expect("write cluster PKI");
+        std::fs::remove_file(dir.join("front-proxy-ca.crt")).unwrap();
+        std::fs::remove_file(dir.join("front-proxy-ca.key")).unwrap();
+        std::fs::remove_file(dir.join("front-proxy-client.crt")).unwrap();
+        std::fs::remove_file(dir.join("front-proxy-client.key")).unwrap();
+
+        ensure_front_proxy_client(&dir).expect("migrate an older PKI directory");
+        let cert = std::fs::read_to_string(dir.join("front-proxy-client.crt")).unwrap();
+        let parsed = pem::parse(cert).expect("parse migrated front-proxy certificate");
+        let (_, certificate) = x509_parser::parse_x509_certificate(parsed.contents()).unwrap();
+        let common_name = certificate
+            .subject()
+            .iter_common_name()
+            .next()
+            .and_then(|value| value.as_str().ok())
+            .unwrap();
+        assert_eq!(common_name, "front-proxy-client");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
