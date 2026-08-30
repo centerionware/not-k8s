@@ -38,11 +38,9 @@
 //!
 //! The real `managedFields` wire format and
 //! `server::rest`/`application/apply-patch+yaml` wiring now live in
-//! `patch::managed_fields` and `server::rest`. Also not ported: upstream's own
-//! `IgnoreFilter`/`IgnoredFields` (server-managed field exclusion, e.g.
-//! `status`). Runtime CRD field sets are reconciled when their schema changes
-//! between atomic and granular representations; compiled built-in schemas do
-//! not change at runtime.
+//! `patch::managed_fields` and `server::rest`. Runtime CRD field sets are
+//! reconciled when their schema changes between atomic and granular
+//! representations; compiled built-in schemas do not change at runtime.
 
 use super::fieldset::{ensure_named_fields_are_members, remove_items, set_from_object, Set};
 use super::managed_fields::{VersionedManager, VersionedManagers};
@@ -87,7 +85,24 @@ pub fn update(
     managers: &BTreeMap<String, Set>,
     force: bool,
 ) -> Result<(BTreeMap<String, Set>, Comparison), Vec<Conflict>> {
-    let cmp = compare(schema, old, new);
+    update_with_ignored_fields(schema, old, new, managers, force, None)
+}
+
+/// [`update`] with upstream's server-managed field exclusion applied to the
+/// comparison. Ignored paths and all descendants are removed before conflict
+/// detection or ownership cleanup.
+pub fn update_with_ignored_fields(
+    schema: &str,
+    old: &Value,
+    new: &Value,
+    managers: &BTreeMap<String, Set>,
+    force: bool,
+    ignored_fields: Option<&Set>,
+) -> Result<(BTreeMap<String, Set>, Comparison), Vec<Conflict>> {
+    let cmp = match ignored_fields {
+        Some(ignored) => compare(schema, old, new).exclude_fields(ignored),
+        None => compare(schema, old, new),
+    };
     let changed = cmp.modified.union(&cmp.added);
 
     let mut conflicts = Vec::new();
@@ -148,13 +163,26 @@ pub fn apply_update(
     managers: &BTreeMap<String, Set>,
     manager: &str,
 ) -> BTreeMap<String, Set> {
+    apply_update_with_ignored_fields(schema, live, new, managers, manager, None)
+}
+
+/// [`apply_update`] with upstream's server-managed field exclusion applied to
+/// both the changed-field comparison and the manager's resulting ownership.
+pub fn apply_update_with_ignored_fields(
+    schema: &str,
+    live: &Value,
+    new: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+    ignored_fields: Option<&Set>,
+) -> BTreeMap<String, Set> {
     let others: BTreeMap<String, Set> = managers
         .iter()
         .filter(|(m, _)| m.as_str() != manager)
         .map(|(m, s)| (m.clone(), s.clone()))
         .collect();
 
-    let (mut result, cmp) = update(schema, live, new, &others, true)
+    let (mut result, cmp) = update_with_ignored_fields(schema, live, new, &others, true, ignored_fields)
         .expect("force: true never returns Err — see update()'s own doc comment");
 
     let existing = managers.get(manager).cloned().unwrap_or_default();
@@ -162,6 +190,10 @@ pub fn apply_update(
         .difference(&cmp.removed)
         .union(&cmp.modified)
         .union(&cmp.added);
+    let set = match ignored_fields {
+        Some(ignored) => set.recursive_difference(ignored),
+        None => set,
+    };
 
     if set.is_empty() {
         result.remove(manager);
@@ -287,6 +319,35 @@ pub fn reconcile_versioned_apply(
     comparisons: &BTreeMap<String, Comparison>,
     force: bool,
 ) -> Result<VersionedApplied, Vec<Conflict>> {
+    reconcile_versioned_apply_with_ignored_fields(
+        live,
+        candidate,
+        managers,
+        manager,
+        request_api_version,
+        request_fields,
+        comparisons,
+        force,
+        None,
+    )
+}
+
+/// [`reconcile_versioned_apply`] with server-managed fields excluded from
+/// conflicts and ownership removal. The caller normally filters each
+/// versioned comparison before calling this function; accepting the set here
+/// as well keeps this boundary faithful for callers that supply an unfiltered
+/// comparison map.
+pub fn reconcile_versioned_apply_with_ignored_fields(
+    live: &Value,
+    candidate: &Value,
+    managers: &VersionedManagers,
+    manager: &str,
+    request_api_version: &str,
+    request_fields: Set,
+    comparisons: &BTreeMap<String, Comparison>,
+    force: bool,
+    ignored_fields: Option<&Set>,
+) -> Result<VersionedApplied, Vec<Conflict>> {
     let mut conflicts = Vec::new();
     for (name, state) in managers {
         if name == manager {
@@ -294,6 +355,10 @@ pub fn reconcile_versioned_apply(
         }
         let Some(comparison) = comparisons.get(name) else {
             continue;
+        };
+        let comparison = match ignored_fields {
+            Some(ignored) => comparison.exclude_fields(ignored),
+            None => comparison.clone(),
         };
         let changed = comparison.modified.union(&comparison.added);
         let fields = state.fields.intersection(&changed);
@@ -321,6 +386,10 @@ pub fn reconcile_versioned_apply(
             continue;
         }
         if let Some(state) = result.get_mut(name) {
+            let comparison = match ignored_fields {
+                Some(ignored) => comparison.exclude_fields(ignored),
+                None => comparison.clone(),
+            };
             state.fields = state.fields.difference(&comparison.removed);
         }
     }
@@ -372,10 +441,27 @@ pub fn apply(
     manager: &str,
     force: bool,
 ) -> Result<Applied, Vec<Conflict>> {
+    apply_with_ignored_fields(schema, live, config, managers, manager, force, None)
+}
+
+/// [`apply`] with upstream's server-managed field exclusion applied to the
+/// incoming configuration's ownership set and changed-field comparison.
+pub fn apply_with_ignored_fields(
+    schema: &str,
+    live: &Value,
+    config: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+    force: bool,
+    ignored_fields: Option<&Set>,
+) -> Result<Applied, Vec<Conflict>> {
     let merged = typed_merge(schema, live, config);
 
     let last_set = managers.get(manager).cloned();
-    let new_set = set_from_object(schema, config);
+    let new_set = ignored_fields.map_or_else(
+        || set_from_object(schema, config),
+        |ignored| set_from_object(schema, config).recursive_difference(ignored),
+    );
     let mut managers = managers.clone();
     managers.insert(manager.to_string(), new_set);
 
@@ -386,7 +472,7 @@ pub fn apply(
         .filter(|(m, _)| m.as_str() != manager)
         .map(|(m, s)| (m.clone(), s.clone()))
         .collect();
-    let (mut result, _cmp) = update(schema, live, &pruned, &others, force)?;
+    let (mut result, _cmp) = update_with_ignored_fields(schema, live, &pruned, &others, force, ignored_fields)?;
     // `update()`'s own contract (see its doc comment) never touches a
     // manager excluded from the map handed to it -- add the applying
     // manager's own entry (set above, step 2) back in.
@@ -682,6 +768,52 @@ mod tests {
             !result.contains_key("kubectl-edit"),
             "removed its only owned field and added nothing else — dropped entirely"
         );
+    }
+
+    #[test]
+    fn apply_update_ignores_server_managed_fields() {
+        let mut ignored = Set::new();
+        ignored.insert(&path(&["status"]));
+        let mut status_manager = Set::new();
+        status_manager.insert(&path(&["status", "ready"]));
+        let managers = BTreeMap::from([("status-controller".to_string(), status_manager)]);
+
+        let result = apply_update_with_ignored_fields(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &json!({"replicas": 1, "status": {"ready": false}}),
+            &json!({"replicas": 2, "status": {"ready": true}}),
+            &managers,
+            "kubectl-edit",
+            Some(&ignored),
+        );
+
+        assert!(result["status-controller"].has(&path(&["status", "ready"])));
+        assert!(result["kubectl-edit"].has(&path(&["replicas"])));
+        assert!(!result["kubectl-edit"].has(&path(&["status", "ready"])));
+    }
+
+    #[test]
+    fn apply_does_not_claim_or_conflict_on_server_managed_fields() {
+        let mut ignored = Set::new();
+        ignored.insert(&path(&["status"]));
+        let mut status_manager = Set::new();
+        status_manager.insert(&path(&["status", "ready"]));
+        let managers = BTreeMap::from([("status-controller".to_string(), status_manager)]);
+
+        let result = apply_with_ignored_fields(
+            "io.k8s.api.apps.v1.DeploymentSpec",
+            &json!({"replicas": 1, "status": {"ready": false}}),
+            &json!({"replicas": 2, "status": {"ready": true}}),
+            &managers,
+            "kubectl-apply",
+            false,
+            Some(&ignored),
+        )
+        .expect("status is ignored, so it must not conflict");
+
+        assert!(result.managers["status-controller"].has(&path(&["status", "ready"])));
+        assert!(result.managers["kubectl-apply"].has(&path(&["replicas"])));
+        assert!(!result.managers["kubectl-apply"].has(&path(&["status", "ready"])));
     }
 
     // `prune`
