@@ -969,7 +969,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = crate::codegen::api_resources::API_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE are real; every other resource verb is still a bring-up stub — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = crate::codegen::api_resources::API_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE/PATCH/DELETECOLLECTION/WATCH are real; unsupported paths remain bring-up stubs — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
     let concurrency_limiter = Arc::new(crate::flowcontrol::limiter::ConcurrencyLimiter::new(
         cfg.apf_max_requests_inflight,
@@ -3183,6 +3183,7 @@ async fn handle(
                         candidate,
                         old_object.as_ref(),
                         dry_run,
+                        identity.as_ref(),
                     )
                     .await
                     {

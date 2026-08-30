@@ -59,9 +59,8 @@
 //! binary).
 //! `watch_event` — converts one `cacher::store::WatchEvent` into the real
 //! `metav1.WatchEvent` wire shape (`{"type": ..., "object": ...}`) used by
-//! the live `WATCH` response stream. The cache still does not retain a
-//! deleted object's last known value, so deleted-event payload fidelity is
-//! a named, honest limitation.
+//! the live `WATCH` response stream, including the cache's retained
+//! pre-delete object value.
 //!
 //! Status: in progress (see docs/APISERVER.md). Landed: the path grammar,
 //! a real TLS listener proving the grammar and transport work together,
@@ -79,7 +78,7 @@
 //! resource verb this build knows about is now real. **Not yet
 //! landed**: the real handler chain (authn -> authz -> APF -> admission
 //! -> REST — a hard requirement on order, not a style choice, once it
-//! exists), `/openapi/v2`.
+//! exists).
 
 pub mod path;
 pub mod tls;

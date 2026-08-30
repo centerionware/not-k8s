@@ -41,7 +41,7 @@
 //!    to the fields this crate can honestly populate from
 //!    [`super::attributes::Attributes`] today: **not populated** —
 //!    `requestKind`/`kind` and `userInfo` are populated by the storage-backed
-//!    adapter from the submitted/old object and authenticated identity.
+//!    adapters from the submitted/old object and authenticated identity.
 //! 4. [`build_eval_vars`] — the real `object`/`oldObject`/`request`/
 //!    `params` variable set `match_conditions`/`policy_validations` both
 //!    expect their own `vars` slice to already carry, assembled from
