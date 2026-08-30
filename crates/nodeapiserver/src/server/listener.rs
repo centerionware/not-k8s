@@ -278,6 +278,49 @@ fn resource_version_query(query: &str) -> i64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WatchOptions {
+    allow_watch_bookmarks: bool,
+    timeout: Option<std::time::Duration>,
+}
+
+/// Parses the two watch-only `ListOptions` this listener can honor without
+/// changing the cache protocol. `allowWatchBookmarks` controls delivery of
+/// the cache driver's synthetic bookmark events; `timeoutSeconds` bounds the
+/// complete stream, including a quiet watch, just as upstream's watch
+/// handler does. Zero means no server-side timeout.
+fn watch_options_query(query: &str) -> Result<WatchOptions, &'static str> {
+    let params = path::parse_query(query);
+    let allow_watch_bookmarks = match params
+        .iter()
+        .find(|(key, _)| key == "allowWatchBookmarks")
+    {
+        None => false,
+        Some((_, value)) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => return Err("allowWatchBookmarks must be true or false"),
+        },
+    };
+    let timeout = match params.iter().find(|(key, _)| key == "timeoutSeconds") {
+        None => None,
+        Some((_, value)) => {
+            let seconds = value
+                .parse::<u64>()
+                .map_err(|_| "timeoutSeconds must be a non-negative integer")?;
+            if seconds == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(seconds))
+            }
+        }
+    };
+    Ok(WatchOptions {
+        allow_watch_bookmarks,
+        timeout,
+    })
+}
+
 /// The minimal `%XX`/`+` decoding a bare integer query value could ever
 /// actually need — `resourceVersion` is always digits, so this only
 /// exists to be defensive against a client that percent-encodes it
@@ -511,7 +554,7 @@ async fn encode_watch_event_with_conversion(
     }
 }
 
-type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send>>;
+type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send + Sync>>;
 type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
 
 struct ConversionWatchState {
@@ -661,6 +704,8 @@ fn watch_response_body(
     resource: String,
     version: String,
     partial_metadata: bool,
+    allow_watch_bookmarks: bool,
+    timeout: Option<std::time::Duration>,
     conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
 ) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
@@ -669,7 +714,17 @@ fn watch_response_body(
 
     let replay_stream = tokio_stream::iter(replay);
     let live_stream = BroadcastStream::new(rx).map_while(|res| res.ok());
-    let events = replay_stream.chain(live_stream);
+    let events = replay_stream
+        .chain(live_stream)
+        .filter(move |event| allow_watch_bookmarks || event.kind != crate::cacher::store::EventKind::Bookmark);
+    let events: WatchEventStream = if let Some(timeout) = timeout {
+        Box::pin(futures::StreamExt::take_until(
+            events,
+            tokio::time::sleep(timeout),
+        ))
+    } else {
+        Box::pin(events)
+    };
     // Cloned once per closure (`StorageClient` wraps a cheap-to-clone
     // `tonic::transport::Channel`, same posture every other real call
     // site in this crate already takes) — `filter`/`filter_map` each need
@@ -3810,6 +3865,10 @@ async fn handle(
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string())));
             }
             let start_revision = resource_version_query(&query);
+            let watch_options = match watch_options_query(&query) {
+                Ok(options) => options,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, error))),
+            };
             match cache.watch_from(start_revision) {
                 Ok((replay, rx)) => {
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
@@ -3825,6 +3884,8 @@ async fn handle(
                         info.resource.clone(),
                         info.api_version.clone(),
                         wants_partial_metadata,
+                        watch_options.allow_watch_bookmarks,
+                        watch_options.timeout,
                         conversion_webhook,
                     );
                     // No explicit `Transfer-Encoding` header: hyper's own
@@ -4425,6 +4486,17 @@ mod tests {
     }
 
     #[test]
+    fn watch_options_parse_bookmarks_and_timeout() {
+        let options = watch_options_query("watch=true&allowWatchBookmarks=true&timeoutSeconds=7").unwrap();
+        assert!(options.allow_watch_bookmarks);
+        assert_eq!(options.timeout, Some(std::time::Duration::from_secs(7)));
+        assert_eq!(watch_options_query("allowWatchBookmarks=0&timeoutSeconds=0").unwrap(), WatchOptions::default());
+        assert!(watch_options_query("allowWatchBookmarks=maybe").is_err());
+        assert!(watch_options_query("timeoutSeconds=-1").is_err());
+        assert!(watch_options_query("timeoutSeconds=not-a-number").is_err());
+    }
+
+    #[test]
     fn is_apply_patch_content_type_recognizes_the_real_media_type_and_ignores_charset() {
         assert!(is_apply_patch_content_type("application/apply-patch+yaml"));
         assert!(is_apply_patch_content_type("application/apply-patch+yaml; charset=utf-8"));
@@ -4567,6 +4639,8 @@ mod tests {
             "namespaces".to_string(),
             "v1".to_string(),
             false,
+            true,
+            None,
             None,
         );
         let collected = body.collect().await.unwrap().to_bytes();
@@ -4574,6 +4648,58 @@ mod tests {
         assert_eq!(text.lines().count(), 1);
         let parsed: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["type"], "ADDED");
+    }
+
+    #[tokio::test]
+    async fn watch_response_body_honors_bookmark_negotiation_and_timeout() {
+        use http_body_util::BodyExt;
+
+        let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
+        let (_, rx) = {
+            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+            cache.watch_from(0).unwrap()
+        };
+        let body = watch_response_body(
+            vec![bookmark.clone()],
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            false,
+            None,
+            None,
+        );
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert!(bytes.is_empty(), "bookmarks must be opt-in");
+
+        let (_, rx) = {
+            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+            cache.watch_from(0).unwrap()
+        };
+        let body = watch_response_body(
+            Vec::new(),
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            false,
+            Some(std::time::Duration::from_millis(10)),
+            None,
+        );
+        let bytes = tokio::time::timeout(std::time::Duration::from_secs(1), body.collect()).await.unwrap().unwrap().to_bytes();
+        assert!(bytes.is_empty(), "an idle watch must terminate at timeoutSeconds");
     }
 
     fn test_peer() -> SocketAddr {

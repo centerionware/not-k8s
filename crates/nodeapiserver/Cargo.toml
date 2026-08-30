@@ -45,6 +45,10 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 serde_yaml = "0.9"
+# Group E's watch response lifetime uses the standard stream combinators to
+# apply Kubernetes' request timeout without turning the listener into a
+# polling loop.
+futures = { workspace = true }
 # protobuf's `bytes` fields are base64 in the JSON representation — the
 # same convention every other Kubernetes JSON<->protobuf codec follows.
 base64 = "0.22"
