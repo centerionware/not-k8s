@@ -963,6 +963,19 @@ pub async fn run(cfg: Config) {
         _ => None,
     };
 
+    let audit_webhook = match cfg.audit_webhook_url.as_deref() {
+        Some(url) => match crate::audit::webhook::AuditWebhook::new(url) {
+            Ok(webhook) => {
+                info!(%url, "nodeapiserver: configured audit webhook");
+                Some(webhook)
+            }
+            Err(error) => {
+                warn!(%url, error, "invalid NODEAPISERVER_AUDIT_WEBHOOK_URL; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
     let audit_sink = match cfg.audit_log_path.as_deref() {
         Some(path) => match crate::audit::sink::AuditSink::open_with_rotation(
             path,
@@ -971,14 +984,17 @@ pub async fn run(cfg: Config) {
         ) {
             Ok(sink) => {
                 info!(path = %path.display(), "nodeapiserver: opened audit log");
-                Some(Arc::new(sink))
+                Some(Arc::new(match audit_webhook {
+                    Some(webhook) => sink.with_webhook(webhook),
+                    None => sink,
+                }))
             }
             Err(error) => {
                 warn!(path = %path.display(), error = ?error, "failed to open NODEAPISERVER_AUDIT_LOG_PATH; the REST/watch listener will not run");
                 return;
             }
         },
-        None => None,
+        None => audit_webhook.map(|webhook| Arc::new(crate::audit::sink::AuditSink::webhook_only(webhook))),
     };
     let audit_policy = match cfg.audit_policy_file.as_deref() {
         Some(path) => match crate::audit::policy::AuditPolicy::from_file(path) {
@@ -1590,8 +1606,8 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
 /// response path is audited after `handle` returns. The sink is this crate's
 /// own `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
 /// request) and, when configured, an append-only file selected by
-/// `NODEAPISERVER_AUDIT_LOG_PATH`; rotation and webhook delivery remain
-/// separate backends. See
+/// `NODEAPISERVER_AUDIT_LOG_PATH` or a bounded asynchronous webhook selected
+/// by `NODEAPISERVER_AUDIT_WEBHOOK_URL`. See
 /// `audit::event`'s own doc comment for exactly which real `Event`
 /// fields are populated and which stages/levels this uses.
 async fn handle_with_audit(
