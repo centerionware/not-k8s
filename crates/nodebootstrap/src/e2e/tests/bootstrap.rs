@@ -1929,13 +1929,6 @@ pub(super) async fn nodeapiserver_audits_request_and_response_objects(context: &
         }
     };
     let generate_name = format!("nodeapiserver-audit-body-{}-", std::process::id());
-    let request_body = json!({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"generateName": generate_name.clone()},
-        "data": {"audit": "request"}
-    })
-    .to_string();
     let result = async {
         context
             .wait_until(
@@ -1960,30 +1953,25 @@ pub(super) async fn nodeapiserver_audits_request_and_response_objects(context: &
             )
             .await?;
 
-        let response = Command::new("curl")
-            .args([
-                "-k",
-                "-sS",
-                "--max-time",
-                "10",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "--data",
-                &request_body,
-                "-w",
-                "\n%{http_code}",
-                "https://127.0.0.1:6443/api/v1/namespaces/default/configmaps",
-            ])
-            .output()
+        let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), "default");
+        let configmap = ConfigMap {
+            metadata: kube::api::ObjectMeta {
+                generate_name: Some(generate_name.clone()),
+                ..Default::default()
+            },
+            data: Some(BTreeMap::from([(String::from("audit"), String::from("request"))])),
+            ..Default::default()
+        };
+        let created = configmaps
+            .create(&PostParams::default(), &configmap)
+            .await
             .context("creating a ConfigMap for audit object capture")?;
-        anyhow::ensure!(response.status.success(), "ConfigMap request failed: {}", String::from_utf8_lossy(&response.stderr));
-        let response_text = String::from_utf8_lossy(&response.stdout);
-        let (response_body, status) = response_text.rsplit_once('\n').context("splitting the ConfigMap response and status")?;
-        anyhow::ensure!(status.trim() == "201", "ConfigMap create returned HTTP {}: {}", status.trim(), response_body);
-        let created: Value = serde_json::from_str(response_body).context("decoding the created ConfigMap")?;
-        let name = created["metadata"]["name"].as_str().context("created ConfigMap had no name")?;
+        let name = created
+            .metadata
+            .name
+            .as_deref()
+            .context("created ConfigMap had no name")?
+            .to_string();
 
         context
             .wait_until(
@@ -2011,10 +1999,7 @@ pub(super) async fn nodeapiserver_audits_request_and_response_objects(context: &
             )
             .await?;
 
-        let delete_url = format!("https://127.0.0.1:6443/api/v1/namespaces/default/configmaps/{name}");
-        let _ = Command::new("curl")
-            .args(["-k", "-sS", "--max-time", "10", "-X", "DELETE", &delete_url])
-            .output();
+        let _ = configmaps.delete(&name, &DeleteParams::default()).await;
         Ok::<(), anyhow::Error>(())
     }
     .await;
