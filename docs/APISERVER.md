@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `be723604` on
+This snapshot is checked against `origin/nodeapiserver` at `d9cf951e` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1260,12 +1260,13 @@ mount at `/var/run/secrets/kubernetes.io/serviceaccount` unless the pod or
 its `ServiceAccount` opts out (`shouldAutomount`, ported exactly — pod's
 own preference wins, then the `ServiceAccount`'s, defaulting `true`), and
 copies the `ServiceAccount`'s `imagePullSecrets` onto the pod when it
-specifies none of its own. Split the same pure-decision/real-I/O-step way
-as `namespace_lifecycle`. Named honestly not ported:
-`LimitSecretReferences`/`enforceMountableSecrets` (upstream's own default
-is `false` unless an operator annotates the `ServiceAccount`
-`kubernetes.io/enforce-mountable-secrets: "true"` — a real but
-off-by-default check most real clusters never exercise). The
+specifies none of its own. When the `ServiceAccount` carries
+`kubernetes.io/enforce-mountable-secrets: "true"`, it also enforces the
+mountable-secret restriction for Secret volumes, container and init-container
+`env[].valueFrom.secretKeyRef`/`envFrom[].secretRef` references, and pod
+`imagePullSecrets`, against the `ServiceAccount`'s corresponding allowlists.
+That opt-in check is off by default, matching upstream. Split the same pure-
+decision/real-I/O-step way as `namespace_lifecycle`. The
 `pods/ephemeralcontainers` subresource is served by the REST layer, but this
 CREATE-only admission plugin does not run for its separate Pod update
 strategy.
