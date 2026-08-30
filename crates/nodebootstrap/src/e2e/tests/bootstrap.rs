@@ -1596,6 +1596,58 @@ pub(super) async fn nodeapiserver_writes_audit_log(context: &E2eContext) -> Resu
         .await
 }
 
+pub(super) async fn nodeapiserver_audits_rejected_requests(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "audit rejection checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let _auth = NodeapiserverAuthenticationOverride::install()?;
+    let audit = NodeapiserverAuditLogOverride::install()?;
+    context
+        .wait_until(
+            "nodeapiserver to reject an unauthenticated request after audit configuration",
+            Duration::from_secs(60),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "2",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "https://127.0.0.1:6443/healthz",
+                    ])
+                .output();
+                Ok(output.is_ok_and(|output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() == "401"
+                }))
+            },
+        )
+        .await?;
+
+    context
+        .wait_until(
+            "audit log to contain the rejected unauthenticated request",
+            Duration::from_secs(30),
+            || async {
+                Ok(fs::read_to_string(&audit.audit_log).is_ok_and(|content| {
+                    content.lines().any(|line| {
+                        line.contains("\"requestURI\":\"/healthz\"")
+                            && line.contains("\"code\":401")
+                    })
+                }))
+            },
+        )
+        .await
+}
+
 pub(super) async fn nodeapiserver_rotates_audit_log(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
