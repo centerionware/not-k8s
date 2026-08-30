@@ -25,8 +25,8 @@
 //! operator sets `kubernetes.io/enforce-mountable-secrets: "true"` on the
 //! `ServiceAccount` — a real but off-by-default check most real clusters
 //! never exercise), and the `pods/ephemeralcontainers` subresource
-//! validation path (that subresource is not served by this crate yet — a
-//! named, separate gap `server::rest`'s own doc comment already tracks).
+//! validation path (the subresource has its own Pod update strategy and is
+//! outside this `CREATE`-only plugin).
 //!
 //! Mirror-pod handling is ported too: a pod carrying real upstream's own
 //! `kubernetes.io/config.mirror` annotation is never mutated (mutating a
@@ -137,9 +137,9 @@ fn references_service_account_token_projection(pod: &Value) -> bool {
 /// fetched, for the automount/imagePullSecrets steps — real upstream's
 /// own `Admit` always calls `getServiceAccount`, unconditionally).
 /// `operation` other than `Create` is always `Allow` — real upstream's own
-/// plugin only mutates/validates on `CREATE` (the `ephemeralcontainers`
-/// subresource `UPDATE` path is the one exception, not ported — see this
-/// module's own doc comment).
+/// plugin only mutates/validates on `CREATE`; the separate
+/// `ephemeralcontainers` subresource `UPDATE` path is handled by its own Pod
+/// strategy rather than this plugin — see this module's own doc comment.
 pub fn quick_decision(pod: &Value, operation: crate::admission::attributes::Operation) -> Decision {
     if operation != crate::admission::attributes::Operation::Create {
         return Decision::Allow;

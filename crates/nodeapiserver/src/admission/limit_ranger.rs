@@ -26,8 +26,9 @@
 //! overriding the aggregated per-container total for CPU/memory — an
 //! alpha feature this crate has no feature-gate machinery to model, so
 //! `pod_requests`/`pod_limits` always use the aggregated per-container
-//! total, never a pod-level override), the `resize` subresource path
-//! (this crate serves no subresources yet), and upstream's own
+//! total, never a pod-level override), the `resize` subresource path (this
+//! plugin intentionally does not apply to subresources; the server has
+//! separate subresource strategies), and upstream's own
 //! live-lookup LRU/singleflight cache for `LimitRange` objects — this
 //! plugin always lists live from storage, same posture
 //! `namespace_lifecycle` already takes and for the same reason (nothing in
@@ -53,9 +54,8 @@ use serde_json::{json, Value};
 const LIMIT_RANGER_ANNOTATION: &str = "kubernetes.io/limit-ranger";
 
 /// Real upstream's own `SupportsAttributes`, minus the `resize`
-/// subresource carve-out (not applicable — this crate serves no
-/// subresources at all, so the "no other subresources are supported"
-/// branch already covers it) and minus in-place-resize's own consequence
+/// subresource carve-out (this plugin intentionally does not apply to any
+/// subresource) and minus in-place-resize's own consequence
 /// (`Pod` `UPDATE` is never supported here either way, matching
 /// upstream's own "containers/initContainers are immutable after create,
 /// so mutating/validating limits on update is unnecessary" reasoning).
