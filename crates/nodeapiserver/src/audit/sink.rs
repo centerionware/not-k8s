@@ -5,8 +5,8 @@
 //! without introducing a logging framework dependency: one process-wide
 //! mutex serializes complete event lines, and the file is opened in append
 //! mode so a restart never truncates an existing audit trail. Optional
-//! size-based rotation keeps a bounded set of numbered backups, matching the
-//! useful file-backend part of kube-apiserver's audit configuration.
+//! size-based rotation keeps a bounded set of numbered backups. The same
+//! sink can additionally enqueue events for the asynchronous webhook backend.
 
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
@@ -14,9 +14,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::webhook::AuditWebhook;
+
 #[derive(Clone)]
 pub struct AuditSink {
     state: Arc<Mutex<State>>,
+    webhook: Option<AuditWebhook>,
 }
 
 struct State {
@@ -50,32 +53,61 @@ impl AuditSink {
                 max_size_bytes,
                 max_backups,
             })),
+            webhook: None,
         })
+    }
+
+    /// Adds an asynchronous webhook backend to this sink. File and webhook
+    /// delivery are independent: a failed file write does not suppress a
+    /// queued webhook event, and a full webhook queue does not make a local
+    /// file write fail.
+    pub fn with_webhook(mut self, webhook: AuditWebhook) -> Self {
+        self.webhook = Some(webhook);
+        self
+    }
+
+    /// Creates a webhook-only sink for installations that do not configure
+    /// an audit log file.
+    pub fn webhook_only(webhook: AuditWebhook) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(State {
+                file: None,
+                path: PathBuf::new(),
+                max_size_bytes: None,
+                max_backups: 0,
+            })),
+            webhook: Some(webhook),
+        }
     }
 
     pub fn write(&self, event: &Value) -> io::Result<()> {
         let encoded = serde_json::to_vec(event).map_err(io::Error::other)?;
-        let mut file = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let line_len = encoded.len() as u64 + 1;
-        let current_len = file
-            .file
-            .as_ref()
-            .expect("audit sink file is always open")
-            .metadata()?
-            .len();
-        if file
-            .max_size_bytes
-            .is_some_and(|limit| current_len > 0 && current_len.saturating_add(line_len) > limit)
-        {
-            rotate(&mut file)?;
+        let file_result = {
+            let mut file = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(output) = file.file.as_ref() {
+                let line_len = encoded.len() as u64 + 1;
+                let current_len = output.metadata()?.len();
+                if file
+                    .max_size_bytes
+                    .is_some_and(|limit| current_len > 0 && current_len.saturating_add(line_len) > limit)
+                {
+                    rotate(&mut file)?;
+                }
+                let output = file.file.as_mut().expect("audit file exists after rotation");
+                output.write_all(&encoded)?;
+                output.write_all(b"\n")?;
+                output.flush()
+            } else {
+                Ok(())
+            }
+        };
+        if let Some(webhook) = &self.webhook {
+            webhook.enqueue(event);
         }
-        let output = file.file.as_mut().expect("audit sink file is always open");
-        output.write_all(&encoded)?;
-        output.write_all(b"\n")?;
-        output.flush()
+        file_result
     }
 }
 
