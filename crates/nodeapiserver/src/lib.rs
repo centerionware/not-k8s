@@ -89,12 +89,13 @@ pub fn install_crypto_provider() {
 /// `notk8s` applet dispatch. `nodebootstrap` stages the split binary or
 /// combined applet and supplies the cluster PKI when this target is selected.
 ///
-/// Runs the Group E listener forever. **Its handler is still a bring-up
-/// stub** (`server::listener`'s own doc comment) — this proves the
-/// listener, TLS, and path grammar work end to end, not that the apiserver
-/// is feature-complete. The deploy component table still controls whether a
-/// build contains this optional target; selecting it in nodebootstrap is an
-/// integration-branch operation until the full no-k3s acceptance gate passes.
+/// Runs the Group E listener forever. Its handler now serves the implemented
+/// discovery, generic REST, watch, admission, authorization, and proxy
+/// paths; unsupported compatibility edges remain documented in
+/// `server::listener` and `docs/APISERVER.md`. The deploy component table
+/// still controls whether a build contains this optional target; selecting
+/// it in nodebootstrap is an integration-branch operation until the full
+/// no-k3s acceptance gate passes.
 pub async fn run() -> Result<()> {
     install_crypto_provider();
     let cfg = config::Config::from_env()?;
