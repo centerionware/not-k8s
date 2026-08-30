@@ -19,6 +19,17 @@ pub enum Level {
     RequestResponse,
 }
 
+impl Level {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Metadata => "Metadata",
+            Self::Request => "Request",
+            Self::RequestResponse => "RequestResponse",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decision {
     pub level: Level,
