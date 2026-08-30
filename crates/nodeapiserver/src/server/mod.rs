@@ -71,6 +71,8 @@
 //! now runs the two Group J plugins that ever apply to an `Update`-shaped
 //! write (`namespace_lifecycle`, `LimitRanger`'s own PVC validation);
 //! `DELETECOLLECTION` also runs configured admission per selected object.
+//! The core Pod `ephemeralcontainers` GET/PUT/PATCH subresource is also
+//! real, with upstream's append-only existing-container strategy.
 //! `watch` is also real now (a real streaming HTTP response against a
 //! registered cache — this paragraph was stale about that; see
 //! `listener`'s own doc comment for the full, current picture). Every

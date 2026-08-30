@@ -52,10 +52,12 @@
 //! plugins as of this revision — see `admission`'s own doc comment) is
 //! applied in `server::listener`, also before dispatching in here.
 //! The generic `<resource>/status` subresource is real now
-//! (`update_status`/`patch_status`); every other subresource
-//! (`pods/log`, ...) still isn't, except for the scheduler's
-//! `pods/binding` subresource — the discovery table this module reads
-//! doesn't carry them either (a named, separate skip in
+//! (`update_status`/`patch_status`), as is the core Pod
+//! `ephemeralcontainers` subresource (`get_ephemeral_containers`,
+//! `update_ephemeral_containers`, and `patch_ephemeral_containers`);
+//! every other subresource (`pods/log`, ...) still isn't, except for the
+//! scheduler's `pods/binding` subresource — the discovery table this
+//! module reads doesn't carry them either (a named, separate skip in
 //! `build/discovery_parse.rs`). `list` filters by label/field selector
 //! for real (`cacher::selector::object_matches`, wired against every
 //! item's own decoded JSON — Group D's own generic adapter, unchanged
@@ -1312,6 +1314,212 @@ pub async fn bind_pod(
         UpdateOutcome::UnknownResource | UpdateOutcome::ObjectNotFound => Ok(BindOutcome::ObjectNotFound),
         UpdateOutcome::MissingResourceVersion | UpdateOutcome::NamespaceMismatch | UpdateOutcome::UnsupportedPatchType => Ok(BindOutcome::Invalid(vec!["binding could not be persisted".to_string()])),
     }
+}
+
+/// The core Pod `ephemeralcontainers` subresource only exposes the Pod
+/// object; its strategy permits changing `spec.ephemeralContainers` and
+/// resets every other attempted change back to the stored Pod. Existing
+/// ephemeral containers are immutable, so a caller may only append valid
+/// new entries. This is the same boundary enforced by upstream's
+/// `EphemeralContainersStrategy` before its normal optimistic-concurrency
+/// store update.
+fn restrict_ephemeral_container_update(existing: &Value, candidate: &Value) -> Result<Value, Vec<String>> {
+    let existing_list = ephemeral_container_list(existing)?;
+    let candidate_list = ephemeral_container_list(candidate)?;
+    let mut violations = Vec::new();
+
+    if candidate_list.len() < existing_list.len() {
+        violations.push("spec.ephemeralContainers: existing ephemeral containers may not be removed".to_string());
+    }
+    for (index, old) in existing_list.iter().enumerate() {
+        let old_name = old.get("name").and_then(Value::as_str);
+        let replacement = old_name.and_then(|name| {
+            candidate_list
+                .iter()
+                .find(|container| container.get("name").and_then(Value::as_str) == Some(name))
+        });
+        match replacement {
+            None => violations.push(format!("spec.ephemeralContainers[{index}]: existing ephemeral containers may not be removed")),
+            Some(new) if new != old => {
+                violations.push(format!("spec.ephemeralContainers[{index}]: existing ephemeral containers may not be modified"));
+            }
+            Some(_) => {}
+        }
+    }
+
+    let ordinary_names: std::collections::BTreeSet<&str> = existing
+        .pointer("/spec/containers")
+        .into_iter()
+        .chain(existing.pointer("/spec/initContainers"))
+        .filter_map(Value::as_array)
+        .flat_map(|containers| containers.iter())
+        .filter_map(|container| container.get("name").and_then(Value::as_str))
+        .collect();
+    let mut names = std::collections::BTreeSet::new();
+    for (index, container) in candidate_list.iter().enumerate() {
+        let Some(container) = container.as_object() else {
+            violations.push(format!("spec.ephemeralContainers[{index}]: must be an object"));
+            continue;
+        };
+        let Some(name) = container.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) else {
+            violations.push(format!("spec.ephemeralContainers[{index}].name: Required value"));
+            continue;
+        };
+        for detail in crate::scheme::name_format::is_dns1123_label(name) {
+            violations.push(format!("spec.ephemeralContainers[{index}].name: {detail}"));
+        }
+        if !names.insert(name) {
+            violations.push(format!("spec.ephemeralContainers[{index}].name: must be unique"));
+        }
+        if ordinary_names.contains(name) {
+            violations.push(format!("spec.ephemeralContainers[{index}].name: must not duplicate a regular or init container"));
+        }
+        if let Some(target) = container.get("targetContainerName").and_then(Value::as_str).filter(|target| !target.is_empty()) {
+            if !ordinary_names.contains(target) {
+                violations.push(format!("spec.ephemeralContainers[{index}].targetContainerName: must name an existing regular or init container"));
+            }
+        }
+        for field in ["ports", "resources", "lifecycle", "livenessProbe", "readinessProbe", "startupProbe"] {
+            if container.get(field).is_some_and(|value| !value.is_null()) {
+                violations.push(format!("spec.ephemeralContainers[{index}].{field}: field is not allowed for an ephemeral container"));
+            }
+        }
+    }
+    if !violations.is_empty() {
+        return Err(violations);
+    }
+
+    let mut object = existing.clone();
+    let Some(spec) = object.get_mut("spec").and_then(Value::as_object_mut) else {
+        return Err(vec!["spec: must be an object".to_string()]);
+    };
+    if candidate_list.is_empty() {
+        spec.remove("ephemeralContainers");
+    } else {
+        spec.insert("ephemeralContainers".to_string(), Value::Array(candidate_list.to_vec()));
+    }
+    if candidate_list != existing_list {
+        let generation = object.pointer("/metadata/generation").and_then(Value::as_i64).unwrap_or(0);
+        set_metadata_field(&mut object, "generation", Value::Number((generation + 1).into()));
+    }
+    Ok(object)
+}
+
+fn ephemeral_container_list(object: &Value) -> Result<&[Value], Vec<String>> {
+    match object.pointer("/spec/ephemeralContainers") {
+        None => Ok(&[]),
+        Some(Value::Array(containers)) => Ok(containers),
+        Some(_) => Err(vec!["spec.ephemeralContainers: must be an array".to_string()]),
+    }
+}
+
+/// Reads a Pod through the `ephemeralcontainers` subresource. Upstream
+/// returns the complete Pod because the subresource strategy only narrows
+/// writes; the caller still needs the ordinary metadata and status fields
+/// to observe the result.
+pub async fn get_ephemeral_containers(storage: &mut StorageClient, namespace: &str, name: &str) -> Result<GetOutcome, Error> {
+    get(storage, None, "", "v1", "pods", Some(namespace), name).await
+}
+
+/// Replaces a Pod through the `ephemeralcontainers` subresource. Only the
+/// ephemeral-container list from `body` is retained; spec, status, and
+/// ordinary metadata changes are discarded by the subresource strategy.
+pub async fn update_ephemeral_containers(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
+    let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let key = keys::object_key("", "pods", Some(namespace), name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decrypt_and_decode_with_rotation(storage, "", "pods", &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+    let body = convert_to_requested_version(storage, "", "v1", &resolved.kind, None, body.clone()).await?;
+    let object = match restrict_ephemeral_container_update(&existing_object, &body) {
+        Ok(object) => object,
+        Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
+    };
+    persist_update(
+        storage,
+        resolved.schema,
+        None,
+        None,
+        &resolved.kind,
+        "",
+        "v1",
+        "pods",
+        key,
+        &existing_kv,
+        &existing_object,
+        Some(namespace),
+        object,
+        dry_run,
+        None,
+        field_manager,
+        "ephemeralcontainers",
+        false,
+    )
+    .await
+}
+
+/// Applies a JSON/merge/strategic patch through the Pod
+/// `ephemeralcontainers` subresource. The patch is evaluated against the
+/// complete current Pod, then only its resulting ephemeral-container list
+/// is retained, matching upstream's reset-fields strategy.
+pub async fn patch_ephemeral_containers(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
+    let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let key = keys::object_key("", "pods", Some(namespace), name);
+    let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decrypt_and_decode_with_rotation(storage, "", "pods", &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
+    let patched = match apply_patch(kind_of_patch, resolved.schema, None, &existing_object, patch_doc) {
+        Ok(object) => object,
+        Err(message) => return Ok(UpdateOutcome::Invalid(vec![message])),
+    };
+    let object = match restrict_ephemeral_container_update(&existing_object, &patched) {
+        Ok(object) => object,
+        Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
+    };
+    persist_update(
+        storage,
+        resolved.schema,
+        None,
+        None,
+        &resolved.kind,
+        "",
+        "v1",
+        "pods",
+        key,
+        &existing_kv,
+        &existing_object,
+        Some(namespace),
+        object,
+        dry_run,
+        None,
+        field_manager,
+        "ephemeralcontainers",
+        false,
+    )
+    .await
 }
 
 /// Replaces an existing object. `namespace: None` for a cluster-scoped
@@ -3092,6 +3300,79 @@ mod tests {
         set_metadata_field(&mut obj, "uid", Value::String("abc".to_string()));
         assert_eq!(obj["metadata"]["name"], "web-1");
         assert_eq!(obj["metadata"]["uid"], "abc");
+    }
+
+    #[test]
+    fn ephemeral_container_update_keeps_the_pod_and_only_appends() {
+        let existing = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "debuggable", "generation": 4, "uid": "uid-1"},
+            "spec": {
+                "nodeName": "node-a",
+                "containers": [{"name": "app", "image": "busybox"}],
+                "ephemeralContainers": [{"name": "old-debugger", "image": "busybox", "command": ["sleep", "3600"]}]
+            },
+            "status": {"phase": "Running"}
+        });
+        let candidate = json!({
+            "metadata": {"name": "different", "uid": "different"},
+            "spec": {
+                "nodeName": "different-node",
+                "containers": [{"name": "different", "image": "different"}],
+                "ephemeralContainers": [
+                    {"name": "old-debugger", "image": "busybox", "command": ["sleep", "3600"]},
+                    {"name": "new-debugger", "image": "busybox", "targetContainerName": "app"}
+                ]
+            },
+            "status": {"phase": "Failed"}
+        });
+
+        let result = restrict_ephemeral_container_update(&existing, &candidate).expect("valid append");
+        assert_eq!(result["metadata"]["name"], "debuggable");
+        assert_eq!(result["metadata"]["uid"], "uid-1");
+        assert_eq!(result["metadata"]["generation"], 5);
+        assert_eq!(result["spec"]["nodeName"], "node-a");
+        assert_eq!(result["spec"]["containers"], existing["spec"]["containers"]);
+        assert_eq!(result["status"], existing["status"]);
+        assert_eq!(result["spec"]["ephemeralContainers"], candidate["spec"]["ephemeralContainers"]);
+    }
+
+    #[test]
+    fn ephemeral_container_update_rejects_removing_or_changing_existing_entries() {
+        let existing = json!({
+            "metadata": {"generation": 1},
+            "spec": {
+                "containers": [{"name": "app"}],
+                "ephemeralContainers": [{"name": "debugger", "image": "busybox"}]
+            }
+        });
+        let removed = json!({"spec": {"ephemeralContainers": []}});
+        let changed = json!({"spec": {"ephemeralContainers": [{"name": "debugger", "image": "other"}]}});
+
+        let removed_errors = restrict_ephemeral_container_update(&existing, &removed).expect_err("removal must be rejected");
+        assert!(removed_errors.iter().any(|error| error.contains("may not be removed")));
+        let changed_errors = restrict_ephemeral_container_update(&existing, &changed).expect_err("mutation must be rejected");
+        assert!(changed_errors.iter().any(|error| error.contains("may not be modified")));
+    }
+
+    #[test]
+    fn ephemeral_container_update_rejects_invalid_new_entries() {
+        let existing = json!({"spec": {"containers": [{"name": "app"}]}});
+        let candidate = json!({
+            "spec": {
+                "ephemeralContainers": [
+                    {"name": "app", "image": "busybox"},
+                    {"name": "debugger", "image": "busybox", "ports": [{"containerPort": 80}]},
+                    {"name": "debugger", "image": "busybox"}
+                ]
+            }
+        });
+
+        let errors = restrict_ephemeral_container_update(&existing, &candidate).expect_err("invalid entries must be rejected");
+        assert!(errors.iter().any(|error| error.contains("duplicate a regular or init container")));
+        assert!(errors.iter().any(|error| error.contains("ports")));
+        assert!(errors.iter().any(|error| error.contains("must be unique")));
     }
 
     #[test]
