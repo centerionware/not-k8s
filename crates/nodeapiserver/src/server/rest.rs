@@ -1097,6 +1097,7 @@ pub async fn create_with_options_and_manager(
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
         (None, None) => body.clone(),
     };
+    object = defaulting::apply_builtin_defaults(group, version, kind, object);
     object = crate::scheme::conversion::to_version(group, version, kind, object);
 
     // CEL Phase 4: real x-kubernetes-validations rule evaluation against
@@ -1975,6 +1976,7 @@ pub async fn update_with_options_and_manager(
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, body),
         (None, None) => body.clone(),
     };
+    let object = defaulting::apply_builtin_defaults(group, version, &kind, object);
 
     // CEL Phase 4: same real rule evaluation `create`'s own CRD branch
     // runs, `old_value: Some(&existing_object)` this time — real
@@ -2526,6 +2528,7 @@ pub async fn patch_persist_with_manager(
         (None, Some(open_api_schema)) => apiextensions::schema_defaults::apply_defaults(open_api_schema, &candidate),
         (None, None) => candidate,
     };
+    let object = defaulting::apply_builtin_defaults(group, version, &context.kind, object);
 
     // CEL Phase 4: same real rule evaluation `create`/`update` both run.
     if let Some(open_api_schema) = &context.open_api_schema {
@@ -3123,6 +3126,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             (None, Some(schema)) => apiextensions::schema_defaults::apply_defaults(schema, &object),
             (None, None) => object,
         };
+        let object = defaulting::apply_builtin_defaults(group, version, &resolved.kind, object);
         if let Some(schema) = &open_api_schema {
             let rule_violations = apiextensions::cel_evaluate::validate_object(schema, &object, None);
             if !rule_violations.is_empty() {
@@ -3286,6 +3290,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         (None, Some(schema)) => apiextensions::schema_defaults::apply_defaults(schema, &object),
         (None, None) => object,
     };
+    let object = defaulting::apply_builtin_defaults(group, version, &resolved.kind, object);
     if let Some(schema) = &open_api_schema {
         let rule_violations = apiextensions::cel_evaluate::validate_object(schema, &object, Some(&live_for_request));
         if !rule_violations.is_empty() {
