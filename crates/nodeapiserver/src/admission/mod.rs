@@ -31,8 +31,9 @@
 //! mirror pod's three real restrictions. See that module's own doc
 //! comment for the two real pieces of upstream's plugin this one doesn't
 //! port (`LimitSecretReferences`, off by default upstream anyway, and the
-//! `ephemeralcontainers` subresource path, which this crate doesn't serve
-//! at all yet).
+//! `ephemeralcontainers` subresource validation path, which is handled by
+//! that subresource's own Pod update strategy rather than this `CREATE`-
+//! only plugin).
 //!
 //! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
 //! a `PersistentVolumeClaim` with no class of its own gets
