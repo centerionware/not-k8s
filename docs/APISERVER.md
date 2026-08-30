@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `d9cf951e` on
+This snapshot is checked against `origin/nodeapiserver` at `7169b64a` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1267,9 +1267,11 @@ mountable-secret restriction for Secret volumes, container and init-container
 `imagePullSecrets`, against the `ServiceAccount`'s corresponding allowlists.
 That opt-in check is off by default, matching upstream. Split the same pure-
 decision/real-I/O-step way as `namespace_lifecycle`. The
-`pods/ephemeralcontainers` subresource is served by the REST layer, but this
-CREATE-only admission plugin does not run for its separate Pod update
-strategy.
+`pods/ephemeralcontainers` subresource is served by its own Pod update
+strategy; its separate ServiceAccount validation path now checks new
+ephemeral containers' `env[].valueFrom.secretKeyRef` and
+`envFrom[].secretRef` references against the annotated account's allowed
+secrets before the update is persisted.
 
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
