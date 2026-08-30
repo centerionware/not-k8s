@@ -428,7 +428,7 @@ where
     let _ = writeln!(out, "# TYPE {name} histogram");
     let mut sorted: Vec<&(K, HistogramSnapshot)> = hists.iter().collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    for ((labels, (bucket_counts, sum, count))) in sorted {
+    for (labels, (bucket_counts, sum, count)) in sorted {
         let rendered_labels = render_histogram_labels(labels);
         for (bound, cumulative) in buckets.iter().zip(bucket_counts.iter()) {
             let _ = writeln!(out, "{name}_bucket{{{rendered_labels},le=\"{bound}\"}} {cumulative}");
@@ -519,6 +519,7 @@ pub fn render() -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::server::path;
     use super::*;
 
     fn labels(verb: &str, resource: &str) -> RequestLabels {

@@ -2237,6 +2237,7 @@ fn build_audit_event(
     )
 }
 
+#[cfg(test)]
 fn build_audit_event_at_stage(
     audit_id: &str,
     stage: &str,
