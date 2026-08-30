@@ -2551,7 +2551,7 @@ pub(super) async fn nodeapiserver_rejects_oversized_request_body(
         ));
     }
 
-    let body = vec![b'x'; cfg.max_request_body_bytes + 1];
+    let body = vec![b'x'; 3 * 1024 * 1024 + 1];
     let request = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/namespaces/{}/configmaps", context.namespace))
