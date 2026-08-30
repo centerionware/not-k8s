@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `987ce502` on
+This snapshot is checked against `origin/nodeapiserver` at `be723604` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -51,7 +51,7 @@ explanation of each boundary.
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, and ordinary-write managed-fields tracking are present; remaining upstream managed-fields edge cases need coverage. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
-| J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
+| J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
@@ -1539,8 +1539,9 @@ request.
 loaded from storage before validating admission. Matching bindings can apply
 multiple JSON Patch operations or an apply configuration in order, including
 parameter and selector matching, with the policy's `failurePolicy` honored.
-The current CEL adapter accepts JSON-shaped mutation results; typed
-`JSONPatch{}`/`Object{}` declarations remain explicit follow-up work. Composed
+The CEL adapter now exposes schema-backed typed `JSONPatch{}` and `Object{}`
+declarations, including nested object fields and list-item aliases, while
+preserving the mutation result's JSON shape. Composed
 `spec.variables` are evaluated in declaration order and exposed to validation and mutation expressions through
 the `variables` object; match conditions remain evaluated before composition.
 Each matching policy chain is evaluated once per write; the e2e coverage uses
