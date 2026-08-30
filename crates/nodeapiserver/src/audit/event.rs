@@ -4,8 +4,8 @@
 //! `--audit-log-path` writes one line of per request, at real upstream's
 //! own `Metadata` level (the most common real default: everything about
 //! *who did what to which object*, but not the request/response object
-//! bodies themselves — those are `Request`/`RequestResponse` level,
-//! genuinely more invasive and not built here).
+//! bodies themselves). The caller may supply decoded request and response
+//! objects when the selected policy level is `Request` or `RequestResponse`.
 //!
 //! **Wired into `server::listener`**: `server::listener::handle_with_audit`
 //! wraps every request, calling [`build_event`] once the response is
@@ -25,11 +25,12 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-/// Real upstream's own `Level` constants — only `"Metadata"` is actually
-/// produced by [`build_event`] today (see this module's own doc
-/// comment), the others are real values a caller could reasonably ask
-/// for once request/response body logging exists.
+/// Real upstream's own `Level` constants. [`build_event`] defaults to
+/// `Metadata`; request/response objects are included when the caller passes
+/// them through [`EventInput`].
 pub const LEVEL_METADATA: &str = "Metadata";
+pub const LEVEL_REQUEST: &str = "Request";
+pub const LEVEL_REQUEST_RESPONSE: &str = "RequestResponse";
 pub const STAGE_REQUEST_RECEIVED: &str = "RequestReceived";
 pub const STAGE_RESPONSE_STARTED: &str = "ResponseStarted";
 pub const STAGE_RESPONSE_COMPLETE: &str = "ResponseComplete";
@@ -51,6 +52,11 @@ pub struct EventInput<'a> {
     pub object_ref: Option<ObjectRef<'a>>,
     pub response_code: u16,
     pub annotations: Option<&'a BTreeMap<String, String>>,
+    /// The decoded request object for `Request` and `RequestResponse` audit
+    /// levels. `None` means the request had no decodable object body.
+    pub request_object: Option<&'a Value>,
+    /// The decoded response object for the `RequestResponse` audit level.
+    pub response_object: Option<&'a Value>,
     /// RFC3339 (real upstream uses `MicroTime`, sub-second precision —
     /// this crate's own `chrono`-based timestamps elsewhere in the code
     /// base are already RFC3339-second precision, so this is that same
@@ -68,17 +74,25 @@ pub struct ObjectRef<'a> {
 }
 
 /// Real upstream's own `Event`, at the requested audit stage and
-/// `Metadata` level. Request/response object capture is still a separate
-/// scope; the stage itself is no longer hard-coded.
+/// `Metadata` level. The listener uses
+/// [`build_event_at_stage_with_level`] when a policy requests object data.
 pub fn build_event(input: &EventInput<'_>) -> Value {
-    build_event_at_stage(input, STAGE_RESPONSE_COMPLETE)
+    build_event_at_stage_with_level(input, LEVEL_METADATA, STAGE_RESPONSE_COMPLETE)
 }
 
 pub fn build_event_at_stage(input: &EventInput<'_>, stage: &str) -> Value {
+    build_event_at_stage_with_level(input, LEVEL_METADATA, stage)
+}
+
+pub fn build_event_at_stage_with_level(
+    input: &EventInput<'_>,
+    level: &str,
+    stage: &str,
+) -> Value {
     let mut event = json!({
         "kind": "Event",
         "apiVersion": "audit.k8s.io/v1",
-        "level": LEVEL_METADATA,
+        "level": level,
         "auditID": input.audit_id,
         "stage": stage,
         "requestURI": input.request_uri,
@@ -117,6 +131,12 @@ pub fn build_event_at_stage(input: &EventInput<'_>, stage: &str) -> Value {
     if let Some(annotations) = input.annotations.filter(|annotations| !annotations.is_empty()) {
         event["annotations"] = json!(annotations);
     }
+    if let Some(request_object) = input.request_object {
+        event["requestObject"] = request_object.clone();
+    }
+    if let Some(response_object) = input.response_object {
+        event["responseObject"] = response_object.clone();
+    }
 
     event
 }
@@ -138,6 +158,8 @@ mod tests {
             object_ref: None,
             response_code: 200,
             annotations: None,
+            request_object: None,
+            response_object: None,
             timestamp: "2026-08-20T12:00:00Z",
         }
     }
@@ -213,5 +235,27 @@ mod tests {
         assert_eq!(event["auditID"], input.audit_id);
         assert_eq!(event["stage"], STAGE_REQUEST_RECEIVED);
         assert!(event.get("responseStatus").is_none());
+    }
+
+    #[test]
+    fn build_event_includes_supplied_request_and_response_objects() {
+        let request = json!({"spec": {"replicas": 2}});
+        let response = json!({"status": "Success"});
+        let mut input = minimal_input();
+        input.request_object = Some(&request);
+        input.response_object = Some(&response);
+        let event = build_event(&input);
+        assert_eq!(event["requestObject"], request);
+        assert_eq!(event["responseObject"], response);
+    }
+
+    #[test]
+    fn build_event_preserves_the_selected_request_response_level() {
+        let request = json!({"metadata": {"name": "demo"}});
+        let mut input = minimal_input();
+        input.request_object = Some(&request);
+        let event = build_event_at_stage_with_level(&input, LEVEL_REQUEST, STAGE_RESPONSE_COMPLETE);
+        assert_eq!(event["level"], LEVEL_REQUEST);
+        assert_eq!(event["requestObject"], request);
     }
 }

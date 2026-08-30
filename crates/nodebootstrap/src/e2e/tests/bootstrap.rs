@@ -297,10 +297,15 @@ impl Drop for NodeapiserverAuditLogOverride {
 
 struct NodeapiserverAuditWebhookOverride {
     drop_in: PathBuf,
+    policy_file: Option<PathBuf>,
 }
 
 impl NodeapiserverAuditWebhookOverride {
     fn install(url: &str) -> Result<Self> {
+        Self::install_with_policy(url, None)
+    }
+
+    fn install_with_policy(url: &str, policy: Option<&str>) -> Result<Self> {
         if !systemd_service_available("nodeapiserver.service") {
             return Err(skip_test(
                 "nodeapiserver.service is unavailable; audit-webhook checks need systemd",
@@ -308,16 +313,27 @@ impl NodeapiserverAuditWebhookOverride {
         }
 
         let suffix = std::process::id();
+        let policy_file = policy.map(|contents| {
+            let path = std::env::temp_dir().join(format!("nodeapiserver-e2e-audit-policy-{suffix}.yaml"));
+            (path, contents)
+        });
+        if let Some((path, contents)) = &policy_file {
+            fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
+        }
         let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
         let drop_in = drop_in_dir.join(format!("nodebootstrap-audit-webhook-{suffix}.conf"));
         let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-audit-webhook-{suffix}.conf"));
-        fs::write(
-            &local_drop_in,
-            format!("[Service]\nEnvironment=NODEAPISERVER_AUDIT_WEBHOOK_URL={url}\n"),
-        )
+        let mut contents = format!("[Service]\nEnvironment=NODEAPISERVER_AUDIT_WEBHOOK_URL={url}\n");
+        if let Some((path, _)) = &policy_file {
+            contents.push_str(&format!("Environment=NODEAPISERVER_AUDIT_POLICY_FILE={}\n", path.display()));
+        }
+        fs::write(&local_drop_in, contents)
         .with_context(|| format!("writing {}", local_drop_in.display()))?;
 
-        let guard = Self { drop_in };
+        let guard = Self {
+            drop_in,
+            policy_file: policy_file.map(|(path, _)| path),
+        };
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
@@ -337,6 +353,9 @@ impl Drop for NodeapiserverAuditWebhookOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        if let Some(policy_file) = &self.policy_file {
+            let _ = fs::remove_file(policy_file);
+        }
     }
 }
 
@@ -1859,6 +1878,144 @@ pub(super) async fn nodeapiserver_delivers_audit_webhook(context: &E2eContext) -
                 },
             )
             .await
+    }
+    .await;
+
+    drop(webhook);
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    result
+}
+
+pub(super) async fn nodeapiserver_audits_request_and_response_objects(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "audit object checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).context("binding the e2e audit webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let batches = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_batches = batches.clone();
+    let server_stopping = stopping.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_audit_webhook_connection(stream, &server_batches);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let policy = "apiVersion: audit.k8s.io/v1\nkind: Policy\nrules:\n- level: RequestResponse\n  resources:\n  - group: \"\"\n    resources: [configmaps]\n";
+    let webhook = match NodeapiserverAuditWebhookOverride::install_with_policy(
+        &format!("http://{address}/audit"),
+        Some(policy),
+    ) {
+        Ok(webhook) => webhook,
+        Err(error) => {
+            stopping.store(true, Ordering::Relaxed);
+            let _ = server.join();
+            return Err(error);
+        }
+    };
+    let generate_name = format!("nodeapiserver-audit-body-{}-", std::process::id());
+    let request_body = json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"generateName": generate_name.clone()},
+        "data": {"audit": "request"}
+    })
+    .to_string();
+    let result = async {
+        context
+            .wait_until(
+                "nodeapiserver to answer requests after audit object configuration",
+                Duration::from_secs(60),
+                || async {
+                    let output = Command::new("curl")
+                        .args([
+                            "-k",
+                            "-sS",
+                            "--max-time",
+                            "2",
+                            "-o",
+                            "/dev/null",
+                            "-w",
+                            "%{http_code}",
+                            "https://127.0.0.1:6443/healthz",
+                        ])
+                        .output();
+                    Ok(output.is_ok_and(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim() != "000"))
+                },
+            )
+            .await?;
+
+        let response = Command::new("curl")
+            .args([
+                "-k",
+                "-sS",
+                "--max-time",
+                "10",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--data",
+                &request_body,
+                "-w",
+                "\n%{http_code}",
+                "https://127.0.0.1:6443/api/v1/namespaces/default/configmaps",
+            ])
+            .output()
+            .context("creating a ConfigMap for audit object capture")?;
+        anyhow::ensure!(response.status.success(), "ConfigMap request failed: {}", String::from_utf8_lossy(&response.stderr));
+        let response_text = String::from_utf8_lossy(&response.stdout);
+        let (response_body, status) = response_text.rsplit_once('\n').context("splitting the ConfigMap response and status")?;
+        anyhow::ensure!(status.trim() == "201", "ConfigMap create returned HTTP {}: {}", status.trim(), response_body);
+        let created: Value = serde_json::from_str(response_body).context("decoding the created ConfigMap")?;
+        let name = created["metadata"]["name"].as_str().context("created ConfigMap had no name")?;
+
+        context
+            .wait_until(
+                "audit webhook to receive request and response objects",
+                Duration::from_secs(45),
+                || {
+                    let batches = batches.clone();
+                    let generate_name = generate_name.clone();
+                    async move {
+                        Ok(batches.lock().is_ok_and(|batches| {
+                            batches.iter().any(|batch| {
+                                batch["kind"] == "EventList"
+                                    && batch["items"].as_array().is_some_and(|items| {
+                                        items.iter().any(|event| {
+                                            event["level"] == "RequestResponse"
+                                                && event["stage"] == "ResponseComplete"
+                                                && event["requestObject"]["metadata"]["generateName"] == generate_name
+                                                && event["responseObject"]["kind"] == "ConfigMap"
+                                        })
+                                    })
+                            })
+                        }))
+                    }
+                },
+            )
+            .await?;
+
+        let delete_url = format!("https://127.0.0.1:6443/api/v1/namespaces/default/configmaps/{name}");
+        let _ = Command::new("curl")
+            .args(["-k", "-sS", "--max-time", "10", "-X", "DELETE", &delete_url])
+            .output();
+        Ok::<(), anyhow::Error>(())
     }
     .await;
 
