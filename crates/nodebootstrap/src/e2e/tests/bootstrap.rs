@@ -1424,8 +1424,8 @@ pub(super) async fn nodeapiserver_serves_ephemeralcontainers_subresource(
                         "command": ["sleep", "3600"],
                         "targetContainerName": "app"
                     }]}
-                })))?,
-        )?
+                }))?)?,
+        )
         .await
         .context("patching nodeapiserver ephemeralcontainers")?;
     anyhow::ensure!(
