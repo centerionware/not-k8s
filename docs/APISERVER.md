@@ -868,8 +868,10 @@ Published OpenAPI-local constraints are now applied generically as well:
 `scheme::validation::validate_openapi_constraints` resolves the built-in
 GVK's vendored schema and reuses the CRD constraint walker for formats,
 enums, ranges, lengths, patterns, and uniqueness on create, update, patch,
-and apply. This closes the schema-local part of the generic validation gap;
-cross-field and per-kind semantic rules remain separate work, rather than
+and apply. The generic write paths also enforce the universal Kubernetes
+metadata grammar for label/annotation keys and values and finalizers. This
+closes the schema-local and universal-metadata part of the generic validation
+gap; cross-field and per-kind semantic rules remain separate work, rather than
 pretending this is a full replacement for upstream's hand-maintained
 `pkg/apis/*/v1/defaults.go` and validation packages.
 `scheme::validation::validate_required(schema, value)` lands the

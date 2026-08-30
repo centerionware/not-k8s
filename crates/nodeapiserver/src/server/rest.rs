@@ -1079,6 +1079,7 @@ pub async fn create_with_options_and_manager(
         (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, &name).into_iter().map(|e| format!("metadata.name: {e}")));
+    violations.extend(metadata_format_violations(body));
     // Group K / CEL Phase 3: a CustomResourceDefinition's own
     // `x-kubernetes-validations` rules get their real static cost
     // checked at CRD-acceptance time, real upstream's own posture
@@ -1963,6 +1964,7 @@ pub async fn update_with_options_and_manager(
         (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+    violations.extend(metadata_format_violations(body));
     // Group K / CEL Phase 3: same real static cost check `create`'s own
     // CRD branch runs.
     if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
@@ -2522,6 +2524,7 @@ pub async fn patch_persist_with_manager(
         (None, None) => Vec::new(),
     };
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+    violations.extend(metadata_format_violations(&candidate));
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }
@@ -3128,6 +3131,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             (None, None) => {}
         }
         violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+        violations.extend(metadata_format_violations(&object));
         if !violations.is_empty() {
             return Ok(ApplyPrepareOutcome::Invalid(violations));
         }
@@ -3299,6 +3303,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         (None, None) => {}
     }
     violations.extend(name_format_violations(group, resource, name).into_iter().map(|e| format!("metadata.name: {e}")));
+    violations.extend(metadata_format_violations(&object));
     if !violations.is_empty() {
         return Ok(ApplyPrepareOutcome::Invalid(violations));
     }
@@ -3494,6 +3499,59 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         ("coordination.k8s.io", "leases") => crate::scheme::name_format::is_dns1123_subdomain(name),
         _ => Vec::new(),
     }
+}
+
+/// Validates metadata fields shared by every Kubernetes object. OpenAPI's
+/// `additionalProperties` can validate map values but cannot constrain the
+/// property names themselves, so labels, annotations, and finalizers need
+/// this universal metadata pass in addition to the per-kind schema checks.
+fn metadata_format_violations(object: &Value) -> Vec<String> {
+    let Some(metadata) = object.get("metadata") else {
+        return Vec::new();
+    };
+    let Some(metadata) = metadata.as_object() else {
+        return vec!["metadata must be an object".to_string()];
+    };
+    let mut violations = Vec::new();
+
+    for field in ["labels", "annotations"] {
+        let Some(values) = metadata.get(field) else { continue };
+        let Some(values) = values.as_object() else {
+            violations.push(format!("metadata.{field} must be an object"));
+            continue;
+        };
+        for (key, value) in values {
+            for error in crate::scheme::name_format::is_qualified_name(key) {
+                violations.push(format!("metadata.{field}[{key:?}]: {error}"));
+            }
+            let Some(value) = value.as_str() else {
+                violations.push(format!("metadata.{field}[{key:?}] must be a string"));
+                continue;
+            };
+            if field == "labels" {
+                for error in crate::scheme::name_format::is_label_value(value) {
+                    violations.push(format!("metadata.labels[{key:?}]: {error}"));
+                }
+            }
+        }
+    }
+
+    if let Some(finalizers) = metadata.get("finalizers") {
+        let Some(finalizers) = finalizers.as_array() else {
+            violations.push("metadata.finalizers must be an array".to_string());
+            return violations;
+        };
+        for (index, finalizer) in finalizers.iter().enumerate() {
+            let Some(finalizer) = finalizer.as_str() else {
+                violations.push(format!("metadata.finalizers[{index}] must be a string"));
+                continue;
+            };
+            for error in crate::scheme::name_format::is_qualified_name(finalizer) {
+                violations.push(format!("metadata.finalizers[{index}]: {error}"));
+            }
+        }
+    }
+    violations
 }
 
 /// No-ops (rather than panicking, matching this crate's established
@@ -4004,6 +4062,24 @@ mod tests {
     fn name_format_violations_enforces_the_real_namespace_rule() {
         assert!(name_format_violations("", "namespaces", "my-namespace").is_empty());
         assert!(!name_format_violations("", "namespaces", "My_Namespace").is_empty());
+    }
+
+    #[test]
+    fn metadata_format_violations_reject_invalid_keys_and_values() {
+        let violations = metadata_format_violations(&json!({
+            "metadata": {
+                "labels": {
+                    "example.com/owner": "valid",
+                    "invalid/key/with/two/slashes": "valid",
+                    "other": "has/slash"
+                },
+                "annotations": {"invalid/key/with/two/slashes": "value"},
+                "finalizers": ["example.com/cleanup", "bad/finalizer/name"]
+            }
+        }));
+        assert!(violations.iter().any(|violation| violation.contains("invalid/key/with/two/slashes")));
+        assert!(violations.iter().any(|violation| violation.contains("has/slash")));
+        assert!(violations.iter().any(|violation| violation.contains("finalizers")));
     }
 
     #[test]

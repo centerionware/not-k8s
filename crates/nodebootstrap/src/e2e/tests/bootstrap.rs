@@ -858,6 +858,43 @@ pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
     }
 }
 
+pub(super) async fn nodeapiserver_rejects_invalid_metadata_keys(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "metadata validation checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-invalid-metadata-{}", std::process::id());
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/namespaces/{}/configmaps",
+            context.namespace
+        ))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": name,
+                "namespace": context.namespace,
+                "labels": {"invalid/key/with/two/slashes": "value"}
+            }
+        }))?)?;
+
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "invalid metadata key returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!("invalid metadata key was accepted: {value}"),
+    }
+}
+
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     context: &E2eContext,
 ) -> Result<()> {
