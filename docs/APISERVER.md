@@ -1055,10 +1055,12 @@ resources; CRD-defined resources use the matching runtime-schema SSA
 implementation (`patch::crd_apply`) against each established version's
 `openAPIV3Schema`, including managed-field ownership, conflict detection,
 structural list/map merge behavior, pruning, and create-on-apply. The Apply
-path preserves each manager's recorded API version and compares converted
-live/candidate objects under that manager's own schema, including built-in
-version conversions and CRD conversion-webhook boundaries. Both paths share the same
-optimistic-concurrency persistence behavior. Ordinary CREATE/PUT/PATCH and
+path preserves each manager's recorded API version, compares converted
+live/candidate objects under that manager's own schema, and performs
+cross-version pruning when a manager changes the API version it applies with,
+including built-in version conversions and CRD conversion-webhook boundaries.
+Both paths share the same optimistic-concurrency persistence behavior.
+Ordinary CREATE/PUT/PATCH and
 status writes now also reconcile `metadata.managedFields` using the explicit
 `fieldManager` or the request's `User-Agent`, with generated server metadata
 excluded from ownership calculation.
