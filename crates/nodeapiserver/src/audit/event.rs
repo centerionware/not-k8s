@@ -10,11 +10,9 @@
 //! **Wired into `server::listener`**: `server::listener::handle_with_audit`
 //! wraps every request, calling [`build_event`] once the response is
 //! known and logging it via this crate's own `tracing` output (target
-//! `"nodeapiserver::audit"`) — see that function's own doc comment for
-//! exactly why the sink is "this crate's own log output," not a
-//! dedicated file/webhook, and why wrapping the call site (rather than
-//! threading an audit context out through `handle`'s own many early
-//! returns) was the far less invasive place to add this.
+//! `"nodeapiserver::audit"`) plus the configured file/webhook sinks — see
+//! that function's own doc comment for the request-boundary placement and
+//! backend behavior.
 //!
 //! Real upstream emits up to four events per request across real audit
 //! *stages* (`RequestReceived`, `ResponseStarted` — long-running requests
