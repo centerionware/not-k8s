@@ -1533,7 +1533,7 @@ pub(super) async fn nodeapiserver_enforces_service_account_mountable_secrets(
         }
     }))?;
     match pods.create(&PostParams::default(), &denied).await {
-        Err(KubeError::Api(error)) if error.code == 403 => {}
+        Err(KubeError::Api(error)) if error.code == 422 => {}
         Err(error) => anyhow::bail!(
             "an unlisted mountable secret returned the wrong API error: {error}"
         ),
@@ -1575,6 +1575,162 @@ pub(super) async fn nodeapiserver_enforces_service_account_mountable_secrets(
     pods.delete(&allowed.metadata.name.clone().unwrap_or_default(), &DeleteParams::default())
         .await
         .context("deleting the mountable-secret allow fixture")?;
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "ephemeral-container ServiceAccount secret checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let service_account_name = format!("nodeapiserver-ephemeral-sa-{suffix}");
+    let secret_name = format!("nodeapiserver-ephemeral-secret-{suffix}");
+    let pod_name = format!("nodeapiserver-ephemeral-secret-pod-{suffix}");
+    let secrets: Api<Secret> = Api::namespaced(context.client.clone(), &context.namespace);
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+
+    secrets
+        .create(
+            &PostParams::default(),
+            &Secret {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(secret_name.clone()),
+                    ..Default::default()
+                },
+                string_data: Some(BTreeMap::from([(
+                    String::from("token"),
+                    String::from("allowed"),
+                )])),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the ephemeral-container mountable-secret fixture")?;
+    service_accounts
+        .create(
+            &PostParams::default(),
+            &ServiceAccount {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(service_account_name.clone()),
+                    annotations: Some(BTreeMap::from([(
+                        String::from("kubernetes.io/enforce-mountable-secrets"),
+                        String::from("true"),
+                    )])),
+                    ..Default::default()
+                },
+                secrets: Some(vec![ObjectReference {
+                    name: Some(secret_name.clone()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the ephemeral-container ServiceAccount fixture")?;
+
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": pod_name},
+        "spec": {
+            "serviceAccountName": service_account_name,
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod)
+        .await
+        .context("creating the ephemeral-container secret fixture Pod")?;
+    context
+        .wait_until(
+            "the ephemeral-container secret fixture Pod to become Running",
+            Duration::from_secs(90),
+            || {
+                let pods = pods.clone();
+                let name = pod_name.clone();
+                async move {
+                    Ok(pods
+                        .get(&name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            },
+        )
+        .await?;
+
+    let ephemeral_uri = format!(
+        "/api/v1/namespaces/{}/pods/{pod_name}/ephemeralcontainers",
+        context.namespace
+    );
+    let denied_request = Request::builder()
+        .method("PATCH")
+        .uri(ephemeral_uri.as_str())
+        .header("Content-Type", "application/strategic-merge-patch+json")
+        .body(serde_json::to_vec(&json!({
+            "spec": {"ephemeralContainers": [{
+                "name": "denied-debugger",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}]
+            }]}
+        }))?)?;
+    let denied = context.client.request::<Value>(denied_request).await;
+    match denied {
+        Err(KubeError::Api(error)) if error.code == 422 => {}
+        Err(error) => anyhow::bail!(
+            "an unlisted ephemeral-container secret returned the wrong API error: {error}"
+        ),
+        Ok(response) => anyhow::bail!(
+            "an unlisted ephemeral-container secret was unexpectedly admitted: {response}"
+        ),
+    }
+
+    let allowed_request = Request::builder()
+        .method("PATCH")
+        .uri(ephemeral_uri.as_str())
+        .header("Content-Type", "application/strategic-merge-patch+json")
+        .body(serde_json::to_vec(&json!({
+            "spec": {"ephemeralContainers": [{
+                "name": "allowed-debugger",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"],
+                "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": secret_name, "key": "token"}}}]
+            }]}
+        }))?)?;
+    let allowed = context
+        .client
+        .request::<Value>(allowed_request)
+        .await
+        .context("adding an allowed ephemeral container")?;
+    anyhow::ensure!(
+        allowed
+            .pointer("/spec/ephemeralContainers/0/name")
+            .and_then(Value::as_str)
+            == Some("allowed-debugger"),
+        "nodeapiserver did not admit the allowed ephemeral-container secret reference: {allowed}"
+    );
+
+    pods.delete(&pod_name, &DeleteParams::default())
+        .await
+        .context("deleting the ephemeral-container secret fixture Pod")?;
+    service_accounts
+        .delete(&service_account_name, &DeleteParams::default())
+        .await
+        .context("deleting the ephemeral-container ServiceAccount fixture")?;
+    secrets
+        .delete(&secret_name, &DeleteParams::default())
+        .await
+        .context("deleting the ephemeral-container mountable-secret fixture")?;
     Ok(())
 }
 

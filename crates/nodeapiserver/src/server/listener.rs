@@ -2016,6 +2016,61 @@ async fn handle(
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             };
+            let existing_pod = match rest::get(&mut client, None, "", "v1", "pods", Some(&info.namespace), &info.name).await {
+                Ok(rest::GetOutcome::Found(pod)) => pod,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the Pod for ephemeralcontainers failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let Some(service_account_name) = existing_pod
+                .pointer("/spec/serviceAccountName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            else {
+                return Ok(json_response(
+                    StatusCode::FORBIDDEN,
+                    &admission_forbidden_status(
+                        &path_str,
+                        &format!(
+                            "no service account specified for pod {}/{}",
+                            info.namespace, info.name
+                        ),
+                    ),
+                ));
+            };
+            let service_account = match rest::get(
+                &mut client,
+                None,
+                "",
+                "v1",
+                "serviceaccounts",
+                Some(&info.namespace),
+                service_account_name,
+            )
+            .await
+            {
+                Ok(rest::GetOutcome::Found(service_account)) => service_account,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                    return Ok(json_response(
+                        StatusCode::FORBIDDEN,
+                        &admission_forbidden_status(
+                            &path_str,
+                            &format!(
+                                "error looking up service account {}/{}: not found",
+                                info.namespace, service_account_name
+                            ),
+                        ),
+                    ));
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the ServiceAccount for ephemeralcontainers failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
             let dry_run = match dry_run_query(&query) {
                 Ok(value) => value,
                 Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
@@ -2032,8 +2087,15 @@ async fn handle(
                 Ok(body) => body,
                 Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
             };
+            let validate_ephemeral = |pod: &Value| {
+                admission::service_account::validate_ephemeral_container_secret_references(
+                    &service_account,
+                    pod,
+                )
+                .map_err(|error| vec![error])
+            };
             let outcome = if info.verb == "update" {
-                rest::update_ephemeral_containers(&mut client, &info.namespace, &info.name, &body, dry_run, request_field_manager.as_deref()).await
+                rest::update_ephemeral_containers(&mut client, &info.namespace, &info.name, &body, dry_run, request_field_manager.as_deref(), validate_ephemeral).await
             } else {
                 let kind_of_patch = match content_type.as_deref() {
                     Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
@@ -2047,7 +2109,7 @@ async fn handle(
                     },
                     None => rest::PatchKind::StrategicMerge,
                 };
-                rest::patch_ephemeral_containers(&mut client, &info.namespace, &info.name, kind_of_patch, &body, dry_run, request_field_manager.as_deref()).await
+                rest::patch_ephemeral_containers(&mut client, &info.namespace, &info.name, kind_of_patch, &body, dry_run, request_field_manager.as_deref(), validate_ephemeral).await
             };
             return match outcome {
                 Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),

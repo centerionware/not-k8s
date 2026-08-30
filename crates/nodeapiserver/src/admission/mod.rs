@@ -25,14 +25,13 @@
 //! `namespace_lifecycle`, nothing about this decision depends on other
 //! cluster state.
 //! `service_account` — `ServiceAccount`, both mutating and validating,
-//! `CREATE`-only: defaults `spec.serviceAccountName`, requires the
-//! referenced `ServiceAccount` to exist, auto-mounts its token volume
-//! unless opted out, copies its `imagePullSecrets`, and validates a
-//! mirror pod's three real restrictions, and the opt-in
-//! `enforce-mountable-secrets` check. See that module's own doc comment for
-//! the remaining `ephemeralcontainers` subresource validation path, which
-//! is handled by that subresource's own Pod update strategy rather than this
-//! `CREATE`-only plugin.
+//! `CREATE`-only for ordinary Pods: defaults `spec.serviceAccountName`,
+//! requires the referenced `ServiceAccount` to exist, auto-mounts its token
+//! volume unless opted out, copies its `imagePullSecrets`, and validates a
+//! mirror pod's three real restrictions and the opt-in
+//! `enforce-mountable-secrets` check. Its separate
+//! `ephemeralcontainers` validation path also checks new ephemeral
+//! containers against the referenced account's allowed Secret references.
 //!
 //! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
 //! a `PersistentVolumeClaim` with no class of its own gets

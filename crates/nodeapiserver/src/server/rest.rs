@@ -48,7 +48,7 @@
 //! No authentication is consulted *inside*
 //! this module either way — `server::listener` is what applies Group
 //! H/I's identity/RBAC (opt-in, see that module's own doc comment)
-//! before ever calling in here; Group J admission (five unconditional
+//! before ever calling in here; Group J admission (seven unconditional
 //! plugins as of this revision — see `admission`'s own doc comment) is
 //! applied in `server::listener`, also before dispatching in here.
 //! The generic `<resource>/status` subresource is real now
@@ -1495,6 +1495,7 @@ pub async fn update_ephemeral_containers(
     body: &Value,
     dry_run: bool,
     field_manager: Option<&str>,
+    validate: impl FnOnce(&Value) -> Result<(), Vec<String>>,
 ) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
         return Ok(UpdateOutcome::UnknownResource);
@@ -1510,6 +1511,9 @@ pub async fn update_ephemeral_containers(
         Ok(object) => object,
         Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
     };
+    if let Err(violations) = validate(&object) {
+        return Ok(UpdateOutcome::Invalid(violations));
+    }
     persist_update(
         storage,
         resolved.schema,
@@ -1545,6 +1549,7 @@ pub async fn patch_ephemeral_containers(
     patch_doc: &Value,
     dry_run: bool,
     field_manager: Option<&str>,
+    validate: impl FnOnce(&Value) -> Result<(), Vec<String>>,
 ) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
         return Ok(UpdateOutcome::UnknownResource);
@@ -1563,6 +1568,9 @@ pub async fn patch_ephemeral_containers(
         Ok(object) => object,
         Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
     };
+    if let Err(violations) = validate(&object) {
+        return Ok(UpdateOutcome::Invalid(violations));
+    }
     persist_update(
         storage,
         resolved.schema,

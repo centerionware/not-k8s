@@ -24,8 +24,9 @@
 //! supported too: a `ServiceAccount` annotated with
 //! `kubernetes.io/enforce-mountable-secrets: "true"` may only be used by a
 //! pod that references secrets and image-pull secrets listed on that
-//! account. The `pods/ephemeralcontainers` subresource validation path
-//! remains separate because that subresource has its own update strategy.
+//! account. The `pods/ephemeralcontainers` subresource has its own update
+//! strategy, but its new ephemeral containers still use the same separate
+//! ServiceAccount secret-reference validation path.
 //!
 //! Mirror-pod handling is ported too: a pod carrying real upstream's own
 //! `kubernetes.io/config.mirror` annotation is never mutated (mutating a
@@ -266,6 +267,32 @@ pub fn validate_secret_references(service_account: &Value, pod: &Value) -> Resul
     Ok(())
 }
 
+/// Enforces the upstream `ServiceAccount` plugin's separate
+/// `pods/ephemeralcontainers` validation path. Ephemeral containers may
+/// reference secrets through `env` and `envFrom`, but they cannot add
+/// volumes or image-pull secrets through this subresource, so only those
+/// references are checked here.
+pub fn validate_ephemeral_container_secret_references(
+    service_account: &Value,
+    pod: &Value,
+) -> Result<(), String> {
+    if !enforce_mountable_secrets(service_account) {
+        return Ok(());
+    }
+    let Some(containers) = pod
+        .pointer("/spec/ephemeralContainers")
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    validate_container_secret_references(
+        service_account,
+        containers,
+        "ephemeral container",
+        &mountable_secret_names(service_account),
+    )
+}
+
 /// The pure decision, with no I/O: mirror-pod validation needs none (its
 /// three restrictions are all readable straight off `pod`); every other
 /// `Pod` `CREATE` needs a `ServiceAccount` lookup before this plugin can
@@ -273,9 +300,9 @@ pub fn validate_secret_references(service_account: &Value, pod: &Value) -> Resul
 /// fetched, for the automount/imagePullSecrets steps — real upstream's
 /// own `Admit` always calls `getServiceAccount`, unconditionally).
 /// `operation` other than `Create` is always `Allow` — real upstream's own
-/// plugin only mutates/validates on `CREATE`; the separate
-/// `ephemeralcontainers` subresource `UPDATE` path is handled by its own Pod
-/// strategy rather than this plugin — see this module's own doc comment.
+/// plugin's ordinary Pod path only mutates/validates on `CREATE`; the
+/// `ephemeralcontainers` subresource `UPDATE` path has its own Pod strategy
+/// and calls [`validate_ephemeral_container_secret_references`] separately.
 pub fn quick_decision(pod: &Value, operation: crate::admission::attributes::Operation) -> Decision {
     if operation != crate::admission::attributes::Operation::Create {
         return Decision::Allow;
@@ -634,5 +661,29 @@ mod tests {
             }
         });
         assert!(validate_secret_references(&service_account, &pod).is_ok());
+    }
+
+    #[test]
+    fn annotated_service_account_restricts_ephemeral_container_secret_env() {
+        let service_account = json!({
+            "metadata": {"name": "builder", "annotations": {ENFORCE_MOUNTABLE_SECRETS_ANNOTATION: "true"}},
+            "secrets": [{"name": "allowed"}]
+        });
+        let denied = json!({
+            "spec": {"ephemeralContainers": [{
+                "name": "debugger",
+                "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}]
+            }]}
+        });
+        let error = validate_ephemeral_container_secret_references(&service_account, &denied).unwrap_err();
+        assert!(error.contains("ephemeral container debugger with envVar TOKEN"));
+
+        let allowed = json!({
+            "spec": {"ephemeralContainers": [{
+                "name": "debugger",
+                "envFrom": [{"secretRef": {"name": "allowed"}}]
+            }]}
+        });
+        assert!(validate_ephemeral_container_secret_references(&service_account, &allowed).is_ok());
     }
 }
