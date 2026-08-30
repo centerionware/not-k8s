@@ -73,8 +73,11 @@
 //! than treating the raw deadline helper as an unbounded request primitive.
 //! `type_check` supplies the schema-aware declaration phase for those CRD
 //! rules: it resolves `self`/`oldSelf`, checks exposed fields and obvious
-//! overloads, and enforces a boolean result at CRD acceptance while leaving
-//! dynamic schema portions permissive.
+//! overloads (including the opaque Kubernetes extension values), and
+//! enforces a boolean result at CRD acceptance while leaving dynamic schema
+//! portions permissive. Rules opting into `optionalOldSelf` receive the
+//! native CEL optional form at runtime; ordinary transition rules are skipped
+//! when there is no prior value to compare.
 //! The remaining difference from upstream is that the `cel` crate exposes
 //! no interpreter-level fuel or interruption hook, so timed-out evaluation
 //! threads cannot be forcibly reclaimed.
@@ -143,6 +146,7 @@ pub mod path;
 pub mod type_check;
 
 use cel::extractors::This;
+use cel::objects::OptionalValue;
 use cel::{Context, FunctionContext, Program, Value as CelValue};
 use serde_json::Value;
 
@@ -202,6 +206,29 @@ pub fn eval_bool(expr: &str, self_value: &Value, old_self_value: Option<&Value>)
         vars.push(("oldSelf", old));
     }
     eval_bool_with_vars(expr, &vars)
+}
+
+/// Evaluate a rule whose `oldSelf` variable is the Kubernetes optional type.
+/// `optionalOldSelf: true` keeps the variable defined on CREATE, where it is
+/// `optional.none()`, while UPDATE binds `optional.of(oldSelf)`.
+pub fn eval_bool_with_optional_old_self(
+    expr: &str,
+    self_value: &Value,
+    old_self_value: Option<&Value>,
+) -> Result<bool, Error> {
+    let old_self = optional_old_self_value(old_self_value)?;
+    eval_bool_with_vars_and_cel_vars(expr, &[("self", self_value)], &[("oldSelf", old_self)])
+}
+
+fn optional_old_self_value(old_self_value: Option<&Value>) -> Result<CelValue, Error> {
+    let optional = match old_self_value {
+        Some(value) => {
+            let value = cel::to_value(value.clone()).map_err(|error| Error::Serialize(error.to_string()))?;
+            OptionalValue::of(value)
+        }
+        None => OptionalValue::none(),
+    };
+    Ok(CelValue::Opaque(std::sync::Arc::new(optional)))
 }
 
 /// The general form [`eval_bool`] is a convenience wrapper around:
@@ -367,6 +394,24 @@ pub fn eval_bool_with_deadline(expr: &str, self_value: &Value, old_self_value: O
         vars.push(("oldSelf", old));
     }
     eval_bool_with_vars_and_deadline(expr, &vars, deadline)
+}
+
+/// Deadline-bounded variant of [`eval_bool_with_optional_old_self`], used by
+/// the CRD runtime evaluator so optional-old-self rules receive the same
+/// request-side CEL deadline as ordinary rules.
+pub fn eval_bool_with_optional_old_self_and_deadline(
+    expr: &str,
+    self_value: &Value,
+    old_self_value: Option<&Value>,
+    deadline: std::time::Duration,
+) -> Result<bool, Error> {
+    let old_self = optional_old_self_value(old_self_value)?;
+    eval_bool_with_vars_and_cel_vars_and_deadline(
+        expr,
+        &[("self", self_value)],
+        &[("oldSelf", old_self)],
+        deadline,
+    )
 }
 
 /// The general form [`eval_bool_with_deadline`] is a convenience wrapper

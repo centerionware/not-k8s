@@ -31,7 +31,8 @@
 //! threads; the request concurrency gate limits how many such evaluations
 //! can be started at once.
 
-use crate::cel_ext::{eval_bool_with_deadline, Error as CelError};
+use crate::cel_ext::{eval_bool_with_deadline, eval_bool_with_optional_old_self_and_deadline, Error as CelError};
+use crate::cel_ext::type_check::rule_references_old_self;
 use serde_json::Value;
 use std::cmp::min;
 use std::time::Duration;
@@ -87,13 +88,25 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, de
     if let Some(rules) = schema.get("x-kubernetes-validations").and_then(Value::as_array) {
         for (i, rule) in rules.iter().enumerate() {
             let Some(rule_str) = rule.get("rule").and_then(Value::as_str) else { continue };
+            let optional_old_self = rule.get("optionalOldSelf").and_then(Value::as_bool).unwrap_or(false);
+            if !optional_old_self && old_value.is_none() && rule_references_old_self(rule_str) {
+                // Transition rules are evaluated on UPDATE only. A missing
+                // old value is not a runtime error unless the rule opts into
+                // the optional-old-self form.
+                continue;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 out.push(RuleViolation { path: path.to_string(), rule_index: i, message: "runtime CEL cost budget exceeded".to_string() });
                 *budget_exhausted = true;
                 return;
             }
-            match eval_bool_with_deadline(rule_str, value, old_value, min(PER_RULE_DEADLINE, remaining)) {
+            let rule_result = if optional_old_self {
+                eval_bool_with_optional_old_self_and_deadline(rule_str, value, old_value, min(PER_RULE_DEADLINE, remaining))
+            } else {
+                eval_bool_with_deadline(rule_str, value, old_value, min(PER_RULE_DEADLINE, remaining))
+            };
+            match rule_result {
                 Ok(true) => {}
                 Ok(false) => {
                     let message = rule.get("message").and_then(Value::as_str).unwrap_or("failed validation").to_string();
@@ -221,10 +234,36 @@ mod tests {
             "properties": {"replicas": {"type": "integer"}},
             "x-kubernetes-validations": [{"rule": "self.replicas >= oldSelf.replicas", "message": "replicas may not decrease"}],
         });
+        let created = json!({"replicas": 1});
+        assert!(validate_object(&schema, &created, None).is_empty());
         let old_value = json!({"replicas": 5});
         let increased = json!({"replicas": 6});
         let decreased = json!({"replicas": 4});
         assert!(validate_object(&schema, &increased, Some(&old_value)).is_empty());
+        let violations = validate_object(&schema, &decreased, Some(&old_value));
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].message, "replicas may not decrease");
+    }
+
+    #[test]
+    fn an_optional_old_self_rule_handles_create_and_update() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"replicas": {"type": "integer"}},
+            "x-kubernetes-validations": [{
+                "rule": "oldSelf.hasValue() ? oldSelf.value().replicas <= self.replicas : true",
+                "optionalOldSelf": true,
+                "message": "replicas may not decrease",
+            }],
+        });
+        let created = json!({"replicas": 1});
+        assert!(validate_object(&schema, &created, None).is_empty());
+
+        let old_value = json!({"replicas": 2});
+        let increased = json!({"replicas": 3});
+        assert!(validate_object(&schema, &increased, Some(&old_value)).is_empty());
+
+        let decreased = json!({"replicas": 1});
         let violations = validate_object(&schema, &decreased, Some(&old_value));
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].message, "replicas may not decrease");

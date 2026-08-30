@@ -34,7 +34,7 @@
 
 use crate::cel_ext::budget::{check_rule_cost_with_cardinality, RuleCostError};
 use crate::cel_ext::decl_type;
-use crate::cel_ext::type_check::{check_root_rule, check_rule, TypeError};
+use crate::cel_ext::type_check::{check_root_rule_with_optional_old_self, check_rule_with_optional_old_self, TypeError};
 use serde_json::Value;
 
 /// One `x-kubernetes-validations` rule whose real cost exceeds budget —
@@ -82,7 +82,12 @@ fn walk_types(schema: &Value, path: &str, out: &mut Vec<CelTypeViolation>) {
     if let Some(rules) = schema.get("x-kubernetes-validations").and_then(Value::as_array) {
         for (i, rule) in rules.iter().enumerate() {
             let Some(rule_str) = rule.get("rule").and_then(Value::as_str) else { continue };
-            let errors = if path.is_empty() { check_root_rule(schema, rule_str) } else { check_rule(schema, rule_str) };
+            let optional_old_self = rule.get("optionalOldSelf").and_then(Value::as_bool).unwrap_or(false);
+            let errors = if path.is_empty() {
+                check_root_rule_with_optional_old_self(schema, rule_str, optional_old_self)
+            } else {
+                check_rule_with_optional_old_self(schema, rule_str, optional_old_self)
+            };
             for error in errors.into_iter().filter(|error| !matches!(error, TypeError::Compile(_))) {
                 out.push(CelTypeViolation { path: path.to_string(), rule_index: i, error });
             }
@@ -236,6 +241,19 @@ mod tests {
         });
         let violations = validate_schema_cel_types(&schema);
         assert!(violations.iter().any(|violation| matches!(violation.error, TypeError::NonBoolean(_))));
+    }
+
+    #[test]
+    fn optional_old_self_is_type_checked_as_an_optional() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"replicas": {"type": "integer"}},
+            "x-kubernetes-validations": [{
+                "rule": "oldSelf.hasValue() ? oldSelf.value().replicas <= self.replicas : true",
+                "optionalOldSelf": true,
+            }],
+        });
+        assert!(validate_schema_cel_types(&schema).is_empty());
     }
 
     #[test]

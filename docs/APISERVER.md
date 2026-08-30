@@ -34,8 +34,8 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `f4553a6` on
-2026-08-29. It describes what is integrated on that branch; open child PRs
+This snapshot is checked against `origin/nodeapiserver` at `b5ea43f` on
+2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
 
@@ -864,10 +864,13 @@ shortcut).
 the runtime `cel` crate does not provide: `self`/`oldSelf` are resolved against
 the rule's own schema scope, undeclared structural fields and obvious
 operator/member-function overload mismatches are rejected, and a validation
-rule must have a boolean result. Root `apiVersion`/`kind`/selected metadata
-fields are exposed as Kubernetes does even when a CRD schema omits them;
-dynamic or preserved-unknown schema sections remain permissive. The checker
-is wired into CRD `CREATE`/`UPDATE` alongside syntax and static-cost checks.
+rule must have a boolean result. Kubernetes' opaque CEL extension values
+(`Quantity`, IP, CIDR, URL, Semver, and named-format optionals) are declared
+with their obvious receiver and argument types too. Root
+`apiVersion`/`kind`/selected metadata fields are exposed as Kubernetes does
+even when a CRD schema omits them; dynamic or preserved-unknown schema
+sections remain permissive. The checker is wired into CRD `CREATE`/`UPDATE`
+alongside syntax and static-cost checks.
 It is intentionally a schema/type phase, not a replacement for runtime
 evaluation: CEL overloads that remain dynamic at compile time still get the
 existing runtime error behavior.
@@ -1969,8 +1972,11 @@ used*:
    already their own modules, not duplicated here). Recursively walks
    the schema *and* the real object together (`apiextensions::
    schema_validation`'s own data-driven recursion convention), `self`/
-   `oldSelf` bound per schema level (`oldSelf` genuinely unavailable on
-   `CREATE`, not just empty), each rule capped by
+   `oldSelf` bound per schema level. Transition rules that reference
+   `oldSelf` are skipped when no prior value exists, while a rule with
+   `optionalOldSelf: true` receives a real CEL optional whose
+   `hasValue()`/`value()` behavior works on both `CREATE` and `UPDATE`. Each
+   rule is capped by
    `eval_bool_with_deadline` (Phase 2, already landed) at real upstream's
    own `PerCallLimit` (~0.1s), under one shared ~1s wall-clock
    `RuntimeCELCostBudget` per object. Once that shared window is exhausted,
