@@ -8,15 +8,15 @@
 //! `keys` — the etcd key layout, including the real per-resource prefix
 //! override table (`SpecialDefaultResourcePrefixes`).
 //! `encryption` — encryption-at-rest transformers (`Identity`, AES-256-GCM,
-//! AES-256-CBC, and the generic prefix-dispatch composition every provider
-//! list uses),
+//! AES-256-CBC, Secretbox, and the generic prefix-dispatch composition every
+//! provider list uses),
 //! a faithful port of a real subset of upstream's `storage/value` package
 //! — see that module's own doc comment for exactly which providers are
 //! and aren't covered.
 //! `encryption_config` — parses a real `EncryptionConfiguration` YAML
 //! document into a resolvable, per-resource set of `encryption`
-//! transformers (`aesgcm`/`aescbc`/`identity`; `secretbox`/`kms` parse
-//! structurally but resolve to a real, named error rather than being
+//! transformers (`aesgcm`/`aescbc`/`secretbox`/`identity`; `kms` parses
+//! structurally but resolves to a real, named error rather than being
 //! silently dropped) — see that
 //! module's own doc comment for the real resource-name/wildcard matching
 //! rules ported.

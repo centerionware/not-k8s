@@ -70,6 +70,8 @@ ring = "0.17"
 # with the GCM path.
 aes = "0.8"
 cbc = "0.1"
+# Group C: Kubernetes' legacy NaCl-compatible Secretbox provider.
+crypto_secretbox = { version = "0.1", features = ["salsa20"] }
 
 # Group E: the REST/watch listener. Same hyper/hyper-util/tokio-rustls
 # stack as crates/nodelet/Cargo.toml's own HTTPS server, except this one
