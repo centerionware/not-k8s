@@ -8,12 +8,15 @@
 //! The CEL runtime returns JSON-shaped values here. That keeps the mutation
 //! engine independent from the storage codec while still accepting the same
 //! object/array/map result shape that Kubernetes applies after evaluating a
-//! policy expression.
+//! policy expression. Request variables include the submitted kind,
+//! authenticated `userInfo`, and the native CEL `authorizer` binding when a
+//! policy expression uses it.
 
 use super::match_conditions::FailurePolicy;
 use super::policy_decode::DecodedPolicy;
 use super::policy_matching::{self, RequestVariable};
 use super::validating_admission_policy::{self, PolicyDefinition, PolicyOutcome};
+use crate::authn::x509::Identity;
 use crate::server::rest::{self, ListOutcome};
 use crate::storage::client::StorageClient;
 use serde_json::Value;
@@ -37,6 +40,7 @@ pub async fn mutate(
     object: Value,
     old_object: Option<&Value>,
     dry_run: bool,
+    identity: Option<&Identity>,
 ) -> Result<Value, String> {
     if is_exempt(group, resource) {
         return Ok(object);
@@ -49,6 +53,42 @@ pub async fn mutate(
     if policies.is_empty() || bindings.is_empty() {
         return Ok(object);
     }
+
+    let namespaced = rest::resource_is_namespaced(storage, group, version, resource)
+        .await
+        .map_err(|error| error.to_string())?;
+    let authorizer = if policies.iter().any(policy_uses_authorizer) {
+        let snapshot = std::sync::Arc::new(crate::authz::resolve::load_snapshot(storage).await?);
+        let (user_name, user_groups) = identity
+            .map(|identity| (identity.name.clone(), identity.groups.clone()))
+            .unwrap_or_else(|| {
+                (
+                    "system:anonymous".to_string(),
+                    vec!["system:unauthenticated".to_string()],
+                )
+            });
+        Some(crate::cel_ext::authorizer::value(
+            crate::cel_ext::authorizer::AuthorizationContext::from_snapshot(
+                snapshot,
+                user_name,
+                user_groups,
+                crate::cel_ext::authorizer::RequestResource {
+                    group: group.to_string(),
+                    resource: resource.to_string(),
+                    subresource: subresource.to_string(),
+                    namespace: namespace.to_string(),
+                    name: name.to_string(),
+                    path: String::new(),
+                },
+            ),
+        ))
+    } else {
+        None
+    };
+    let authorizer_vars = authorizer
+        .as_ref()
+        .map(|authorizer| vec![("authorizer", authorizer.clone())])
+        .unwrap_or_default();
 
     let namespace_labels = if namespace.is_empty() {
         BTreeMap::new()
@@ -77,7 +117,7 @@ pub async fn mutate(
         operation,
         dry_run,
         kind: object.get("kind").and_then(Value::as_str).unwrap_or(""),
-        user_info: None,
+        user_info: request_user_info(identity),
     });
 
     let mut object = object;
@@ -120,6 +160,7 @@ pub async fn mutate(
                 &namespace_labels,
                 &crate::cacher::selector::object_labels(&object),
                 &old_labels,
+                namespaced,
             ) {
                 continue;
             }
@@ -161,7 +202,7 @@ pub async fn mutate(
                     &request,
                     params.as_ref(),
                 );
-                match validating_admission_policy::evaluate(
+                match validating_admission_policy::evaluate_with_composed_cel_vars_and_scope(
                     &definition,
                     operation,
                     group,
@@ -171,6 +212,10 @@ pub async fn mutate(
                     &namespace_labels,
                     &labels,
                     &match_vars,
+                    &match_vars,
+                    &decoded.variables,
+                    namespaced,
+                    &authorizer_vars,
                 ) {
                     PolicyOutcome::NotApplicable => continue,
                     PolicyOutcome::MatchConditionsError { errors } => {
@@ -185,7 +230,7 @@ pub async fn mutate(
                     PolicyOutcome::Decided(_) => {}
                 }
 
-                let composed_variables = match policy_matching::compose_variables(&decoded.variables, &match_vars) {
+                let composed_variables = match policy_matching::compose_variables_with_cel_vars(&decoded.variables, &match_vars, &authorizer_vars) {
                     Ok(value) => value,
                     Err(error) if decoded.failure_policy == FailurePolicy::Ignore => {
                         tracing::warn!(policy = policy_name, error, "ignoring failed MutatingAdmissionPolicy variable composition");
@@ -205,7 +250,14 @@ pub async fn mutate(
                 let mut candidate = object.clone();
                 for mutation in &mutations {
                     match apply_mutation(
-                        storage, group, version, resource, &candidate, mutation, &mutation_vars,
+                        storage,
+                        group,
+                        version,
+                        resource,
+                        &candidate,
+                        mutation,
+                        &mutation_vars,
+                        &authorizer_vars,
                     )
                     .await
                     {
@@ -231,6 +283,27 @@ pub async fn mutate(
     Ok(object)
 }
 
+fn request_user_info(identity: Option<&Identity>) -> Option<policy_matching::RequestUserInfo<'_>> {
+    identity.map(|identity| policy_matching::RequestUserInfo {
+        username: &identity.name,
+        uid: identity.uid.as_deref(),
+        groups: &identity.groups,
+    })
+}
+
+fn policy_uses_authorizer(policy: &Value) -> bool {
+    fn contains(value: &Value) -> bool {
+        match value {
+            Value::String(value) => value.contains("authorizer"),
+            Value::Array(values) => values.iter().any(contains),
+            Value::Object(values) => values.values().any(contains),
+            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+        }
+    }
+
+    policy.get("spec").is_some_and(contains)
+}
+
 async fn apply_mutation(
     storage: &mut StorageClient,
     group: &str,
@@ -239,6 +312,7 @@ async fn apply_mutation(
     object: &Value,
     mutation: &Value,
     vars: &[(&'static str, &Value)],
+    cel_vars: &[(&'static str, cel::Value)],
 ) -> Result<Value, String> {
     let patch_type = mutation
         .get("patchType")
@@ -250,9 +324,10 @@ async fn apply_mutation(
                 .pointer("/jsonPatch/expression")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "JSONPatch mutation expression is required".to_string())?;
-            let patch = crate::cel_ext::eval_json_with_vars_and_deadline(
+            let patch = crate::cel_ext::eval_json_with_vars_and_cel_vars_and_deadline(
                 expression,
                 vars,
+                cel_vars,
                 std::time::Duration::from_millis(100),
             )
             .map_err(|error| error.to_string())?;
@@ -269,9 +344,10 @@ async fn apply_mutation(
                 .pointer("/applyConfiguration/expression")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "ApplyConfiguration mutation expression is required".to_string())?;
-            let configuration = crate::cel_ext::eval_json_with_vars_and_deadline(
+            let configuration = crate::cel_ext::eval_json_with_vars_and_cel_vars_and_deadline(
                 expression,
                 vars,
+                cel_vars,
                 std::time::Duration::from_millis(100),
             )
             .map_err(|error| error.to_string())?;
@@ -354,6 +430,7 @@ fn binding_matches(
     namespace_labels: &BTreeMap<String, String>,
     object_labels: &BTreeMap<String, String>,
     old_object_labels: &BTreeMap<String, String>,
+    namespaced: Option<bool>,
 ) -> bool {
     let Some(match_resources) = binding.pointer("/spec/matchResources") else {
         return true;
@@ -364,7 +441,7 @@ fn binding_matches(
         .map_or(true, |rules| {
             rules.is_empty()
                 || rules.iter().any(|rule| {
-                    raw_rule_matches(rule, operation, group, version, resource, subresource)
+                    raw_rule_matches(rule, operation, group, version, resource, subresource, namespaced)
                 })
         });
     let excluded = match_resources
@@ -372,7 +449,7 @@ fn binding_matches(
         .and_then(Value::as_array)
         .is_some_and(|rules| {
             rules.iter().any(|rule| {
-                raw_rule_matches(rule, operation, group, version, resource, subresource)
+                raw_rule_matches(rule, operation, group, version, resource, subresource, namespaced)
             })
         });
     include
@@ -389,6 +466,7 @@ fn raw_rule_matches(
     version: &str,
     resource: &str,
     subresource: &str,
+    namespaced: Option<bool>,
 ) -> bool {
     let contains = |field: &str, actual: &str| {
         rule.get(field)
@@ -406,10 +484,17 @@ fn raw_rule_matches(
     } else {
         format!("{resource}/{subresource}")
     };
+    let scope_matches = match rule.get("scope").and_then(Value::as_str) {
+        None | Some("*") => true,
+        Some("Namespaced") => namespaced == Some(true),
+        Some("Cluster") => namespaced == Some(false),
+        Some(_) => false,
+    };
     contains("operations", operation)
         && contains("apiGroups", group)
         && contains("apiVersions", version)
         && contains("resources", &resource_name)
+        && scope_matches
 }
 
 fn selector_matches(selector: Option<&Value>, labels: &BTreeMap<String, String>) -> bool {
@@ -546,6 +631,33 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn mutation_request_context_carries_authenticated_identity() {
+        let identity = Identity {
+            name: "alice".to_string(),
+            groups: vec!["developers".to_string()],
+            uid: Some("user-id".to_string()),
+            credential_id: (String::new(), Vec::new()),
+        };
+        let request = policy_matching::build_request_object(&policy_matching::RequestVariable {
+            uid: "request-id",
+            group: "apps",
+            version: "v1",
+            resource: "deployments",
+            subresource: "",
+            namespace: "default",
+            name: "web",
+            operation: "CREATE",
+            dry_run: false,
+            kind: "Deployment",
+            user_info: request_user_info(Some(&identity)),
+        });
+
+        assert_eq!(request["userInfo"]["username"], "alice");
+        assert_eq!(request["userInfo"]["uid"], "user-id");
+        assert_eq!(request["userInfo"]["groups"], json!(["developers"]));
+    }
+
+    #[test]
     fn binding_without_match_resources_matches() {
         assert!(binding_matches(
             &json!({"spec": {}}),
@@ -556,7 +668,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &BTreeMap::new()
+            &BTreeMap::new(),
+            None
         ));
     }
 
@@ -572,7 +685,8 @@ mod tests {
             "status",
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &BTreeMap::new()
+            &BTreeMap::new(),
+            None
         ));
         assert!(!binding_matches(
             &binding,
@@ -583,7 +697,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &BTreeMap::new()
+            &BTreeMap::new(),
+            None
         ));
     }
 
@@ -610,6 +725,7 @@ mod tests {
             &BTreeMap::new(),
             &new_labels,
             &old_labels,
+            None,
         ));
     }
 
@@ -618,5 +734,56 @@ mod tests {
         assert!(is_exempt(GROUP, "mutatingadmissionpolicies"));
         assert!(is_exempt("authorization.k8s.io", "subjectaccessreviews"));
         assert!(!is_exempt("", "configmaps"));
+    }
+
+    #[test]
+    fn binding_scope_matches_the_discovered_resource_scope() {
+        let binding = json!({
+            "spec": {
+                "matchResources": {
+                    "resourceRules": [{
+                        "operations": ["CREATE"],
+                        "apiGroups": ["apps"],
+                        "apiVersions": ["v1"],
+                        "resources": ["deployments"],
+                        "scope": "Namespaced"
+                    }]
+                }
+            }
+        });
+        assert!(binding_matches(
+            &binding,
+            "CREATE",
+            "apps",
+            "v1",
+            "deployments",
+            "",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Some(true),
+        ));
+        assert!(!binding_matches(
+            &binding,
+            "CREATE",
+            "apps",
+            "v1",
+            "deployments",
+            "",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Some(false),
+        ));
+    }
+
+    #[test]
+    fn authorizer_expressions_are_detected_in_any_mutation_field() {
+        assert!(policy_uses_authorizer(&json!({
+            "spec": {"mutations": [{"jsonPatch": {"expression": "authorizer.group()"}}]}
+        })));
+        assert!(!policy_uses_authorizer(&json!({
+            "spec": {"mutations": [{"jsonPatch": {"expression": "object"}}]}
+        })));
     }
 }

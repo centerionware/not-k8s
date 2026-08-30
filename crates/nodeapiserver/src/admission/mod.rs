@@ -126,10 +126,10 @@
 //! declaration-order `variables` composition (`compose_variables`) —
 //! `object`/`oldObject`/`params` bind to a real CEL `null`, not an absent
 //! variable, when the caller has none. See that module's own doc comment
-//! for the named, honest gaps (`Rule.Scope` not matched, `kind`/`userInfo`
-//! not yet populated). The storage-backed
-//! policy adapters consume these pure matching
-//! and variable-building primitives for real policy requests.
+//! for the named, honest gap that the pure wrapper remains scope-agnostic
+//! without discovery context. The storage-backed policy adapters populate
+//! `kind`/`userInfo` and consume these pure matching and variable-building
+//! primitives for real policy requests.
 //!
 //! `policy_validations` — the actual `spec.validations[]` decision: real
 //! upstream's own `validator.Validate`, given an already-bound variable
@@ -180,16 +180,12 @@
 //! returns denial, warning, and audit results for the request wrapper to
 //! publish before persistence.
 //!
-//! Status: started (see docs/APISERVER.md). **Not yet landed**: every
-//! other built-in plugin, a complete async plugin-chain/registry covering
-//! storage-backed mutators and validators, mutating/validating
-//! admission webhooks themselves, `MutatingAdmissionPolicy` itself as
-//! actual enforcement — every real decision primitive
-//! `server::listener` would need now exists
-//! standalone, `match_conditions` through `validating_admission_policy`
-//! above (`policy_matching::build_eval_vars` is the real `object`/
-//! `oldObject`/`params` variable assembly itself; `PolicyOutcome::
-//! is_denial`/`validation_actions_deny` are the real enforcement-decision
+//! Status: in progress (see docs/APISERVER.md). The built-in plugins,
+//! admission webhooks, and both admission-policy enforcement paths are
+//! wired into `server::listener`. The remaining work is the broader
+//! upstream built-in plugin set, the remaining typed mutation result forms,
+//! and interpreter-level CEL fuel accounting; the standalone matching and
+//! evaluation primitives remain independently testable below.
 
 pub mod attributes;
 pub mod chain;

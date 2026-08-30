@@ -48,8 +48,9 @@
 //! **Per-Kind `SelectableFields` is now enforced**: built-in resources use
 //! their verified metadata and resource-specific fields, while CRDs accept
 //! only universal metadata fields; unsupported paths are rejected rather than
-//! silently matching no objects. The remaining cache gap is registering a
-//! cache for every resource at boot.
+//! silently matching no objects. Remaining work is cache compatibility
+//! hardening, not basic registration: built-in resources are registered at
+//! boot and CRD resources follow their live lifecycle.
 
 pub mod store;
 pub mod driver;
