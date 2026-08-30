@@ -177,8 +177,8 @@ async fn wait_or_stop(stop: &mut watch::Receiver<bool>, delay: std::time::Durati
 /// [`EventKind::Bookmark`] — real kube-apiserver sends these so a watcher
 /// that reconnects can resume from a recent RV without a full relist
 /// (`ARCHITECTURE.md` §4); nodestore's own `progress_notify` mechanism is
-/// what would drive one on a schedule (this module's own doc comment's
-/// "not yet done" — requesting one, not handling one once it arrives). The
+/// what would drive one on a schedule, and this module explicitly requests
+/// those progress notifications. The
 /// `created`/`canceled` acknowledgement responses carry no events and no
 /// revision advance worth applying, so they're a no-op here.
 pub fn apply_watch_response(cache: &mut WatchCache, resp: &WatchResponse) {
