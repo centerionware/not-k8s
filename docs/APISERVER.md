@@ -9,7 +9,7 @@
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
-| G — Patch and Server-Side Apply | in progress | 5/6 |
+| G — Patch and Server-Side Apply | in progress | 6/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/6 |
 | J — Admission | in progress | 8/8 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `ff8cf2c2` on
+This snapshot is checked against `origin/nodeapiserver` at `eefd3f35` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -1060,12 +1060,17 @@ live/candidate objects under that manager's own schema, and performs
 cross-version pruning when a manager changes the API version it applies with,
 including built-in version conversions and CRD conversion-webhook boundaries.
 Both paths share the same optimistic-concurrency persistence behavior.
+Runtime CRD managed-field sets are reconciled when a CRD schema changes
+between granular and atomic map/list relationships, matching the upstream
+schema-change ownership transition for the supported schema forms.
 Ordinary CREATE/PUT/PATCH and
 status writes now also reconcile `metadata.managedFields` using the explicit
 `fieldManager` or the request's `User-Agent`, with generated server metadata
 excluded from ownership calculation.
 Explicit and default patch-strategy selection both honor the directive set;
 the default is strategic merge for built-ins and JSON merge patch for CRDs.
+The remaining upstream managed-fields edge is `IgnoreFilter`/
+`IgnoredFields` handling.
 
 **H. Authentication** — **complete for the supported authentication
 paths**. `authn::x509::identity_from_der`
