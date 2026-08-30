@@ -39,11 +39,10 @@
 //! The real `managedFields` wire format and
 //! `server::rest`/`application/apply-patch+yaml` wiring now live in
 //! `patch::managed_fields` and `server::rest`. Also not ported: upstream's own
-//! `IgnoreFilter`/`IgnoredFields`
-//! (server-managed field exclusion, e.g. `status`) and
-//! `reconcileManagedFieldsWithSchemaChanges` (schema atomic<->granular
-//! migration bookkeeping) — both real, both named as separate
-//! not-yet-started work rather than silently dropped.
+//! `IgnoreFilter`/`IgnoredFields` (server-managed field exclusion, e.g.
+//! `status`). Runtime CRD field sets are reconciled when their schema changes
+//! between atomic and granular representations; compiled built-in schemas do
+//! not change at runtime.
 
 use super::fieldset::{ensure_named_fields_are_members, remove_items, set_from_object, Set};
 use super::managed_fields::{VersionedManager, VersionedManagers};
