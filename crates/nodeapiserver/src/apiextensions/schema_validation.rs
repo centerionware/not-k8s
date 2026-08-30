@@ -165,6 +165,11 @@ fn walk_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<Str
     if value.is_null() {
         return;
     }
+    if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
+        for branch in branches {
+            walk_constraints(branch, value, path, out);
+        }
+    }
     validate_node_constraints(schema, value, path, out);
 
     match value {
@@ -413,5 +418,19 @@ mod tests {
         let violations = validate_constraints(&schema, &json!({"addresses": ["127.0.0.1", "127.0.0.1"], "id": "not-a-uuid"}));
         assert!(violations.iter().any(|violation| violation.contains("addresses") && violation.contains("unique")));
         assert!(violations.iter().any(|violation| violation.contains("id") && violation.contains("uuid")));
+    }
+
+    #[test]
+    fn constraints_follow_all_of_schema_branches() {
+        let schema = json!({
+            "allOf": [{
+                "type": "object",
+                "properties": {
+                    "token": {"type": "string", "format": "uuid"}
+                }
+            }]
+        });
+        let violations = validate_constraints(&schema, &json!({"token": "not-a-uuid"}));
+        assert!(violations.iter().any(|violation| violation.contains("token") && violation.contains("uuid")));
     }
 }

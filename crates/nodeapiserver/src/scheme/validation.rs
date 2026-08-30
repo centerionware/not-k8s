@@ -11,18 +11,14 @@
 //! # What this captures, and what it honestly doesn't
 //!
 //! Real upstream validation (`pkg/apis/*/validation/validation.go`) is
-//! hand-written Go: format checks (RFC 1123 DNS labels, IANA service
-//! names), cross-field consistency ("hostPort requires hostNetwork" isn't
-//! expressible from one field alone), enum membership (not even present in
-//! the vendored specs — verified empty), numeric ranges. None of that is
-//! derivable from a flat per-schema table, and this module doesn't attempt
-//! it — same honesty `defaulting`'s module doc holds about conditional
-//! defaults. What it *does* correctly handle: the two structural facts
-//! every richer form of validation needs first — is a required field
-//! there at all, and if a field is there, is it even the right kind of
-//! JSON value — both checked recursively through every nested
-//! object/array this crate's `ref_schema` metadata already threads
-//! through defaulting and Strategic Merge Patch.
+//! hand-written Go: cross-field consistency ("hostPort requires hostNetwork"
+//! isn't expressible from one field alone) and other semantic rules still
+//! need explicit per-kind code. The published OpenAPI schema's local
+//! constraints (formats, enums, ranges, lengths, patterns, and uniqueness)
+//! are available through [`validate_openapi_constraints`]; this module keeps
+//! required fields and JSON kinds in the compact generated metadata tables
+//! above and supplements them with that schema-driven pass at REST call
+//! sites. Both layers recurse through nested objects and arrays.
 //!
 //! Deliberately run *before* defaulting in any real create/update path:
 //! a required field is required in the *user's* input, not required to
@@ -116,6 +112,23 @@ pub fn validate_types(schema: &str, value: &Value) -> Vec<TypeMismatch> {
     let mut out = Vec::new();
     walk_types(schema, value, "", &mut out);
     out
+}
+
+/// Validates constraints that are present in a built-in resource's published
+/// OpenAPI schema. Required fields and JSON kinds remain backed by the
+/// compiled metadata tables above; this supplemental pass covers schema-local
+/// enum, range, length, pattern, uniqueness, and standard-format rules for
+/// the same built-in object.
+pub fn validate_openapi_constraints(
+    group: &str,
+    version: &str,
+    kind: &str,
+    value: &Value,
+) -> Vec<String> {
+    let Some(schema) = codegen::openapi_schema_for_gvk(group, version, kind) else {
+        return Vec::new();
+    };
+    crate::apiextensions::schema_validation::validate_constraints(&schema, value)
 }
 
 fn walk_types(schema: &str, value: &Value, path_prefix: &str, out: &mut Vec<TypeMismatch>) {
@@ -304,5 +317,16 @@ mod tests {
             mismatches,
             vec![TypeMismatch { path: "securityContext.runAsUser".to_string(), expected: "integer".to_string(), actual_kind: "string".to_string() }]
         );
+    }
+
+    #[test]
+    fn built_in_constraints_use_the_published_openapi_schema() {
+        let violations = validate_openapi_constraints(
+            "",
+            "v1",
+            "Secret",
+            &json!({"data": {"token": "not-base64"}}),
+        );
+        assert!(violations.iter().any(|violation| violation.contains("data.token")));
     }
 }

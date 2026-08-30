@@ -822,6 +822,42 @@ pub(super) async fn nodeapiserver_applies_core_defaults(context: &E2eContext) ->
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "built-in schema constraint checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-invalid-secret-{}", std::process::id());
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/namespaces/{}/secrets",
+            context.namespace
+        ))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": name, "namespace": context.namespace},
+            "data": {"token": "not-base64"}
+        }))?)?;
+
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "invalid built-in schema constraint returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!(
+            "invalid built-in schema constraint was accepted: {value}"
+        ),
+    }
+}
+
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     context: &E2eContext,
 ) -> Result<()> {

@@ -1065,6 +1065,7 @@ pub async fn create_with_options_and_manager(
         (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v.extend(validation::validate_openapi_constraints(group, version, kind, body));
             v
         }
         // Group K: real required/type validation against a CRD's own
@@ -1949,6 +1950,7 @@ pub async fn update_with_options_and_manager(
         (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, body).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(validation::validate_types(schema, body).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v.extend(validation::validate_openapi_constraints(group, version, &kind, body));
             v
         }
         // Group K: same scope `create`'s own CRD branch runs.
@@ -2507,6 +2509,7 @@ pub async fn patch_persist_with_manager(
         (Some(schema), _) => {
             let mut v: Vec<String> = validation::validate_required(schema, &candidate).into_iter().map(|m| format!("{}: Required value", m.path)).collect();
             v.extend(validation::validate_types(schema, &candidate).into_iter().map(|t| format!("{}: expected type {}, got {}", t.path, t.expected, t.actual_kind)));
+            v.extend(validation::validate_openapi_constraints(group, version, &context.kind, &candidate));
             v
         }
         // Group K: same scope `create`'s own CRD branch runs.
@@ -3101,7 +3104,14 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         let object = prune_runtime_schema(open_api_schema.as_ref(), object);
 
         let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
-            (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+            (Some(schema), _) => {
+                let mut violations = validation::validate_required(schema, &object)
+                    .into_iter()
+                    .map(|m| format!("{}: Required value", m.path))
+                    .collect::<Vec<_>>();
+                violations.extend(validation::validate_openapi_constraints(group, version, &resolved.kind, &object));
+                violations
+            }
             (None, Some(schema)) => {
                 let mut violations: Vec<String> = apiextensions::schema_validation::validate_required(schema, &object)
                     .into_iter()
@@ -3265,7 +3275,14 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let object = prune_runtime_schema(open_api_schema.as_ref(), object);
 
     let mut violations: Vec<String> = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => validation::validate_required(schema, &object).into_iter().map(|m| format!("{}: Required value", m.path)).collect(),
+        (Some(schema), _) => {
+            let mut violations = validation::validate_required(schema, &object)
+                .into_iter()
+                .map(|m| format!("{}: Required value", m.path))
+                .collect::<Vec<_>>();
+            violations.extend(validation::validate_openapi_constraints(group, version, &context.kind, &object));
+            violations
+        }
         (None, Some(schema)) => {
             let mut violations: Vec<String> = apiextensions::schema_validation::validate_required(schema, &object)
                 .into_iter()

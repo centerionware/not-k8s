@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `841ad8ee` on
+This snapshot is checked against `origin/nodeapiserver` at `b983dbff` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -47,14 +47,14 @@ explanation of each boundary.
 | C. Storage | **done for current scope** | etcd storage, encryption providers, stale-value key rotation/rewrite, and full read/write/transaction/watch wiring are integrated. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
-| F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
+| F. Scheme | **in progress** | Conversion, structural validation/defaulting, published OpenAPI-local constraints, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
-| M. APF/audit/observability | **in progress** | Audit stages, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, and policy-selected request/response object capture are present; remaining observability refinements remain. |
+| M. APF/audit/observability | **in progress** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, and policy-selected request/response object capture are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -864,9 +864,14 @@ and target-port defaults, plus the corresponding common Secret, ConfigMap,
 PV, PVC, Endpoints, Namespace, ReplicationController, and apps workload
 template defaults. It is wired into create, update, patch, and apply before
 conversion and is covered by a nodeapiserver-only live Pod round trip.
-The remaining per-kind validation/defaulting rules are still separate work;
-this is named explicitly rather than presenting the generic pass as a full
-replacement for upstream's hand-maintained `pkg/apis/*/v1/defaults.go`.
+Published OpenAPI-local constraints are now applied generically as well:
+`scheme::validation::validate_openapi_constraints` resolves the built-in
+GVK's vendored schema and reuses the CRD constraint walker for formats,
+enums, ranges, lengths, patterns, and uniqueness on create, update, patch,
+and apply. This closes the schema-local part of the generic validation gap;
+cross-field and per-kind semantic rules remain separate work, rather than
+pretending this is a full replacement for upstream's hand-maintained
+`pkg/apis/*/v1/defaults.go` and validation packages.
 `scheme::validation::validate_required(schema, value)` lands the
 first validation slice: recursively checks every field a schema's own
 vendored `required` array names is present and non-null, returning one
@@ -890,11 +895,11 @@ recursion instead, verified against `PodSpec.securityContext`). Recurses
 the same way, and a whole number encoded as a JSON float (`30.0`) still
 counts as `integer` — JSON has no separate integer literal syntax, so the
 check is on the value's mathematical shape, not how a particular encoder
-happened to lex it. Named honestly: both functions together are still
-only structural (presence + kind), not the rest of real validation
-(formats, enums — verified absent from the vendored specs entirely —
-cross-field consistency, numeric ranges — all hand-written Go upstream, no
-shortcut).
+happened to lex it. Named honestly: these two generated-table functions are
+still only structural (presence + kind). The schema-local constraints are
+covered by the supplemental OpenAPI pass described above; cross-field and
+other per-kind semantic validation remains hand-written Go upstream, with no
+generic shortcut.
 
 `cel_ext::type_check` now supplies the schema-aware CEL acceptance step that
 the runtime `cel` crate does not provide: `self`/`oldSelf` are resolved against
@@ -2057,7 +2062,9 @@ used*:
    resolves named or selector-based `paramRef` objects, and evaluates every
    matching binding against the final candidate object before persistence.
    It also supplies `oldObject` for update/delete and the real
-   `request.dryRun` value. MutatingAdmissionPolicy remains separate work.
+   `request.dryRun` value. The same storage-backed policy machinery also
+   applies MutatingAdmissionPolicy JSONPatch and ApplyConfiguration results
+   before the remaining admission plugins run.
    `ValidatingAdmissionPolicy` itself is now **confirmed, live, working
    generic CRUD** (`tests/validating_admission_policy_roundtrip.rs`, a
    real round trip against a real `nodestore`: create/get/list/update/
@@ -2389,12 +2396,10 @@ is now genuinely meaningful there, not just a bare `200`. `/metrics` is
 real too now (`server::metrics`, a
 scoped port of real upstream's own `apiserver_request_total` counter,
 `k8s.io/apiserver/pkg/endpoints/metrics`): every completed request is
-recorded under `(verb, resource, code)` — a deliberately narrowed label
-set next to real upstream's own nine (`verb`/`dry_run`/`group`/
-`version`/`resource`/`subresource`/`scope`/`component`/`code`), the
-three that answer the practically useful "what's erroring"/"what's
-being hit hardest" questions without the cardinality cost of the full
-set this early in the crate's metrics story. Rendered as real
+recorded under upstream's full nine-label identity
+(`verb`/`dry_run`/`group`/`version`/`resource`/`subresource`/`scope`/
+`component`/`code`), matching the dimensions clients and dashboards use to
+separate equivalent requests. Rendered as real
 Prometheus text exposition format by hand (no metrics crate dependency,
 mirroring `crates/nodelet/src/server/prom_metrics.rs`'s own established
 `push_metric`-shaped approach, sorted output so repeated scrapes diff
