@@ -2364,12 +2364,14 @@ failed: reason withheld` output (upstream's own real "never leak the
 actual error to an unauthenticated caller" posture) followed by `"<name>
 check failed"` and a real `500` on any failure, always verbose
 regardless of the query param; the same per-line output followed by
-`"<name> check passed\n"` on success when `?verbose` is given. Not
-ported: the `log`/`informer-sync`/`shutdown` checks (klog-specific,
-no-informers-here, and no graceful-shutdown machinery respectively) and
-the `?exclude=` query param. `deploy/setup-control-plane.sh` already
-polls `/readyz?verbose`, so this is now genuinely meaningful there, not
-just a bare `200`. `/metrics` is real too now (`server::metrics`, a
+`"<name> check passed\n"` on success when `?verbose` is given. The
+upstream `?exclude=<check>` query parameter is also supported, including
+the verbose `excluded: ok` output and warnings for unknown check names.
+Not ported: the `log`/`informer-sync`/`shutdown` checks (klog-specific,
+no-informers-here, and no graceful-shutdown machinery respectively).
+`deploy/setup-control-plane.sh` already polls `/readyz?verbose`, so this
+is now genuinely meaningful there, not just a bare `200`. `/metrics` is
+real too now (`server::metrics`, a
 scoped port of real upstream's own `apiserver_request_total` counter,
 `k8s.io/apiserver/pkg/endpoints/metrics`): every completed request is
 recorded under `(verb, resource, code)` — a deliberately narrowed label

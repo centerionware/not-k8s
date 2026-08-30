@@ -1800,9 +1800,11 @@ async fn handle(
     let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
 
     if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
-        let verbose = path::parse_query(&query).iter().any(|(k, _)| k == "verbose");
-        let checks = healthz::run_checks(check_name, storage.is_some());
-        let (status, body) = healthz::render(check_name, &checks, verbose);
+        let params = path::parse_query(&query);
+        let verbose = params.iter().any(|(key, _)| key == "verbose");
+        let excluded = params.into_iter().filter(|(key, _)| key == "exclude").map(|(_, value)| value).collect::<Vec<_>>();
+        let (checks, unknown_excluded) = healthz::run_checks(check_name, storage.is_some(), &excluded);
+        let (status, body) = healthz::render(check_name, &checks, &unknown_excluded, verbose);
         let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return Ok(Response::builder().status(code).header("Content-Type", "text/plain; charset=utf-8").header("X-Content-Type-Options", "nosniff").body(body_from_bytes(body.into_bytes())).unwrap());
     }
