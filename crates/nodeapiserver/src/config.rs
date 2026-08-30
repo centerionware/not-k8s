@@ -101,6 +101,11 @@ pub struct Config {
     /// output, while an explicit path mirrors kube-apiserver's
     /// `--audit-log-path` without changing the request event shape.
     pub audit_log_path: Option<PathBuf>,
+    /// `NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES` rotates the file before a
+    /// line would exceed this size. `NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS`
+    /// controls how many numbered backups are retained.
+    pub audit_log_max_size_bytes: Option<u64>,
+    pub audit_log_max_backups: usize,
     /// `NODEAPISERVER_AUDIT_POLICY_FILE` selects an upstream-shaped
     /// `audit.k8s.io/v1` policy. When unset, every request keeps the existing
     /// metadata audit behavior.
@@ -173,6 +178,8 @@ impl Default for Config {
             apf_max_mutating_requests_inflight: 200,
             apf_queue_length_limit: 1000,
             audit_log_path: None,
+            audit_log_max_size_bytes: None,
+            audit_log_max_backups: 5,
             audit_policy_file: None,
             enforce_rbac: false,
             encryption_config_file: None,
@@ -302,6 +309,11 @@ impl Config {
             cfg.apf_queue_length_limit,
         )?;
         cfg.audit_log_path = path_env("NODEAPISERVER_AUDIT_LOG_PATH");
+        cfg.audit_log_max_size_bytes = optional_u64_env("NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES")?;
+        cfg.audit_log_max_backups = usize_env(
+            "NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS",
+            cfg.audit_log_max_backups,
+        )?;
         cfg.audit_policy_file = path_env("NODEAPISERVER_AUDIT_POLICY_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
@@ -346,6 +358,17 @@ fn usize_env(name: &str, default: usize) -> Result<usize> {
         }
         Err(_) => Ok(default),
     }
+}
+
+fn optional_u64_env(name: &str) -> Result<Option<u64>> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|error| anyhow!("{name} must be a positive integer: {error}"))?;
+    anyhow::ensure!(parsed > 0, "{name} must be greater than zero");
+    Ok(Some(parsed))
 }
 
 fn duration_env(name: &str, default: Duration) -> Result<Duration> {
@@ -422,6 +445,8 @@ mod tests {
         assert_eq!(cfg.apf_max_mutating_requests_inflight, 200);
         assert_eq!(cfg.apf_queue_length_limit, 1000);
         assert!(cfg.audit_log_path.is_none());
+        assert_eq!(cfg.audit_log_max_size_bytes, None);
+        assert_eq!(cfg.audit_log_max_backups, 5);
         assert!(cfg.audit_policy_file.is_none());
     }
 
@@ -432,12 +457,16 @@ mod tests {
         std::env::set_var("NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT", "9");
         std::env::set_var("NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT", "31");
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_PATH", "/tmp/nodeapiserver-audit.log");
+        std::env::set_var("NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES", "4096");
+        std::env::set_var("NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS", "3");
         std::env::set_var("NODEAPISERVER_AUDIT_POLICY_FILE", "/tmp/nodeapiserver-audit-policy.yaml");
         let _cleanup = EnvGuard(&[
             "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
             "NODEAPISERVER_APF_MAX_MUTATING_REQUESTS_INFLIGHT",
             "NODEAPISERVER_APF_QUEUE_LENGTH_LIMIT",
             "NODEAPISERVER_AUDIT_LOG_PATH",
+            "NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES",
+            "NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS",
             "NODEAPISERVER_AUDIT_POLICY_FILE",
         ]);
         let cfg = Config::from_env().unwrap();
@@ -445,6 +474,8 @@ mod tests {
         assert_eq!(cfg.apf_max_mutating_requests_inflight, 9);
         assert_eq!(cfg.apf_queue_length_limit, 31);
         assert_eq!(cfg.audit_log_path.as_deref(), Some(std::path::Path::new("/tmp/nodeapiserver-audit.log")));
+        assert_eq!(cfg.audit_log_max_size_bytes, Some(4096));
+        assert_eq!(cfg.audit_log_max_backups, 3);
         assert_eq!(cfg.audit_policy_file.as_deref(), Some(std::path::Path::new("/tmp/nodeapiserver-audit-policy.yaml")));
     }
 

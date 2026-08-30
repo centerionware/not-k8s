@@ -912,7 +912,11 @@ pub async fn run(cfg: Config) {
     };
 
     let audit_sink = match cfg.audit_log_path.as_deref() {
-        Some(path) => match crate::audit::sink::AuditSink::open(path) {
+        Some(path) => match crate::audit::sink::AuditSink::open_with_rotation(
+            path,
+            cfg.audit_log_max_size_bytes,
+            cfg.audit_log_max_backups,
+        ) {
             Ok(sink) => {
                 info!(path = %path.display(), "nodeapiserver: opened audit log");
                 Some(Arc::new(sink))
@@ -1811,6 +1815,7 @@ fn log_audit_event(
 /// The pure half of [`log_audit_event`] — everything up to the built
 /// `Value`, factored out so it's unit-testable without capturing
 /// `tracing`'s own log output.
+#[cfg(test)]
 fn build_audit_event(
     method: &str,
     path_str: &str,
