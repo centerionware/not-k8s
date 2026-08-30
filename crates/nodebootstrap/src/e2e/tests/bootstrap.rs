@@ -776,6 +776,52 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_applies_core_defaults(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "core defaulting checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    // Keep this object unschedulable by using an image that is never pulled;
+    // the response is enough to prove the apiserver defaulted the object, and
+    // deletion immediately removes the nodelet work item.
+    let name = format!("nodeapiserver-defaults-{}", std::process::id());
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), "default");
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "containers": [{"name": "app", "image": "example.invalid/not-k8s-defaults"}]
+        }
+    }))?;
+    let created = pods
+        .create(&PostParams::default(), &pod)
+        .await
+        .context("creating a Pod to verify core defaulting")?;
+    let delete_result = pods.delete(&name, &DeleteParams::default()).await;
+    anyhow::ensure!(
+        delete_result.is_ok(),
+        "cleanup of the core-defaulting Pod failed: {:?}",
+        delete_result.err()
+    );
+
+    let returned = serde_json::to_value(created)?;
+    anyhow::ensure!(
+        returned.pointer("/spec/dnsPolicy").and_then(Value::as_str) == Some("ClusterFirst")
+            && returned.pointer("/spec/restartPolicy").and_then(Value::as_str) == Some("Always")
+            && returned.pointer("/spec/enableServiceLinks").and_then(Value::as_bool) == Some(true)
+            && returned.pointer("/spec/containers/0/imagePullPolicy").and_then(Value::as_str)
+                == Some("Always")
+            && returned.pointer("/spec/containers/0/terminationMessagePath").and_then(Value::as_str)
+                == Some("/dev/termination-log"),
+        "nodeapiserver did not apply the expected core Pod defaults: {returned}"
+    );
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     context: &E2eContext,
 ) -> Result<()> {
