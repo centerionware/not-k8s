@@ -1324,7 +1324,7 @@ pub async fn update_scale(storage: &mut StorageClient, group: &str, version: &st
         return Ok(ScaleOutcome::Conflict);
     }
 
-    let parent = parent_with_replicas(&current, replicas)?;
+    let parent = parent_with_replicas(&current, replicas).map_err(Error::InvalidProtobufRequest)?;
     match update_with_options(storage, group, version, resource, namespace, name, &parent, dry_run).await? {
         UpdateOutcome::Updated(updated) => Ok(ScaleOutcome::Updated(scale_from_parent(&updated).map_err(Error::InvalidProtobufRequest)?)),
         UpdateOutcome::UnknownResource => Ok(ScaleOutcome::UnknownResource),
@@ -1371,7 +1371,7 @@ pub async fn patch_scale(storage: &mut StorageClient, group: &str, version: &str
         }
     }
 
-    let parent = parent_with_replicas(&current, replicas)?;
+    let parent = parent_with_replicas(&current, replicas).map_err(Error::InvalidProtobufRequest)?;
     match update_with_options(storage, group, version, resource, namespace, name, &parent, dry_run).await? {
         UpdateOutcome::Updated(updated) => Ok(ScaleOutcome::Updated(scale_from_parent(&updated).map_err(Error::InvalidProtobufRequest)?)),
         UpdateOutcome::UnknownResource => Ok(ScaleOutcome::UnknownResource),
