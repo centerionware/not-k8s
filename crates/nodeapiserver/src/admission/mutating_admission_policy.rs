@@ -5,12 +5,13 @@
 //! name order and applies each JSON Patch or apply configuration to the
 //! candidate object before the remaining admission plugins run.
 //!
-//! The CEL runtime returns JSON-shaped values here. That keeps the mutation
-//! engine independent from the storage codec while still accepting the same
-//! object/array/map result shape that Kubernetes applies after evaluating a
-//! policy expression. Request variables include the submitted kind,
-//! authenticated `userInfo`, and the native CEL `authorizer` binding when a
-//! policy expression uses it.
+//! Mutation expressions run with schema-backed CEL declarations for the
+//! `JSONPatch` operation and the request object's `Object` aliases. Their
+//! resulting typed values are converted to JSON at the patch boundary, which
+//! keeps the mutation engine independent from the storage codec while
+//! preserving Kubernetes' typed expression surface. Request variables
+//! include the submitted kind, authenticated `userInfo`, and the native CEL
+//! `authorizer` binding when a policy expression uses it.
 
 use super::match_conditions::FailurePolicy;
 use super::policy_decode::DecodedPolicy;
@@ -89,6 +90,9 @@ pub async fn mutate(
         .as_ref()
         .map(|authorizer| vec![("authorizer", authorizer.clone())])
         .unwrap_or_default();
+    let mutation_schema = rest::mutation_openapi_schema(storage, group, version, resource)
+        .await
+        .map_err(|error| format!("resolving mutation object schema: {error}"))?;
 
     let namespace_labels = if namespace.is_empty() {
         BTreeMap::new()
@@ -258,6 +262,7 @@ pub async fn mutate(
                         mutation,
                         &mutation_vars,
                         &authorizer_vars,
+                        mutation_schema.as_ref(),
                     )
                     .await
                     {
@@ -313,6 +318,7 @@ async fn apply_mutation(
     mutation: &Value,
     vars: &[(&'static str, &Value)],
     cel_vars: &[(&'static str, cel::Value)],
+    schema: Option<&Value>,
 ) -> Result<Value, String> {
     let patch_type = mutation
         .get("patchType")
@@ -324,10 +330,11 @@ async fn apply_mutation(
                 .pointer("/jsonPatch/expression")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "JSONPatch mutation expression is required".to_string())?;
-            let patch = crate::cel_ext::eval_json_with_vars_and_cel_vars_and_deadline(
+            let patch = crate::cel_ext::typed_mutation::eval_json_with_schema_and_cel_vars_and_deadline(
                 expression,
                 vars,
                 cel_vars,
+                schema,
                 std::time::Duration::from_millis(100),
             )
             .map_err(|error| error.to_string())?;
@@ -344,10 +351,11 @@ async fn apply_mutation(
                 .pointer("/applyConfiguration/expression")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "ApplyConfiguration mutation expression is required".to_string())?;
-            let configuration = crate::cel_ext::eval_json_with_vars_and_cel_vars_and_deadline(
+            let configuration = crate::cel_ext::typed_mutation::eval_json_with_schema_and_cel_vars_and_deadline(
                 expression,
                 vars,
                 cel_vars,
+                schema,
                 std::time::Duration::from_millis(100),
             )
             .map_err(|error| error.to_string())?;

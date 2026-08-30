@@ -144,6 +144,7 @@ pub mod kubernetes_semver;
 pub mod kubernetes_url;
 pub mod path;
 pub mod type_check;
+pub mod typed_mutation;
 
 use cel::extractors::This;
 use cel::objects::OptionalValue;
