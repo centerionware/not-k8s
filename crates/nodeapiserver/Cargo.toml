@@ -65,6 +65,11 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # feature) already pulls this crate in transitively (see Cargo.lock);
 # declaring it explicitly just makes it directly usable here too.
 ring = "0.17"
+# Group C: the upstream AES-CBC encryption-at-rest provider. These are the
+# RustCrypto AES-256-CBC and PKCS#7 mode crates; no provider code is shared
+# with the GCM path.
+aes = "0.8"
+cbc = "0.1"
 
 # Group E: the REST/watch listener. Same hyper/hyper-util/tokio-rustls
 # stack as crates/nodelet/Cargo.toml's own HTTPS server, except this one
