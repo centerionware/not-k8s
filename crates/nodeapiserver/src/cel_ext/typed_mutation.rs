@@ -305,8 +305,13 @@ fn add_object_definition(env: &mut Env, name: &str, schema: &Value, seen: &mut B
 }
 
 fn field_type(env: &mut Env, name: &str, schema: &Value, seen: &mut BTreeSet<String>) -> Type {
+    let properties = schema_properties(schema);
+    if !properties.is_empty() {
+        add_object_definition(env, name, schema, seen);
+        return Type::new_struct(name.to_string());
+    }
     if schema.get("type").and_then(Value::as_str) == Some("object") {
-        if !schema_properties(schema).is_empty() || schema.get("additionalProperties").is_none() {
+        if schema.get("additionalProperties").is_none() {
             add_object_definition(env, name, schema, seen);
             return Type::new_struct(name.to_string());
         }
