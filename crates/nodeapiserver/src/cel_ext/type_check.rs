@@ -130,6 +130,24 @@ pub fn check_rule(schema: &Value, rule: &str) -> Vec<TypeError> {
     check_rule_with_type(schema_type(schema), rule)
 }
 
+/// Check a rule against the schema while modeling Kubernetes' optional
+/// `oldSelf` binding used by rules with `optionalOldSelf: true`.
+pub fn check_rule_with_optional_old_self(
+    schema: &Value,
+    rule: &str,
+    optional_old_self: bool,
+) -> Vec<TypeError> {
+    let root = schema_type(schema);
+    let old_self = root.clone().map(|root| {
+        if optional_old_self {
+            CelType::Optional(Box::new(root))
+        } else {
+            root
+        }
+    });
+    check_rule_with_old_self(root, old_self, rule)
+}
+
 /// Check a rule at the top-level resource scope. Kubernetes exposes a small
 /// set of identity and metadata fields at the root even when the CRD schema
 /// does not repeat them; nested validation scopes do not get this addition.
@@ -137,7 +155,53 @@ pub fn check_root_rule(schema: &Value, rule: &str) -> Vec<TypeError> {
     check_rule_with_type(schema_type_for_root(schema), rule)
 }
 
+/// Check a top-level rule with the optional `oldSelf` type used when its
+/// `optionalOldSelf` field is enabled.
+pub fn check_root_rule_with_optional_old_self(
+    schema: &Value,
+    rule: &str,
+    optional_old_self: bool,
+) -> Vec<TypeError> {
+    let root = schema_type_for_root(schema);
+    let old_self = root.clone().map(|root| {
+        if optional_old_self {
+            CelType::Optional(Box::new(root))
+        } else {
+            root
+        }
+    });
+    check_rule_with_old_self(root, old_self, rule)
+}
+
+/// Return whether a rule actually references the `oldSelf` identifier. This
+/// distinguishes ordinary rules, which still run on CREATE, from transition
+/// rules that Kubernetes skips when no prior value exists unless they opt
+/// into optional-old-self behavior.
+pub fn rule_references_old_self(rule: &str) -> bool {
+    let Ok(program) = Program::compile(rule) else {
+        return false;
+    };
+    let mut checker = Checker {
+        variables: HashMap::new(),
+        errors: Vec::new(),
+        references_old_self: false,
+    };
+    checker.expression(program.expression());
+    checker.references_old_self
+}
+
 fn check_rule_with_type(root: Option<CelType>, rule: &str) -> Vec<TypeError> {
+    check_rule_with_old_self(root.clone(), root, rule)
+}
+
+/// Check a rule with an explicitly declared `oldSelf` type. The regular
+/// helper keeps the historical non-optional binding; CRD rules opt into the
+/// optional form per rule through `check_*_with_optional_old_self`.
+fn check_rule_with_old_self(
+    root: Option<CelType>,
+    old_self: Option<CelType>,
+    rule: &str,
+) -> Vec<TypeError> {
     let Some(root) = root else {
         return Vec::new();
     };
@@ -148,9 +212,10 @@ fn check_rule_with_type(root: Option<CelType>, rule: &str) -> Vec<TypeError> {
     let mut checker = Checker {
         variables: HashMap::from([
             (String::from("self"), root.clone()),
-            (String::from("oldSelf"), root),
+            (String::from("oldSelf"), old_self.unwrap_or(root)),
         ]),
         errors: Vec::new(),
+        references_old_self: false,
     };
     let result = checker.expression(program.expression());
     if !result.is_bool_or_dynamic() {
@@ -248,6 +313,7 @@ fn schema_type(schema: &Value) -> Option<CelType> {
 struct Checker {
     variables: HashMap<String, CelType>,
     errors: Vec<TypeError>,
+    references_old_self: bool,
 }
 
 impl Checker {
@@ -315,6 +381,9 @@ impl Checker {
     }
 
     fn identifier(&mut self, name: &str) -> CelType {
+        if name == "oldSelf" {
+            self.references_old_self = true;
+        }
         if let Some(ty) = self.variables.get(name) {
             return ty.clone();
         }
@@ -1202,6 +1271,25 @@ mod tests {
         assert!(errors.iter().any(|error| matches!(
             error,
             TypeError::InvalidOperand { operation, .. } if operation == "quantity"
+        )));
+    }
+
+    #[test]
+    fn optional_old_self_exposes_has_value_and_value() {
+        assert!(check_root_rule_with_optional_old_self(
+            &schema(),
+            "oldSelf.hasValue() ? oldSelf.value().name != '' : true",
+            true,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn non_optional_old_self_rejects_optional_methods() {
+        let errors = check_root_rule_with_optional_old_self(&schema(), "oldSelf.hasValue()", false);
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            TypeError::InvalidOperand { operation, .. } if operation == "hasValue"
         )));
     }
 }
