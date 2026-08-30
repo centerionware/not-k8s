@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `9ab58e8` on
+This snapshot is checked against `origin/nodeapiserver` at `0f3ee03` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -44,7 +44,7 @@ explanation of each boundary.
 | Phase 0 prerequisites | **done** | The workspace uses `k8s-openapi` v1_34 and the related dependency migration is integrated. |
 | A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
 | B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
-| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; remaining provider compatibility is open. |
+| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; key-rotation migration and Secretbox/KMS provider compatibility remain open. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
@@ -281,12 +281,13 @@ the crate uses this instead, `get`/`list`/`update`/`patch_prepare`/
 `update_status`/`patch_status`/`delete`, plus `watch`'s own event
 decoding in `server::watch_event`) and `encrypt_for_storage` (called at
 both real `PutRequest` construction sites, `create` and
-`persist_update`). Both use the object's own etcd key as AES-GCM's
-authenticated data, matching real upstream's own
-`dataCtx.AuthenticatedData()` convention exactly. A resource with no
-matching entry in the loaded config is written/read as-is, unchanged
-from before this wiring existed — encryption is opt-in per resource,
-never a blanket switch. The real `stale` flag `transform_from_storage`
+`persist_update`). AES-GCM uses the object's own etcd key as authenticated
+data, matching real upstream's own `dataCtx.AuthenticatedData()` convention;
+AES-CBC follows upstream's unauthenticated CBC provider and ignores that
+argument. A resource with no matching entry in the loaded config is
+written/read as-is, unchanged from before this wiring existed — encryption
+is opt-in per resource, never a blanket switch. The real `stale` flag
+`transform_from_storage`
 returns (upstream's own "this was encrypted under a non-primary key,
 rewrite it with the current one next write" signal) is now honored on
 every nodestore-backed read. The rewrite is guarded by an MVCC compare
@@ -409,8 +410,8 @@ would be indistinguishable from "not synced yet" if synced-ness were
 inferred from the revision alone. `list` checks `has_synced()` before
 trusting the cache; an unsynced cache falls through to nodestore exactly
 as `cache: None` would. `server::listener` uses the same registry for every
-built-in resource, while dynamic CRD registrations remain the lifecycle
-follow-up described above.
+built-in resource and reconciles dynamically served CRD GVRs from the live
+CRD cache; the first-watch fallback remains only for the startup race.
 
 **E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
@@ -480,7 +481,8 @@ the exact subset `client-go`'s own `errors.NewNotFound` decoding path
 reads, not the full `Status` type's `details.causes` machinery) for an
 unknown group/version rather than a silent fallthrough into the
 resource-request echo stub. A resource-shaped path (`/api/v1/namespaces/
-default/pods`) still falls through to that stub, unchanged.
+default/pods`) is handled by the resource dispatch described below, not by
+the discovery-only route.
 `/openapi/v3` and `/openapi/v3/<path>` are also now real, wired the same
 way: a new Group A build-time step (`build/openapi_serve.rs`) embeds
 every `vendor/openapi-spec/v3/*.json` file verbatim, keyed by the real
@@ -545,11 +547,11 @@ at startup (best-effort — a nodestore unreachable at boot degrades to
 listener from serving discovery, which needs no storage at all) and
 clones it per connection (`StorageClient` wraps a cheap-to-clone
 `tonic::transport::Channel`, same posture `cacher`'s own driver takes).
-Named honestly, not overclaimed: reads go straight to nodestore,
-bypassing `cacher::store::WatchCache` entirely (a real, valid strategy —
-upstream's own quorum-read path takes exactly this shape — not a
-stand-in for the cache; the cache isn't even started yet, since nothing
-in `lib.rs::run()` calls `cacher::driver::reflect()`), no subresources.
+Named honestly, not overclaimed: `GET`/`LIST` consult the registered
+`cacher::store::SharedCache` for synchronized, non-paginated reads and
+fall back to nodestore for cache misses, unsynchronized caches, paginated
+reads, or callers without a cache. `WATCH` is served from the same cache;
+no subresources are included in these generic read paths.
 `list` now filters by label/field selector for real —
 `cacher::selector::object_matches` (Group D's own generic adapter,
 already landed and unit-tested there) wired in unchanged, with a real

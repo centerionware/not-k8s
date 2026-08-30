@@ -8,7 +8,9 @@
 //! any of that intersecting a field another manager owns" — this module
 //! is that comparison, the third of `merge.Updater`'s own real
 //! prerequisites (`fieldset::set_from_object`, `typed_merge::merge`,
-//! this) to land, `Updater.Apply` itself still not started.
+//! this) to land. `Updater.Apply` now consumes this comparison primitive as
+//! part of its real conflict-detection path; the orchestration lives in
+//! `patch::updater`.
 //!
 //! Reads the exact same SSA-specific `FIELD_META` columns
 //! (`list_type`/`list_map_keys`/`map_type`/`ref_schema`) every other

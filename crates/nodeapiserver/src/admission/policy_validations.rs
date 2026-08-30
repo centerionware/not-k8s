@@ -1,9 +1,10 @@
 //! `ValidatingAdmissionPolicy`'s own `spec.validations[]` evaluation —
 //! real upstream's own `validator.Validate`
 //! (`k8s.io/apiserver/pkg/admission/plugin/policy/validating/
-//! validator.go`, fetched and read directly), scoped to the part of that
-//! function this crate can honestly build without real
-//! `ValidatingAdmissionPolicyBinding`/`paramRef`/audit-annotation wiring:
+//! validator.go`, fetched and read directly), scoped to the pure evaluation
+//! part of that function. The storage-backed policy adapter supplies the
+//! real binding/`paramRef` and audit-annotation wiring around this primitive;
+//! this module only evaluates the already-bound inputs:
 //! given an already-bound `object`/`oldObject`/`request`/`params`
 //! variable set (the same shape [`super::policy_matching::
 //! build_request_object`] and `cel_ext::eval_bool_with_vars` already
@@ -73,8 +74,8 @@ pub enum Action {
 
 /// Real upstream's own `PolicyDecision`, scoped to the fields this
 /// primitive can honestly produce (no `Elapsed`, no
-/// `PolicyAuditAnnotation` — both real, separate, not-yet-started
-/// concerns named in this module's own doc comment).
+/// `PolicyAuditAnnotation` (the storage-backed policy enforcement layer
+/// adds that annotation around this pure result).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
     pub action: Action,
