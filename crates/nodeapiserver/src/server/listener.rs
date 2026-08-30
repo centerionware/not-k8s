@@ -263,6 +263,16 @@ fn json_response_with_content_type(status: StatusCode, value: &serde_json::Value
     Response::builder().status(status).header("Content-Type", content_type).body(body_from_bytes(bytes)).unwrap()
 }
 
+fn scale_outcome_response(path: &str, outcome: rest::ScaleOutcome) -> Response<BoxedBody> {
+    match outcome {
+        rest::ScaleOutcome::Found(scale) | rest::ScaleOutcome::Updated(scale) => json_response(StatusCode::OK, &scale),
+        rest::ScaleOutcome::UnknownResource | rest::ScaleOutcome::ObjectNotFound => json_response(StatusCode::NOT_FOUND, &not_found_status(path)),
+        rest::ScaleOutcome::MissingResourceVersion => json_response(StatusCode::BAD_REQUEST, &bad_request_status(path, "metadata.resourceVersion is required")),
+        rest::ScaleOutcome::Conflict => json_response(StatusCode::CONFLICT, &conflict_status(path)),
+        rest::ScaleOutcome::Invalid(violations) => json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(path, &violations)),
+    }
+}
+
 /// Real upstream's own `resourceVersion` query parameter for a `watch`
 /// request — `path::RequestInfo` doesn't carry this (it's not part of
 /// the URL *path* grammar `path::parse` ports, only the query string), so
@@ -2926,6 +2936,103 @@ async fn handle(
         });
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
+    // Built-in workload scale subresources expose a virtual
+    // `autoscaling/v1 Scale`, not the parent object itself. Keep this ahead
+    // of generic CRUD so HPA and `kubectl scale` can read and update
+    // `spec.replicas` without persisting a second object.
+    if info.is_resource_request
+        && info.subresource == "scale"
+        && !info.name.is_empty()
+        && rest::supports_scale(&info.api_group, &info.api_version, &info.resource)
+        && matches!(info.verb.as_str(), "get" | "update" | "patch")
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = (!info.namespace.is_empty()).then_some(info.namespace.as_str());
+        if info.verb == "get" {
+            return match rest::get_scale(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(outcome) => Ok(scale_outcome_response(&path_str, outcome)),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "rest::get_scale failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
+
+        let content_type = req.headers().get("content-type").and_then(|value| value.to_str().ok()).map(str::to_string);
+        let kind_of_patch = if info.verb == "patch" {
+            match content_type.as_deref() {
+                Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                    Some(kind) => Some(kind),
+                    None => {
+                        return Ok(json_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &bad_request_status(&path_str, "unsupported Content-Type for the Scale subresource")));
+                    }
+                },
+                None => Some(rest::PatchKind::StrategicMerge),
+            }
+        } else {
+            None
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "reading the Scale request failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body: Value = if info.verb == "update" && content_type.as_deref().and_then(negotiation::content_type) == Some(negotiation::Format::Yaml) {
+            match crate::codec::yaml::decode(&body_bytes) {
+                Ok(body) => body,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            }
+        } else {
+            match crate::codec::json::decode(&body_bytes) {
+                Ok(body) => body,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            }
+        };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+        };
+        let outcome = if info.verb == "update" {
+            rest::update_scale(
+                &mut client,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                namespace,
+                &info.name,
+                &body,
+                dry_run,
+            )
+            .await
+        } else if let Some(kind_of_patch) = kind_of_patch {
+            rest::patch_scale(
+                &mut client,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                namespace,
+                &info.name,
+                kind_of_patch,
+                &body,
+                dry_run,
+            )
+            .await
+        } else {
+            unreachable!("scale PATCH requests always have a patch kind")
+        };
+        return match outcome {
+            Ok(outcome) => Ok(scale_outcome_response(&path_str, outcome)),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::Scale update failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+
     // Group L: aggregated APIs (`APIService`) — a genuine live reverse
     // proxy to a real aggregated backend, with discovery merge already
     // wired through the request-time discovery path.
