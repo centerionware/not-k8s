@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `7169b64a` on
+This snapshot is checked against `origin/nodeapiserver` at `b91a6de7` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
