@@ -126,6 +126,9 @@ struct AdmissionMetadata {
 
 type SharedAdmissionMetadata = Arc<Mutex<AdmissionMetadata>>;
 
+#[derive(Clone)]
+struct AuditRequestBodyCapture(Arc<Mutex<Option<Vec<u8>>>>);
+
 #[derive(Clone, Copy)]
 struct RequestBodyLimit(usize);
 
@@ -278,6 +281,10 @@ async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, BodyReadErro
         .extensions()
         .get::<RequestBodyLimit>()
         .map_or(usize::MAX, |limit| limit.0);
+    let capture = req
+        .extensions()
+        .get::<AuditRequestBodyCapture>()
+        .map(|capture| capture.0.clone());
     let mut body = req.into_body();
     let mut bytes = Vec::new();
     while let Some(frame) = body.frame().await {
@@ -289,6 +296,11 @@ async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, BodyReadErro
             return Err(BodyReadError::TooLarge { limit });
         }
         bytes.extend_from_slice(&data);
+    }
+    if let Some(capture) = capture {
+        if let Ok(mut captured) = capture.lock() {
+            *captured = Some(bytes.clone());
+        }
     }
     Ok(bytes)
 }
@@ -303,6 +315,58 @@ fn body_read_error_response(path_str: &str, error: &BodyReadError) -> Response<B
             StatusCode::BAD_REQUEST,
             &bad_request_status(path_str, "request body could not be read"),
         ),
+    }
+}
+
+/// Captures a bounded, already-materialized response body for audit
+/// `RequestResponse` events while returning the same bytes to the client.
+/// Streaming responses and bodies larger than the request limit remain
+/// uncaptured so audit logging cannot turn a normal response into an
+/// unbounded second buffer.
+async fn capture_response_object(
+    response: Response<BoxedBody>,
+    max_bytes: usize,
+) -> (Response<BoxedBody>, Option<Value>) {
+    use http_body::Body as _;
+    use http_body_util::BodyExt;
+
+    let (parts, body) = response.into_parts();
+    let Some(size) = body.size_hint().exact() else {
+        return (Response::from_parts(parts, body), None);
+    };
+    if size > max_bytes as u64 {
+        return (Response::from_parts(parts, body), None);
+    }
+    let content_type = parts
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => {
+            warn!(error = ?error, "nodeapiserver: failed to capture response body for audit");
+            return (Response::from_parts(parts, body_from_bytes(Vec::new())), None);
+        }
+    };
+    let object = decode_audit_object(&bytes, content_type.as_deref());
+    (
+        Response::from_parts(parts, body_from_bytes(bytes.to_vec())),
+        object,
+    )
+}
+
+fn decode_audit_object(bytes: &[u8], content_type: Option<&str>) -> Option<Value> {
+    if bytes.is_empty() {
+        return None;
+    }
+    match content_type
+        .and_then(negotiation::content_type)
+        .unwrap_or(negotiation::Format::Json)
+    {
+        negotiation::Format::Json => crate::codec::json::decode(bytes).ok(),
+        negotiation::Format::Yaml => crate::codec::yaml::decode(bytes).ok(),
+        negotiation::Format::Protobuf => None,
     }
 }
 
@@ -1678,6 +1742,25 @@ async fn handle_with_audit(
         .map(|identity| identity.groups.clone())
         .unwrap_or_else(|| vec![UNAUTHENTICATED_GROUP.to_string()]);
     let long_running = is_long_running_request(&request_info, &query);
+    let audit_level = audit_policy
+        .as_ref()
+        .map(|policy| policy.decide(&request_info, audit_user, &audit_groups).level)
+        .unwrap_or(crate::audit::policy::Level::Metadata);
+    let capture_request_body = !long_running
+        && matches!(
+            audit_level,
+            crate::audit::policy::Level::Request | crate::audit::policy::Level::RequestResponse
+        );
+    let request_body_capture = capture_request_body.then(|| {
+        let capture = Arc::new(Mutex::new(None));
+        req.extensions_mut().insert(AuditRequestBodyCapture(capture.clone()));
+        capture
+    });
+    let request_content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let audit_request_received = audit_policy.as_ref().is_some_and(|policy| {
         policy.should_emit_stage(
             &request_info,
@@ -1704,7 +1787,7 @@ async fn handle_with_audit(
                 crate::audit::event::STAGE_RESPONSE_COMPLETE,
             )
         });
-    if audit_request_received {
+    if audit_request_received && !capture_request_body {
         log_audit_event(
             &audit_id,
             crate::audit::event::STAGE_REQUEST_RECEIVED,
@@ -1859,7 +1942,19 @@ async fn handle_with_audit(
     // `handle()` returns the still-streaming response), not the full
     // stream lifetime.
     let start = std::time::Instant::now();
-    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await;
+    let mut response_object = None;
+    let mut response = match handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
+        Ok(response) => {
+            if audit_level == crate::audit::policy::Level::RequestResponse && !long_running {
+                let (response, object) = capture_response_object(response, max_request_body_bytes).await;
+                response_object = object;
+                Ok(response)
+            } else {
+                Ok(response)
+            }
+        }
+        Err(error) => match error {},
+    };
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
@@ -1867,8 +1962,31 @@ async fn handle_with_audit(
         apply_admission_warnings(resp, &metadata.warnings);
         let audit_annotations = audit_annotations(&metadata);
         let status = resp.status().as_u16();
+        let request_object = request_body_capture
+            .as_ref()
+            .and_then(|capture| capture.lock().ok().and_then(|captured| captured.clone()))
+            .as_deref()
+            .and_then(|bytes| decode_audit_object(bytes, request_content_type.as_deref()));
+        if audit_request_received && capture_request_body {
+            log_audit_event_with_objects(
+                &audit_id,
+                crate::audit::event::STAGE_REQUEST_RECEIVED,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                audit_identity.as_ref(),
+                &peer,
+                0,
+                audit_sink.as_deref(),
+                &BTreeMap::new(),
+                audit_level.as_str(),
+                request_object.as_ref(),
+                None,
+            );
+        }
         if audit_response_started {
-            log_audit_event(
+            log_audit_event_with_objects(
                 &audit_id,
                 crate::audit::event::STAGE_RESPONSE_STARTED,
                 &method,
@@ -1880,10 +1998,13 @@ async fn handle_with_audit(
                 status,
                 audit_sink.as_deref(),
                 &audit_annotations,
+                audit_level.as_str(),
+                request_object.as_ref(),
+                None,
             );
         }
         if audit_response_complete {
-            log_audit_event(
+            log_audit_event_with_objects(
                 &audit_id,
                 crate::audit::event::STAGE_RESPONSE_COMPLETE,
                 &method,
@@ -1895,6 +2016,9 @@ async fn handle_with_audit(
                 status,
                 audit_sink.as_deref(),
                 &audit_annotations,
+                audit_level.as_str(),
+                request_object.as_ref(),
+                response_object.as_ref(),
             );
         }
         // Group M: `/metrics`'s own request counter (`server::metrics`) —
@@ -1967,7 +2091,41 @@ fn log_audit_event(
     audit_sink: Option<&crate::audit::sink::AuditSink>,
     annotations: &BTreeMap<String, String>,
 ) {
-    let event = build_audit_event_at_stage(
+    log_audit_event_with_objects(
+        audit_id,
+        stage,
+        method,
+        path_str,
+        query,
+        user_agent,
+        identity,
+        peer,
+        status,
+        audit_sink,
+        annotations,
+        crate::audit::event::LEVEL_METADATA,
+        None,
+        None,
+    );
+}
+
+fn log_audit_event_with_objects(
+    audit_id: &str,
+    stage: &str,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    user_agent: Option<&str>,
+    identity: Option<&crate::authn::x509::Identity>,
+    peer: &SocketAddr,
+    status: u16,
+    audit_sink: Option<&crate::audit::sink::AuditSink>,
+    annotations: &BTreeMap<String, String>,
+    level: &str,
+    request_object: Option<&Value>,
+    response_object: Option<&Value>,
+) {
+    let event = build_audit_event_at_stage_with_objects(
         audit_id,
         stage,
         method,
@@ -1978,6 +2136,9 @@ fn log_audit_event(
         peer,
         status,
         annotations,
+        level,
+        request_object,
+        response_object,
     );
     if let Some(sink) = audit_sink {
         if let Err(error) = sink.write(&event) {
@@ -2091,6 +2252,38 @@ fn build_audit_event_at_stage(
     status: u16,
     annotations: &BTreeMap<String, String>,
 ) -> serde_json::Value {
+    build_audit_event_at_stage_with_objects(
+        audit_id,
+        stage,
+        method,
+        path_str,
+        query,
+        user_agent,
+        identity,
+        peer,
+        status,
+        annotations,
+        crate::audit::event::LEVEL_METADATA,
+        None,
+        None,
+    )
+}
+
+fn build_audit_event_at_stage_with_objects(
+    audit_id: &str,
+    stage: &str,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    user_agent: Option<&str>,
+    identity: Option<&crate::authn::x509::Identity>,
+    peer: &SocketAddr,
+    status: u16,
+    annotations: &BTreeMap<String, String>,
+    level: &str,
+    request_object: Option<&Value>,
+    response_object: Option<&Value>,
+) -> serde_json::Value {
     let info = path::parse(method, path_str, query);
     let (user_name, user_uid, user_groups): (&str, Option<&str>, Vec<String>) = match identity {
         Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
@@ -2100,7 +2293,7 @@ fn build_audit_event_at_stage(
     let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
     let timestamp = chrono::Utc::now().to_rfc3339();
     let source_ip = peer.ip().to_string();
-    crate::audit::event::build_event_at_stage(&crate::audit::event::EventInput {
+    crate::audit::event::build_event_at_stage_with_level(&crate::audit::event::EventInput {
         audit_id,
         request_uri: &request_uri,
         verb: &info.verb,
@@ -2112,8 +2305,10 @@ fn build_audit_event_at_stage(
         object_ref,
         response_code: status,
         annotations: (!annotations.is_empty()).then_some(annotations),
+        request_object,
+        response_object,
         timestamp: &timestamp,
-    }, stage)
+    }, level, stage)
 }
 
 async fn authenticate_request(
