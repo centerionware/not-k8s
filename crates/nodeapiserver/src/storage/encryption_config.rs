@@ -23,14 +23,10 @@
 //!
 //! `aesgcm` (`storage::encryption::Gcm`), `aescbc`
 //! (`storage::encryption::AesCbc`), `secretbox`
-//! (`storage::encryption::Secretbox`), and `identity`
-//! (`storage::encryption::Identity`) — the providers this crate can
-//! currently execute. `kms` entries parse structurally (so a config file
-//! that names one doesn't fail to parse at all) but [`build`] returns a
-//! real, named [`Error::UnsupportedProvider`] rather than silently
-//! dropping or misapplying them — the same "fail loud on what isn't
-//! ported" posture as `is_extended_resource_name`'s own `IsQualifiedName`
-//! gap.
+//! (`storage::encryption::Secretbox`), `identity`
+//! (`storage::encryption::Identity`), and Kubernetes KMS v1/v2. KMS
+//! endpoints are kept lazy, so parsing an apiserver config does not require
+//! the plugin socket to be available until the first encrypted read/write.
 //!
 //! # Resource matching
 //!
@@ -48,13 +44,16 @@
 //! port just takes first-match-wins at face value, same as it takes the
 //! document's own field values at face value elsewhere.
 
-use crate::storage::encryption::{AesCbc, Gcm, Identity, PrefixTransformer, PrefixTransformers, Secretbox, AES_CBC_PREFIX_V1, AES_GCM_PREFIX_V1, SECRETBOX_PREFIX_V1};
+use crate::storage::encryption::{AesCbc, Gcm, Identity, KmsV1, KmsV2, PrefixTransformer, PrefixTransformers, Secretbox, AES_CBC_PREFIX_V1, AES_GCM_PREFIX_V1, KMS_PREFIX_V1, KMS_PREFIX_V2, SECRETBOX_PREFIX_V1};
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("parsing EncryptionConfiguration YAML: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("building an encryption provider: {0}")]
+    Encryption(#[from] crate::storage::encryption::Error),
     #[error("EncryptionConfiguration.resources[{index}] is missing its own \"resources\" list")]
     MissingResources { index: usize },
     #[error("EncryptionConfiguration.resources[{index}] is missing its own \"providers\" list, or it's empty")]
@@ -63,8 +62,10 @@ pub enum Error {
     InvalidKeyBase64 { index: usize, provider: &'static str, key_name: String, #[source] source: base64::DecodeError },
     #[error("EncryptionConfiguration.resources[{index}]'s {provider} key {key_name:?} must decode to exactly 32 bytes, got {actual}")]
     WrongKeyLength { index: usize, provider: &'static str, key_name: String, actual: usize },
-    #[error("EncryptionConfiguration.resources[{index}] names a provider this build doesn't implement: {provider} (only aesgcm/aescbc/secretbox/identity are ported — see this module's own doc comment)")]
+    #[error("EncryptionConfiguration.resources[{index}] names a provider this build doesn't implement: {provider} (supported providers are aesgcm/aescbc/secretbox/identity/kms)")]
     UnsupportedProvider { index: usize, provider: &'static str },
+    #[error("EncryptionConfiguration.resources[{index}]'s {provider} provider has invalid configuration: {message}")]
+    InvalidProviderConfig { index: usize, provider: &'static str, message: String },
 }
 
 /// One resolved entry: which resources it applies to (real upstream's
@@ -121,13 +122,47 @@ fn build_secretbox(index: usize, keys: &Value) -> Result<PrefixTransformers, Err
     Ok(PrefixTransformers::new(transformers))
 }
 
+fn kms_string(index: usize, kms: &Value, field: &str) -> Result<String, Error> {
+    match kms.get(field).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => Ok(value.to_string()),
+        None => Err(Error::InvalidProviderConfig { index, provider: "kms", message: format!("{field} must be a non-empty string") }),
+    }
+}
+
+fn kms_timeout(index: usize, kms: &Value) -> Result<Duration, Error> {
+    let value = kms.get("timeout").and_then(Value::as_str).unwrap_or("3s").trim();
+    let (number, multiplier) = if let Some(value) = value.strip_suffix("ms") {
+        (value, 1u64)
+    } else if let Some(value) = value.strip_suffix('s') {
+        (value, 1_000u64)
+    } else if let Some(value) = value.strip_suffix('m') {
+        (value, 60_000u64)
+    } else {
+        return Err(Error::InvalidProviderConfig { index, provider: "kms", message: "timeout must use ms, s, or m units".to_string() });
+    };
+    let number = number.parse::<u64>().map_err(|_| Error::InvalidProviderConfig { index, provider: "kms", message: "timeout must be a positive duration".to_string() })?;
+    let millis = number.checked_mul(multiplier).filter(|millis| *millis > 0).ok_or_else(|| Error::InvalidProviderConfig { index, provider: "kms", message: "timeout must be a positive duration".to_string() })?;
+    Ok(Duration::from_millis(millis))
+}
+
+fn build_kms(index: usize, kms: &Value) -> Result<(String, Box<dyn crate::storage::encryption::Transformer + Send + Sync>), Error> {
+    let api_version = kms_string(index, kms, "apiVersion")?;
+    let name = kms_string(index, kms, "name")?;
+    let endpoint = kms_string(index, kms, "endpoint")?;
+    let timeout = kms_timeout(index, kms)?;
+    match api_version.as_str() {
+        "v1" => Ok((format!("{KMS_PREFIX_V1}{name}:"), Box::new(KmsV1::new(&endpoint, timeout)?))),
+        "v2" | "v2beta1" => Ok((format!("{KMS_PREFIX_V2}{name}:"), Box::new(KmsV2::new(&endpoint, timeout)?))),
+        _ => Err(Error::InvalidProviderConfig { index, provider: "kms", message: format!("apiVersion must be v1 or v2, got {api_version:?}") }),
+    }
+}
+
 /// Builds the real [`EncryptionConfig`] this crate can act on from the
 /// parsed document's own `resources` array — the one step that can fail
-/// on an unsupported provider ([`Error::UnsupportedProvider`]), kept
-/// separate from [`parse`] so a caller could, in principle, inspect the
-/// raw document before deciding whether an unsupported provider is fatal
-/// (not done by any caller today, but the split costs nothing and
-/// mirrors this crate's usual parse/decide separation).
+/// on an unsupported or malformed provider, kept separate from [`parse`]
+/// so a caller could, in principle, inspect the raw document before deciding
+/// whether that failure is fatal (not done by any caller today, but the split
+/// costs nothing and mirrors this crate's usual parse/decide separation).
 fn build(doc: &Value) -> Result<EncryptionConfig, Error> {
     let mut entries = Vec::new();
     for (index, entry) in doc.get("resources").and_then(Value::as_array).into_iter().flatten().enumerate() {
@@ -156,8 +191,9 @@ fn build(doc: &Value) -> Result<EncryptionConfig, Error> {
                 transformers.push(PrefixTransformer { prefix: SECRETBOX_PREFIX_V1.as_bytes().to_vec(), transformer: Box::new(inner) });
             } else if provider.get("identity").is_some() {
                 transformers.push(PrefixTransformer { prefix: Vec::new(), transformer: Box::new(Identity) });
-            } else if provider.get("kms").is_some() {
-                return Err(Error::UnsupportedProvider { index, provider: "kms" });
+            } else if let Some(kms) = provider.get("kms") {
+                let (prefix, transformer) = build_kms(index, kms)?;
+                transformers.push(PrefixTransformer { prefix: prefix.into_bytes(), transformer });
             } else {
                 return Err(Error::UnsupportedProvider { index, provider: "unknown" });
             }
@@ -273,12 +309,27 @@ mod tests {
 
     #[test]
     fn an_unsupported_provider_is_a_real_named_error_not_silently_dropped() {
-        let yaml = "resources:\n- resources:\n  - secrets\n  providers:\n  - kms:\n      name: provider\n      apiVersion: v1\n      endpoint: unix:///var/run/kms.sock\n";
+        let yaml = "resources:\n- resources:\n  - secrets\n  providers:\n  - madeup: {}\n";
         let err = match parse(&yaml) {
             Err(e) => e,
-            Ok(_) => panic!("kms isn't ported"),
+            Ok(_) => panic!("unknown provider must be rejected"),
         };
-        assert!(matches!(err, Error::UnsupportedProvider { provider: "kms", .. }));
+        assert!(matches!(err, Error::UnsupportedProvider { provider: "unknown", .. }));
+    }
+
+    #[test]
+    fn parses_kms_v1_and_v2_without_connecting_until_use() {
+        let yaml = "resources:\n- resources:\n  - secrets\n  providers:\n  - kms:\n      name: provider-v1\n      apiVersion: v1\n      endpoint: unix:///var/run/kms-v1.sock\n- resources:\n  - configmaps\n  providers:\n  - kms:\n      name: provider-v2\n      apiVersion: v2\n      endpoint: unix:///var/run/kms-v2.sock\n      timeout: 1500ms\n";
+        let config = parse(yaml).expect("valid KMS provider configuration");
+        assert_eq!(config.entries.len(), 2);
+        assert!(transformers_for(&config, "", "secrets").is_some());
+        assert!(transformers_for(&config, "", "configmaps").is_some());
+    }
+
+    #[test]
+    fn rejects_invalid_kms_configuration_before_building_a_client() {
+        let yaml = "resources:\n- resources:\n  - secrets\n  providers:\n  - kms:\n      name: provider\n      apiVersion: v3\n      endpoint: unix:///var/run/kms.sock\n";
+        assert!(matches!(parse(yaml), Err(Error::InvalidProviderConfig { provider: "kms", .. })));
     }
 
     #[test]
