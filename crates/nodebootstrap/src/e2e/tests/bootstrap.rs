@@ -1608,7 +1608,7 @@ pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_conta
                 string_data: Some(BTreeMap::from([(
                     String::from("token"),
                     String::from("allowed"),
-                ])),
+                )])),
                 ..Default::default()
             },
         )
