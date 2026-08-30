@@ -9,7 +9,7 @@
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
-| G — Patch and Server-Side Apply | in progress | 4/6 |
+| G — Patch and Server-Side Apply | in progress | 5/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 6/6 |
 | J — Admission | in progress | 8/8 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `b5ea43f` on
+This snapshot is checked against `origin/nodeapiserver` at `9ab58e8` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -48,7 +48,7 @@ explanation of each boundary.
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
-| G. Patch/SSA | **in progress** | JSON/merge/strategic patch and CRD-aware Server-Side Apply are present; remaining upstream directive and managed-fields edge cases need coverage. |
+| G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, and ordinary-write managed-fields tracking are present; remaining upstream managed-fields edge cases need coverage. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and full typed CEL surface remain. |
@@ -155,9 +155,9 @@ including `ref_schema` — the `$ref`'d schema a field's value is shaped
 like, added for Group G's Strategic Merge Patch recursion), and the
 discovery GVK map; `src/codegen.rs` builds runtime indexes over them plus
 the proto-style<->openapi-style message-name resolver (`resolve_message_ref`)
-Group B's codec depends on. Not wired into `deploy/lib/components.sh` or
-`notk8s`'s `APPLETS` table yet — packaging and bootstrap integration remain
-Group O's job now that the listener exists.
+Group B's codec depends on. The codegen output is integrated into the
+nodeapiserver build; packaging and bootstrap integration are tracked under
+Group O.
 
 **B. Wire formats** — **done for the current scope**. `codec::protobuf` is a generic
 protobuf encode/decode over `serde_json::Value`, driven entirely by Group
@@ -730,7 +730,7 @@ now passes configured admission before deletion, matching upstream's
 per-object delete validation callback. **Named, honest simplifications**:
 real upstream deletes with a worker pool and paginates
 the list internally; this port deletes sequentially and lists in one
-shot (this crate's own `list` doesn't paginate either yet).
+shot, while the ordinary `list` path itself now supports pagination.
 
 **Every real, generic REST verb this build knows about is now wired
 in** — `GET`/`LIST`/`CREATE`/`DELETE`/`UPDATE`/`PATCH`/`DELETECOLLECTION`,
@@ -778,11 +778,11 @@ persist a `status` write at all before this. `patch_status` reuses the
 same `json_patch`/`merge_patch`/`strategic_merge` application Group
 G's main `PATCH` path uses (factored into a shared `apply_patch` helper),
 then merges only the result's own `.status` onto the existing object,
-exactly like `update_status`'s own `PUT` semantics. **Named, honest scope
-narrowing**: no structural/type validation of the status write (real
-upstream's own per-type status strategies are hand-written Go with no
-generic table to derive them from, same finding that already scoped down
-`scheme::validation` elsewhere), and no Group J admission runs on either
+exactly like `update_status`'s own `PUT` semantics. CRD status writes now
+run the matched version's structural pruning, required/type, and local
+constraint validation before persistence; built-in status strategies remain
+generic because their per-type rules are hand-written upstream. **Named,
+honest scope narrowing**: no Group J admission runs on either
 — every plugin that ever applies to an `Update`-shaped write in this
 build (`namespace_lifecycle`'s Terminating-namespace check,
 `LimitRanger`'s PVC-minimum check) is about a create/full-object write
@@ -985,10 +985,9 @@ non-matching elements appended, verified against the concrete
 `PodSpec.containers` sample finding 5 names directly (merge-key `name`)
 including a two-levels-deep recursion case
 (`containers[].resources.limits`) to prove `ref_schema` resolution chains
-correctly, not just parent -> immediate child. Named, deliberate gaps
-(`strategic_merge`'s own doc comment): `$patch`/`$setElementOrder`/
-`$deleteFromPrimitiveList` directives are supported for built-in and CRD
-schemas. **All three
+correctly, not just parent -> immediate child. The `$patch`/
+`$setElementOrder`/`$deleteFromPrimitiveList` directives are supported for
+built-in and CRD schemas. **All three
 are now wired into a real `PATCH` verb** (Group E's own section has the
 detail: `server::rest::patch`, selected by real `Content-Type`, real
 optimistic concurrency, `namespace_lifecycle`/`LimitRanger` admission
@@ -1006,9 +1005,9 @@ sibling of `strategic_merge` differing in two confirmed ways — deduplicated
 set-list union, atomic-map wholesale replacement), `patch::typed_compare`
 (the real diff, `{removed, modified, added}`), `patch::updater`
 (`merge.Updater` itself: `update`/`apply_update`/`prune`/`apply` — real
-conflict detection, pruning fields a manager stops claiming, all
-single-schema-version scoped since this build has no multi-version
-conversion machinery), and `patch::managed_fields` (the real
+conflict detection, pruning fields a manager stops claiming, with
+single-schema-version comparisons inside the SSA updater), and
+`patch::managed_fields` (the real
 `metadata.managedFields[]` wire shape and its conversion to/from the
 `BTreeMap<String, Set>` `updater` operates on). `server::rest::server_side_apply`
 wires all of this to real storage, and `server::listener` routes `PATCH`
@@ -1021,14 +1020,20 @@ object at this key creates one through the same create-only-if-absent
 same shape `patch_prepare`/`patch_persist` already has) lets both
 `namespace_lifecycle` *and* `LimitRanger` admission run against the real
 candidate object, matching the ordinary three-patch-kind `PATCH`
-branch's own coverage exactly. **Named, honest scope remaining**:
+branch's own coverage exactly. REST and watch conversion webhooks already
+convert CRD objects between served and storage versions. **Named, honest
+scope remaining**:
 `updater`'s compiled `FIELD_META` path still applies only to built-in
 resources; CRD-defined resources use the matching runtime-schema SSA
 implementation (`patch::crd_apply`) against each established version's
 `openAPIV3Schema`, including managed-field ownership, conflict detection,
 structural list/map merge behavior, pruning, and create-on-apply. This build
-still has no multi-version CRD conversion. Both paths share the same
-optimistic-concurrency persistence behavior.
+does not yet perform upstream's per-manager, multi-version SSA comparison;
+the REST conversion boundary is already real. Both paths share the same
+optimistic-concurrency persistence behavior. Ordinary CREATE/PUT/PATCH and
+status writes now also reconcile `metadata.managedFields` using the explicit
+`fieldManager` or the request's `User-Agent`, with generated server metadata
+excluded from ownership calculation.
 Explicit and default patch-strategy selection both honor the directive set;
 the default is strategic merge for built-ins and JSON merge patch for CRDs.
 
@@ -1241,8 +1246,8 @@ as `namespace_lifecycle`. Named honestly not ported:
 is `false` unless an operator annotates the `ServiceAccount`
 `kubernetes.io/enforce-mountable-secrets: "true"` — a real but
 off-by-default check most real clusters never exercise) and the
-`ephemeralcontainers` subresource validation path (this crate doesn't
-serve any subresource yet).
+`pods/ephemeralcontainers` subresource validation path (that subresource
+is not served by this crate yet).
 
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
@@ -1806,11 +1811,8 @@ used*:
    `cel::Context`/`.execute` wrapper against `serde_json::Value` bound
    variables (`self` for the value being validated, `oldSelf` on
    `UPDATE` — real upstream's own two well-known variable names for
-   `x-kubernetes-validations`), no cost accounting yet, no k8s extension
-   functions yet — proves the crate itself round-trips real expressions
-   against real k8s-shaped data. Not reachable from any real request
-   path yet (nothing calls it outside its own unit tests) — deliberate,
-   see this section's own repeated warning on why.
+   `x-kubernetes-validations`). The raw helper remains a unit-testable
+   primitive; real requests use the budgeted `cel_evaluate` wrapper below.
 2. **Partially done.** `eval_bool_with_deadline` — a real wall-clock
    deadline around evaluation, this build's own stand-in for real
    upstream's per-operation `PerCallLimit`/`RuntimeCELCostBudget`/
@@ -1825,10 +1827,10 @@ used*:
    thread, so a pathological expression still runs to completion in the
    background; this alone does not bound how many concurrent evaluations
    can be in flight either (that's separate rate-limiting, Group M's own
-   APF work). **Still not wired into any real request path** — a
-   deadline alone isn't the same guarantee real upstream's own
-   interruption provides, and this module's own doc comment says so
-   again at the call site itself, not just here.
+   APF work). This budgeted path is wired into CRD create/update/patch
+   validation through `apiextensions::cel_evaluate`; it remains a
+   wall-clock approximation because the `cel` crate exposes no
+   interpreter-level interruption hook.
 3. Static checked-cost estimation (layer 1) — real upstream's own
    defense against a malicious *rule* (not just malicious input), needed
    before `x-kubernetes-validations` can be accepted at CRD-creation

@@ -59,7 +59,9 @@
 //! `/apis/{group}/{version}` and their aggregated-v2 counterparts, not
 //! just at their own already-known URL.
 //!
-//! **Not yet landed, named honestly**: conversion webhooks; the
+//! Conversion webhooks are landed for REST CRUD and watch responses; the
+//! storage version is selected from the CRD and requests crossing a served
+//! version boundary are sent through the configured webhook. The
 //! `status` subresource is now
 //! schema-pruned and validated on `update_status`/`patch_status`, using the
 //! matched version's `properties.status` schema. **Done, not a gap**: the
