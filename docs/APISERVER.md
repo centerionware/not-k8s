@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `20e5c6de` on
+This snapshot is checked against `origin/nodeapiserver` at `fb57ea58` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -2313,9 +2313,13 @@ current scope of each piece; summarized here:
    (`aggregator::client_tls::build_client_config` — real
    `spec.caBundle`/`.insecureSkipTLSVerify`, `webpki-roots` fallback),
    and relays the whole request (method/headers/body, any verb) through
-   `proxy::http_client::relay`. **Not attempted**: this build presenting
-   its own client identity to the backend (real upstream's own
-   front-proxy `X-Remote-User`/`--proxy-client-cert-file` chain), and
+   `proxy::http_client::relay`. The standard `front-proxy-client` identity
+   is now presented when `NODEAPISERVER_PROXY_CLIENT_CERT_FILE` and
+   `NODEAPISERVER_PROXY_CLIENT_KEY_FILE` are configured; nodebootstrap
+   generates those files plus a separate `front-proxy-ca` and migrates
+   older PKI directories. Caller-supplied `X-Remote-*` headers are removed
+   and rebuilt from the authenticated request identity, including the
+   Kubernetes percent-escaped `X-Remote-Extra-*` form. **Not attempted**:
    streaming upgrade support (SPDY/websocket — the same gap Group N's
    exec/attach still has).
 
