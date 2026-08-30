@@ -894,6 +894,75 @@ pub(super) async fn nodeapiserver_serves_workload_scale_subresource(context: &E2
     result
 }
 
+pub(super) async fn nodeapiserver_reconciles_managed_fields_across_versions(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("multi-version managed-fields checks are only exercised against nodeapiserver"));
+    }
+
+    let name = format!("nodeapiserver-ssa-{}", std::process::id());
+    let uri_v1 = format!("/apis/autoscaling/v1/namespaces/{}/horizontalpodautoscalers/{name}", context.namespace);
+    let uri_v2 = format!("/apis/autoscaling/v2/namespaces/{}/horizontalpodautoscalers/{name}", context.namespace);
+    let first = json!({
+        "apiVersion": "autoscaling/v1",
+        "kind": "HorizontalPodAutoscaler",
+        "metadata": {"name": name.clone(), "namespace": context.namespace.clone()},
+        "spec": {
+            "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "not-required-for-ssa"},
+            "minReplicas": 1,
+            "maxReplicas": 3,
+            "targetCPUUtilizationPercentage": 50
+        }
+    });
+    let first_request = Request::builder()
+        .method("PATCH")
+        .uri(format!("{uri_v1}?fieldManager=nodeapiserver-ssa-v1"))
+        .header("Content-Type", "application/apply-patch+yaml")
+        .body(serde_json::to_vec(&first)?)?;
+    let created: Value = context
+        .client
+        .request(first_request)
+        .await
+        .context("applying the HPA through autoscaling/v1")?;
+    anyhow::ensure!(
+        created.pointer("/metadata/managedFields").and_then(Value::as_array).is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry.get("manager").and_then(Value::as_str) == Some("nodeapiserver-ssa-v1")
+                    && entry.get("apiVersion").and_then(Value::as_str) == Some("autoscaling/v1")
+            })
+        }),
+        "autoscaling/v1 Apply did not record its API version in managedFields: {created}"
+    );
+
+    let second = json!({
+        "apiVersion": "autoscaling/v2",
+        "kind": "HorizontalPodAutoscaler",
+        "metadata": {"name": name.clone(), "namespace": context.namespace.clone()},
+        "spec": {
+            "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "not-required-for-ssa"},
+            "minReplicas": 1,
+            "maxReplicas": 3,
+            "metrics": [{"type": "Resource", "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 75}}}]
+        }
+    });
+    let second_request = Request::builder()
+        .method("PATCH")
+        .uri(format!("{uri_v2}?fieldManager=nodeapiserver-ssa-v2"))
+        .header("Content-Type", "application/apply-patch+yaml")
+        .body(serde_json::to_vec(&second)?)?;
+    match context.client.request::<Value>(second_request).await {
+        Err(KubeError::Api(error)) if error.code == 409 => {}
+        Err(error) => anyhow::bail!("cross-version Apply returned the wrong API error: {error}"),
+        Ok(value) => anyhow::bail!("cross-version Apply unexpectedly took ownership: {value}"),
+    }
+
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(uri_v1).body(Vec::new())?)
+        .await;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

@@ -42,7 +42,16 @@ pub fn to_version(group: &str, version: &str, kind: &str, mut object: Value) -> 
         let source_version = source.rsplit_once('/').map_or(source, |(_, version)| version);
         source_version != version
     }) {
+        // managedFields describes ownership paths in the manager's recorded
+        // version. It is not part of the object's versioned schema and must
+        // survive projection unchanged so the next Apply can reconcile it.
+        let managed_fields = object.pointer("/metadata/managedFields").cloned();
         project_to_version(group, version, kind, object.as_object_mut().expect("object was checked above"));
+        if let Some(managed_fields) = managed_fields {
+            if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+                metadata.insert("managedFields".to_string(), managed_fields);
+            }
+        }
     }
     let map = object.as_object_mut().expect("object was checked above");
     map.insert("apiVersion".to_string(), Value::String(requested_api_version));
@@ -274,5 +283,26 @@ mod tests {
         assert!(object.get("fieldOnlyInTheSource").is_none());
         assert!(object["spec"].get("fieldOnlyInTheSource").is_none());
         assert!(object["spec"].get("devices").is_some());
+    }
+
+    #[test]
+    fn hpa_version_projection_preserves_managed_fields_for_reconciliation() {
+        let object = to_version("autoscaling", "v2", "HorizontalPodAutoscaler", json!({
+            "apiVersion": "autoscaling/v1",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {
+                "name": "hpa",
+                "managedFields": [{
+                    "manager": "legacy",
+                    "operation": "Apply",
+                    "apiVersion": "autoscaling/v1",
+                    "fieldsType": "FieldsV1",
+                    "fieldsV1": {"f:spec": {"f:targetCPUUtilizationPercentage": {}}}
+                }]
+            },
+            "spec": {"targetCPUUtilizationPercentage": 70},
+        }));
+        assert_eq!(object["metadata"]["managedFields"][0]["apiVersion"], "autoscaling/v1");
+        assert!(object["metadata"]["managedFields"][0]["fieldsV1"]["f:spec"]["f:targetCPUUtilizationPercentage"].is_object());
     }
 }

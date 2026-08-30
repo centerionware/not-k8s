@@ -6,20 +6,17 @@
 //! all three of Group G's real SSA prerequisites (`fieldset::set_from_object`,
 //! `typed_merge::merge`, `typed_compare::compare`) exist to feed.
 //!
-//! # Named, deliberate scope for this slice
+//! # Version-aware orchestration
 //!
 //! Real upstream's `update()` caches one `Comparison` **per manager's own
 //! recorded API version** (`versions map[fieldpath.APIVersion]*typed.
 //! Comparison`), since two managers can have last written the object at
 //! different served versions and a `Converter` re-converts old/new into each
-//! one before comparing. This build has **no multi-version conversion
-//! machinery in this module** — the REST layer now handles CRD conversion
-//! webhooks, but every manager's `Set` here is still assumed to already be
-//! expressed against the one `schema` being compared. That collapses
-//! upstream's per-version `Comparison` cache down to one shared
-//! `Comparison` computed once. If per-manager multi-version SSA comparison
-//! is ever added, this is where the per-version cache would need to come
-//! back.
+//! one before comparing. The ordinary functions below retain their compact
+//! single-schema API for patch/update callers; `reconcile_versioned_apply`
+//! is the Apply path's version-aware ownership phase. The REST layer performs
+//! asynchronous built-in or CRD conversion first, then supplies one
+//! comparison per manager so this module's bookkeeping remains deterministic.
 //!
 //! Landed here: `update()` (the shared conflict-detection/bookkeeping core
 //! both `Update` and `Apply` build on), `apply_update()` (real upstream's
@@ -41,18 +38,15 @@
 //!
 //! The real `managedFields` wire format and
 //! `server::rest`/`application/apply-patch+yaml` wiring now live in
-//! `patch::managed_fields` and `server::rest`; this module still operates
-//! on `BTreeMap<String, Set>`. Also not ported: upstream's own
+//! `patch::managed_fields` and `server::rest`. Also not ported: upstream's own
 //! `IgnoreFilter`/`IgnoredFields`
 //! (server-managed field exclusion, e.g. `status`) and
 //! `reconcileManagedFieldsWithSchemaChanges` (schema atomic<->granular
 //! migration bookkeeping) — both real, both named as separate
-//! not-yet-started work rather than silently dropped. `apply()`'s own doc
-//! comment also names one further simplification specific to it: real
-//! upstream's `VersionedSet` carries an `Applied` bool per manager this
-//! crate's plain `Set`-keyed map has no room for.
+//! not-yet-started work rather than silently dropped.
 
 use super::fieldset::{ensure_named_fields_are_members, remove_items, set_from_object, Set};
+use super::managed_fields::{VersionedManager, VersionedManagers};
 use super::typed_compare::{compare, Comparison};
 use super::typed_merge::merge as typed_merge;
 use serde_json::Value;
@@ -264,10 +258,92 @@ pub struct Applied {
     pub managers: BTreeMap<String, Set>,
 }
 
+/// The result of the version-aware part of Server-Side Apply. The merge and
+/// prune phases still use the request's schema, but conflict detection and
+/// ownership cleanup are performed against each manager's own comparison and
+/// field-path version before this result is serialized back to
+/// `metadata.managedFields`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VersionedApplied {
+    pub object: Option<Value>,
+    pub managers: VersionedManagers,
+}
+
+/// Reconciles a merged Apply candidate using one comparison per manager's
+/// recorded API version. The caller supplies those comparisons after using
+/// the appropriate built-in or CRD schema and conversion path; this keeps
+/// webhook I/O outside the deterministic field-ownership algorithm.
+///
+/// `candidate` must already include request-version merge/prune results and
+/// `request_fields` must be the field set extracted from the incoming config
+/// in that same request version. This mirrors upstream's `Updater.update`
+/// after its `Converter` has produced each manager-specific comparison.
+pub fn reconcile_versioned_apply(
+    live: &Value,
+    candidate: &Value,
+    managers: &VersionedManagers,
+    manager: &str,
+    request_api_version: &str,
+    request_fields: Set,
+    comparisons: &BTreeMap<String, Comparison>,
+    force: bool,
+) -> Result<VersionedApplied, Vec<Conflict>> {
+    let mut conflicts = Vec::new();
+    for (name, state) in managers {
+        if name == manager {
+            continue;
+        }
+        let Some(comparison) = comparisons.get(name) else {
+            continue;
+        };
+        let changed = comparison.modified.union(&comparison.added);
+        let fields = state.fields.intersection(&changed);
+        if !fields.is_empty() {
+            conflicts.push(Conflict { manager: name.clone(), fields });
+        }
+    }
+    if !force && !conflicts.is_empty() {
+        return Err(conflicts);
+    }
+
+    let mut result = managers.clone();
+    // A manager whose recorded version is no longer served cannot be
+    // compared safely. Upstream's converter treats that as obsolete managed
+    // fields and removes the entry rather than applying paths under a
+    // guessed schema.
+    result.retain(|name, _| name == manager || comparisons.contains_key(name));
+    for conflict in &conflicts {
+        if let Some(state) = result.get_mut(&conflict.manager) {
+            state.fields = state.fields.difference(&conflict.fields);
+        }
+    }
+    for (name, comparison) in comparisons {
+        if name == manager {
+            continue;
+        }
+        if let Some(state) = result.get_mut(name) {
+            state.fields = state.fields.difference(&comparison.removed);
+        }
+    }
+    result.retain(|_, state| !state.fields.is_empty());
+    result.insert(
+        manager.to_string(),
+        VersionedManager {
+            fields: request_fields,
+            api_version: request_api_version.to_string(),
+            applied: true,
+        },
+    );
+
+    Ok(VersionedApplied {
+        object: (candidate != live).then_some(candidate.clone()),
+        managers: result,
+    })
+}
+
 /// Real upstream's `Updater.Apply` (`merge/update.go`, fetched and read
-/// directly) — the piece this whole arc has been building toward.
-/// Single-schema-version scoped like every other function in this module
-/// (see the module doc's own note); `managers` is every manager's
+/// directly) — the request-schema merge/prune primitive used by the REST
+/// layer before its version-aware ownership phase. `managers` is every manager's
 /// *current* `Set`, including `manager`'s own prior entry if it has one
 /// (real upstream's own `lastSet := managers[manager]`, read **before**
 /// it gets overwritten).
@@ -334,6 +410,62 @@ mod tests {
             .iter()
             .map(|f| PathElement::Field(f.to_string()))
             .collect()
+    }
+
+    fn versioned_manager(fields: Set, api_version: &str) -> VersionedManager {
+        VersionedManager {
+            fields,
+            api_version: api_version.to_string(),
+            applied: true,
+        }
+    }
+
+    #[test]
+    fn versioned_apply_compares_ownership_in_each_managers_recorded_version() {
+        let mut owned = Set::new();
+        owned.insert(&path(&["spec", "targetCPUUtilizationPercentage"]));
+        let managers = BTreeMap::from([(
+            "legacy-client".to_string(),
+            versioned_manager(owned.clone(), "autoscaling/v1"),
+        )]);
+        let mut changed = Set::new();
+        changed.insert(&path(&["spec", "targetCPUUtilizationPercentage"]));
+        let comparisons = BTreeMap::from([(
+            "legacy-client".to_string(),
+            Comparison {
+                removed: Set::new(),
+                modified: changed,
+                added: Set::new(),
+            },
+        )]);
+
+        let error = reconcile_versioned_apply(
+            &serde_json::json!({"spec": {"targetCPUUtilizationPercentage": 50}}),
+            &serde_json::json!({"spec": {"targetCPUUtilizationPercentage": 75}}),
+            &managers,
+            "new-client",
+            "autoscaling/v2",
+            Set::new(),
+            &comparisons,
+            false,
+        )
+        .expect_err("a converted v2 change must conflict with v1 ownership");
+        assert_eq!(error[0].manager, "legacy-client");
+        assert!(error[0].fields.has(&path(&["spec", "targetCPUUtilizationPercentage"])));
+
+        let forced = reconcile_versioned_apply(
+            &serde_json::json!({"spec": {"targetCPUUtilizationPercentage": 50}}),
+            &serde_json::json!({"spec": {"targetCPUUtilizationPercentage": 75}}),
+            &managers,
+            "new-client",
+            "autoscaling/v2",
+            Set::new(),
+            &comparisons,
+            true,
+        )
+        .expect("force transfers ownership without rewriting the old path");
+        assert!(!forced.managers.contains_key("legacy-client"));
+        assert_eq!(forced.managers["new-client"].api_version, "autoscaling/v2");
     }
 
     #[test]

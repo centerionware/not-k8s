@@ -1,10 +1,9 @@
 //! The real `metadata.managedFields[]` wire shape (`io.k8s.apimachinery.
 //! pkg.apis.meta.v1.ManagedFieldsEntry`, confirmed directly against the
-//! vendored OpenAPI spec) and the two conversions `updater::apply`/
-//! `updater::update`/`apply_update` actually need: the stored array in,
-//! a `BTreeMap<String, Set>` out (what those functions operate on); a
-//! reconciled `BTreeMap<String, Set>` plus the applying manager's own new
-//! entry in, the array to write back to storage out.
+//! vendored OpenAPI spec), including the version-aware in-memory manager
+//! state used by Server-Side Apply. A field path is interpreted under the
+//! API version that recorded it; the REST layer converts comparison objects
+//! before handing them to `patch::updater`.
 //!
 //! `fieldsV1`'s own JSON shape is exactly `fieldset::Set::to_json()`/
 //! `from_json()`'s shape (confirmed directly: the vendored `FieldsV1`
@@ -13,9 +12,10 @@
 //! parser needed here.
 //!
 //! `server::rest` uses this module for the request-handling glue: it parses
-//! `metadata.managedFields` from stored objects, calls the appropriate
-//! updater, and writes the rebuilt array back. The listener routes the
-//! Apply media type separately from ordinary patch kinds.
+//! `metadata.managedFields` from stored objects, preserves each entry's
+//! version and operation, calls the appropriate updater, and writes the
+//! rebuilt array back. The listener routes the Apply media type separately
+//! from ordinary patch kinds.
 
 use super::fieldset::{DeserializeError, Set};
 use std::collections::BTreeMap;
@@ -40,6 +40,20 @@ pub struct ManagedFieldsEntry {
     /// upstream's own `Subresource string` (never optional on the wire).
     pub subresource: String,
 }
+
+/// The in-memory form of one managed-fields entry used by the version-aware
+/// SSA reconciler. `api_version` is deliberately kept beside the field set:
+/// the set's paths are meaningful only in the API version whose schema
+/// produced them, and `applied` preserves upstream's `VersionedSet.Applied`
+/// bit for callers that need to distinguish Apply from Update ownership.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VersionedManager {
+    pub fields: Set,
+    pub api_version: String,
+    pub applied: bool,
+}
+
+pub type VersionedManagers = BTreeMap<String, VersionedManager>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -128,6 +142,30 @@ pub fn to_managers_map(entries: &[ManagedFieldsEntry]) -> BTreeMap<String, Set> 
     map
 }
 
+/// Converts the wire entries without losing the API version that gave each
+/// field path its meaning. Empty legacy `apiVersion` values use the current
+/// request version, which is the only safe interpretation for objects written
+/// before this metadata was populated.
+pub fn to_versioned_managers_map(entries: &[ManagedFieldsEntry], default_api_version: &str) -> VersionedManagers {
+    let mut map = VersionedManagers::new();
+    for entry in entries {
+        let key = manager_key(&entry.manager, &entry.subresource);
+        map.insert(
+            key,
+            VersionedManager {
+                fields: entry.fields.clone(),
+                api_version: if entry.api_version.is_empty() {
+                    default_api_version.to_string()
+                } else {
+                    entry.api_version.clone()
+                },
+                applied: entry.operation == "Apply",
+            },
+        );
+    }
+    map
+}
+
 fn manager_key(manager: &str, subresource: &str) -> String {
     if subresource.is_empty() {
         manager.to_string()
@@ -201,6 +239,64 @@ pub fn rebuild_managed_fields(
             }),
         }
     }
+    result.sort_by(|a, b| (a.manager.as_str(), a.subresource.as_str()).cmp(&(b.manager.as_str(), b.subresource.as_str())));
+    result
+}
+
+/// Rebuilds the wire representation from version-aware ownership state.
+/// Unchanged managers retain their own API version and operation metadata;
+/// only the manager performing this Apply receives the new request version
+/// and timestamp.
+pub fn rebuild_versioned_managed_fields(
+    previous: &[ManagedFieldsEntry],
+    managers: &VersionedManagers,
+    applying_manager: &str,
+    applying_subresource: &str,
+    operation: &str,
+    api_version: &str,
+    time: Option<&str>,
+) -> Vec<ManagedFieldsEntry> {
+    let mut previous_by_key: BTreeMap<String, &ManagedFieldsEntry> = BTreeMap::new();
+    for entry in previous {
+        previous_by_key.insert(manager_key(&entry.manager, &entry.subresource), entry);
+    }
+    let applying_key = manager_key(applying_manager, applying_subresource);
+    let mut result = Vec::with_capacity(managers.len());
+
+    for (key, state) in managers {
+        if *key == applying_key {
+            result.push(ManagedFieldsEntry {
+                manager: applying_manager.to_string(),
+                operation: operation.to_string(),
+                api_version: api_version.to_string(),
+                time: time.map(str::to_string),
+                fields: state.fields.clone(),
+                subresource: applying_subresource.to_string(),
+            });
+            continue;
+        }
+
+        if let Some(prior) = previous_by_key.get(key) {
+            result.push(ManagedFieldsEntry {
+                manager: prior.manager.clone(),
+                operation: if state.applied { "Apply".to_string() } else { prior.operation.clone() },
+                api_version: state.api_version.clone(),
+                time: prior.time.clone(),
+                fields: state.fields.clone(),
+                subresource: prior.subresource.clone(),
+            });
+        } else {
+            result.push(ManagedFieldsEntry {
+                manager: key.clone(),
+                operation: if state.applied { "Apply" } else { operation }.to_string(),
+                api_version: state.api_version.clone(),
+                time: time.map(str::to_string),
+                fields: state.fields.clone(),
+                subresource: String::new(),
+            });
+        }
+    }
+
     result.sort_by(|a, b| (a.manager.as_str(), a.subresource.as_str()).cmp(&(b.manager.as_str(), b.subresource.as_str())));
     result
 }
@@ -297,6 +393,39 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert!(map.contains_key("kubectl-edit"));
         assert!(map.contains_key("kubectl-edit/status"));
+    }
+
+    #[test]
+    fn versioned_manager_map_preserves_api_version_and_operation() {
+        let mut update = entry("legacy-update", &[&["spec", "replicas"]]);
+        update.operation = "Update".to_string();
+        update.api_version = "apps/v1beta1".to_string();
+        let apply = entry("current-apply", &[&["spec", "selector"]]);
+        let map = to_versioned_managers_map(&[update, apply], "apps/v1");
+
+        assert_eq!(map["legacy-update"].api_version, "apps/v1beta1");
+        assert!(!map["legacy-update"].applied);
+        assert_eq!(map["current-apply"].api_version, "apps/v1");
+        assert!(map["current-apply"].applied);
+    }
+
+    #[test]
+    fn versioned_rebuild_keeps_unrelated_manager_versions() {
+        let previous = vec![entry("legacy-update", &[&["spec", "replicas"]])];
+        let mut fields = Set::new();
+        fields.insert(&path(&["spec", "replicas"]));
+        let managers = VersionedManagers::from([(
+            "legacy-update".to_string(),
+            VersionedManager {
+                fields,
+                api_version: "apps/v1beta1".to_string(),
+                applied: false,
+            },
+        )]);
+
+        let rebuilt = rebuild_versioned_managed_fields(&previous, &managers, "new-apply", "", "Apply", "apps/v1", Some("2026-08-21T01:00:00Z"));
+        assert_eq!(rebuilt[0].api_version, "apps/v1beta1");
+        assert_eq!(rebuilt[0].operation, "Apply");
     }
 
     #[test]

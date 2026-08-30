@@ -113,7 +113,7 @@ fn is_atomic_map(schema: &Value) -> bool {
     schema.get("x-kubernetes-map-type").and_then(Value::as_str) == Some("atomic")
 }
 
-fn merge(schema: &Value, live: &Value, config: &Value) -> Value {
+pub fn merge(schema: &Value, live: &Value, config: &Value) -> Value {
     let (Value::Object(live), Value::Object(config)) = (live, config) else {
         return config.clone();
     };
@@ -314,6 +314,18 @@ fn compare(schema: &Value, live: &Value, candidate: &Value) -> Comparison {
     let mut path = Vec::new();
     compare_object(schema, live, candidate, &mut path, &mut result);
     result
+}
+
+/// Exposes the CRD schema comparison in the same public shape as the
+/// compiled-schema comparator. The version-aware updater uses this after it
+/// has converted a live/candidate pair into a manager's recorded version.
+pub fn compare_for_managed_fields(schema: &Value, live: &Value, candidate: &Value) -> crate::patch::typed_compare::Comparison {
+    let comparison = compare(schema, live, candidate);
+    crate::patch::typed_compare::Comparison {
+        removed: comparison.removed,
+        modified: comparison.modified,
+        added: comparison.added,
+    }
 }
 
 fn compare_object(

@@ -233,6 +233,13 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
                 // approach — see `encode_time_string`'s own doc comment.
                 let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "RFC3339 timestamp string", value))?;
                 encode_time_string(&format!("{message}.{}", field.json_name), s)?
+            } else if is_fields_v1_message(&nested_message) {
+                // FieldsV1 is a JSON-shaped field set wrapped in a single
+                // protobuf `Raw` bytes field, just like the other dynamic
+                // JSON messages below. Treating its `f:*` keys as ordinary
+                // protobuf fields silently drops managed-field ownership on
+                // every protobuf storage round trip.
+                encode_json_value(value)
             } else if is_json_message(&nested_message) {
                 // Group K: `apiextensions.v1.JSON` — see `is_json_message`'s
                 // own doc comment.
@@ -347,6 +354,8 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
             let nested_message = codegen::resolve_message_ref(message, &field.proto_type);
             if is_time_message(&nested_message) {
                 decode_time_message(&label(), as_bytes(&label(), raw)?)
+            } else if is_fields_v1_message(&nested_message) {
+                decode_json_message(&label(), as_bytes(&label(), raw)?)
             } else if is_json_message(&nested_message) {
                 decode_json_message(&label(), as_bytes(&label(), raw)?)
             } else if is_json_schema_props_or_array(&nested_message) {
@@ -463,6 +472,14 @@ fn is_json_message(message: &str) -> bool {
         message,
         "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSON" | "io.k8s.apimachinery.pkg.runtime.RawExtension"
     )
+}
+
+/// `metav1.FieldsV1` has a custom JSON representation: its arbitrary field
+/// set is carried in the protobuf `Raw` bytes member rather than as ordinary
+/// protobuf properties. This is the managed-fields counterpart to
+/// `apiextensions.v1.JSON` and `runtime.RawExtension`.
+fn is_fields_v1_message(message: &str) -> bool {
+    message == "io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1"
 }
 
 /// Encodes an arbitrary JSON `value` as `JSON{raw: <value's own JSON
@@ -1105,6 +1122,25 @@ mod tests {
         let encoded = encode_json_value(&json!({"kind": "PluginA", "aOption": "foo"}));
         let decoded = decode_json_message("raw", &encoded).unwrap();
         assert_eq!(decoded, json!({"kind": "PluginA", "aOption": "foo"}));
+    }
+
+    #[test]
+    fn managed_fields_round_trip_through_the_fields_v1_json_wrapper() {
+        let message = "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta";
+        let value = json!({
+            "name": "hpa",
+            "managedFields": [{
+                "manager": "legacy",
+                "operation": "Apply",
+                "apiVersion": "autoscaling/v1",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {"f:spec": {"f:targetCPUUtilizationPercentage": {}}}
+            }]
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded["managedFields"][0]["manager"], "legacy");
+        assert!(decoded["managedFields"][0]["fieldsV1"]["f:spec"]["f:targetCPUUtilizationPercentage"].is_object());
     }
 
     #[test]
