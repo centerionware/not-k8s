@@ -466,8 +466,8 @@ impl Set {
 /// application/apply-patch+yaml`, this is what would become that
 /// manager's own new `managedFields` entry (before the *merge*/conflict-
 /// detection half — real upstream's own `merge.Updater` — which is
-/// separate, larger, not-yet-started work; this function alone doesn't
-/// merge anything, it only says what one object owns).
+/// implemented separately in [`crate::patch::updater`]; this function alone
+/// doesn't merge anything, it only says what one object owns).
 ///
 /// Driven entirely by the same `codegen::field_meta_index()` Group A
 /// table `patch::strategic_merge` already reads (`list_type`/
@@ -508,11 +508,10 @@ impl Set {
 /// **Named, deliberate scope, not silently overclaimed**: real upstream
 /// strips a handful of `ObjectMeta` fields (`resourceVersion`,
 /// `creationTimestamp`, `selfLink`, `uid`, `managedFields` itself, ...)
-/// before ever computing a field set for a real applied object — that's
-/// the *caller*'s job here too (`k8s.io/apimachinery/pkg/util/
-/// managedfields`'s own `stripFields`, not yet ported), this function
-/// tracks exactly whatever object it's handed, nothing more, nothing
-/// less.
+/// before ever computing a field set for a real applied object — the REST
+/// write path performs that filtering before calling the updater; this
+/// reusable function tracks exactly whatever object it's handed, nothing
+/// more, nothing less.
 pub fn set_from_object(schema: &str, value: &Value) -> Set {
     let mut set = Set::new();
     let mut path = Vec::new();

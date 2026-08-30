@@ -5,8 +5,8 @@
 //! `Updater.Apply` would produce as `liveObject.Merge(configObject)`'s
 //! own half of the algorithm — the other half (`Updater.Apply` itself:
 //! conflict detection against other managers' `managedFields`, pruning
-//! fields the applier no longer mentions, the `Compare` walk needed for
-//! both) is separate, larger, not-yet-started work; this module produces
+//! fields the applier no longer mentions, and the `Compare` walk needed for
+//! both) is implemented in [`crate::patch::updater`]; this module produces
 //! only the merged *value*.
 //!
 //! **A real, deliberate sibling of `patch::strategic_merge`, not a
