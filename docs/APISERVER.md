@@ -241,17 +241,16 @@ now-stale guess at the location) turned out not to define it in
 `services` -> `services/specs`, and `ingresses` -> `ingress` in both
 `extensions` and `networking.k8s.io`), vendored as a literal table rather
 than approximated. **Encryption-at-rest transform primitives now exist**
-(`storage::encryption`): `Identity` and AES-256-GCM providers, plus the
+(`storage::encryption`): `Identity`, AES-256-GCM, and AES-256-CBC providers, plus the
 generic `PrefixTransformers` composition every provider list (including
 per-key rotation) uses — a faithful port of upstream's own
 `storage/value` package (`transformer.go`'s `prefixTransformers`,
-`encrypt/identity/identity.go`, `encrypt/aes/aes.go`'s `gcm` type), fetched
+`encrypt/identity/identity.go`, `encrypt/aes/aes.go`'s `gcm`/`cbc` types), fetched
 and read directly. Real envelope format confirmed against upstream:
-`k8s:enc:aesgcm:v1:<key-name>:<nonce><ciphertext+tag>`. Named honestly:
-AES-CBC, secretbox, and KMS (v1/v2) are real upstream providers this
-module doesn't build (no CBC/secretbox crate in the dependency tree, no
-KMS gRPC plugin protocol vendored — `ring`, used for AES-GCM, is not a
-*new* dependency, already pulled in transitively by `rustls`).
+`k8s:enc:aesgcm:v1:<key-name>:<nonce><ciphertext+tag>` and
+`k8s:enc:aescbc:v1:<key-name>:<iv><padded-ciphertext>`. Secretbox and KMS
+(v1/v2) remain real upstream providers this module doesn't build; KMS needs
+a gRPC plugin protocol and secretbox needs a NaCl-compatible implementation.
 **`EncryptionConfiguration` YAML parsing now exists too**
 (`storage::encryption_config`, fetched and read directly against
 `staging/src/k8s.io/apiserver/pkg/apis/apiserver/v1/types_encryption.go`):
@@ -260,9 +259,9 @@ providers: [...]}]`) into a resolvable set of `encryption::
 PrefixTransformers`, one per resource entry, matched by real upstream's
 own resource-name/wildcard rules (`secrets`, `<resource>.<group>`, `*.`,
 `*.<group>`, `*.*`) with real "earlier entries take precedence"
-first-match-wins resolution. Only `aesgcm`/`identity` build (matching
-`storage::encryption`'s own scope); `aescbc`/`secretbox`/`kms` parse
-structurally but resolve to a real, named error rather than being
+first-match-wins resolution. `aesgcm`/`aescbc`/`identity` build (matching
+`storage::encryption`'s own scope); `secretbox`/`kms` parse structurally but
+resolve to a real, named error rather than being
 silently dropped or misapplied. `NODEAPISERVER_ENCRYPTION_CONFIG_FILE`
 loads and validates the file at listener startup
 (`config::Config::encryption_config_file`) — a misconfigured file is a
