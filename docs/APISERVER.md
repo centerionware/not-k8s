@@ -11,7 +11,7 @@
 | F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
 | G — Patch and Server-Side Apply | in progress | 5/6 |
 | H — Authentication | done for current scope | 7/7 |
-| I — Authorization | done for current scope | 6/6 |
+| I — Authorization | in progress | 6/6 |
 | J — Admission | in progress | 8/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
@@ -1524,6 +1524,9 @@ The current CEL adapter accepts JSON-shaped mutation results; typed
 the `variables` object; match conditions remain evaluated before composition.
 Each matching policy chain is evaluated once per write; the e2e coverage uses
 a non-idempotent finalizer append to guard against duplicate dispatch.
+The policy request object also carries the submitted kind and authenticated
+`userInfo` for mutation expressions, with the anonymous identity used when
+the request has no authenticated certificate.
 
 Configured mutating and validating webhooks are also invoked for matching
 create, update, delete, and deletecollection requests (the latter once per
