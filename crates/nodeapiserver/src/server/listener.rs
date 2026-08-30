@@ -2021,15 +2021,12 @@ async fn handle_with_audit(
                 response_object.as_ref(),
             );
         }
-        // Group M: `/metrics`'s own request counter (`server::metrics`) —
-        // recorded from the exact same parsed `RequestInfo` the audit
-        // event above already builds, so a non-resource request (a
-        // discovery route, `/healthz`, ...) is counted under its real
-        // verb with an empty `resource` label, matching real upstream's
-        // own convention for that case.
+        // Group M: record the complete upstream-shaped metric label set from
+        // the exact same parsed RequestInfo the audit event above builds.
         let info = &request_info;
-        metrics::record_request(&info.verb, &info.resource, status);
-        metrics::record_duration(&info.verb, &info.resource, elapsed);
+        let metric_labels = metrics::labels_for_request(info, &query);
+        metrics::record_request(&metric_labels, status);
+        metrics::record_duration(&metric_labels, elapsed);
         // Group M: `apiserver_response_sizes` — only recorded when the
         // body's own size is known up front (`size_hint().exact()`,
         // `None` for a `watch`'s unbounded stream) — see `server::
@@ -2039,7 +2036,7 @@ async fn handle_with_audit(
         {
             use http_body::Body as _;
             if let Some(size) = resp.body().size_hint().exact() {
-                metrics::record_response_size(&info.verb, &info.resource, size);
+                metrics::record_response_size(&metric_labels, size);
             }
         }
 
@@ -2240,6 +2237,7 @@ fn build_audit_event(
     )
 }
 
+#[cfg(test)]
 fn build_audit_event_at_stage(
     audit_id: &str,
     stage: &str,
