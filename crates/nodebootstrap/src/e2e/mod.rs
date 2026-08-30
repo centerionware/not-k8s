@@ -231,6 +231,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_exposes_full_request_metrics",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_honors_patch_dry_run",
         group: TestGroup::General,
     },
