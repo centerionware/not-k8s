@@ -4655,8 +4655,10 @@ mod tests {
         use http_body_util::BodyExt;
 
         let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
-        let (_, rx) = cache.watch_from(0).unwrap();
+        let (_, rx) = {
+            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+            cache.watch_from(0).unwrap()
+        };
         let body = watch_response_body(
             vec![bookmark.clone()],
             rx,
@@ -4676,7 +4678,10 @@ mod tests {
         let bytes = body.collect().await.unwrap().to_bytes();
         assert!(bytes.is_empty(), "bookmarks must be opt-in");
 
-        let (_, rx) = cache.watch_from(0).unwrap();
+        let (_, rx) = {
+            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+            cache.watch_from(0).unwrap()
+        };
         let body = watch_response_body(
             Vec::new(),
             rx,
