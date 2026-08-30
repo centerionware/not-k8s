@@ -116,7 +116,7 @@ impl NodeapiserverAuthenticationOverride {
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
-        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
         run_privileged(
             "install",
             &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
@@ -157,7 +157,7 @@ impl NodeapiserverAuthenticationOverride {
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
-        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
         run_privileged(
             "install",
             &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
@@ -206,7 +206,7 @@ impl NodeapiserverAuthorizationWebhookOverride {
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
-        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
         run_privileged(
             "install",
             &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
@@ -271,7 +271,7 @@ impl NodeapiserverAuditLogOverride {
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
-        run_privileged("mkdir", &[drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
         run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
         let _ = fs::remove_file(local_drop_in.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
