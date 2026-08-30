@@ -243,6 +243,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_enforces_service_account_mountable_secrets",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_watches_an_uncommon_builtin_resource",
         group: TestGroup::General,
     },
@@ -1662,6 +1666,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeapiserver_serves_ephemeralcontainers_subresource" => {
             bootstrap::nodeapiserver_serves_ephemeralcontainers_subresource(context).await
+        }
+        "test_nodeapiserver_enforces_service_account_mountable_secrets" => {
+            bootstrap::nodeapiserver_enforces_service_account_mountable_secrets(context).await
         }
         "test_nodeapiserver_watches_an_uncommon_builtin_resource" => {
             bootstrap::nodeapiserver_watches_an_uncommon_builtin_resource(context).await

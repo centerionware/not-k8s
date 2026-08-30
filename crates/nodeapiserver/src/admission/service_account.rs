@@ -20,13 +20,12 @@
 //! 4. Copies the `ServiceAccount`'s own `imagePullSecrets` onto the pod
 //!    when the pod specifies none of its own.
 //!
-//! **Not ported, named honestly**: `LimitSecretReferences`/
-//! `enforceMountableSecrets` (upstream's own default is `false` unless an
-//! operator sets `kubernetes.io/enforce-mountable-secrets: "true"` on the
-//! `ServiceAccount` — a real but off-by-default check most real clusters
-//! never exercise), and the `pods/ephemeralcontainers` subresource
-//! validation path (the subresource has its own Pod update strategy and is
-//! outside this `CREATE`-only plugin).
+//! The opt-in `LimitSecretReferences`/`enforceMountableSecrets` check is
+//! supported too: a `ServiceAccount` annotated with
+//! `kubernetes.io/enforce-mountable-secrets: "true"` may only be used by a
+//! pod that references secrets and image-pull secrets listed on that
+//! account. The `pods/ephemeralcontainers` subresource validation path
+//! remains separate because that subresource has its own update strategy.
 //!
 //! Mirror-pod handling is ported too: a pod carrying real upstream's own
 //! `kubernetes.io/config.mirror` annotation is never mutated (mutating a
@@ -43,6 +42,7 @@
 //! only when [`Decision::NeedsServiceAccountLookup`] says to).
 
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 pub const DEFAULT_SERVICE_ACCOUNT_NAME: &str = "default";
 /// `pub` — `server::listener`'s own real random-name generator needs this
@@ -52,6 +52,7 @@ pub const DEFAULT_SERVICE_ACCOUNT_NAME: &str = "default";
 /// + "-")` does the concatenation before this plugin ever sees the
 /// result, and this port keeps that same division of responsibility).
 pub const SERVICE_ACCOUNT_VOLUME_PREFIX: &str = "kube-api-access-";
+pub const ENFORCE_MOUNTABLE_SECRETS_ANNOTATION: &str = "kubernetes.io/enforce-mountable-secrets";
 const DEFAULT_API_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 const MIRROR_POD_ANNOTATION_KEY: &str = "kubernetes.io/config.mirror";
 /// Real upstream's own `serviceaccount.WarnOnlyBoundTokenExpirationSeconds`
@@ -128,6 +129,141 @@ fn references_service_account_token_projection(pod: &Value) -> bool {
         .and_then(|s| s.get("volumes"))
         .and_then(Value::as_array)
         .is_some_and(|vols| vols.iter().any(|v| v.get("projected").and_then(|p| p.get("sources")).and_then(Value::as_array).is_some_and(|srcs| srcs.iter().any(|src| src.get("serviceAccountToken").is_some()))))
+}
+
+fn service_account_name_for_errors(service_account: &Value) -> &str {
+    service_account
+        .pointer("/metadata/name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn enforce_mountable_secrets(service_account: &Value) -> bool {
+    let Some(value) = service_account
+        .pointer("/metadata/annotations/kubernetes.io~1enforce-mountable-secrets")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    matches!(value, "1" | "t" | "T" | "TRUE" | "True" | "true")
+}
+
+fn mountable_secret_names(service_account: &Value) -> BTreeSet<&str> {
+    service_account
+        .get("secrets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|secret| secret.get("name").and_then(Value::as_str))
+        .collect()
+}
+
+fn mountable_image_pull_secret_names(service_account: &Value) -> BTreeSet<&str> {
+    service_account
+        .get("imagePullSecrets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|secret| secret.get("name").and_then(Value::as_str))
+        .collect()
+}
+
+fn validate_container_secret_references(
+    service_account: &Value,
+    containers: &[Value],
+    description: &str,
+    allowed: &BTreeSet<&str>,
+) -> Result<(), String> {
+    let service_account_name = service_account_name_for_errors(service_account);
+    for container in containers {
+        let container_name = container.get("name").and_then(Value::as_str).unwrap_or("");
+        if let Some(envs) = container.get("env").and_then(Value::as_array) {
+            for env in envs {
+                let Some(secret_name) = env
+                    .pointer("/valueFrom/secretKeyRef/name")
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                if !allowed.contains(secret_name) {
+                    return Err(format!(
+                        "{description} {container_name} with envVar {} referencing secret.secretName=\"{secret_name}\" is not allowed because service account {service_account_name} does not reference that secret",
+                        env.get("name").and_then(Value::as_str).unwrap_or("")
+                    ));
+                }
+            }
+        }
+        if let Some(env_from) = container.get("envFrom").and_then(Value::as_array) {
+            for reference in env_from {
+                let Some(secret_name) = reference
+                    .pointer("/secretRef/name")
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                if !allowed.contains(secret_name) {
+                    return Err(format!(
+                        "{description} {container_name} with envFrom referencing secret.secretName=\"{secret_name}\" is not allowed because service account {service_account_name} does not reference that secret"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Enforces the upstream opt-in mountable-secret check for a Pod `CREATE`.
+/// The account annotation controls the check; an absent annotation or any
+/// value other than a Go `strconv.ParseBool` true spelling leaves the pod
+/// unrestricted.
+pub fn validate_secret_references(service_account: &Value, pod: &Value) -> Result<(), String> {
+    if !enforce_mountable_secrets(service_account) {
+        return Ok(());
+    }
+    let allowed = mountable_secret_names(service_account);
+    let service_account_name = service_account_name_for_errors(service_account);
+    let spec = pod.get("spec");
+    if let Some(volumes) = spec.and_then(|spec| spec.get("volumes")).and_then(Value::as_array) {
+        for volume in volumes {
+            let Some(secret_name) = volume.pointer("/secret/secretName").and_then(Value::as_str) else {
+                continue;
+            };
+            if !allowed.contains(secret_name) {
+                return Err(format!(
+                    "volume with secret.secretName=\"{secret_name}\" is not allowed because service account {service_account_name} does not reference that secret"
+                ));
+            }
+        }
+    }
+    for key in ["initContainers", "containers"] {
+        let containers = spec
+            .and_then(|spec| spec.get(key))
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let description = if key == "initContainers" {
+            "init container"
+        } else {
+            "container"
+        };
+        validate_container_secret_references(service_account, containers, description, &allowed)?;
+    }
+
+    let allowed_pull_secrets = mountable_image_pull_secret_names(service_account);
+    if let Some(pull_secrets) = spec
+        .and_then(|spec| spec.get("imagePullSecrets"))
+        .and_then(Value::as_array)
+    {
+        for (index, pull_secret) in pull_secrets.iter().enumerate() {
+            let secret_name = pull_secret.get("name").and_then(Value::as_str).unwrap_or("");
+            if !allowed_pull_secrets.contains(secret_name) {
+                return Err(format!(
+                    "imagePullSecrets[{index}].name=\"{secret_name}\" is not allowed because service account {service_account_name} does not reference that imagePullSecret"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The pure decision, with no I/O: mirror-pod validation needs none (its
@@ -412,5 +548,91 @@ mod tests {
         let sa = json!({"imagePullSecrets": [{"name": "regcred"}]});
         mutate_with_service_account(&mut pod, &sa, suffix);
         assert_eq!(pod["spec"]["imagePullSecrets"], json!([{"name": "own-secret"}]));
+    }
+
+    #[test]
+    fn mountable_secret_references_are_unrestricted_without_the_opt_in_annotation() {
+        let service_account = json!({"metadata": {"name": "builder"}});
+        let pod = json!({
+            "spec": {
+                "volumes": [{"name": "credentials", "secret": {"secretName": "not-listed"}}],
+                "containers": [{
+                    "name": "app",
+                    "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}],
+                    "envFrom": [{"secretRef": {"name": "also-not-listed"}}]
+                }],
+                "imagePullSecrets": [{"name": "pull-not-listed"}]
+            }
+        });
+        assert!(validate_secret_references(&service_account, &pod).is_ok());
+    }
+
+    #[test]
+    fn annotated_service_account_rejects_unlisted_volume_secret() {
+        let service_account = json!({
+            "metadata": {"name": "builder", "annotations": {ENFORCE_MOUNTABLE_SECRETS_ANNOTATION: "true"}},
+            "secrets": [{"name": "allowed"}],
+            "imagePullSecrets": [{"name": "pull-allowed"}]
+        });
+        let pod = json!({"spec": {"volumes": [{"name": "credentials", "secret": {"secretName": "not-listed"}}]}});
+        let error = validate_secret_references(&service_account, &pod).unwrap_err();
+        assert!(error.contains("volume with secret.secretName=\"not-listed\""));
+        assert!(error.contains("service account builder"));
+    }
+
+    #[test]
+    fn annotated_service_account_rejects_unlisted_container_secret_and_pull_secret() {
+        let service_account = json!({
+            "metadata": {"name": "builder", "annotations": {ENFORCE_MOUNTABLE_SECRETS_ANNOTATION: "true"}},
+            "secrets": [{"name": "allowed"}],
+            "imagePullSecrets": [{"name": "pull-allowed"}]
+        });
+        let pod = json!({
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}],
+                    "envFrom": [{"secretRef": {"name": "also-not-listed"}}]
+                }],
+                "imagePullSecrets": [{"name": "pull-not-listed"}]
+            }
+        });
+        let error = validate_secret_references(&service_account, &pod).unwrap_err();
+        assert!(error.contains("container app with envVar TOKEN"));
+
+        let allowed_pod = json!({
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "allowed", "key": "token"}}}],
+                    "envFrom": [{"secretRef": {"name": "allowed"}}]
+                }],
+                "imagePullSecrets": [{"name": "pull-not-listed"}]
+            }
+        });
+        let error = validate_secret_references(&service_account, &allowed_pod).unwrap_err();
+        assert!(error.contains("imagePullSecrets[0]"));
+    }
+
+    #[test]
+    fn all_secret_reference_forms_listed_on_the_account_are_allowed() {
+        let service_account = json!({
+            "metadata": {"name": "builder", "annotations": {ENFORCE_MOUNTABLE_SECRETS_ANNOTATION: "TRUE"}},
+            "secrets": [{"name": "allowed"}],
+            "imagePullSecrets": [{"name": "pull-allowed"}]
+        });
+        let pod = json!({
+            "spec": {
+                "volumes": [{"name": "credentials", "secret": {"secretName": "allowed"}}],
+                "initContainers": [{
+                    "name": "init",
+                    "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "allowed", "key": "token"}}}],
+                    "envFrom": [{"secretRef": {"name": "allowed"}}]
+                }],
+                "containers": [{"name": "app", "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "allowed", "key": "token"}}}]}],
+                "imagePullSecrets": [{"name": "pull-allowed"}]
+            }
+        });
+        assert!(validate_secret_references(&service_account, &pod).is_ok());
     }
 }
