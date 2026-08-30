@@ -1033,10 +1033,10 @@ set-list union, atomic-map wholesale replacement), `patch::typed_compare`
 (the real diff, `{removed, modified, added}`), `patch::updater`
 (`merge.Updater` itself: `update`/`apply_update`/`prune`/`apply` — real
 conflict detection, pruning fields a manager stops claiming, with
-single-schema-version comparisons inside the SSA updater), and
+version-aware per-manager comparisons in the Apply path), and
 `patch::managed_fields` (the real
 `metadata.managedFields[]` wire shape and its conversion to/from the
-`BTreeMap<String, Set>` `updater` operates on). `server::rest::server_side_apply`
+version-aware manager state `updater` operates on). `server::rest::server_side_apply`
 wires all of this to real storage, and `server::listener` routes `PATCH`
 with `Content-Type: application/apply-patch+yaml` into it
 (`?fieldManager=` required, `?force=true` honored, a real `409 Conflict`
@@ -1054,9 +1054,10 @@ scope remaining**:
 resources; CRD-defined resources use the matching runtime-schema SSA
 implementation (`patch::crd_apply`) against each established version's
 `openAPIV3Schema`, including managed-field ownership, conflict detection,
-structural list/map merge behavior, pruning, and create-on-apply. This build
-does not yet perform upstream's per-manager, multi-version SSA comparison;
-the REST conversion boundary is already real. Both paths share the same
+structural list/map merge behavior, pruning, and create-on-apply. The Apply
+path preserves each manager's recorded API version and compares converted
+live/candidate objects under that manager's own schema, including built-in
+version conversions and CRD conversion-webhook boundaries. Both paths share the same
 optimistic-concurrency persistence behavior. Ordinary CREATE/PUT/PATCH and
 status writes now also reconcile `metadata.managedFields` using the explicit
 `fieldManager` or the request's `User-Agent`, with generated server metadata

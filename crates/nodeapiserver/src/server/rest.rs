@@ -141,7 +141,7 @@ use crate::storage::pb::etcdserverpb as pb;
 use crate::storage::pb::etcdserverpb::RangeRequest;
 use crate::storage::pb::mvccpb;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -2681,6 +2681,89 @@ pub enum ApplyPrepareOutcome {
     NoOp(Value),
 }
 
+fn managed_field_key(manager: &str, subresource: &str) -> String {
+    if subresource.is_empty() {
+        manager.to_string()
+    } else {
+        format!("{manager}/{subresource}")
+    }
+}
+
+fn managers_for_request(
+    managers: &crate::patch::managed_fields::VersionedManagers,
+    request_api_version: &str,
+) -> BTreeMap<String, crate::patch::fieldset::Set> {
+    managers
+        .iter()
+        .filter(|(_, state)| state.api_version == request_api_version)
+        .map(|(manager, state)| (manager.clone(), state.fields.clone()))
+        .collect()
+}
+
+/// Compare the live object and Apply candidate in each manager's recorded
+/// version. Upstream's managed fields are versioned because a field path is
+/// only meaningful under the schema that produced it; for example, HPA v1's
+/// `targetCPUUtilizationPercentage` is represented as v2's `metrics` list.
+async fn compare_managed_fields_in_recorded_versions(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    kind: &str,
+    schema: Option<&str>,
+    open_api_schema: Option<&Value>,
+    conversion_webhook: Option<&apiextensions::registry::ConversionWebhook>,
+    live: &Value,
+    live_for_request: &Value,
+    candidate: &Value,
+    entries: &[crate::patch::managed_fields::ManagedFieldsEntry],
+) -> Result<BTreeMap<String, crate::patch::typed_compare::Comparison>, Error> {
+    let request_api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let mut comparisons = BTreeMap::new();
+
+    for entry in entries {
+        let key = managed_field_key(&entry.manager, &entry.subresource);
+        let manager_api_version = if entry.api_version.is_empty() {
+            request_api_version.clone()
+        } else {
+            entry.api_version.clone()
+        };
+        let (manager_group, manager_version) = split_api_version(&manager_api_version);
+        let (old, new) = if manager_api_version == request_api_version {
+            (live_for_request.clone(), candidate.clone())
+        } else {
+            let old = convert_to_requested_version(storage, group, manager_version, kind, conversion_webhook, live.clone()).await?;
+            let new = convert_to_requested_version(storage, group, manager_version, kind, conversion_webhook, candidate.clone()).await?;
+            (old, new)
+        };
+
+        let comparison = if let Some(_) = schema {
+            let Some(manager_schema) = protobuf::schema_for_gvk(manager_group, manager_version, kind) else {
+                // Real upstream drops managed-field entries for versions it
+                // can no longer serve. Leave it out of the comparison map;
+                // the versioned reconciler performs that same cleanup.
+                continue;
+            };
+            crate::patch::typed_compare::compare(manager_schema, &old, &new)
+        } else {
+            let manager_schema = if manager_api_version == request_api_version {
+                open_api_schema.cloned()
+            } else {
+                resolve_resource(storage, manager_group, manager_version, resource)
+                    .await?
+                    .and_then(|resolved| resolved.open_api_schema)
+            };
+            let Some(manager_schema) = manager_schema else {
+                continue;
+            };
+            crate::patch::crd_apply::compare_for_managed_fields(&manager_schema, &old, &new)
+        };
+        comparisons.insert(key, comparison);
+    }
+
+    Ok(comparisons)
+}
+
 /// The "prepare" half of [`server_side_apply`]: resolves the resource,
 /// reads the current object (if any), runs the real `updater::apply`
 /// orchestration, rebuilds `managedFields`, and validates/defaults the
@@ -2721,9 +2804,28 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
             Ok(a) => a,
             Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
         };
-        let Some(mut object) = applied.object else {
+        let Some(candidate) = applied.object else {
             // The apply configuration was itself empty (merges to `{}`)
             // -- nothing real to create.
+            return Ok(ApplyPrepareOutcome::NoOp(live));
+        };
+        let request_fields = match (schema, open_api_schema.as_ref()) {
+            (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config),
+            (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config),
+            (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
+        };
+        let applied = crate::patch::updater::reconcile_versioned_apply(
+            &live,
+            &candidate,
+            &crate::patch::managed_fields::VersionedManagers::new(),
+            manager,
+            &api_version,
+            request_fields,
+            &BTreeMap::new(),
+            force,
+        )
+        .expect("an empty managed-fields map cannot conflict");
+        let Some(mut object) = applied.object else {
             return Ok(ApplyPrepareOutcome::NoOp(live));
         };
 
@@ -2737,7 +2839,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         if let Some(ns) = namespace {
             set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
         }
-        let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&[], &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
+        let rebuilt = crate::patch::managed_fields::rebuild_versioned_managed_fields(&[], &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
         set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
         let object = prune_runtime_schema(open_api_schema.as_ref(), object);
 
@@ -2780,7 +2882,11 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let live = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
     let live_for_request = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live.clone()).await?;
 
-    let stored_managed_fields = live_for_request.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    // Managed-field paths are versioned data, not ordinary object fields.
+    // Read them from the decoded storage object before projecting the object
+    // through a different request version; the target OpenAPI projection can
+    // legitimately omit the internal fieldsV1 shape.
+    let stored_managed_fields = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
     // A stored `managedFields` this crate can't parse (malformed, or an
     // entry with a `fieldsType` this crate doesn't understand — see
     // `managed_fields::parse_managed_fields`'s own doc comment) degrades
@@ -2788,11 +2894,16 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     // object itself is still perfectly real and applicable, only the
     // ownership history is unrecoverable.
     let entries = crate::patch::managed_fields::parse_managed_fields(&stored_managed_fields).unwrap_or_default();
-    let managers = crate::patch::managed_fields::to_managers_map(&entries);
+    let managers = crate::patch::managed_fields::to_versioned_managers_map(&entries, &api_version);
+    // The existing single-schema updater remains the request-version merge
+    // and prune implementation. Managers recorded under another version are
+    // intentionally withheld from it; their ownership is reconciled below
+    // using comparisons made after conversion into their own schemas.
+    let request_managers = managers_for_request(&managers, &api_version);
 
     let applied_result = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => crate::patch::updater::apply(schema, &live_for_request, &effective_config, &managers, manager, force),
-        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live_for_request, &effective_config, &managers, manager, force),
+        (Some(schema), _) => crate::patch::updater::apply(schema, &live_for_request, &effective_config, &request_managers, manager, force),
+        (None, Some(schema)) => crate::patch::crd_apply::apply(schema, &live_for_request, &effective_config, &request_managers, manager, force),
         (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
     };
     let applied = match applied_result {
@@ -2800,12 +2911,49 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
     };
 
-    let Some(mut object) = applied.object else {
+    let Some(candidate) = applied.object else {
         let live = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live).await?;
         return Ok(ApplyPrepareOutcome::NoOp(live));
     };
 
-    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
+    let comparisons = compare_managed_fields_in_recorded_versions(
+        storage,
+        group,
+        version,
+        resource,
+        &resolved.kind,
+        schema,
+        open_api_schema.as_ref(),
+        resolved.conversion_webhook.as_ref(),
+        &live,
+        &live_for_request,
+        &candidate,
+        &entries,
+    )
+    .await?;
+    let request_fields = match (schema, open_api_schema.as_ref()) {
+        (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config),
+        (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config),
+        (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
+    };
+    let applied = match crate::patch::updater::reconcile_versioned_apply(
+        &live_for_request,
+        &candidate,
+        &managers,
+        manager,
+        &api_version,
+        request_fields,
+        &comparisons,
+        force,
+    ) {
+        Ok(applied) => applied,
+        Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
+    };
+    let Some(mut object) = applied.object else {
+        return Ok(ApplyPrepareOutcome::NoOp(live_for_request));
+    };
+
+    let rebuilt = crate::patch::managed_fields::rebuild_versioned_managed_fields(&entries, &applied.managers, manager, "", "Apply", &api_version, Some(&now_rfc3339()));
     set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
     let object = prune_runtime_schema(open_api_schema.as_ref(), object);
 
