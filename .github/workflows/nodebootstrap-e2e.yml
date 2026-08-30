@@ -11,7 +11,7 @@ name: nodebootstrap e2e (real infra)
 # strategy section describes, ahead of the case file that will eventually
 # live in deploy/lib/test/cases/*.sh once nodebootstrap replaces the shell
 # bootstrap entirely. Manual dispatch, not on every push -- this installs
-# real systemd services and downloads real upstream Kubernetes binaries,
+# real systemd services and installs the repository's nodeapiserver target,
 # the same reasons e2e.yml/release.yml aren't push-triggered either.
 #
 # Binaries are built directly (`cargo build`, debug profile) and staged
@@ -55,7 +55,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
 
-      - name: cargo build (nodestore, nodelet [cri], nodeproxy, nodescheduler, nodecontroller, nodebootstrap, debug)
+      - name: cargo build (nodestore, nodelet [cri], nodeproxy, nodescheduler, nodecontroller, nodeapiserver, nodebootstrap, debug)
         run: |
           set -e
           cargo build -p nodestore
@@ -63,6 +63,7 @@ jobs:
           cargo build -p nodeproxy
           cargo build -p nodescheduler
           cargo build -p nodecontroller
+          cargo build -p nodeapiserver
           cargo build -p nodebootstrap
 
       - name: Stage binaries where nodebootstrap's services.rs expects them
@@ -70,7 +71,7 @@ jobs:
           set -e
           dest=/var/lib/nodebootstrap/toolchain/bin
           sudo mkdir -p "$dest"
-          for bin in nodestore nodelet nodeproxy nodescheduler nodecontroller; do
+          for bin in nodestore nodelet nodeproxy nodescheduler nodecontroller nodeapiserver; do
             sudo install -m0755 "target/debug/$bin" "$dest/$bin"
           done
 
@@ -115,10 +116,10 @@ jobs:
       - name: nodebootstrap kubeconfig (real kubeconfig emission)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap kubeconfig
 
-      - name: nodebootstrap targets (fetches + starts real upstream kube-apiserver)
+      - name: nodebootstrap targets (starts the repository nodeapiserver)
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap targets
 
-      - name: Real kubectl against the real apiserver
+      - name: Real kubectl against nodeapiserver
         run: sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get --raw=/readyz
 
       - name: nodebootstrap rbac (verifies bootstrap RBAC + applies the nodescheduler DRA grant)
@@ -240,7 +241,7 @@ jobs:
       - name: Dump logs on failure
         if: failure()
         run: |
-          for svc in containerd flanneld nodestore kube-apiserver nodescheduler nodecontroller nodelet nodeproxy; do
+          for svc in containerd flanneld nodestore nodeapiserver kube-apiserver nodescheduler nodecontroller nodelet nodeproxy; do
             echo "== journalctl -u $svc =="
             sudo journalctl -u "$svc" -n 100 --no-pager || true
           done
