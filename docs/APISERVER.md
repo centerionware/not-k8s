@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `4c8ce23c` on
+This snapshot is checked against `origin/nodeapiserver` at `ef14eab2` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -548,8 +548,10 @@ never a separate hand-assigned name), `resourceVersion` from the
 build knows about, no per-type Go code, same posture every other Group
 B/C/E slice has taken. `server::listener::run` connects a `StorageClient`
 at startup (best-effort — a nodestore unreachable at boot degrades to
-`None`, falling back to the bring-up echo stub rather than stopping the
-listener from serving discovery, which needs no storage at all) and
+`None` rather than stopping the listener from serving discovery, which needs
+no storage at all). Resource requests return `503 ServiceUnavailable` while
+that backend is unavailable, and unknown non-resource paths return a
+Kubernetes `404` rather than a bring-up echo. The listener still
 clones it per connection (`StorageClient` wraps a cheap-to-clone
 `tonic::transport::Channel`, same posture `cacher`'s own driver takes).
 Named honestly, not overclaimed: `GET`/`LIST` consult the registered
@@ -670,9 +672,9 @@ it by hand would have been wrong for an h2 connection). A
 `resourceVersion` older than the cache's retained history window gets a
 real `410 Gone` (`errors.NewResourceExpired`'s own shape — the signal
 every real `client-go` informer relists on) rather than silently serving
-a gap. A resource with no registered cache falls through to the bring-up
-echo stub, same posture as `GET`/`LIST` already had for an uncached
-resource. **`WATCH` is now RBAC-gated too**
+a gap. A resource with no registered cache returns a real Kubernetes error,
+the same posture as `GET`/`LIST` already had for an uncached resource.
+**`WATCH` is now RBAC-gated too**
 (`enforce_rbac`, resolved against a fresh cheap `storage.clone()` since
 `watch` otherwise needs no storage connection at all) — fails closed
 (`500`) if enforcement is on but no storage connection exists to resolve
@@ -1095,8 +1097,8 @@ verification at the TLS layer (`server::tls::load_client_ca` +
 `with_client_cert_verifier`, offered but not required, same posture
 `nodelet`'s own `load_client_ca` already established), and the resulting
 verified peer certificate is turned into an `Identity` and threaded
-through to `server::listener::handle`, surfaced in the bring-up echo
-response's own `user` field for real observability. **Authorization now
+through to `server::listener::handle` and used for request authentication
+and audit identity. **Authorization now
 does check this identity too** (Group I's `enforce_rbac`, opt-in — see
 that section below; this doc line used to say authentication had no
 authorization to enforce against, stale since Group I landed).
