@@ -1687,7 +1687,7 @@ pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_conta
                         "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "not-listed", "key": "token"}}}]
                     }]}
                 }))?,
-        )
+        ))
         .await;
     match denied {
         Err(KubeError::Api(error)) if error.code == 403 => {}
@@ -1714,7 +1714,7 @@ pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_conta
                         "env": [{"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": secret_name, "key": "token"}}}]
                     }]}
                 }))?,
-        )
+        ))
         .await
         .context("adding an allowed ephemeral container")?;
     anyhow::ensure!(
