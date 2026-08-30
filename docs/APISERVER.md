@@ -8,7 +8,7 @@
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 8/8 |
 | G — Patch and Server-Side Apply | in progress | 6/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/6 |
@@ -848,22 +848,26 @@ require them to decode watch events as Kubernetes objects.
 
 **F. Scheme: conversion, defaulting, validation** — **in progress**. The
 largest handwritten chunk. `scheme::defaulting::apply_defaults(schema, value)`
-lands the first slice: recursively fills a JSON object's absent fields from
-Group A's `FIELD_META` table, now carrying each property's real vendored
-`"default"` value (`default_json`, added alongside this module) —
-unconditional defaults only (`ContainerPort.protocol` -> `"TCP"` is the
-verified concrete case), matching real upstream defaulting exactly wherever
-a field's default doesn't depend on another field's value or the request's
-`apiVersion`; upstream's genuinely conditional defaults
-(`pkg/apis/*/v1/defaults.go`'s hand-written Go) are out of scope for this
-mechanism and stay separate, per-type work, named honestly in the module's
-own doc comment rather than silently only-partially-implemented. An absent
-object-typed field first materializes from its own structural default
-(usually `{}`, which is what tells the recursion to keep going into that
-schema's own fields) via `ref_schema`, then gets that schema's own defaults
-applied — proven with a genuinely two-levels-deep case
-(`Container.ports[].protocol`) so the cascade isn't just asserted at one
-level. `scheme::validation::validate_required(schema, value)` lands the
+recursively fills a JSON object's absent fields from Group A's `FIELD_META`
+table, now carrying each property's real vendored `"default"` value
+(`default_json`, added alongside this module). An absent object-typed field
+first materializes from its own structural default (usually `{}`, which is
+what tells the recursion to keep going into that schema's own fields) via
+`ref_schema`, then gets that schema's own defaults applied — proven with a
+genuinely two-levels-deep case (`Container.ports[].protocol`).
+`apply_builtin_defaults` now supplies the conditional core defaults that
+cannot be represented in OpenAPI field metadata: Pod and PodTemplateSpec
+restart/DNS/security/service-link defaults, image pull policy and termination
+message defaults, probe defaults, resource-limit-to-request copying, volume
+and projected-token defaults, Service type/session-affinity/traffic-policy
+and target-port defaults, plus the corresponding common Secret, ConfigMap,
+PV, PVC, Endpoints, Namespace, ReplicationController, and apps workload
+template defaults. It is wired into create, update, patch, and apply before
+conversion and is covered by a nodeapiserver-only live Pod round trip.
+The remaining per-kind validation/defaulting rules are still separate work;
+this is named explicitly rather than presenting the generic pass as a full
+replacement for upstream's hand-maintained `pkg/apis/*/v1/defaults.go`.
+`scheme::validation::validate_required(schema, value)` lands the
 first validation slice: recursively checks every field a schema's own
 vendored `required` array names is present and non-null, returning one
 `MissingField{path}` per violation with a real dotted/indexed path
