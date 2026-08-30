@@ -16,20 +16,13 @@
 //! threading an audit context out through `handle`'s own many early
 //! returns) was the far less invasive place to add this.
 //!
-//! **One stage only**: real upstream emits up to four events per request
-//! across real audit *stages* (`RequestReceived`, `ResponseStarted` —
-//! long-running requests like `watch` only, `ResponseComplete`, `Panic`).
-//! This builder only ever produces a single event labeled
-//! `ResponseComplete` — accurate for every ordinary REST verb (the
-//! request has genuinely finished by the time `handle_with_audit` logs
-//! it), but a **named inaccuracy for `watch`**: a watch response is only
-//! *starting* to stream when `handle` returns it (real upstream's own
-//! `ResponseStarted` is the semantically correct stage there), not
-//! complete — this builder has no way to know when a stream later ends
-//! (that would need a hook into the response body's own completion, not
-//! built), so a watch request's one logged event is stamped
-//! `ResponseComplete` a little early, a real, narrow, honestly-named gap
-//! rather than a silently wrong claim.
+//! Real upstream emits up to four events per request across real audit
+//! *stages* (`RequestReceived`, `ResponseStarted` — long-running requests
+//! like `watch` only, `ResponseComplete`, `Panic`). This builder supports
+//! the stage selected by its caller; the listener emits `RequestReceived`
+//! and `ResponseStarted` where the current policy requests them. `Panic`
+//! remains outside this process's response wrapper because Rust panics do
+//! not become ordinary `Response` values.
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -39,6 +32,9 @@ use std::collections::BTreeMap;
 /// comment), the others are real values a caller could reasonably ask
 /// for once request/response body logging exists.
 pub const LEVEL_METADATA: &str = "Metadata";
+pub const STAGE_REQUEST_RECEIVED: &str = "RequestReceived";
+pub const STAGE_RESPONSE_STARTED: &str = "ResponseStarted";
+pub const STAGE_RESPONSE_COMPLETE: &str = "ResponseComplete";
 
 pub struct EventInput<'a> {
     pub audit_id: &'a str,
@@ -73,15 +69,20 @@ pub struct ObjectRef<'a> {
     pub api_version: &'a str,
 }
 
-/// Real upstream's own `Event`, `Metadata` level, `ResponseComplete`
-/// stage only (see this module's own doc comment for why).
+/// Real upstream's own `Event`, at the requested audit stage and
+/// `Metadata` level. Request/response object capture is still a separate
+/// scope; the stage itself is no longer hard-coded.
 pub fn build_event(input: &EventInput<'_>) -> Value {
+    build_event_at_stage(input, STAGE_RESPONSE_COMPLETE)
+}
+
+pub fn build_event_at_stage(input: &EventInput<'_>, stage: &str) -> Value {
     let mut event = json!({
         "kind": "Event",
         "apiVersion": "audit.k8s.io/v1",
         "level": LEVEL_METADATA,
         "auditID": input.audit_id,
-        "stage": "ResponseComplete",
+        "stage": stage,
         "requestURI": input.request_uri,
         "verb": input.verb,
         "user": {
@@ -90,10 +91,11 @@ pub fn build_event(input: &EventInput<'_>) -> Value {
         },
         "requestReceivedTimestamp": input.timestamp,
         "stageTimestamp": input.timestamp,
-        "responseStatus": {
-            "code": input.response_code,
-        },
     });
+
+    if stage != STAGE_REQUEST_RECEIVED {
+        event["responseStatus"] = json!({"code": input.response_code});
+    }
 
     if let Some(uid) = input.user_uid {
         event["user"]["uid"] = json!(uid);
@@ -204,5 +206,14 @@ mod tests {
         input.annotations = Some(&annotations);
         let event = build_event(&input);
         assert_eq!(event["annotations"]["example.com/check"], "failed");
+    }
+
+    #[test]
+    fn request_received_omits_response_status_but_keeps_the_shared_audit_id() {
+        let input = minimal_input();
+        let event = build_event_at_stage(&input, STAGE_REQUEST_RECEIVED);
+        assert_eq!(event["auditID"], input.audit_id);
+        assert_eq!(event["stage"], STAGE_REQUEST_RECEIVED);
+        assert!(event.get("responseStatus").is_none());
     }
 }
