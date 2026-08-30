@@ -138,7 +138,8 @@ use crate::storage::keys;
 use crate::storage::pb::etcdserverpb as pb;
 use crate::storage::pb::etcdserverpb::RangeRequest;
 use crate::storage::pb::mvccpb;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -265,6 +266,69 @@ async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &st
     Ok(resolve_crd(storage, group, version, resource)
         .await?
         .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, storage_open_api_schema: r.storage_open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
+}
+
+/// Resolve the OpenAPI schema used to declare CEL mutation object aliases.
+/// Built-in schemas come from the same vendored document advertised by
+/// `/openapi/v3`; CRD schemas come from their established version directly.
+/// Built-in references are expanded here so the CEL environment can register
+/// names such as `Object.spec.containers` without duplicating schema lookup
+/// rules in the admission layer.
+pub async fn mutation_openapi_schema(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<Value>, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Ok(None);
+    };
+    if let Some(schema) = resolved.open_api_schema {
+        return Ok(Some(schema));
+    }
+    let Some(schema_name) = resolved.schema else {
+        return Ok(None);
+    };
+    let path = if group.is_empty() {
+        format!("api/{version}")
+    } else {
+        format!("apis/{group}/{version}")
+    };
+    let Some(document) = codegen::openapi_v3_document(&path) else {
+        return Ok(None);
+    };
+    let Some(schemas) = document.pointer("/components/schemas").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(root) = schemas.get(schema_name) else {
+        return Ok(None);
+    };
+    Ok(Some(expand_openapi_refs(root, schemas, &mut BTreeSet::new())))
+}
+
+fn expand_openapi_refs(value: &Value, schemas: &Map<String, Value>, active: &mut BTreeSet<String>) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(|value| expand_openapi_refs(value, schemas, active)).collect()),
+        Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str).and_then(|reference| reference.strip_prefix("#/components/schemas/")) {
+                if let Some(target) = schemas.get(reference) {
+                    if active.insert(reference.to_string()) {
+                        let mut expanded = expand_openapi_refs(target, schemas, active);
+                        active.remove(reference);
+                        if let Value::Object(expanded_object) = &mut expanded {
+                            for (key, value) in object {
+                                if key != "$ref" {
+                                    expanded_object.insert(key.clone(), expand_openapi_refs(value, schemas, active));
+                                }
+                            }
+                        }
+                        return expanded;
+                    }
+                    // Recursive OpenAPI types cannot be represented by a
+                    // finite CEL struct tree. Keep the recursive edge
+                    // dynamic while retaining the containing object fields.
+                    return json!({"type": "object"});
+                }
+            }
+            Value::Object(object.iter().map(|(key, value)| (key.clone(), expand_openapi_refs(value, schemas, active))).collect())
+        }
+        _ => value.clone(),
+    }
 }
 
 async fn convert_to_storage_version(

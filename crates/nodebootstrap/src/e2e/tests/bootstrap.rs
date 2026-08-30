@@ -1986,7 +1986,12 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
             "mutations": [{
                 "patchType": "JSONPatch",
                 "jsonPatch": {
-                    "expression": "[{\"op\": \"add\", \"path\": \"/metadata/finalizers/-\", \"value\": \"nodeapiserver.test\"}]"
+                    "expression": "[JSONPatch{op: \"add\", path: \"/metadata/finalizers/-\", value: \"nodeapiserver.test\"}]"
+                }
+            }, {
+                "patchType": "ApplyConfiguration",
+                "applyConfiguration": {
+                    "expression": "Object{metadata: Object.metadata{labels: {\"typed-mutation\": \"true\"}}}"
                 }
             }]
         }
@@ -2040,6 +2045,16 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
             finalizers.len() == 1 && finalizers[0] == "nodeapiserver.test",
             "MutatingAdmissionPolicy was not applied exactly once: {:?}",
             finalizers
+        );
+        anyhow::ensure!(
+            created
+                .metadata
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("typed-mutation"))
+                .is_some_and(|value| value == "true"),
+            "typed ApplyConfiguration mutation was not applied: {:?}",
+            created.metadata.labels
         );
         Ok::<(), anyhow::Error>(())
     }
