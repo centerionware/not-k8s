@@ -3280,7 +3280,7 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
                 .into_iter()
                 .map(|m| format!("{}: Required value", m.path))
                 .collect::<Vec<_>>();
-            violations.extend(validation::validate_openapi_constraints(group, version, &context.kind, &object));
+            violations.extend(validation::validate_openapi_constraints(group, version, &resolved.kind, &object));
             violations
         }
         (None, Some(schema)) => {
