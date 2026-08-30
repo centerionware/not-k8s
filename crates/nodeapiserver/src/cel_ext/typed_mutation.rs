@@ -44,8 +44,163 @@ pub fn eval_json_with_schema_and_cel_vars(
             .map_err(|_| Error::Bind { name })?;
     }
 
-    let result = Program::compile(expression)?.execute(&context)?;
+    // CEL-Rust checks custom struct fields by exact runtime type. That makes
+    // a literal JSONPatch `value` unable to accept both scalars and typed
+    // Object structs, although Kubernetes intentionally defines it as dyn.
+    // Preserve the typed syntax while evaluating JSONPatch literals as CEL
+    // maps; the resulting map is the same JSON shape and typed Object values
+    // still pass through the recursive serializer below.
+    let expression = rewrite_json_patch_literals(expression);
+    let result = Program::compile(&expression)?.execute(&context)?;
     cel_value_to_json(&result)
+}
+
+fn rewrite_json_patch_literals(expression: &str) -> String {
+    let chars: Vec<char> = expression.chars().collect();
+    let mut rewritten = String::with_capacity(expression.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < chars.len() {
+        if in_string {
+            rewritten.push(chars[index]);
+            if escaped {
+                escaped = false;
+            } else if chars[index] == '\\' {
+                escaped = true;
+            } else if chars[index] == '"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if chars[index] == '"' {
+            in_string = true;
+            rewritten.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        if token_at(&chars, index, "JSONPatch") {
+            let mut open = index + "JSONPatch".chars().count();
+            while chars
+                .get(open)
+                .is_some_and(|character| character.is_whitespace())
+            {
+                open += 1;
+            }
+            if chars.get(open) == Some(&'{') {
+                rewritten.push('{');
+                let (body, close) = rewrite_json_patch_body(&chars, open + 1);
+                rewritten.push_str(&body);
+                rewritten.push('}');
+                index = close + 1;
+                continue;
+            }
+        }
+        rewritten.push(chars[index]);
+        index += 1;
+    }
+    rewritten
+}
+
+fn token_at(chars: &[char], index: usize, token: &str) -> bool {
+    let token_chars: Vec<char> = token.chars().collect();
+    chars.get(index..index + token_chars.len()) == Some(token_chars.as_slice())
+        && (index == 0 || !is_identifier_char(chars[index - 1]))
+        && (index + token_chars.len() == chars.len()
+            || !is_identifier_char(chars[index + token_chars.len()]))
+}
+
+fn rewrite_json_patch_body(chars: &[char], mut index: usize) -> (String, usize) {
+    let mut body = String::new();
+    let mut braces = 0;
+    let mut brackets = 0;
+    let mut parentheses = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut expect_field = true;
+
+    while index < chars.len() {
+        let character = chars[index];
+        if in_string {
+            body.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            body.push(character);
+            index += 1;
+            continue;
+        }
+
+        if braces == 0 && brackets == 0 && parentheses == 0 && character == '}' {
+            return (body, index);
+        }
+        if braces == 0 && brackets == 0 && parentheses == 0 && character == ',' {
+            expect_field = true;
+            body.push(character);
+            index += 1;
+            continue;
+        }
+        if expect_field
+            && braces == 0
+            && brackets == 0
+            && parentheses == 0
+            && is_identifier_start(character)
+        {
+            let start = index;
+            index += 1;
+            while index < chars.len() && is_identifier_char(chars[index]) {
+                index += 1;
+            }
+            let mut colon = index;
+            while chars.get(colon).is_some_and(|next| next.is_whitespace()) {
+                colon += 1;
+            }
+            if chars.get(colon) == Some(&':') {
+                body.push('"');
+                body.extend(chars[start..index].iter());
+                body.push('"');
+                body.extend(chars[index..=colon].iter());
+                expect_field = false;
+                index = colon + 1;
+                continue;
+            }
+            body.extend(chars[start..index].iter());
+            expect_field = false;
+            continue;
+        }
+
+        match character {
+            '{' => braces += 1,
+            '}' => braces -= 1,
+            '[' => brackets += 1,
+            ']' => brackets -= 1,
+            '(' => parentheses += 1,
+            ')' => parentheses -= 1,
+            character if !character.is_whitespace() => expect_field = false,
+            _ => {}
+        }
+        body.push(character);
+        index += 1;
+    }
+    (body, chars.len())
+}
+
+fn is_identifier_start(character: char) -> bool {
+    character == '_' || character.is_ascii_alphabetic()
+}
+
+fn is_identifier_char(character: char) -> bool {
+    is_identifier_start(character) || character.is_ascii_digit()
 }
 
 /// Convert a CEL result to JSON, including typed CEL structs.  CEL-Rust's
@@ -239,6 +394,16 @@ fn test_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jsonpatch_rewriting_preserves_strings_and_quotes_fields() {
+        assert_eq!(
+            rewrite_json_patch_literals(r#"[JSONPatch{op: "add", path: "/x", value: "y"}]"#),
+            r#"[{"op": "add", "path": "/x", "value": "y"}]"#
+        );
+        let expression = r#""JSONPatch{op: "add"}""#;
+        assert_eq!(rewrite_json_patch_literals(expression), expression);
+    }
 
     #[test]
     fn typed_jsonpatch_structs_serialize_nested_object_values() {
