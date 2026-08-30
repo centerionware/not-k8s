@@ -599,7 +599,7 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
         "metadata": {"name": "editable-widget", "namespace": "default"},
         "spec": {"color": "red"},
     });
-    let created = match rest::create(&mut storage, "example.com", "v1", "widgets", Some("default"), &widget).await.expect("rest::create must not itself error") {
+    let created = match rest::create_with_options_and_manager(&mut storage, "example.com", "v1", "widgets", Some("default"), &widget, false, Some("creator")).await.expect("rest::create must not itself error") {
         rest::CreateOutcome::Created(object) => object,
         other => panic!("expected Created, got {other:?}"),
     };
@@ -611,12 +611,15 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
     let mut replacement = created.clone();
     replacement["spec"]["color"] = json!("blue");
     replacement["spec"].as_object_mut().unwrap().remove("size");
-    let updated = match rest::update(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", &replacement).await.expect("rest::update must not itself error") {
+    let updated = match rest::update_with_options_and_manager(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", &replacement, false, Some("editor")).await.expect("rest::update must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
     assert_eq!(updated["spec"]["color"], "blue");
     assert_eq!(updated["spec"]["size"], "small", "the CRD schema's own default must still apply on UPDATE");
+    let managed_fields = updated["metadata"]["managedFields"].as_array().expect("ordinary UPDATE must persist managedFields");
+    assert!(managed_fields.iter().any(|entry| entry["manager"] == "creator"));
+    assert!(managed_fields.iter().any(|entry| entry["manager"] == "editor" && entry["operation"] == "Update"));
 
     // 2. A JSON Patch (RFC 6902) -- needs no schema at all.
     let json_patch = json!([{"op": "replace", "path": "/spec/color", "value": "green"}]);
@@ -627,11 +630,12 @@ async fn update_and_patch_work_against_a_crd_defined_resource() {
         rest::PatchPrepareOutcome::Ready(candidate, context) => (candidate, context),
         other => panic!("expected Ready, got {other:?}"),
     };
-    let patched = match rest::patch_persist(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate, false).await.expect("rest::patch_persist must not itself error") {
+    let patched = match rest::patch_persist_with_manager(&mut storage, "example.com", "v1", "widgets", Some("default"), "editable-widget", context, candidate, false, Some("patcher")).await.expect("rest::patch_persist must not itself error") {
         rest::UpdateOutcome::Updated(object) => object,
         other => panic!("expected Updated, got {other:?}"),
     };
     assert_eq!(patched["spec"]["color"], "green");
+    assert!(patched["metadata"]["managedFields"].as_array().unwrap().iter().any(|entry| entry["manager"] == "patcher" && entry["operation"] == "Update"));
 
     // 3. A Merge Patch (RFC 7386) -- also needs no schema.
     let merge_patch = json!({"spec": {"color": "yellow"}});

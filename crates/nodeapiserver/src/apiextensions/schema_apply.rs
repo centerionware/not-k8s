@@ -101,6 +101,43 @@ pub fn apply(
     })
 }
 
+/// Reconciles managed fields for an ordinary PUT/PATCH update. Unlike
+/// [`apply`], an ordinary update never reports ownership conflicts: fields it
+/// changed are transferred to the update manager, while fields it removed
+/// are removed from every manager. This is the runtime-schema counterpart to
+/// `patch::updater::apply_update` for CRD-defined resources.
+pub fn apply_update(
+    schema: &Value,
+    live: &Value,
+    new: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+) -> BTreeMap<String, Set> {
+    let mut changed = Set::new();
+    let mut removed = Set::new();
+    diff(schema, live, new, &mut Vec::new(), &mut changed, &mut removed);
+
+    let mut result = managers.clone();
+    for (name, fields) in managers {
+        if name != manager {
+            result.insert(name.clone(), fields.difference(&changed));
+        }
+    }
+    for fields in result.values_mut() {
+        *fields = fields.difference(&removed);
+    }
+
+    let existing = managers.get(manager).cloned().unwrap_or_default();
+    let fields = existing.difference(&removed).union(&changed);
+    if fields.is_empty() {
+        result.remove(manager);
+    } else {
+        result.insert(manager.to_string(), fields);
+    }
+    result.retain(|_, fields| !fields.is_empty());
+    result
+}
+
 pub fn set_from_object(schema: &Value, value: &Value) -> Set {
     let mut set = Set::new();
     collect_object(schema, value, &mut Vec::new(), &mut set);
@@ -506,5 +543,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second.object.unwrap()["spec"].get("color"), None);
+    }
+
+    #[test]
+    fn an_ordinary_update_transfers_changed_crd_fields_without_conflicting() {
+        let schema = schema();
+        let first = apply(
+            &schema,
+            &json!({}),
+            &json!({"spec": {"color": "red", "ports": [{"name": "http", "port": 80}]}}),
+            &BTreeMap::new(),
+            "one",
+            false,
+        )
+        .unwrap();
+        let live = first.object.unwrap();
+        let updated = apply_update(
+            &schema,
+            &live,
+            &json!({"spec": {"color": "blue", "ports": [{"name": "http", "port": 80}]}}),
+            &first.managers,
+            "two",
+        );
+
+        assert!(!updated["one"].has(&[PathElement::Field("spec".to_string()), PathElement::Field("color".to_string())]));
+        assert!(!updated["one"].is_empty(), "an unchanged CRD field must remain with its original manager");
+        assert!(updated["two"].has(&[PathElement::Field("spec".to_string()), PathElement::Field("color".to_string())]));
     }
 }

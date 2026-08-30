@@ -933,13 +933,30 @@ pub enum CreateOutcome {
 /// submitted object, decoded but otherwise untouched — this function
 /// validates and defaults it, it doesn't trust it.
 pub async fn create(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, body: &Value) -> Result<CreateOutcome, Error> {
-    create_with_options(storage, group, version, resource, namespace, body, false).await
+    create_with_options_and_manager(storage, group, version, resource, namespace, body, false, None).await
 }
 
 /// [`create`] with the real Kubernetes `dryRun=All` write option. Dry-run
 /// still resolves, validates, defaults, and checks for an existing object,
 /// but never changes nodestore.
 pub async fn create_with_options(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, body: &Value, dry_run: bool) -> Result<CreateOutcome, Error> {
+    create_with_options_and_manager(storage, group, version, resource, namespace, body, dry_run, None).await
+}
+
+/// [`create_with_options`] with the request's field manager. The listener
+/// supplies the explicit `fieldManager` or the request's user agent, just as
+/// upstream's `managerOrUserAgent` does. Direct REST callers may omit it;
+/// their submitted `managedFields` are never trusted or persisted.
+pub async fn create_with_options_and_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<CreateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(CreateOutcome::UnknownResource);
     };
@@ -1045,6 +1062,18 @@ pub async fn create_with_options(storage: &mut StorageClient, group: &str, versi
         let other_crds = list_stored_crds(storage).await?;
         object["status"] = apiextensions::conditions::compute_status(&object, other_crds.iter(), &[], &now_rfc3339());
     }
+
+    object = reconcile_managed_fields(
+        resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        &json!({}),
+        object,
+        field_manager,
+        "Update",
+        "",
+        group,
+        version,
+    );
 
     // Conversion sees the complete object, including the system metadata
     // generated above. This is the same object shape a webhook receives for
@@ -1259,6 +1288,7 @@ pub async fn bind_pod(
         storage,
         resolved.schema,
         None,
+        None,
         &resolved.kind,
         "",
         "v1",
@@ -1270,6 +1300,9 @@ pub async fn bind_pod(
         object,
         false,
         None,
+        None,
+        "",
+        false,
     )
     .await?
     {
@@ -1292,13 +1325,30 @@ pub async fn bind_pod(
 /// object regardless of what the client submitted — real upstream
 /// treats both as immutable after creation.
 pub async fn update(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value) -> Result<UpdateOutcome, Error> {
-    update_with_options(storage, group, version, resource, namespace, name, body, false).await
+    update_with_options_and_manager(storage, group, version, resource, namespace, name, body, false, None).await
 }
 
 /// [`update`] with the real Kubernetes `dryRun=All` write option. The
 /// candidate is prepared exactly like a normal update, but the final
 /// optimistic-concurrency write is omitted.
 pub async fn update_with_options(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
+    update_with_options_and_manager(storage, group, version, resource, namespace, name, body, dry_run, None).await
+}
+
+/// [`update_with_options`] with the request's field manager. Ordinary
+/// updates use the same `Update` managed-fields operation as upstream and do
+/// not report ownership conflicts; changed fields move to this manager.
+pub async fn update_with_options_and_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -1382,7 +1432,7 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
         }
     }
 
-    persist_update(storage, resolved.schema, resolved.storage_open_api_schema.as_ref(), &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone()).await
+    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "", false).await
 }
 
 /// Real upstream's generic status subresource (`GenericStatusREST`,
@@ -1416,6 +1466,22 @@ pub async fn update_with_options(storage: &mut StorageClient, group: &str, versi
 /// already has for built-in subresources generally.
 /// `dry_run` validates and returns the status candidate without persisting it.
 pub async fn update_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, body: &Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
+    update_status_with_manager(storage, group, version, resource, namespace, name, body, dry_run, None).await
+}
+
+/// [`update_status`] with the request's field manager. Status writes use a
+/// separate managed-fields subresource entry, as in upstream.
+pub async fn update_status_with_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -1454,7 +1520,7 @@ pub async fn update_status(storage: &mut StorageClient, group: &str, version: &s
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, resolved.storage_open_api_schema.as_ref(), &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone()).await
+    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "status", false).await
 }
 
 /// Applies a CRD version's `properties.status` schema to a status-subresource
@@ -1504,6 +1570,7 @@ fn validate_crd_status(open_api_schema: &Option<Value>, object: &mut Value) -> V
 async fn persist_update(
     storage: &mut StorageClient,
     schema: Option<&str>,
+    open_api_schema: Option<&Value>,
     storage_open_api_schema: Option<&Value>,
     kind: &str,
     group: &str,
@@ -1516,6 +1583,9 @@ async fn persist_update(
     mut object: Value,
     dry_run: bool,
     conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
+    field_manager: Option<&str>,
+    managed_subresource: &str,
+    managed_fields_reconciled: bool,
 ) -> Result<UpdateOutcome, Error> {
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
@@ -1527,6 +1597,22 @@ async fn persist_update(
     }
 
     object = crate::scheme::conversion::to_version(group, version, kind, object);
+    if field_manager.is_some() {
+        let existing_for_fields = convert_to_requested_version(storage, group, version, kind, conversion_webhook.as_ref(), existing_object.clone()).await?;
+        object = reconcile_managed_fields(
+            schema,
+            open_api_schema,
+            &existing_for_fields,
+            object,
+            field_manager,
+            "Update",
+            managed_subresource,
+            group,
+            version,
+        );
+    } else if !managed_fields_reconciled {
+        preserve_managed_fields(existing_object, &mut object);
+    }
     object = convert_to_storage_version(storage, group, version, conversion_webhook.as_ref(), object).await?;
     object = match revalidate_storage_object(storage_open_api_schema, object) {
         Ok(object) => object,
@@ -1789,6 +1875,23 @@ pub async fn patch_prepare(storage: &mut StorageClient, group: &str, version: &s
 /// [`patch_prepare`] already read. With `dry_run`, it performs all of the
 /// same validation/defaulting and returns the candidate without writing.
 pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, context: PatchContext, candidate: Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
+    patch_persist_with_manager(storage, group, version, resource, namespace, name, context, candidate, dry_run, None).await
+}
+
+/// [`patch_persist`] with the request's field manager. Ordinary patch writes
+/// use the same managed-fields `Update` operation as ordinary PUT writes.
+pub async fn patch_persist_with_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    context: PatchContext,
+    candidate: Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     // Group K: same pruning `create`/`update` run, same order (before
     // validation/defaulting) — `candidate` is already owned, so this
     // just reassigns it rather than needing the borrow-juggling
@@ -1832,7 +1935,7 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
         }
     }
 
-    persist_update(storage, context.schema, context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run, context.conversion_webhook).await
+    persist_update(storage, context.schema, context.open_api_schema.as_ref(), context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run, context.conversion_webhook, field_manager, "", false).await
 }
 
 /// `PATCH .../status` — the patch counterpart to [`update_status`],
@@ -1853,6 +1956,22 @@ pub async fn patch_persist(storage: &mut StorageClient, group: &str, version: &s
 /// resource (`update_status`'s own doc comment covers why). `dry_run` keeps
 /// the same validation path while skipping the write.
 pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str, kind_of_patch: PatchKind, patch_doc: &Value, dry_run: bool) -> Result<UpdateOutcome, Error> {
+    patch_status_with_manager(storage, group, version, resource, namespace, name, kind_of_patch, patch_doc, dry_run, None).await
+}
+
+/// [`patch_status`] with the request's field manager.
+pub async fn patch_status_with_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -1888,7 +2007,7 @@ pub async fn patch_status(storage: &mut StorageClient, group: &str, version: &st
         return Ok(UpdateOutcome::Invalid(violations));
     }
 
-    persist_update(storage, resolved.schema, resolved.storage_open_api_schema.as_ref(), &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone()).await
+    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "status", false).await
 }
 
 /// Convenience wrapper combining [`patch_prepare`] and [`patch_persist`]
@@ -2230,7 +2349,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, context.schema, context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run, context.conversion_webhook).await? {
+    match persist_update(storage, context.schema, None, context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run, context.conversion_webhook, None, "", true).await? {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
@@ -2367,6 +2486,83 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
         *metadata = json!({});
     }
     metadata[field] = value;
+}
+
+fn preserve_managed_fields(existing: &Value, object: &mut Value) {
+    if let Some(fields) = existing.pointer("/metadata/managedFields").cloned() {
+        set_metadata_field(object, "managedFields", fields);
+    } else if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("managedFields");
+    }
+}
+
+fn strip_managed_field_system_fields(mut object: Value) -> Value {
+    if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+        for field in ["resourceVersion", "creationTimestamp", "selfLink", "uid", "managedFields"] {
+            metadata.remove(field);
+        }
+    }
+    object
+}
+
+fn reconcile_managed_fields(
+    schema: Option<&str>,
+    open_api_schema: Option<&Value>,
+    existing: &Value,
+    mut object: Value,
+    field_manager: Option<&str>,
+    operation: &str,
+    subresource: &str,
+    group: &str,
+    version: &str,
+) -> Value {
+    let Some(manager) = field_manager.filter(|manager| !manager.is_empty()) else {
+        preserve_managed_fields(existing, &mut object);
+        return object;
+    };
+
+    let Some(manager_schema) = schema else {
+        let Some(manager_schema) = open_api_schema else {
+            preserve_managed_fields(existing, &mut object);
+            return object;
+        };
+        return reconcile_runtime_managed_fields(manager_schema, existing, object, manager, operation, subresource, group, version);
+    };
+
+    let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let entries = crate::patch::managed_fields::parse_managed_fields(&previous).unwrap_or_default();
+    let managers = crate::patch::managed_fields::to_managers_map(&entries);
+    let live = strip_managed_field_system_fields(existing.clone());
+    let new = strip_managed_field_system_fields(object.clone());
+    let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
+    let managers = crate::patch::updater::apply_update(manager_schema, &live, &new, &managers, &manager_key);
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
+    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+    object
+}
+
+fn reconcile_runtime_managed_fields(
+    schema: &Value,
+    existing: &Value,
+    mut object: Value,
+    manager: &str,
+    operation: &str,
+    subresource: &str,
+    group: &str,
+    version: &str,
+) -> Value {
+    let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let entries = crate::patch::managed_fields::parse_managed_fields(&previous).unwrap_or_default();
+    let managers = crate::patch::managed_fields::to_managers_map(&entries);
+    let live = strip_managed_field_system_fields(existing.clone());
+    let new = strip_managed_field_system_fields(object.clone());
+    let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
+    let managers = crate::apiextensions::schema_apply::apply_update(schema, &live, &new, &managers, &manager_key);
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
+    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+    object
 }
 
 fn has_finalizers(object: &Value) -> bool {
