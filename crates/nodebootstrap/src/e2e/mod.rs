@@ -1710,6 +1710,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_exposes_inflight_metrics" => {
             bootstrap::nodeapiserver_exposes_inflight_metrics(context).await
         }
+        "test_nodeapiserver_exposes_full_request_metrics" => {
+            bootstrap::nodeapiserver_exposes_full_request_metrics(context).await
+        }
         "test_nodeapiserver_honors_patch_dry_run" => bootstrap::nodeapiserver_honors_patch_dry_run(context).await,
         "test_nodeapiserver_authorizes_before_special_handlers" => {
             bootstrap::nodeapiserver_authorizes_before_special_handlers(context).await
