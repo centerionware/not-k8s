@@ -809,6 +809,91 @@ pub(super) async fn nodeapiserver_advertises_subresources(context: &E2eContext) 
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_serves_workload_scale_subresource(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("workload scale checks are only exercised against nodeapiserver"));
+    }
+
+    let name = format!("nodeapiserver-scale-{}", std::process::id());
+    let scale_uri = format!("/apis/apps/v1/namespaces/{}/deployments/{name}/scale", context.namespace);
+    let deployment_uri = format!("/apis/apps/v1/namespaces/{}/deployments/{name}", context.namespace);
+    let result = async {
+        let deployment = json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": name.clone(), "namespace": context.namespace.clone()},
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": {"app": name.clone()}},
+                "template": {
+                    "metadata": {"labels": {"app": name.clone()}},
+                    "spec": {"containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]}
+                }
+            }
+        });
+        let create = Request::builder()
+            .method("POST")
+            .uri(format!("/apis/apps/v1/namespaces/{}/deployments", context.namespace))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&deployment)?)?;
+        let _: Value = context.client.request(create).await.context("creating the scale Deployment")?;
+
+        let initial: Value = context
+            .client
+            .request(Request::builder().method("GET").uri(&scale_uri).body(Vec::new())?)
+            .await
+            .context("reading the Deployment Scale")?;
+        anyhow::ensure!(initial["kind"] == "Scale" && initial["apiVersion"] == "autoscaling/v1", "scale GET returned the wrong GVK: {initial}");
+        anyhow::ensure!(initial["spec"]["replicas"] == 1, "scale GET returned the wrong desired replica count: {initial}");
+        let resource_version = initial["metadata"]["resourceVersion"].as_str().context("scale GET returned no resourceVersion")?.to_string();
+
+        let replacement = json!({
+            "apiVersion": "autoscaling/v1",
+            "kind": "Scale",
+            "metadata": {"name": name.clone(), "namespace": context.namespace.clone(), "resourceVersion": resource_version},
+            "spec": {"replicas": 2}
+        });
+        let put = Request::builder()
+            .method("PUT")
+            .uri(&scale_uri)
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&replacement)?)?;
+        let updated: Value = context.client.request(put).await.context("updating the Deployment Scale")?;
+        anyhow::ensure!(updated["spec"]["replicas"] == 2, "scale PUT returned the wrong desired replica count: {updated}");
+
+        let parent: Value = context
+            .client
+            .request(Request::builder().method("GET").uri(&deployment_uri).body(Vec::new())?)
+            .await
+            .context("reading the scaled Deployment")?;
+        anyhow::ensure!(parent["spec"]["replicas"] == 2, "scale PUT did not update the parent Deployment: {parent}");
+
+        let patch = Request::builder()
+            .method("PATCH")
+            .uri(&scale_uri)
+            .header("Content-Type", "application/merge-patch+json")
+            .body(br#"{"spec":{"replicas":1}}"#.to_vec())?;
+        let patched: Value = context.client.request(patch).await.context("patching the Deployment Scale")?;
+        anyhow::ensure!(patched["spec"]["replicas"] == 1, "scale PATCH returned the wrong desired replica count: {patched}");
+
+        let final_parent: Value = context
+            .client
+            .request(Request::builder().method("GET").uri(&deployment_uri).body(Vec::new())?)
+            .await
+            .context("reading the Deployment after scale PATCH")?;
+        anyhow::ensure!(final_parent["spec"]["replicas"] == 1, "scale PATCH did not update the parent Deployment: {final_parent}");
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(&deployment_uri).body(Vec::new())?)
+        .await;
+    result
+}
+
 pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

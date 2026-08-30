@@ -769,6 +769,13 @@ sets `spec.nodeName`, merges binding labels/annotations, and records the
 scheduler uses instead of a full Pod update, and it has a nodeapiserver-only
 e2e check.
 
+The built-in workload `scale` subresources are live too: `GET` returns the
+virtual `autoscaling/v1 Scale` for Deployments, ReplicaSets, StatefulSets,
+and ReplicationControllers; `PUT` and JSON/merge/strategic `PATCH` update
+only the parent's `spec.replicas` with normal resource-version conflict
+checks. This is the Scale API used by `kubectl scale` and HPA clients, and
+has a nodeapiserver-only e2e check.
+
 The core Pod `ephemeralcontainers` subresource is live as well. `GET` returns
 the complete Pod, while `PUT` and JSON/merge/strategic `PATCH` retain only the
 requested `spec.ephemeralContainers` change. Existing ephemeral containers
