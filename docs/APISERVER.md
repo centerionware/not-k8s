@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `eefd3f35` on
+This snapshot is checked against `origin/nodeapiserver` at `20e5c6de` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -48,7 +48,7 @@ explanation of each boundary.
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
-| G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, and ordinary-write managed-fields tracking are present; remaining upstream managed-fields edge cases need coverage. |
+| G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
@@ -1063,14 +1063,20 @@ Both paths share the same optimistic-concurrency persistence behavior.
 Runtime CRD managed-field sets are reconciled when a CRD schema changes
 between granular and atomic map/list relationships, matching the upstream
 schema-change ownership transition for the supported schema forms.
+Main-resource managed-field reconciliation now applies the supported
+server-managed field exclusion for status subresources: `status` is omitted
+from main-resource ownership, conflict, and removal bookkeeping for built-ins
+and runtime CRDs, while status writes retain their separate subresource
+manager entry. This mirrors upstream's `IgnoredFields` behavior at the REST
+strategy boundary.
 Ordinary CREATE/PUT/PATCH and
 status writes now also reconcile `metadata.managedFields` using the explicit
 `fieldManager` or the request's `User-Agent`, with generated server metadata
 excluded from ownership calculation.
 Explicit and default patch-strategy selection both honor the directive set;
 the default is strategic merge for built-ins and JSON merge patch for CRDs.
-The remaining upstream managed-fields edge is `IgnoreFilter`/
-`IgnoredFields` handling.
+Less-common upstream managed-fields compatibility cases remain outside this
+current scope.
 
 **H. Authentication** — **complete for the supported authentication
 paths**. `authn::x509::identity_from_der`
