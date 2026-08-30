@@ -28,12 +28,11 @@
 //! `CREATE`-only: defaults `spec.serviceAccountName`, requires the
 //! referenced `ServiceAccount` to exist, auto-mounts its token volume
 //! unless opted out, copies its `imagePullSecrets`, and validates a
-//! mirror pod's three real restrictions. See that module's own doc
-//! comment for the two real pieces of upstream's plugin this one doesn't
-//! port (`LimitSecretReferences`, off by default upstream anyway, and the
-//! `ephemeralcontainers` subresource validation path, which is handled by
-//! that subresource's own Pod update strategy rather than this `CREATE`-
-//! only plugin).
+//! mirror pod's three real restrictions, and the opt-in
+//! `enforce-mountable-secrets` check. See that module's own doc comment for
+//! the remaining `ephemeralcontainers` subresource validation path, which
+//! is handled by that subresource's own Pod update strategy rather than this
+//! `CREATE`-only plugin.
 //!
 //! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
 //! a `PersistentVolumeClaim` with no class of its own gets

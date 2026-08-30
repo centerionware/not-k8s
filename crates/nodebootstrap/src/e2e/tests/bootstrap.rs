@@ -9,7 +9,10 @@ use k8s_openapi::api::authentication::v1::{
     TokenRequest, TokenRequestSpec, TokenReview, TokenReviewSpec,
 };
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
-use k8s_openapi::api::core::v1::{ConfigMap, Endpoints, Node, Pod, Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, Endpoints, LocalObjectReference, Node, ObjectReference, Pod, Secret, Service,
+    ServiceAccount,
+};
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
@@ -1457,6 +1460,121 @@ pub(super) async fn nodeapiserver_serves_ephemeralcontainers_subresource(
     pods.delete(&name, &DeleteParams::default())
         .await
         .context("deleting the nodeapiserver ephemeralcontainers fixture")?;
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_enforces_service_account_mountable_secrets(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "mountable ServiceAccount secret checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let service_account_name = format!("nodeapiserver-mountable-{suffix}");
+    let secret_name = format!("nodeapiserver-mountable-secret-{suffix}");
+    let denied_pod_name = format!("nodeapiserver-mountable-denied-{suffix}");
+    let allowed_pod_name = format!("nodeapiserver-mountable-allowed-{suffix}");
+    let secrets: Api<Secret> = Api::namespaced(context.client.clone(), &context.namespace);
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+
+    secrets
+        .create(
+            &PostParams::default(),
+            &Secret {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(secret_name.clone()),
+                    ..Default::default()
+                },
+                string_data: Some(BTreeMap::from([(String::from("token"), String::from("allowed"))])),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the mountable-secret fixture")?;
+    service_accounts
+        .create(
+            &PostParams::default(),
+            &ServiceAccount {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(service_account_name.clone()),
+                    annotations: Some(BTreeMap::from([(
+                        String::from("kubernetes.io/enforce-mountable-secrets"),
+                        String::from("true"),
+                    )])),
+                    ..Default::default()
+                },
+                secrets: Some(vec![ObjectReference {
+                    name: Some(secret_name.clone()),
+                    ..Default::default()
+                }]),
+                image_pull_secrets: Some(vec![LocalObjectReference {
+                    name: secret_name.clone(),
+                }]),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the mountable-secret ServiceAccount fixture")?;
+
+    let denied: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": denied_pod_name},
+        "spec": {
+            "serviceAccountName": service_account_name,
+            "volumes": [{"name": "credentials", "secret": {"secretName": "not-listed"}}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+        }
+    }))?;
+    match pods.create(&PostParams::default(), &denied).await {
+        Err(KubeError::Api(error)) if error.code == 403 => {}
+        Err(error) => anyhow::bail!(
+            "an unlisted mountable secret returned the wrong API error: {error}"
+        ),
+        Ok(pod) => anyhow::bail!(
+            "an unlisted mountable secret was unexpectedly admitted: {:?}",
+            pod.metadata.name
+        ),
+    }
+
+    let allowed: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": allowed_pod_name},
+        "spec": {
+            "serviceAccountName": service_account_name,
+            "volumes": [{"name": "credentials", "secret": {"secretName": secret_name}}],
+            "imagePullSecrets": [{"name": secret_name}],
+            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sleep", "3600"]}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &allowed)
+        .await
+        .context("creating a Pod with only mountable ServiceAccount secrets")?;
+    context
+        .wait_until("the mountable-secret allow fixture to become Running", Duration::from_secs(90), || {
+            let pods = pods.clone();
+            let name = allowed.metadata.name.clone().unwrap_or_default();
+            async move {
+                Ok(pods
+                    .get(&name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    pods.delete(&allowed.metadata.name.clone().unwrap_or_default(), &DeleteParams::default())
+        .await
+        .context("deleting the mountable-secret allow fixture")?;
     Ok(())
 }
 
