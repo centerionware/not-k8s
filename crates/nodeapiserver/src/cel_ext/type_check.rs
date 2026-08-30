@@ -27,6 +27,13 @@ pub enum CelType {
     Bytes,
     List(Box<Self>),
     Map(Box<Self>),
+    Quantity,
+    Ip,
+    Cidr,
+    Url,
+    Semver,
+    Format,
+    Optional(Box<Self>),
     Object {
         fields: BTreeMap<String, Self>,
         additional: Option<Box<Self>>,
@@ -60,6 +67,13 @@ impl Display for CelType {
             Self::Bytes => f.write_str("bytes"),
             Self::List(element) => write!(f, "list({element})"),
             Self::Map(value) => write!(f, "map(string, {value})"),
+            Self::Quantity => f.write_str("kubernetes.Quantity"),
+            Self::Ip => f.write_str("net.IP"),
+            Self::Cidr => f.write_str("net.CIDR"),
+            Self::Url => f.write_str("kubernetes.URL"),
+            Self::Semver => f.write_str("kubernetes.Semver"),
+            Self::Format => f.write_str("kubernetes.NamedFormat"),
+            Self::Optional(value) => write!(f, "optional({value})"),
             Self::Object { .. } => f.write_str("object"),
         }
     }
@@ -463,21 +477,179 @@ impl Checker {
                 self.list_method(name, target.as_ref(), arguments);
                 CelType::Int
             }
-            "isQuantity"
-            | "isIP"
-            | "isCIDR"
-            | "isURL"
-            | "isSemver"
-            | "isInteger"
-            | "isCanonical"
-            | "isUnspecified"
-            | "isLoopback"
-            | "isLinkLocalMulticast"
-            | "isLinkLocalUnicast"
-            | "isGlobalUnicast" => CelType::Bool,
-            "asInteger" | "sign" | "family" | "prefixLength" | "compareTo" | "major" | "minor"
-            | "patch" => CelType::Int,
-            "asApproximateFloat" => CelType::Double,
+            "isQuantity" | "isIP" | "isCIDR" | "isURL" => {
+                self.require_argument(name, arguments, 0, "string", is_string_type);
+                CelType::Bool
+            }
+            "isSemver" => {
+                self.require_argument(name, arguments, 0, "string", is_string_type);
+                self.require_argument(name, arguments, 1, "bool", is_bool_type);
+                CelType::Bool
+            }
+            "ip.isCanonical" => {
+                self.require_argument(name, arguments, 0, "string", is_string_type);
+                CelType::Bool
+            }
+            "quantity" => {
+                if self.require_argument(name, arguments, 0, "string", is_string_type) {
+                    CelType::Quantity
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "ip" => {
+                if target.is_some() {
+                    if self.require_receiver(name, target.as_ref(), "a CIDR", is_cidr_type) {
+                        CelType::Ip
+                    } else {
+                        CelType::Dyn
+                    }
+                } else if self.require_argument(name, arguments, 0, "string", is_string_type) {
+                    CelType::Ip
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "cidr" => {
+                if self.require_argument(name, arguments, 0, "string", is_string_type) {
+                    CelType::Cidr
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "url" => {
+                if self.require_argument(name, arguments, 0, "string", is_string_type) {
+                    CelType::Url
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "semver" => {
+                let valid = self.require_argument(name, arguments, 0, "string", is_string_type);
+                self.require_argument(name, arguments, 1, "bool", is_bool_type);
+                if valid {
+                    CelType::Semver
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "isInteger" => {
+                self.require_receiver(name, target.as_ref(), "a Quantity", is_quantity_type);
+                CelType::Bool
+            }
+            "asInteger" => {
+                if self.require_receiver(name, target.as_ref(), "a Quantity", is_quantity_type) {
+                    CelType::Int
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "asApproximateFloat" => {
+                if self.require_receiver(name, target.as_ref(), "a Quantity", is_quantity_type) {
+                    CelType::Double
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "sign" => {
+                if self.require_receiver(name, target.as_ref(), "a Quantity", is_quantity_type) {
+                    CelType::Int
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "add" | "sub" => {
+                if self.require_receiver(name, target.as_ref(), "a Quantity", is_quantity_type) {
+                    self.require_argument(
+                        name,
+                        arguments,
+                        0,
+                        "a Quantity or integer",
+                        is_quantity_or_int_type,
+                    );
+                    CelType::Quantity
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "isLessThan" | "isGreaterThan" | "compareTo" => {
+                self.comparison_method(name, target.as_ref(), arguments)
+            }
+            "family" => {
+                if self.require_receiver(name, target.as_ref(), "an IP", is_ip_type) {
+                    CelType::Int
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "isUnspecified" | "isLoopback" | "isLinkLocalMulticast" | "isLinkLocalUnicast"
+            | "isGlobalUnicast" => {
+                self.require_receiver(name, target.as_ref(), "an IP", is_ip_type);
+                CelType::Bool
+            }
+            "prefixLength" => {
+                if self.require_receiver(name, target.as_ref(), "a CIDR", is_cidr_type) {
+                    CelType::Int
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "containsIP" => {
+                if self.require_receiver(name, target.as_ref(), "a CIDR", is_cidr_type) {
+                    self.require_argument(
+                        name,
+                        arguments,
+                        0,
+                        "an IP or string",
+                        is_ip_or_string_type,
+                    );
+                    CelType::Bool
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "containsCIDR" => {
+                if self.require_receiver(name, target.as_ref(), "a CIDR", is_cidr_type) {
+                    self.require_argument(
+                        name,
+                        arguments,
+                        0,
+                        "a CIDR or string",
+                        is_cidr_or_string_type,
+                    );
+                    CelType::Bool
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "masked" => {
+                if self.require_receiver(name, target.as_ref(), "a CIDR", is_cidr_type) {
+                    CelType::Cidr
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "getScheme" | "getHost" | "getHostname" | "getPort" | "getEscapedPath" => {
+                if self.require_receiver(name, target.as_ref(), "a URL", is_url_type) {
+                    CelType::String
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "getQuery" => {
+                if self.require_receiver(name, target.as_ref(), "a URL", is_url_type) {
+                    CelType::Map(Box::new(CelType::List(Box::new(CelType::String))))
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "major" | "minor" | "patch" => {
+                if self.require_receiver(name, target.as_ref(), "a Semver", is_semver_type) {
+                    CelType::Int
+                } else {
+                    CelType::Dyn
+                }
+            }
             "format.dns1123Label"
             | "format.dns1123Subdomain"
             | "format.dns1035Label"
@@ -490,21 +662,143 @@ impl Checker {
             | "format.uuid"
             | "format.byte"
             | "format.date"
-            | "format.datetime"
-            | "format.named"
-            | "quantity"
-            | "ip"
-            | "cidr"
-            | "url"
-            | "semver" => CelType::Dyn,
-            "validate" => CelType::Dyn,
-            "add" | "sub" | "isLessThan" | "isGreaterThan" | "getScheme" | "getHost"
-            | "getHostname" | "getPort" | "getEscapedPath" | "getQuery" | "containsIP"
-            | "containsCIDR" | "masked" | "fieldSelector" | "labelSelector" | "group"
-            | "resource" | "subresource" | "namespace" | "name" | "serviceAccount" | "check"
-            | "allowed" | "errored" | "error" | "reason" => CelType::Dyn,
+            | "format.datetime" => CelType::Format,
+            "format.named" => {
+                self.require_argument(name, arguments, 0, "string", is_string_type);
+                CelType::Optional(Box::new(CelType::Format))
+            }
+            "validate" => {
+                if self.require_receiver(name, target.as_ref(), "a named format", is_format_type) {
+                    self.require_argument(name, arguments, 0, "string", is_string_type);
+                    CelType::Optional(Box::new(CelType::List(Box::new(CelType::String))))
+                } else {
+                    CelType::Dyn
+                }
+            }
+            "hasValue" => {
+                self.require_receiver(name, target.as_ref(), "an optional value", is_optional_type);
+                CelType::Bool
+            }
+            "value" => match target.as_ref() {
+                Some(CelType::Optional(value)) => (**value).clone(),
+                Some(CelType::Dyn) | None => CelType::Dyn,
+                Some(actual) => {
+                    self.errors.push(TypeError::InvalidOperand {
+                        operation: name.to_string(),
+                        expected: "an optional value receiver".to_string(),
+                        actual: actual.clone(),
+                    });
+                    CelType::Dyn
+                }
+            },
+            "string" => {
+                let value = target.as_ref().or_else(|| arguments.first());
+                if let Some(value) = value {
+                    if !matches!(value, CelType::Dyn | CelType::String | CelType::Int | CelType::Uint | CelType::Double | CelType::Bytes | CelType::Ip | CelType::Cidr | CelType::Url | CelType::Semver) {
+                        self.errors.push(TypeError::InvalidOperand {
+                            operation: name.to_string(),
+                            expected: "a string-convertible value".to_string(),
+                            actual: value.clone(),
+                        });
+                    }
+                }
+                CelType::String
+            }
+            "fieldSelector" | "labelSelector" | "group" | "resource" | "subresource"
+            | "namespace" | "name" | "serviceAccount" | "check" | "allowed" | "errored"
+            | "error" | "reason" => CelType::Dyn,
             _ if name.starts_with("format.") || name.starts_with("ip.") => CelType::Dyn,
             _ => CelType::Dyn,
+        }
+    }
+
+    fn require_receiver(
+        &mut self,
+        operation: &str,
+        target: Option<&CelType>,
+        expected: &str,
+        predicate: fn(&CelType) -> bool,
+    ) -> bool {
+        match target {
+            Some(CelType::Dyn) => true,
+            Some(actual) if predicate(actual) => true,
+            Some(actual) => {
+                self.errors.push(TypeError::InvalidOperand {
+                    operation: operation.to_string(),
+                    expected: format!("{expected} receiver"),
+                    actual: actual.clone(),
+                });
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn require_argument(
+        &mut self,
+        operation: &str,
+        arguments: &[CelType],
+        index: usize,
+        expected: &str,
+        predicate: fn(&CelType) -> bool,
+    ) -> bool {
+        match arguments.get(index) {
+            Some(CelType::Dyn) => true,
+            Some(actual) if predicate(actual) => true,
+            Some(actual) => {
+                self.errors.push(TypeError::InvalidOperand {
+                    operation: operation.to_string(),
+                    expected: expected.to_string(),
+                    actual: actual.clone(),
+                });
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn comparison_method(
+        &mut self,
+        name: &str,
+        target: Option<&CelType>,
+        arguments: &[CelType],
+    ) -> CelType {
+        let Some(target) = target else {
+            return CelType::Dyn;
+        };
+        let valid = match target {
+            CelType::Dyn => true,
+            CelType::Quantity => self.require_argument(
+                name,
+                arguments,
+                0,
+                "a Quantity",
+                is_quantity_type,
+            ),
+            CelType::Semver => self.require_argument(
+                name,
+                arguments,
+                0,
+                "a Semver",
+                is_semver_type,
+            ),
+            actual => {
+                self.errors.push(TypeError::InvalidOperand {
+                    operation: name.to_string(),
+                    expected: "a Quantity or Semver receiver".to_string(),
+                    actual: actual.clone(),
+                });
+                false
+            }
+        };
+        if valid {
+            if name == "compareTo" {
+                CelType::Int
+            } else {
+                CelType::Bool
+            }
+        } else {
+            CelType::Dyn
         }
     }
 
@@ -715,6 +1009,54 @@ impl Checker {
     }
 }
 
+fn is_bool_type(value: &CelType) -> bool {
+    matches!(value, CelType::Bool)
+}
+
+fn is_string_type(value: &CelType) -> bool {
+    matches!(value, CelType::String)
+}
+
+fn is_quantity_type(value: &CelType) -> bool {
+    matches!(value, CelType::Quantity)
+}
+
+fn is_ip_type(value: &CelType) -> bool {
+    matches!(value, CelType::Ip)
+}
+
+fn is_cidr_type(value: &CelType) -> bool {
+    matches!(value, CelType::Cidr)
+}
+
+fn is_url_type(value: &CelType) -> bool {
+    matches!(value, CelType::Url)
+}
+
+fn is_semver_type(value: &CelType) -> bool {
+    matches!(value, CelType::Semver)
+}
+
+fn is_format_type(value: &CelType) -> bool {
+    matches!(value, CelType::Format)
+}
+
+fn is_optional_type(value: &CelType) -> bool {
+    matches!(value, CelType::Optional(_))
+}
+
+fn is_quantity_or_int_type(value: &CelType) -> bool {
+    matches!(value, CelType::Quantity | CelType::Int)
+}
+
+fn is_ip_or_string_type(value: &CelType) -> bool {
+    matches!(value, CelType::Ip | CelType::String)
+}
+
+fn is_cidr_or_string_type(value: &CelType) -> bool {
+    matches!(value, CelType::Cidr | CelType::String)
+}
+
 fn restore(variables: &mut HashMap<String, CelType>, name: &str, previous: Option<CelType>) {
     if let Some(previous) = previous {
         variables.insert(name.to_string(), previous);
@@ -826,5 +1168,40 @@ mod tests {
     fn dynamic_schema_sections_do_not_produce_false_positive_field_errors() {
         let schema = json!({"type": "object", "properties": {"data": {"type": "object", "x-kubernetes-preserve-unknown-fields": true}}});
         assert!(check_rule(&schema, "self.data.anything == 1").is_empty());
+    }
+
+    #[test]
+    fn kubernetes_extension_values_and_format_optionals_are_typed() {
+        let rule = "quantity(self.name).add(1).isGreaterThan(quantity('0')) && cidr('10.0.0.0/8').containsIP(ip('10.1.2.3')) && ip.isCanonical(self.name) && url(self.name).getQuery()['key'][0] == 'value' && semver('1.2.3').major() == 1 && format.named('uuid').value().validate(self.name).hasValue()";
+        assert!(check_rule(&schema(), rule).is_empty());
+    }
+
+    #[test]
+    fn kubernetes_extension_overloads_reject_wrong_operands() {
+        let errors = check_rule(
+            &schema(),
+            "quantity(self.name).add('1') == quantity('2') || ip(self.name).family() == '4' || url(self.name).getHostname().family() == 4",
+        );
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            TypeError::InvalidOperand { operation, .. } if operation == "add"
+        )));
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            TypeError::IncompatibleOperands { .. }
+        )));
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            TypeError::InvalidOperand { operation, .. } if operation == "family"
+        )));
+    }
+
+    #[test]
+    fn kubernetes_extension_constructors_require_strings() {
+        let errors = check_rule(&schema(), "quantity(self.replicas) == quantity('1')");
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            TypeError::InvalidOperand { operation, .. } if operation == "quantity"
+        )));
     }
 }
