@@ -6,10 +6,10 @@
 //! reachable, spec-compliant apiserver -- it doesn't know or care which one
 //! this module started.
 //!
-//! `upstream` remains the default compatibility target (real
-//! `kube-apiserver` against `nodestore`). The integration branch also has a
-//! `nodeapiserver` target, selected with `--apiserver=nodeapiserver`, which
-//! runs this repository's replacement against the same PKI and datastore.
+//! `nodeapiserver` is the default target and runs this repository's
+//! replacement against the shared PKI and datastore. `upstream` remains an
+//! explicit compatibility/comparison target selected with
+//! `--apiserver=upstream`.
 
 pub mod nodeapiserver;
 pub mod upstream;
