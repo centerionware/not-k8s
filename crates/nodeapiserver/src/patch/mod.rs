@@ -46,16 +46,17 @@
 //! real orchestration this whole arc has been building toward: merge the
 //! config in, record the applying manager's new `Set`, prune what it
 //! stopped claiming, run real conflict detection against every other
-//! manager). Single-schema-version scoped throughout (see `updater`'s own
-//! module doc): the REST conversion boundary is real, while the updater's
-//! per-manager multi-version comparison cache remains separate work.
+//! manager). Ordinary patch/update callers retain the single-schema API, while
+//! the Apply path now preserves each manager's recorded API version and runs
+//! conflict/ownership reconciliation against a converted comparison in that
+//! version, including CRD conversion-webhook boundaries.
 //!
 //! `managed_fields` — the real `metadata.managedFields[]` wire shape
 //! (`ManagedFieldsEntry`, confirmed directly against the vendored
 //! OpenAPI spec) and the two conversions `updater`'s functions actually
-//! need: the stored array in, a `BTreeMap<String, Set>` out; a
-//! reconciled map plus the applying manager's own new entry in, the
-//! array to write back out.
+//! need: the stored array in, a version-aware manager map out; a reconciled
+//! map plus the applying manager's own new entry in, the array to write back
+//! out.
 //!
 //! **Server-Side Apply is now reachable from a real request, including
 //! create-on-apply**: `server::rest::server_side_apply` wires
@@ -72,9 +73,9 @@
 //! lets `namespace_lifecycle` *and* `LimitRanger` admission both run
 //! against the real candidate object, matching the ordinary
 //! three-patch-kind `PATCH` branch's own coverage exactly. CRD-defined
-//! resources use the runtime-schema counterpart in [`crd_apply`], with
-//! per-manager multi-version SSA comparison remains separate scope; REST
-//! CRUD/watch conversion webhooks are handled by `server::rest` and
+//! resources use the runtime-schema counterpart in [`crd_apply`], with the
+//! same per-manager version-aware comparison; REST CRUD/watch conversion
+//! webhooks are handled by `server::rest` and
 //! `server::watch_event`. Advanced patch directives are implemented for
 //! both compiled and runtime schemas.
 //!
