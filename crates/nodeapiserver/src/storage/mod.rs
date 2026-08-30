@@ -19,7 +19,7 @@
 //! module's own doc comment for the real resource-name/wildcard matching
 //! rules ported.
 //!
-//! Status: in progress (see docs/APISERVER.md). The gRPC client has the
+//! Status: done for current scope (see docs/APISERVER.md). The gRPC client has the
 //! same mutual-TLS posture nodestore's own client API requires (`Watch`
 //! and `LeaseKeepAlive`'s bidirectional streams included, plus the
 //! standard prefix->range-end helper), and the key layout matches real
