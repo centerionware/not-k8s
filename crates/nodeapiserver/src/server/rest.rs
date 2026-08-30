@@ -4078,7 +4078,9 @@ mod tests {
             }
         }));
         assert!(violations.iter().any(|violation| violation.contains("invalid/key/with/two/slashes")));
-        assert!(violations.iter().any(|violation| violation.contains("has/slash")));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("metadata.labels[\"other\"]") && violation.contains("alphanumeric")));
         assert!(violations.iter().any(|violation| violation.contains("finalizers")));
     }
 
