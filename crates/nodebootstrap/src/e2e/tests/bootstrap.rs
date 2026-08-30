@@ -988,6 +988,118 @@ pub(super) async fn nodeapiserver_reconciles_managed_fields_across_versions(cont
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_reconciles_crd_managed_fields_after_schema_change(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("CRD managed-fields schema changes are only exercised against nodeapiserver"));
+    }
+
+    let suffix = std::process::id();
+    let group = format!("nodeapiserver-schema-{suffix}.test");
+    let crd_name = format!("widgets.{group}");
+    let widget_name = format!("widget-{suffix}");
+    let crds: Api<CustomResourceDefinition> = Api::all(context.client.clone());
+    let widgets: Api<DynamicObject> = Api::namespaced_with(
+        context.client.clone(),
+        &context.namespace,
+        &ApiResource::from_gvk(&GroupVersionKind::gvk(&group, "v1", "Widget")),
+    );
+    let crd: CustomResourceDefinition = serde_json::from_value(json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": crd_name},
+        "spec": {
+            "group": group,
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "listKind": "WidgetList"
+            },
+            "scope": "Namespaced",
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "schema": {"openAPIV3Schema": {
+                    "type": "object",
+                    "properties": {"spec": {
+                        "type": "object",
+                        "properties": {"settings": {
+                            "type": "object",
+                            "x-kubernetes-map-type": "granular",
+                            "additionalProperties": {"type": "string"}
+                        }}
+                    }}
+                }}
+            }]
+        }
+    }))?;
+
+    let result = async {
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("creating the CRD schema-reconciliation fixture")?;
+        context
+            .wait_until("CRD schema-reconciliation fixture to become established", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move { Ok(crds.get_opt(&crd_name).await?.is_some_and(|crd| crd_is_established(&crd))) }
+            })
+            .await?;
+
+        let first: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": widget_name.clone(), "namespace": &context.namespace},
+            "spec": {"settings": {"a": "one"}}
+        }))?;
+        widgets
+            .patch(
+                &widget_name,
+                &kube::api::PatchParams::apply("nodeapiserver-schema-a"),
+                &Patch::Apply(first),
+            )
+            .await
+            .context("applying the CRD object with a granular map")?;
+
+        let mut updated = serde_json::to_value(&crd)?;
+        updated["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["settings"]["x-kubernetes-map-type"] = json!("atomic");
+        crds.patch(
+            &crd_name,
+            &PatchParams::default(),
+            &Patch::Merge(json!({"spec": {"versions": updated["spec"]["versions"].clone()}})),
+        )
+            .await
+            .context("changing the CRD map from granular to atomic")?;
+
+        let second: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": format!("{group}/v1"),
+            "kind": "Widget",
+            "metadata": {"name": widget_name.clone(), "namespace": &context.namespace},
+            "spec": {"settings": {"b": "two"}}
+        }))?;
+        match widgets
+            .patch(
+                &widget_name,
+                &kube::api::PatchParams::apply("nodeapiserver-schema-b"),
+                &Patch::Apply(second),
+            )
+            .await
+        {
+            Err(KubeError::Api(error)) if error.code == 409 => {}
+            Err(error) => anyhow::bail!("post-schema-change Apply returned the wrong API error: {error}"),
+            Ok(value) => anyhow::bail!("post-schema-change Apply did not conflict with the collapsed owner: {value:?}"),
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = widgets.delete(&widget_name, &DeleteParams::default()).await;
+    let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
+    result
+}
+
 pub(super) async fn nodeapiserver_authentication_modes(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

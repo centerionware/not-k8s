@@ -215,6 +215,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_reconciles_crd_managed_fields_after_schema_change",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_authentication_modes",
         group: TestGroup::General,
     },
@@ -1661,6 +1665,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeapiserver_reconciles_managed_fields_across_versions" => {
             bootstrap::nodeapiserver_reconciles_managed_fields_across_versions(context).await
+        }
+        "test_nodeapiserver_reconciles_crd_managed_fields_after_schema_change" => {
+            bootstrap::nodeapiserver_reconciles_crd_managed_fields_after_schema_change(context).await
         }
         "test_nodeapiserver_authentication_modes" => {
             bootstrap::nodeapiserver_authentication_modes(context).await
