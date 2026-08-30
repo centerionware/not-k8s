@@ -20,7 +20,7 @@
 //! it dials `127.0.0.1` directly instead of a real `ClusterIP`, proving
 //! the TLS/relay mechanics rather than cluster networking.
 
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
 use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
@@ -32,9 +32,11 @@ use nodeapiserver::proxy::http_client;
 use nodeapiserver::server::rest;
 use nodeapiserver::storage::client::StorageClient;
 use serde_json::json;
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 /// Mirrors `tests/crd_roundtrip.rs`'s own `find_nodestore_binary` /
@@ -336,6 +338,110 @@ async fn aggregation_proxy_presents_its_client_certificate_to_the_backend() {
     .expect("the mTLS backend must accept the configured proxy client certificate");
     let body = response.into_body().collect().await.expect("reading the backend response").to_bytes();
     assert_eq!(body, Bytes::from_static(b"GET /apis/metrics.k8s.io/v1beta1/nodes alice"));
+}
+
+#[tokio::test]
+async fn aggregation_upgrade_replaces_remote_identity_before_splicing_streams() {
+    nodeapiserver::install_crypto_provider();
+    let backend_listener = TcpListener::bind("127.0.0.1:0").await.expect("binding the upgrade backend");
+    let backend_addr = backend_listener.local_addr().expect("reading the upgrade backend address");
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let seen_tx = Arc::new(std::sync::Mutex::new(Some(seen_tx)));
+    let backend_task = tokio::spawn(async move {
+        let (tcp, _) = backend_listener.accept().await.expect("accepting the upgrade backend connection");
+        let io = TokioIo::new(tcp);
+        let service = service_fn(move |mut req: Request<hyper::body::Incoming>| {
+            let seen_tx = seen_tx.clone();
+            async move {
+                let user = req
+                    .headers()
+                    .get("x-remote-user")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("missing")
+                    .to_string();
+                if let Some(tx) = seen_tx.lock().expect("locking observed identity").take() {
+                    let _ = tx.send(user);
+                }
+                let on_upgrade = hyper::upgrade::on(&mut req);
+                tokio::spawn(async move {
+                    if let Ok(upgraded) = on_upgrade.await {
+                        let mut io = TokioIo::new(upgraded);
+                        let mut payload = [0; 4];
+                        if io.read_exact(&mut payload).await.is_ok() {
+                            let _ = io.write_all(&payload).await;
+                        }
+                    }
+                });
+                Ok::<_, Infallible>(Response::builder()
+                    .status(101)
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .body(Empty::<Bytes>::new().boxed())
+                    .expect("building the upgrade response"))
+            }
+        });
+        let _ = server_http1::Builder::new().serve_connection(io, service).with_upgrades().await;
+    });
+
+    let frontend_listener = TcpListener::bind("127.0.0.1:0").await.expect("binding the upgrade proxy");
+    let frontend_addr = frontend_listener.local_addr().expect("reading the upgrade proxy address");
+    let frontend_task = tokio::spawn(async move {
+        let (tcp, _) = frontend_listener.accept().await.expect("accepting the upgrade proxy connection");
+        let io = TokioIo::new(tcp);
+        let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+            let target = nodeapiserver::proxy::pod_log::Target {
+                scheme: "http",
+                host: backend_addr.ip().to_string(),
+                port: backend_addr.port(),
+                path: "/apis/metrics.k8s.io/v1beta1/exec".to_string(),
+                query: String::new(),
+            };
+            let replacement_headers = vec![("X-Remote-User".to_string(), "alice".to_string())];
+            async move {
+                Ok::<_, Infallible>(http_client::upgrade_with_headers(
+                    req,
+                    &target,
+                    Arc::new(nodeapiserver::proxy::client_tls::build_client_config(None).expect("building the test client config")),
+                    Some(&replacement_headers),
+                )
+                .await
+                .expect("proxying the upgraded request"))
+            }
+        });
+        let _ = server_http1::Builder::new().serve_connection(io, service).with_upgrades().await;
+    });
+
+    let stream = tokio::net::TcpStream::connect(frontend_addr).await.expect("connecting to the upgrade proxy");
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    writer
+        .write_all(b"GET /apis/metrics.k8s.io/v1beta1/exec HTTP/1.1\r\nHost: aggregator\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Remote-User: attacker\r\n\r\n")
+        .await
+        .expect("sending the upgrade request");
+
+    let response = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut response = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            reader.read_until(b'\n', &mut line).await.expect("reading the upgrade response");
+            response.extend(line);
+            if response.ends_with(b"\r\n\r\n") {
+                return response;
+            }
+        }
+    })
+    .await
+    .expect("the upgrade response must arrive");
+    assert!(response.starts_with(b"HTTP/1.1 101"), "unexpected upgrade response: {response:?}");
+    assert_eq!(tokio::time::timeout(Duration::from_secs(3), seen_rx).await.expect("backend identity observation must arrive").expect("backend identity channel must remain open"), "alice");
+
+    writer.write_all(b"ping").await.expect("sending data over the upgraded stream");
+    let mut echoed = [0; 4];
+    tokio::time::timeout(Duration::from_secs(3), reader.read_exact(&mut echoed)).await.expect("the upgraded stream must remain connected").expect("reading the echoed stream data");
+    assert_eq!(&echoed, b"ping");
+
+    frontend_task.abort();
+    backend_task.abort();
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

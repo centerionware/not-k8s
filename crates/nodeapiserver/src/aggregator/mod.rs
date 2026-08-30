@@ -52,8 +52,8 @@
 //! configured front-proxy client certificate is presented to the backend,
 //! and authenticated request identity is rebuilt as `X-Remote-*` headers
 //! after stripping caller-supplied values. Streaming upgrade support
-//! (SPDY/websocket) remains the separate gap Group N's exec/attach still
-//! has.
+//! uses the same dial-and-splice path, with the same identity replacement
+//! applied before the upgraded request reaches the backend.
 //!
 //! **Phase 3 done, including live resource enumeration.**
 //! `aggregator::route::discoverable_group_versions` lists every stored,
