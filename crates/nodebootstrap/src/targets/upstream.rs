@@ -1,6 +1,7 @@
 //! Installs real upstream `kube-apiserver` against `nodestore`, wired up
-//! with the PKI `pki.rs` minted (not k3s's) -- `main`'s default target for
-//! the one piece not yet replaced by `nodeapiserver`.
+//! with the PKI `pki.rs` minted (not k3s's) -- the explicit comparison target
+//! retained for compatibility testing after `nodeapiserver` became the
+//! bootstrap default.
 //!
 //! Replaces `deploy/lib/upstream-kube-apiserver.sh` -- but where that
 //! script deliberately *borrows* k3s's already-generated PKI (see its

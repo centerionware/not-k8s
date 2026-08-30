@@ -727,7 +727,7 @@ fn print_help() {
     println!("  --release [--tag=TAG]  fetch published component binaries");
     println!("  --layout=combined|split|both");
     println!("  --profile=debug|release  select the source-build Cargo profile");
-    println!("  --apiserver=upstream|nodeapiserver  select the API server implementation");
+    println!("  --apiserver=upstream|nodeapiserver  select the API server (default nodeapiserver)");
     println!("  --proxy=none           omit nodeproxy service");
     println!("  --without-flannel      skip flannel and remember external CNI for updates");
     println!("  --cni=none             use an externally-managed CNI for this run");
