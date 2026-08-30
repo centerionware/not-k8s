@@ -470,7 +470,7 @@ fn collect_changed(schema: &Value, value: &Value, path: &[PathElement], set: &mu
     }
 }
 
-fn remove_items(schema: &Value, value: &Value, to_remove: &Set) -> Value {
+pub fn remove_items(schema: &Value, value: &Value, to_remove: &Set) -> Value {
     let Some(object) = value.as_object() else {
         return value.clone();
     };
