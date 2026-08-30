@@ -21,14 +21,14 @@
 //!
 //! # Providers ported
 //!
-//! `aesgcm` (`storage::encryption::Gcm`) and `identity`
-//! (`storage::encryption::Identity`) — the same two real upstream
-//! providers `storage::encryption`'s own doc comment already names as
-//! built. `aescbc`/`secretbox`/`kms` entries parse structurally (so a
-//! config file that names one doesn't fail to parse at all) but
-//! [`build`] returns a real, named [`Error::UnsupportedProvider`] rather
-//! than silently dropping or misapplying them — the same "fail loud on
-//! what isn't ported" posture as `is_extended_resource_name`'s own
+//! `aesgcm` (`storage::encryption::Gcm`), `aescbc`
+//! (`storage::encryption::AesCbc`), and `identity`
+//! (`storage::encryption::Identity`) — the providers this crate can
+//! currently execute. `secretbox`/`kms` entries parse structurally (so a
+//! config file that names one doesn't fail to parse at all) but [`build`]
+//! returns a real, named [`Error::UnsupportedProvider`] rather than
+//! silently dropping or misapplying them — the same "fail loud on what
+//! isn't ported" posture as `is_extended_resource_name`'s own
 //! `IsQualifiedName` gap.
 //!
 //! # Resource matching
@@ -47,7 +47,7 @@
 //! port just takes first-match-wins at face value, same as it takes the
 //! document's own field values at face value elsewhere.
 
-use crate::storage::encryption::{Gcm, Identity, PrefixTransformer, PrefixTransformers, AES_GCM_PREFIX_V1};
+use crate::storage::encryption::{AesCbc, Gcm, Identity, PrefixTransformer, PrefixTransformers, AES_CBC_PREFIX_V1, AES_GCM_PREFIX_V1};
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +62,7 @@ pub enum Error {
     InvalidKeyBase64 { index: usize, provider: &'static str, key_name: String, #[source] source: base64::DecodeError },
     #[error("EncryptionConfiguration.resources[{index}]'s {provider} key {key_name:?} must decode to exactly 32 bytes for AES-256, got {actual}")]
     WrongKeyLength { index: usize, provider: &'static str, key_name: String, actual: usize },
-    #[error("EncryptionConfiguration.resources[{index}] names a provider this build doesn't implement: {provider} (only aesgcm/identity are ported — see this module's own doc comment)")]
+    #[error("EncryptionConfiguration.resources[{index}] names a provider this build doesn't implement: {provider} (only aesgcm/aescbc/identity are ported — see this module's own doc comment)")]
     UnsupportedProvider { index: usize, provider: &'static str },
 }
 
@@ -92,6 +92,20 @@ fn build_aes_gcm(index: usize, keys: &Value) -> Result<PrefixTransformers, Error
     Ok(PrefixTransformers::new(transformers))
 }
 
+fn build_aes_cbc(index: usize, keys: &Value) -> Result<PrefixTransformers, Error> {
+    use base64::Engine;
+    let mut transformers = Vec::new();
+    for key in keys.as_array().into_iter().flatten() {
+        let name = key.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let secret_b64 = key.get("secret").and_then(Value::as_str).unwrap_or("");
+        let secret = base64::engine::general_purpose::STANDARD.decode(secret_b64).map_err(|source| Error::InvalidKeyBase64 { index, provider: "aescbc", key_name: name.clone(), source })?;
+        let len = secret.len();
+        let key_bytes: [u8; 32] = secret.try_into().map_err(|_| Error::WrongKeyLength { index, provider: "aescbc", key_name: name.clone(), actual: len })?;
+        transformers.push(PrefixTransformer { prefix: format!("{name}:").into_bytes(), transformer: Box::new(AesCbc::new(key_bytes)) });
+    }
+    Ok(PrefixTransformers::new(transformers))
+}
+
 /// Builds the real [`EncryptionConfig`] this crate can act on from the
 /// parsed document's own `resources` array — the one step that can fail
 /// on an unsupported provider ([`Error::UnsupportedProvider`]), kept
@@ -117,10 +131,12 @@ fn build(doc: &Value) -> Result<EncryptionConfig, Error> {
                 let keys = aesgcm.get("keys").cloned().unwrap_or(Value::Array(vec![]));
                 let inner = build_aes_gcm(index, &keys)?;
                 transformers.push(PrefixTransformer { prefix: AES_GCM_PREFIX_V1.as_bytes().to_vec(), transformer: Box::new(inner) });
+            } else if let Some(aescbc) = provider.get("aescbc") {
+                let keys = aescbc.get("keys").cloned().unwrap_or(Value::Array(vec![]));
+                let inner = build_aes_cbc(index, &keys)?;
+                transformers.push(PrefixTransformer { prefix: AES_CBC_PREFIX_V1.as_bytes().to_vec(), transformer: Box::new(inner) });
             } else if provider.get("identity").is_some() {
                 transformers.push(PrefixTransformer { prefix: Vec::new(), transformer: Box::new(Identity) });
-            } else if provider.get("aescbc").is_some() {
-                return Err(Error::UnsupportedProvider { index, provider: "aescbc" });
             } else if provider.get("secretbox").is_some() {
                 return Err(Error::UnsupportedProvider { index, provider: "secretbox" });
             } else if provider.get("kms").is_some() {
@@ -240,12 +256,24 @@ mod tests {
 
     #[test]
     fn an_unsupported_provider_is_a_real_named_error_not_silently_dropped() {
-        let yaml = "resources:\n- resources:\n  - secrets\n  providers:\n  - aescbc:\n      keys:\n      - name: key1\n        secret: c2VjcmV0IGlzIHNlY3VyZQ==\n";
-        let err = match parse(yaml) {
+        let yaml = "resources:\n- resources:\n  - secrets\n  providers:\n  - secretbox:\n      keys:\n      - name: key1\n        secret: c2VjcmV0IGlzIHNlY3VyZQ==\n";
+        let err = match parse(&yaml) {
             Err(e) => e,
-            Ok(_) => panic!("aescbc isn't ported"),
+            Ok(_) => panic!("secretbox isn't ported"),
         };
-        assert!(matches!(err, Error::UnsupportedProvider { provider: "aescbc", .. }));
+        assert!(matches!(err, Error::UnsupportedProvider { provider: "secretbox", .. }));
+    }
+
+    #[test]
+    fn parses_and_round_trips_a_real_aescbc_config() {
+        let key_b64 = { use base64::Engine; base64::engine::general_purpose::STANDARD.encode([7u8; 32]) };
+        let yaml = format!("resources:\n- resources:\n  - secrets\n  providers:\n  - aescbc:\n      keys:\n      - name: key1\n        secret: {key_b64}\n");
+        let config = parse(&yaml).expect("valid AES-CBC EncryptionConfiguration");
+        let transformers = transformers_for(&config, "", "secrets").expect("secrets should match");
+        let ciphertext = transformers.transform_to_storage(b"hello", b"aad").unwrap();
+        let (plaintext, _stale) = transformers.transform_from_storage(&ciphertext, b"aad").unwrap();
+        assert_eq!(plaintext, b"hello");
+        assert!(ciphertext.starts_with(b"k8s:enc:aescbc:v1:key1:"));
     }
 
     #[test]

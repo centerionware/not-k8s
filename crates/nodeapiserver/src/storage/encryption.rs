@@ -3,31 +3,25 @@
 //! upstream's `staging/src/k8s.io/apiserver/pkg/storage/value` package
 //! (fetched and read directly, not reconstructed from memory): the
 //! generic prefix-dispatch composition
-//! (`transformer.go`'s `prefixTransformers`) plus two real providers,
-//! `Identity` (`encrypt/identity/identity.go`) and AES-256-GCM
-//! (`encrypt/aes/aes.go`'s `gcm` type).
+//! (`transformer.go`'s `prefixTransformers`) plus three real providers,
+//! `Identity` (`encrypt/identity/identity.go`), AES-256-GCM
+//! (`encrypt/aes/aes.go`'s `gcm` type), and AES-256-CBC
+//! (`encrypt/aes/aes.go`'s `cbc` type).
 //!
 //! # What this deliberately doesn't cover yet
 //!
-//! AES-CBC, secretbox, and KMS (v1/v2) are real, separate providers
-//! upstream also has — not silently missing, named honestly: this crate
-//! has no CBC-mode or NaCl-secretbox crate in its dependency tree yet
-//! (`ring`, used here for AES-GCM, deliberately omits CBC over AEAD's
-//! superior security properties, and secretbox needs a different crate
-//! entirely), and KMS needs a gRPC plugin protocol this crate hasn't
-//! vendored. `ring` itself isn't a *new* dependency — it's already pulled
-//! in transitively by `rustls` (see `Cargo.lock`), so using it here adds
-//! nothing to the build graph. Also not built: `EncryptionConfiguration`
-//! YAML parsing (which provider(s) apply to which resource) — this module
-//! is the transform primitives a config loader would wire up, not the
-//! loader itself.
+//! Secretbox and KMS (v1/v2) are real, separate providers upstream also has
+//! and remain outside this module's scope. KMS needs a gRPC plugin protocol
+//! this crate hasn't vendored; secretbox needs a separate NaCl-compatible
+//! implementation. `EncryptionConfiguration` YAML parsing lives in the
+//! sibling `encryption_config` module.
 //!
 //! # Envelope format
 //!
 //! Confirmed against real upstream, not invented:
 //! `staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go`'s
 //! `aesPrefixTransformer` wraps a per-provider outer `PrefixTransformer`
-//! (prefix `k8s:enc:aesgcm:v1:` for this module's one built provider)
+//! (prefix `k8s:enc:aesgcm:v1:` or `k8s:enc:aescbc:v1:`)
 //! around a nested `NewPrefixTransformers` of per-key `PrefixTransformer`s
 //! (prefix `<key-name>:`) — supporting multiple keys per provider for
 //! rotation: the *first* key is used for writes, every key is tried for
@@ -141,6 +135,62 @@ impl Transformer for Gcm {
     }
 }
 
+/// AES-256-CBC with PKCS#7 padding, matching upstream's `cbc` provider.
+/// Stored data is the random 16-byte IV followed by the padded ciphertext;
+/// the outer provider prefix is added by [`PrefixTransformers`]. CBC has no
+/// authenticated-data parameter, so the caller's resource/key selection
+/// remains the binding that chooses this transformer.
+pub struct AesCbc {
+    key: [u8; 32],
+}
+
+impl AesCbc {
+    pub fn new(key: [u8; 32]) -> Self {
+        Self { key }
+    }
+}
+
+impl Transformer for AesCbc {
+    fn transform_from_storage(&self, data: &[u8], _authenticated_data: &[u8]) -> Result<(Vec<u8>, bool), Error> {
+        use aes::Aes256;
+        use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+
+        if data.len() < 16 {
+            return Err(Error("the stored data was shorter than the required size".to_string()));
+        }
+        let (iv, ciphertext) = data.split_at(16);
+        if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+            return Err(Error("AES-CBC decryption failed".to_string()));
+        }
+        let mut plaintext = ciphertext.to_vec();
+        let plaintext = cbc::Decryptor::<Aes256>::new_from_slices(&self.key, iv)
+            .map_err(|_| Error("invalid AES-CBC key or IV".to_string()))?
+            .decrypt_padded_mut::<Pkcs7>(&mut plaintext)
+            .map_err(|_| Error("AES-CBC decryption failed".to_string()))?;
+        Ok((plaintext.to_vec(), false))
+    }
+
+    fn transform_to_storage(&self, data: &[u8], _authenticated_data: &[u8]) -> Result<Vec<u8>, Error> {
+        use aes::Aes256;
+        use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+
+        let mut iv = [0u8; 16];
+        SystemRandom::new()
+            .fill(&mut iv)
+            .map_err(|_| Error("failed to generate a random IV".to_string()))?;
+        let mut ciphertext = vec![0u8; data.len() + 16];
+        ciphertext[..data.len()].copy_from_slice(data);
+        let ciphertext = cbc::Encryptor::<Aes256>::new_from_slices(&self.key, &iv)
+            .map_err(|_| Error("invalid AES-CBC key or IV".to_string()))?
+            .encrypt_padded_mut::<Pkcs7>(&mut ciphertext, data.len())
+            .map_err(|_| Error("AES-CBC encryption failed".to_string()))?;
+        let mut out = Vec::with_capacity(iv.len() + ciphertext.len());
+        out.extend_from_slice(&iv);
+        out.extend_from_slice(ciphertext);
+        Ok(out)
+    }
+}
+
 /// One entry in a [`PrefixTransformers`] list — `transformer.go`'s
 /// `PrefixTransformer` struct.
 pub struct PrefixTransformer {
@@ -201,9 +251,11 @@ impl Transformer for PrefixTransformers {
     }
 }
 
-/// The real outer prefix for the one provider this module builds —
+/// The real outer prefix for upstream's AES-GCM provider —
 /// `encryptionconfig/config.go`'s `aesGCMTransformerPrefixV1` constant.
 pub const AES_GCM_PREFIX_V1: &str = "k8s:enc:aesgcm:v1:";
+/// The real outer prefix for upstream's AES-CBC provider.
+pub const AES_CBC_PREFIX_V1: &str = "k8s:enc:aescbc:v1:";
 
 #[cfg(test)]
 mod tests {
@@ -267,6 +319,24 @@ mod tests {
     fn gcm_rejects_truncated_data() {
         let err = Gcm::new(key(1)).transform_from_storage(b"short", b"").unwrap_err();
         assert_eq!(err.0, "the stored data was shorter than the required size");
+    }
+
+    #[test]
+    fn aes_cbc_round_trips_and_uses_a_fresh_iv() {
+        let t = AesCbc::new(key(7));
+        let a = t.transform_to_storage(b"super secret value", b"ignored").unwrap();
+        let b = t.transform_to_storage(b"super secret value", b"ignored").unwrap();
+        assert_ne!(a, b, "a fresh random IV must make repeated plaintext differ");
+        let (decoded, stale) = t.transform_from_storage(&a, b"ignored").unwrap();
+        assert_eq!(decoded, b"super secret value");
+        assert!(!stale);
+    }
+
+    #[test]
+    fn aes_cbc_rejects_a_wrong_key_and_bad_padding() {
+        let encoded = AesCbc::new(key(7)).transform_to_storage(b"value", b"").unwrap();
+        assert_eq!(AesCbc::new(key(9)).transform_from_storage(&encoded, b"").unwrap_err().0, "AES-CBC decryption failed");
+        assert_eq!(AesCbc::new(key(7)).transform_from_storage(&encoded[..encoded.len() - 1], b"").unwrap_err().0, "AES-CBC decryption failed");
     }
 
     fn gcm_entry(prefix: &str, key_byte: u8) -> PrefixTransformer {
