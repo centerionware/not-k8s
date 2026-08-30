@@ -150,12 +150,12 @@ fn add_object_definition(env: &mut Env, name: &str, schema: &Value, seen: &mut B
 }
 
 fn field_type(env: &mut Env, name: &str, schema: &Value, seen: &mut BTreeSet<String>) -> Type {
-    if !schema_properties(schema).is_empty()
-        || schema.get("type").and_then(Value::as_str) == Some("object")
-            && schema.get("additionalProperties").is_none()
-    {
-        add_object_definition(env, name, schema, seen);
-        return Type::new_struct(name.to_string());
+    if schema.get("type").and_then(Value::as_str) == Some("object") {
+        if !schema_properties(schema).is_empty() || schema.get("additionalProperties").is_none() {
+            add_object_definition(env, name, schema, seen);
+            return Type::new_struct(name.to_string());
+        }
+        return types::MAP_TYPE.to_owned();
     }
 
     match schema.get("type").and_then(Value::as_str) {
