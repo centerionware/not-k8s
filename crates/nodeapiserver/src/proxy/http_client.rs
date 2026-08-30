@@ -91,7 +91,22 @@ pub async fn relay(target: &Target, client_config: Arc<ClientConfig>, method: &s
 /// than ordinary request/response bodies: the target must receive the
 /// client's upgrade headers, and both upgraded byte streams must remain
 /// connected after the `101 Switching Protocols` response is returned.
-pub async fn upgrade(mut req: Request<Incoming>, target: &Target, client_config: Arc<ClientConfig>) -> Result<Response<BoxedBody>, Error> {
+pub async fn upgrade(req: Request<Incoming>, target: &Target, client_config: Arc<ClientConfig>) -> Result<Response<BoxedBody>, Error> {
+    upgrade_with_headers(req, target, client_config, None).await
+}
+
+/// Upgrade an HTTP connection while replacing the request's front-proxy
+/// identity headers. `replacement_headers` is intentionally optional so the
+/// existing nodelet proxy remains a transparent pass-through; aggregation
+/// uses `Some`, including an empty slice when no trusted proxy identity is
+/// configured, to prevent caller-supplied `X-Remote-*` values from crossing
+/// the trust boundary.
+pub async fn upgrade_with_headers(
+    mut req: Request<Incoming>,
+    target: &Target,
+    client_config: Arc<ClientConfig>,
+    replacement_headers: Option<&[(String, String)]>,
+) -> Result<Response<BoxedBody>, Error> {
     let mut sender = dial_upgrade(target, client_config).await?;
     let target_uri = build_uri(target)?;
     let client_upgrade = hyper::upgrade::on(&mut req);
@@ -99,8 +114,15 @@ pub async fn upgrade(mut req: Request<Incoming>, target: &Target, client_config:
 
     let mut builder = Request::builder().method(parts.method).uri(target_uri).header(hyper::header::HOST, &target.host);
     for (name, value) in &parts.headers {
-        if name != hyper::header::HOST {
+        if name != hyper::header::HOST
+            && replacement_headers.is_none_or(|_| !is_auth_proxy_header(name.as_str()))
+        {
             builder = builder.header(name, value);
+        }
+    }
+    if let Some(replacement_headers) = replacement_headers {
+        for (name, value) in replacement_headers {
+            builder = builder.header(name.as_str(), value.as_str());
         }
     }
     let outgoing = builder.body(body.map_err(|e| Box::new(e) as BoxError).boxed())?;
@@ -124,6 +146,14 @@ pub async fn upgrade(mut req: Request<Incoming>, target: &Target, client_config:
         }
     });
     Ok(response)
+}
+
+fn is_auth_proxy_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("x-remote-user")
+        || name.eq_ignore_ascii_case("x-remote-group")
+        || name.eq_ignore_ascii_case("x-remote-uid")
+        || name.len() >= "x-remote-extra-".len()
+            && name[.."x-remote-extra-".len()].eq_ignore_ascii_case("x-remote-extra-")
 }
 
 fn build_uri(target: &Target) -> Result<Uri, Error> {
@@ -180,5 +210,20 @@ async fn splice(client: Upgraded, target: Upgraded) {
     let mut target = TokioIo::new(target);
     if let Err(error) = tokio::io::copy_bidirectional(&mut client, &mut target).await {
         tracing::debug!(?error, "proxy: upgraded connection ended");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_auth_proxy_header;
+
+    #[test]
+    fn auth_proxy_header_filter_matches_all_request_header_forms() {
+        for name in ["X-Remote-User", "x-remote-group", "X-REMOTE-UID", "X-Remote-Extra-tenant"] {
+            assert!(is_auth_proxy_header(name), "{name} should be replaced");
+        }
+        for name in ["X-Remote", "X-Remote-Extra", "X-Trace-Id"] {
+            assert!(!is_auth_proxy_header(name), "{name} should remain ordinary data");
+        }
     }
 }
