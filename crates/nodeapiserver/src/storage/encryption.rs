@@ -3,18 +3,18 @@
 //! upstream's `staging/src/k8s.io/apiserver/pkg/storage/value` package
 //! (fetched and read directly, not reconstructed from memory): the
 //! generic prefix-dispatch composition
-//! (`transformer.go`'s `prefixTransformers`) plus three real providers,
+//! (`transformer.go`'s `prefixTransformers`) plus four real providers,
 //! `Identity` (`encrypt/identity/identity.go`), AES-256-GCM
 //! (`encrypt/aes/aes.go`'s `gcm` type), and AES-256-CBC
-//! (`encrypt/aes/aes.go`'s `cbc` type).
+//! (`encrypt/aes/aes.go`'s `cbc` type), and Secretbox
+//! (`encrypt/secretbox/secretbox.go`).
 //!
 //! # What this deliberately doesn't cover yet
 //!
-//! Secretbox and KMS (v1/v2) are real, separate providers upstream also has
-//! and remain outside this module's scope. KMS needs a gRPC plugin protocol
-//! this crate hasn't vendored; secretbox needs a separate NaCl-compatible
-//! implementation. `EncryptionConfiguration` YAML parsing lives in the
-//! sibling `encryption_config` module.
+//! KMS (v1/v2) is a real, separate provider upstream also has and remains
+//! outside this module's scope because it needs a gRPC plugin protocol this
+//! crate hasn't vendored. `EncryptionConfiguration` YAML parsing lives in
+//! the sibling `encryption_config` module.
 //!
 //! # Envelope format
 //!
@@ -191,6 +191,61 @@ impl Transformer for AesCbc {
     }
 }
 
+/// NaCl Secretbox (`XSalsa20-Poly1305`), matching upstream's legacy
+/// `encrypt/secretbox/secretbox.go` provider. Stored data is the random
+/// 24-byte nonce followed by the 16-byte Poly1305 tag and ciphertext;
+/// Secretbox has no Kubernetes authenticated-data parameter.
+pub struct Secretbox {
+    key: [u8; 32],
+}
+
+impl Secretbox {
+    pub fn new(key: [u8; 32]) -> Self {
+        Self { key }
+    }
+
+    fn cipher(&self) -> crypto_secretbox::XSalsa20Poly1305 {
+        use crypto_secretbox::aead::KeyInit;
+
+        crypto_secretbox::XSalsa20Poly1305::new(crypto_secretbox::Key::from_slice(&self.key))
+    }
+}
+
+impl Transformer for Secretbox {
+    fn transform_from_storage(&self, data: &[u8], _authenticated_data: &[u8]) -> Result<(Vec<u8>, bool), Error> {
+        use crypto_secretbox::aead::Aead;
+
+        const NONCE_LEN: usize = 24;
+        const TAG_LEN: usize = 16;
+        if data.len() < NONCE_LEN + TAG_LEN {
+            return Err(Error("the stored data was shorter than the required size".to_string()));
+        }
+        let (nonce, ciphertext) = data.split_at(NONCE_LEN);
+        self.cipher()
+            .decrypt(crypto_secretbox::Nonce::from_slice(nonce), ciphertext)
+            .map(|plaintext| (plaintext, false))
+            .map_err(|_| Error("Secretbox decryption failed".to_string()))
+    }
+
+    fn transform_to_storage(&self, data: &[u8], _authenticated_data: &[u8]) -> Result<Vec<u8>, Error> {
+        use crypto_secretbox::aead::Aead;
+
+        const NONCE_LEN: usize = 24;
+        let mut nonce = [0u8; NONCE_LEN];
+        SystemRandom::new()
+            .fill(&mut nonce)
+            .map_err(|_| Error("failed to generate a random nonce".to_string()))?;
+        let ciphertext = self
+            .cipher()
+            .encrypt(crypto_secretbox::Nonce::from_slice(&nonce), data)
+            .map_err(|_| Error("Secretbox encryption failed".to_string()))?;
+        let mut out = Vec::with_capacity(nonce.len() + ciphertext.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+}
+
 /// One entry in a [`PrefixTransformers`] list — `transformer.go`'s
 /// `PrefixTransformer` struct.
 pub struct PrefixTransformer {
@@ -256,6 +311,8 @@ impl Transformer for PrefixTransformers {
 pub const AES_GCM_PREFIX_V1: &str = "k8s:enc:aesgcm:v1:";
 /// The real outer prefix for upstream's AES-CBC provider.
 pub const AES_CBC_PREFIX_V1: &str = "k8s:enc:aescbc:v1:";
+/// The real outer prefix for upstream's Secretbox provider.
+pub const SECRETBOX_PREFIX_V1: &str = "k8s:enc:secretbox:v1:";
 
 #[cfg(test)]
 mod tests {
@@ -337,6 +394,27 @@ mod tests {
         let encoded = AesCbc::new(key(7)).transform_to_storage(b"value", b"").unwrap();
         assert_eq!(AesCbc::new(key(9)).transform_from_storage(&encoded, b"").unwrap_err().0, "AES-CBC decryption failed");
         assert_eq!(AesCbc::new(key(7)).transform_from_storage(&encoded[..encoded.len() - 1], b"").unwrap_err().0, "AES-CBC decryption failed");
+    }
+
+    #[test]
+    fn secretbox_round_trips_and_uses_a_fresh_nonce() {
+        let t = Secretbox::new(key(7));
+        let a = t.transform_to_storage(b"super secret value", b"ignored").unwrap();
+        let b = t.transform_to_storage(b"super secret value", b"ignored").unwrap();
+        assert_ne!(a, b, "a fresh random nonce must make repeated plaintext differ");
+        assert_eq!(a.len(), 24 + b"super secret value".len() + 16);
+        let (decoded, stale) = t.transform_from_storage(&a, b"ignored").unwrap();
+        assert_eq!(decoded, b"super secret value");
+        assert!(!stale);
+    }
+
+    #[test]
+    fn secretbox_rejects_a_wrong_key_and_tampered_ciphertext() {
+        let encoded = Secretbox::new(key(7)).transform_to_storage(b"value", b"").unwrap();
+        assert_eq!(Secretbox::new(key(9)).transform_from_storage(&encoded, b"").unwrap_err().0, "Secretbox decryption failed");
+        let mut tampered = encoded;
+        *tampered.last_mut().unwrap() ^= 1;
+        assert_eq!(Secretbox::new(key(7)).transform_from_storage(&tampered, b"").unwrap_err().0, "Secretbox decryption failed");
     }
 
     fn gcm_entry(prefix: &str, key_byte: u8) -> PrefixTransformer {
