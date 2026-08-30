@@ -113,9 +113,26 @@ pub fn apply_update(
     managers: &BTreeMap<String, Set>,
     manager: &str,
 ) -> BTreeMap<String, Set> {
+    apply_update_with_ignored_fields(schema, live, new, managers, manager, None)
+}
+
+/// [`apply_update`] with upstream's server-managed field exclusion applied to
+/// the changed-field comparison and resulting ownership.
+pub fn apply_update_with_ignored_fields(
+    schema: &Value,
+    live: &Value,
+    new: &Value,
+    managers: &BTreeMap<String, Set>,
+    manager: &str,
+    ignored_fields: Option<&Set>,
+) -> BTreeMap<String, Set> {
     let mut changed = Set::new();
     let mut removed = Set::new();
     diff(schema, live, new, &mut Vec::new(), &mut changed, &mut removed);
+    if let Some(ignored) = ignored_fields {
+        changed = changed.recursive_difference(ignored);
+        removed = removed.recursive_difference(ignored);
+    }
 
     let mut result = managers.clone();
     for (name, fields) in managers {
@@ -129,6 +146,10 @@ pub fn apply_update(
 
     let existing = managers.get(manager).cloned().unwrap_or_default();
     let fields = existing.difference(&removed).union(&changed);
+    let fields = match ignored_fields {
+        Some(ignored) => fields.recursive_difference(ignored),
+        None => fields,
+    };
     if fields.is_empty() {
         result.remove(manager);
     } else {

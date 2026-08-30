@@ -1653,6 +1653,110 @@ pub(super) async fn nodeapiserver_serves_generic_status_subresource(context: &E2
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_excludes_status_from_main_managed_fields(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "managed-field exclusion checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-managed-status-{}", std::process::id());
+    let base_uri = format!("/api/v1/namespaces/{}/configmaps/{name}", context.namespace);
+    let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    configmaps
+        .create(
+            &PostParams::default(),
+            &ConfigMap {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(name.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .context("creating the managed-field status fixture")?;
+
+    let result = async {
+        let apply: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("{base_uri}?fieldManager=nodeapiserver-main"))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "ConfigMap",
+                        "metadata": {"name": name, "namespace": context.namespace},
+                        "data": {"value": "one"},
+                        "status": {"phase": "ignored-by-main-resource"}
+                    }))?)?,
+            )
+            .await
+            .context("applying a main ConfigMap resource containing status")?;
+        let main_entry = apply
+            .pointer("/metadata/managedFields")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry.get("manager").and_then(Value::as_str) == Some("nodeapiserver-main")
+                        && entry
+                            .get("subresource")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .is_empty()
+                })
+            })
+            .context("main Apply response had no managed-fields entry")?;
+        anyhow::ensure!(
+            main_entry.pointer("/fieldsV1/f:status").is_none(),
+            "main-resource Apply incorrectly claimed the server-managed status field: {apply}"
+        );
+        anyhow::ensure!(
+            main_entry.pointer("/fieldsV1/f:data").is_some(),
+            "main-resource Apply did not retain ownership of data: {apply}"
+        );
+
+        let status: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("{base_uri}/status?fieldManager=nodeapiserver-status"))
+                    .header("Content-Type", "application/merge-patch+json")
+                    .body(serde_json::to_vec(&json!({"status": {"phase": "ready"}}))?)?,
+            )
+            .await
+            .context("updating the ConfigMap status subresource")?;
+        let status_entry = status
+            .pointer("/metadata/managedFields")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry.get("manager").and_then(Value::as_str) == Some("nodeapiserver-status")
+                        && entry.get("subresource").and_then(Value::as_str) == Some("status")
+                })
+            })
+            .context("status update response had no status managed-fields entry")?;
+        anyhow::ensure!(
+            status_entry.pointer("/fieldsV1/f:status").is_some(),
+            "status subresource did not claim status ownership: {status}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(base_uri).body(Vec::new())?)
+        .await;
+    result
+}
+
 pub(super) async fn nodeapiserver_serves_ephemeralcontainers_subresource(
     context: &E2eContext,
 ) -> Result<()> {
