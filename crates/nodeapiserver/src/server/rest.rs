@@ -2882,7 +2882,11 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let live = decrypt_and_decode_with_rotation(storage, group, resource, &existing_kv.key, &existing_kv.value, existing_kv.mod_revision).await?;
     let live_for_request = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live.clone()).await?;
 
-    let stored_managed_fields = live_for_request.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    // Managed-field paths are versioned data, not ordinary object fields.
+    // Read them from the decoded storage object before projecting the object
+    // through a different request version; the target OpenAPI projection can
+    // legitimately omit the internal fieldsV1 shape.
+    let stored_managed_fields = live.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
     // A stored `managedFields` this crate can't parse (malformed, or an
     // entry with a `fieldsType` this crate doesn't understand — see
     // `managed_fields::parse_managed_fields`'s own doc comment) degrades

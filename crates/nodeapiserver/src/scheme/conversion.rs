@@ -275,4 +275,25 @@ mod tests {
         assert!(object["spec"].get("fieldOnlyInTheSource").is_none());
         assert!(object["spec"].get("devices").is_some());
     }
+
+    #[test]
+    fn hpa_version_projection_preserves_managed_fields_for_reconciliation() {
+        let object = to_version("autoscaling", "v2", "HorizontalPodAutoscaler", json!({
+            "apiVersion": "autoscaling/v1",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {
+                "name": "hpa",
+                "managedFields": [{
+                    "manager": "legacy",
+                    "operation": "Apply",
+                    "apiVersion": "autoscaling/v1",
+                    "fieldsType": "FieldsV1",
+                    "fieldsV1": {"f:spec": {"f:targetCPUUtilizationPercentage": {}}}
+                }]
+            },
+            "spec": {"targetCPUUtilizationPercentage": 70},
+        }));
+        assert_eq!(object["metadata"]["managedFields"][0]["apiVersion"], "autoscaling/v1");
+        assert!(object["metadata"]["managedFields"][0]["fieldsV1"]["f:spec"]["f:targetCPUUtilizationPercentage"].is_object());
+    }
 }
