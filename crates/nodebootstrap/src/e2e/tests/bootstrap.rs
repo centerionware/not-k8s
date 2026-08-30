@@ -2517,12 +2517,26 @@ pub(super) async fn nodeapiserver_rejects_unsupported_resource_route(
         ))
         .body(Vec::new())?;
     match context.client.request::<Value>(request).await {
-        Err(KubeError::Api(error)) if error.code == 404 => Ok(()),
+        Err(KubeError::Api(error)) if error.code == 404 => {}
         Err(error) => anyhow::bail!(
             "unsupported resource route returned the wrong API error: {error}"
         ),
         Ok(value) => anyhow::bail!(
             "unsupported resource route was accepted instead of returning 404: {value}"
+        ),
+    }
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/nodeapiserver-route-check/unsupported")
+        .body(Vec::new())?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 404 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "unsupported non-resource route returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!(
+            "unsupported non-resource route was accepted instead of returning 404: {value}"
         ),
     }
 }
