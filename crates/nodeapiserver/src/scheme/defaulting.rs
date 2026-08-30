@@ -263,13 +263,17 @@ fn default_service(value: &mut Value) {
             }
         }
     }
-    let service_type = spec.get("type").and_then(Value::as_str).unwrap_or("");
-    if ["ClusterIP", "NodePort", "LoadBalancer"].contains(&service_type)
+    let service_type = spec
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if ["ClusterIP", "NodePort", "LoadBalancer"].contains(&service_type.as_str())
         && spec.get("internalTrafficPolicy").is_none_or(Value::is_null)
     {
         default_string(spec, "internalTrafficPolicy", "Cluster");
     }
-    if ["NodePort", "LoadBalancer"].contains(&service_type)
+    if ["NodePort", "LoadBalancer"].contains(&service_type.as_str())
         && spec.get("externalTrafficPolicy").is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty))
     {
         default_string(spec, "externalTrafficPolicy", "Cluster");
