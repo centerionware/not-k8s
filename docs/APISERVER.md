@@ -5,7 +5,7 @@
 | Phase 0 — prerequisites | done | 2/2 |
 | A — Vendoring + build-time codegen | done | 5/5 |
 | B — Wire formats | done for current scope | 7/7 |
-| C — Storage over nodestore | in progress | 6/7 |
+| C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
@@ -44,7 +44,7 @@ explanation of each boundary.
 | Phase 0 prerequisites | **done** | The workspace uses `k8s-openapi` v1_34 and the related dependency migration is integrated. |
 | A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
 | B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
-| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; key-rotation migration remains open. |
+| C. Storage | **done for current scope** | etcd storage, encryption providers, stale-value key rotation/rewrite, and full read/write/transaction/watch wiring are integrated. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
@@ -216,7 +216,7 @@ negotiates by default. The standard
 representations are now served for negotiated `GET`, `LIST`, and `WATCH`
 responses; per-resource printer behavior remains separate work.
 
-**C. Storage over nodestore** — **in progress**. `storage::client::StorageClient`
+**C. Storage over nodestore** — **done for current scope**. `storage::client::StorageClient`
 is a real etcd v3 gRPC client to nodestore (`Range`/`Put`/`DeleteRange`/`Txn`/
 `Watch`/`Lease*` — `Watch` and `LeaseKeepAlive` both real bidirectional
 streams, plus a `prefix_range_end()` helper matching etcd's own client
