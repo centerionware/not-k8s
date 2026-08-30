@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `6cbd1ff6` on
+This snapshot is checked against `origin/nodeapiserver` at `4c8ce23c` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -2335,6 +2335,9 @@ request/response bodies, real upstream's own `Request`/
 `RequestReceived`, `ResponseStarted`, and `ResponseComplete` stages with one
 shared audit ID per request; long-running watches and streaming subresources
 are recorded at `ResponseStarted` rather than falsely marked complete.
+Requests rejected before normal handler dispatch are also recorded as
+`ResponseComplete` events, including authentication, authorization, and
+request-admission failures.
 `NODEAPISERVER_AUDIT_POLICY_FILE` applies upstream-shaped first-match rules,
 including `None` suppression and `omitStages` for those emitted stages;
 request/response body levels and the `Panic` stage remain outside the current
