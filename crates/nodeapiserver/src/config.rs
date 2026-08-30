@@ -74,6 +74,13 @@ pub struct Config {
     pub oidc_required_claims: Vec<(String, String)>,
     pub oidc_signing_algs: Vec<String>,
     pub oidc_ca_file: Option<PathBuf>,
+    /// `NODEAPISERVER_PROXY_CLIENT_CERT_FILE`/`_KEY_FILE` are the
+    /// front-proxy identity presented to aggregated API servers. The
+    /// corresponding `X-Remote-User`/`X-Remote-Group` headers are generated
+    /// from the authenticated request identity, never copied from the
+    /// incoming request.
+    pub proxy_client_cert_file: Option<PathBuf>,
+    pub proxy_client_key_file: Option<PathBuf>,
     /// Optional `authorization.k8s.io/v1` SubjectAccessReview webhook.
     /// When set, requests are denied if the webhook denies them and return
     /// `503` if the webhook cannot be reached or returns an invalid review.
@@ -157,6 +164,8 @@ impl Default for Config {
             oidc_required_claims: Vec::new(),
             oidc_signing_algs: vec!["RS256".to_string(), "PS256".to_string(), "ES256".to_string()],
             oidc_ca_file: None,
+            proxy_client_cert_file: None,
+            proxy_client_key_file: None,
             authorization_webhook_url: None,
             authorization_webhook_authorized_ttl: DEFAULT_AUTHORIZATION_WEBHOOK_AUTHORIZED_TTL,
             authorization_webhook_unauthorized_ttl: DEFAULT_AUTHORIZATION_WEBHOOK_UNAUTHORIZED_TTL,
@@ -263,6 +272,14 @@ impl Config {
             );
         }
         cfg.oidc_ca_file = path_env("NODEAPISERVER_OIDC_CA_FILE");
+        cfg.proxy_client_cert_file = path_env("NODEAPISERVER_PROXY_CLIENT_CERT_FILE");
+        cfg.proxy_client_key_file = path_env("NODEAPISERVER_PROXY_CLIENT_KEY_FILE");
+        let proxy_client_set = [cfg.proxy_client_cert_file.is_some(), cfg.proxy_client_key_file.is_some()];
+        if proxy_client_set[0] != proxy_client_set[1] {
+            return Err(anyhow!(
+                "NODEAPISERVER_PROXY_CLIENT_CERT_FILE and NODEAPISERVER_PROXY_CLIENT_KEY_FILE must be set together or not at all"
+            ));
+        }
         cfg.authorization_webhook_url = string_env("NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL");
         cfg.authorization_webhook_authorized_ttl = duration_env(
             "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL",
@@ -540,6 +557,32 @@ mod tests {
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.kubelet_client_cert_file, Some(PathBuf::from("/tmp/kubelet-client.der")));
         assert_eq!(cfg.kubelet_client_key_file, Some(PathBuf::from("/tmp/kubelet-client-key.der")));
+    }
+
+    #[test]
+    fn proxy_client_cert_key_are_read_as_a_complete_pair() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_PROXY_CLIENT_CERT_FILE", "/tmp/front-proxy.crt");
+        std::env::set_var("NODEAPISERVER_PROXY_CLIENT_KEY_FILE", "/tmp/front-proxy.key");
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_PROXY_CLIENT_CERT_FILE",
+            "NODEAPISERVER_PROXY_CLIENT_KEY_FILE",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.proxy_client_cert_file, Some(PathBuf::from("/tmp/front-proxy.crt")));
+        assert_eq!(cfg.proxy_client_key_file, Some(PathBuf::from("/tmp/front-proxy.key")));
+    }
+
+    #[test]
+    fn a_half_configured_proxy_client_pair_is_refused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_PROXY_CLIENT_CERT_FILE", "/tmp/front-proxy.crt");
+        std::env::remove_var("NODEAPISERVER_PROXY_CLIENT_KEY_FILE");
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_PROXY_CLIENT_CERT_FILE",
+            "NODEAPISERVER_PROXY_CLIENT_KEY_FILE",
+        ]);
+        assert!(Config::from_env().is_err());
     }
 
     #[test]
