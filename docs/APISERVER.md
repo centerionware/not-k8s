@@ -5,7 +5,7 @@
 | Phase 0 — prerequisites | done | 2/2 |
 | A — Vendoring + build-time codegen | done | 5/5 |
 | B — Wire formats | done for current scope | 7/7 |
-| C — Storage over nodestore | in progress | 5/7 |
+| C — Storage over nodestore | in progress | 6/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 10/10 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 7/8 |
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `0f3ee03` on
+This snapshot is checked against `origin/nodeapiserver` at `e4a2318` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -44,7 +44,7 @@ explanation of each boundary.
 | Phase 0 prerequisites | **done** | The workspace uses `k8s-openapi` v1_34 and the related dependency migration is integrated. |
 | A. Vendoring/codegen | **done** | Packaging and bootstrap wiring are tracked under O. |
 | B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
-| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; key-rotation migration and Secretbox/KMS provider compatibility remain open. |
+| C. Storage | **in progress** | Encryption is wired through reads, writes, transactions, and watches; Secretbox is integrated, while key-rotation migration and KMS provider compatibility remain open. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
 | E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
@@ -241,16 +241,18 @@ now-stale guess at the location) turned out not to define it in
 `services` -> `services/specs`, and `ingresses` -> `ingress` in both
 `extensions` and `networking.k8s.io`), vendored as a literal table rather
 than approximated. **Encryption-at-rest transform primitives now exist**
-(`storage::encryption`): `Identity`, AES-256-GCM, and AES-256-CBC providers, plus the
+(`storage::encryption`): `Identity`, AES-256-GCM, AES-256-CBC, and Secretbox providers, plus the
 generic `PrefixTransformers` composition every provider list (including
 per-key rotation) uses — a faithful port of upstream's own
 `storage/value` package (`transformer.go`'s `prefixTransformers`,
 `encrypt/identity/identity.go`, `encrypt/aes/aes.go`'s `gcm`/`cbc` types), fetched
 and read directly. Real envelope format confirmed against upstream:
-`k8s:enc:aesgcm:v1:<key-name>:<nonce><ciphertext+tag>` and
-`k8s:enc:aescbc:v1:<key-name>:<iv><padded-ciphertext>`. Secretbox and KMS
-(v1/v2) remain real upstream providers this module doesn't build; KMS needs
-a gRPC plugin protocol and secretbox needs a NaCl-compatible implementation.
+`k8s:enc:aesgcm:v1:<key-name>:<nonce><ciphertext+tag>`,
+`k8s:enc:aescbc:v1:<key-name>:<iv><padded-ciphertext>`, and
+`k8s:enc:secretbox:v1:<key-name>:<nonce><tag+ciphertext>`. Secretbox uses
+the upstream-compatible 24-byte nonce and 32-byte key; KMS (v1/v2) remains
+the one real upstream provider this module doesn't build because it needs a
+gRPC plugin protocol.
 **`EncryptionConfiguration` YAML parsing now exists too**
 (`storage::encryption_config`, fetched and read directly against
 `staging/src/k8s.io/apiserver/pkg/apis/apiserver/v1/types_encryption.go`):
@@ -259,10 +261,10 @@ providers: [...]}]`) into a resolvable set of `encryption::
 PrefixTransformers`, one per resource entry, matched by real upstream's
 own resource-name/wildcard rules (`secrets`, `<resource>.<group>`, `*.`,
 `*.<group>`, `*.*`) with real "earlier entries take precedence"
-first-match-wins resolution. `aesgcm`/`aescbc`/`identity` build (matching
-`storage::encryption`'s own scope); `secretbox`/`kms` parse structurally but
-resolve to a real, named error rather than being
-silently dropped or misapplied. `NODEAPISERVER_ENCRYPTION_CONFIG_FILE`
+first-match-wins resolution. `aesgcm`/`aescbc`/`secretbox`/`identity` build
+(matching `storage::encryption`'s own scope); `kms` resolves to a real,
+named error rather than being silently dropped or misapplied.
+`NODEAPISERVER_ENCRYPTION_CONFIG_FILE`
 loads and validates the file at listener startup
 (`config::Config::encryption_config_file`) — a misconfigured file is a
 loud startup warning.
@@ -284,7 +286,8 @@ both real `PutRequest` construction sites, `create` and
 `persist_update`). AES-GCM uses the object's own etcd key as authenticated
 data, matching real upstream's own `dataCtx.AuthenticatedData()` convention;
 AES-CBC follows upstream's unauthenticated CBC provider and ignores that
-argument. A resource with no matching entry in the loaded config is
+argument; Secretbox does likewise. A resource with no matching entry in the
+loaded config is
 written/read as-is, unchanged from before this wiring existed — encryption
 is opt-in per resource, never a blanket switch. The real `stale` flag
 `transform_from_storage`
