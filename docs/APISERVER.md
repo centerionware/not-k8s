@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `093cae7` on
+This snapshot is checked against `origin/nodeapiserver` at `9001f59` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -764,6 +764,15 @@ sets `spec.nodeName`, merges binding labels/annotations, and records the
 scheduler uses instead of a full Pod update, and it has a nodeapiserver-only
 e2e check.
 
+The core Pod `ephemeralcontainers` subresource is live as well. `GET` returns
+the complete Pod, while `PUT` and JSON/merge/strategic `PATCH` retain only the
+requested `spec.ephemeralContainers` change. Existing ephemeral containers
+are append-only and immutable, and invalid names, targets, or fields are
+rejected before the normal optimistic-concurrency write. The existing
+ephemeral-container e2e test exercises the real container startup path; a
+nodeapiserver-only check also verifies that unrelated Pod changes sent to this
+subresource are reset.
+
 `GET` and `LIST` also honor a positive `resourceVersion` by reading a
 consistent nodestore MVCC snapshot. These requests bypass the live watch
 cache, matching the snapshot semantics clients need when relisting after a
@@ -1251,9 +1260,10 @@ as `namespace_lifecycle`. Named honestly not ported:
 `LimitSecretReferences`/`enforceMountableSecrets` (upstream's own default
 is `false` unless an operator annotates the `ServiceAccount`
 `kubernetes.io/enforce-mountable-secrets: "true"` — a real but
-off-by-default check most real clusters never exercise) and the
-`pods/ephemeralcontainers` subresource validation path (that subresource
-is not served by this crate yet).
+off-by-default check most real clusters never exercise). The
+`pods/ephemeralcontainers` subresource is served by the REST layer, but this
+CREATE-only admission plugin does not run for its separate Pod update
+strategy.
 
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
