@@ -15,7 +15,7 @@
 | J — Admission | in progress | 8/8 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
-| M — APF, audit, and observability | in progress | 7/8 |
+| M — APF, audit, and observability | in progress | 8/8 |
 | N — Streaming and proxy subresources | done for current scope | 5/5 |
 | O — nodebootstrap integration | done for current scope | 1/1 |
 
@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `38e9602d` on
+This snapshot is checked against `origin/nodeapiserver` at `eec82d84` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -54,7 +54,7 @@ explanation of each boundary.
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
-| M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
+| M. APF/audit/observability | **in progress** | Audit stages, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -2327,24 +2327,18 @@ current scope of each piece; summarized here:
 
 
 **M. APF, audit, observability** — **in progress**. `audit::event::build_event`
-is a pure builder for one real `audit.k8s.io/v1` `Event` document
+is a pure builder for real `audit.k8s.io/v1` `Event` documents
 (`staging/src/k8s.io/apiserver/pkg/apis/audit/v1/types.go`, fetched and
-read directly), `Metadata` level (who did what to which object — not
+read directly), at `Metadata` level (who did what to which object — not
 request/response bodies, real upstream's own `Request`/
-`RequestResponse` levels), single-stage (`ResponseComplete` only — real
-upstream's other three stages, including the long-running-request-only
-`ResponseStarted`, aren't modeled — `watch` is a named, narrow exception:
-its one logged event is stamped `ResponseComplete` right as the stream
-*starts*, since this crate has no hook into when a stream later ends).
-**Now wired into `server::listener`**: `handle_with_audit` wraps every
-request (the far less invasive place to add this than threading an
-audit context out through `handle`'s own many early returns), building
-and logging one real event per request once the response status is
-known. Requests are logged at `Metadata` level by default —
-`NODEAPISERVER_AUDIT_POLICY_FILE` now applies upstream-shaped first-match
-rules, including `None` suppression and `omitStages` for the emitted
-`ResponseComplete` event; request/response body levels remain metadata-only
-until body capture is added. **The sink is this crate's own `tracing` output**
+`RequestResponse` levels). The listener now emits the applicable
+`RequestReceived`, `ResponseStarted`, and `ResponseComplete` stages with one
+shared audit ID per request; long-running watches and streaming subresources
+are recorded at `ResponseStarted` rather than falsely marked complete.
+`NODEAPISERVER_AUDIT_POLICY_FILE` applies upstream-shaped first-match rules,
+including `None` suppression and `omitStages` for those emitted stages;
+request/response body levels and the `Panic` stage remain outside the current
+scope. **The sink is this crate's own `tracing` output**
 (`target: "nodeapiserver::audit"`, one JSON line per request) and an
 optional append-only JSON-lines file selected by
 `NODEAPISERVER_AUDIT_LOG_PATH`. Rotation and webhook delivery remain
