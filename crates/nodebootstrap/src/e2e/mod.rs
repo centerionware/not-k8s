@@ -247,6 +247,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_watch_options",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_recreates_a_dynamic_watch_cache",
         group: TestGroup::General,
     },
@@ -1662,6 +1666,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_watches_an_uncommon_builtin_resource" => {
             bootstrap::nodeapiserver_watches_an_uncommon_builtin_resource(context).await
         },
+        "test_nodeapiserver_honors_watch_options" => bootstrap::nodeapiserver_honors_watch_options(context).await,
         "test_nodeapiserver_recreates_a_dynamic_watch_cache" => {
             bootstrap::nodeapiserver_recreates_a_dynamic_watch_cache(context).await
         },
