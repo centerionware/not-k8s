@@ -243,6 +243,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_audits_rejected_requests",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rotates_audit_log",
         group: TestGroup::General,
     },
@@ -1601,6 +1605,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart"
             | "test_nodeapiserver_authentication_modes"
             | "test_nodeapiserver_writes_audit_log"
+            | "test_nodeapiserver_audits_rejected_requests"
             | "test_nodeapiserver_rotates_audit_log"
             | "test_client_certificate_authentication_works"
             | "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host"
@@ -1692,6 +1697,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             bootstrap::nodeapiserver_authorizes_before_special_handlers(context).await
         }
         "test_nodeapiserver_writes_audit_log" => bootstrap::nodeapiserver_writes_audit_log(context).await,
+        "test_nodeapiserver_audits_rejected_requests" => {
+            bootstrap::nodeapiserver_audits_rejected_requests(context).await
+        },
         "test_nodeapiserver_rotates_audit_log" => bootstrap::nodeapiserver_rotates_audit_log(context).await,
         "test_nodeapiserver_rejects_unsupported_field_selector" => {
             bootstrap::nodeapiserver_rejects_unsupported_field_selector(context).await
