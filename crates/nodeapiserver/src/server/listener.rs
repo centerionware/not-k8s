@@ -554,7 +554,7 @@ async fn encode_watch_event_with_conversion(
     }
 }
 
-type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send>>;
+type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send + Sync>>;
 type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
 
 struct ConversionWatchState {
