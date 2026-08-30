@@ -38,6 +38,9 @@
 //! silent overwrite), preserving `creationTimestamp`/`uid` from the
 //! existing object regardless of what the client submitted. Admission and
 //! authorization are applied by `listener` before the REST operation.
+//! Built-in workload `scale` subresources are also real: their virtual
+//! `autoscaling/v1 Scale` object is translated to the parent's
+//! `spec.replicas`.
 //! `version_compare` — `CompareKubeAwareVersionStrings`, a faithful port
 //! (GA beats beta beats alpha, then major, then minor — maturity compared
 //! *before* major version, a real bug this module's own tests caught in
