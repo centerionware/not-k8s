@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn labels_follow_upstream_scope_and_dry_run_conventions() {
-        let namespaced = super::path::parse(
+        let namespaced = path::parse(
             "GET",
             "/api/v1/namespaces/default/configmaps",
             "dryRun=All",
@@ -548,10 +548,10 @@ mod tests {
         assert_eq!(namespaced_labels.scope, "namespace");
         assert_eq!(namespaced_labels.component, "apiserver");
 
-        let cluster = super::path::parse("GET", "/api/v1/nodes", "");
+        let cluster = path::parse("GET", "/api/v1/nodes", "");
         assert_eq!(labels_for_request(&cluster, "").scope, "cluster");
 
-        let non_resource = super::path::parse("GET", "/metrics", "");
+        let non_resource = path::parse("GET", "/metrics", "");
         let non_resource_labels = labels_for_request(&non_resource, "");
         assert_eq!(non_resource_labels.scope, "");
         assert_eq!(non_resource_labels.group, "");
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn invalid_dry_run_values_are_labeled_without_panicking() {
-        let info = super::path::parse("GET", "/api/v1/pods", "");
+        let info = path::parse("GET", "/api/v1/pods", "");
         assert_eq!(labels_for_request(&info, "dryRun=typo").dry_run, "invalid");
     }
 
