@@ -1517,14 +1517,11 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
 }
 
 /// Group M: wraps every request with a real `audit::event::build_event`
-/// call, logged rather than delegated back into `handle` itself — this
-/// wrapper needs nothing `handle` doesn't already compute internally
-/// (method/path/query are read off `req` before it's ever consumed, and
-/// `path::parse` is a pure function safe to call a second time here),
-/// so it's the far less invasive place to add auditing than threading an
-/// audit-context return value out through every one of `handle`'s own
-/// early-return branches would have been. The sink is this crate's own
-/// `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
+/// call, logged rather than delegated back into `handle` itself. The
+/// wrapper keeps the audit context at the request boundary and explicitly
+/// records responses that finish before `handle` runs, while the normal
+/// response path is audited after `handle` returns. The sink is this crate's
+/// own `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
 /// request) and, when configured, an append-only file selected by
 /// `NODEAPISERVER_AUDIT_LOG_PATH`; rotation and webhook delivery remain
 /// separate backends. See
@@ -1555,18 +1552,46 @@ async fn handle_with_audit(
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
     let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let identity = match authenticate_request(&req, identity, bootstrap_token_authenticator.as_deref(), service_account_authenticator.as_deref(), oidc_authenticator.as_deref(), anonymous_auth).await {
+    let request_info = path::parse(&method, &path_str, &query);
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    let identity = match authenticate_request(
+        &req,
+        identity,
+        bootstrap_token_authenticator.as_deref(),
+        service_account_authenticator.as_deref(),
+        oidc_authenticator.as_deref(),
+        anonymous_auth,
+    )
+    .await
+    {
         Ok(identity) => identity,
-        Err(detail) => return Ok(json_response(StatusCode::UNAUTHORIZED, &unauthorized_status(&path_str, detail))),
+        Err(detail) => {
+            let response = json_response(
+                StatusCode::UNAUTHORIZED,
+                &unauthorized_status(&path_str, detail),
+            );
+            log_audit_rejected_request(
+                &audit_id,
+                &request_info,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                None,
+                &peer,
+                response.status().as_u16(),
+                audit_sink.as_deref(),
+                audit_policy.as_deref(),
+            );
+            return Ok(response);
+        }
     };
     let audit_identity = identity.clone();
-    let request_info = path::parse(&method, &path_str, &query);
     let audit_user = audit_identity.as_ref().map(|identity| identity.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
     let audit_groups = audit_identity
         .as_ref()
         .map(|identity| identity.groups.clone())
         .unwrap_or_else(|| vec![UNAUTHENTICATED_GROUP.to_string()]);
-    let audit_id = uuid::Uuid::new_v4().to_string();
     let long_running = is_long_running_request(&request_info, &query);
     let audit_request_received = audit_policy.as_ref().is_some_and(|policy| {
         policy.should_emit_stage(
@@ -1621,17 +1646,45 @@ async fn handle_with_audit(
                     .as_ref()
                     .map(|identity| identity.name.as_str())
                     .unwrap_or(ANONYMOUS_USERNAME);
-                return Ok(json_response(
+                let response = json_response(
                     StatusCode::FORBIDDEN,
                     &forbidden_status(&path_str, user_name),
-                ));
+                );
+                log_audit_rejected_request(
+                    &audit_id,
+                    &request_info,
+                    &method,
+                    &path_str,
+                    &query,
+                    user_agent.as_deref(),
+                    identity.as_ref(),
+                    &peer,
+                    response.status().as_u16(),
+                    audit_sink.as_deref(),
+                    audit_policy.as_deref(),
+                );
+                return Ok(response);
             }
             Err(error) => {
                 warn!(path = %path_str, error = ?error, "authorization webhook failed");
-                return Ok(json_response(
+                let response = json_response(
                     StatusCode::SERVICE_UNAVAILABLE,
                     &service_unavailable_status(&path_str, "authorization webhook unavailable"),
-                ));
+                );
+                log_audit_rejected_request(
+                    &audit_id,
+                    &request_info,
+                    &method,
+                    &path_str,
+                    &query,
+                    user_agent.as_deref(),
+                    identity.as_ref(),
+                    &peer,
+                    response.status().as_u16(),
+                    audit_sink.as_deref(),
+                    audit_policy.as_deref(),
+                );
+                return Ok(response);
             }
         }
     }
@@ -1667,10 +1720,47 @@ async fn handle_with_audit(
     {
         Ok(permit) => permit,
         Err(crate::flowcontrol::limiter::Error::QueueFull) => {
-            return Ok(json_response(StatusCode::TOO_MANY_REQUESTS, &too_many_requests_status(&path_str)));
+            let response = json_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                &too_many_requests_status(&path_str),
+            );
+            log_audit_rejected_request(
+                &audit_id,
+                &request_info,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                identity.as_ref(),
+                &peer,
+                response.status().as_u16(),
+                audit_sink.as_deref(),
+                audit_policy.as_deref(),
+            );
+            return Ok(response);
         }
         Err(crate::flowcontrol::limiter::Error::Closed) => {
-            return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "API request concurrency limiter is unavailable")));
+            let response = json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &service_unavailable_status(
+                    &path_str,
+                    "API request concurrency limiter is unavailable",
+                ),
+            );
+            log_audit_rejected_request(
+                &audit_id,
+                &request_info,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                identity.as_ref(),
+                &peer,
+                response.status().as_u16(),
+                audit_sink.as_deref(),
+                audit_policy.as_deref(),
+            );
+            return Ok(response);
         }
     };
     let _inflight = _permit
@@ -1810,6 +1900,69 @@ fn log_audit_event(
         }
     }
     tracing::info!(target: "nodeapiserver::audit", "{event}");
+}
+
+fn log_audit_rejected_request(
+    audit_id: &str,
+    info: &path::RequestInfo,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    user_agent: Option<&str>,
+    identity: Option<&crate::authn::x509::Identity>,
+    peer: &SocketAddr,
+    status: u16,
+    audit_sink: Option<&crate::audit::sink::AuditSink>,
+    audit_policy: Option<&crate::audit::policy::AuditPolicy>,
+) {
+    let (user_name, user_groups): (&str, Vec<String>) = match identity {
+        Some(identity) => (identity.name.as_str(), identity.groups.clone()),
+        None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+    };
+    if audit_policy.is_some_and(|policy| {
+        policy.should_emit_stage(
+            info,
+            user_name,
+            &user_groups,
+            crate::audit::event::STAGE_REQUEST_RECEIVED,
+        )
+    }) {
+        log_audit_event(
+            audit_id,
+            crate::audit::event::STAGE_REQUEST_RECEIVED,
+            method,
+            path_str,
+            query,
+            user_agent,
+            identity,
+            peer,
+            0,
+            audit_sink,
+            &BTreeMap::new(),
+        );
+    }
+    if audit_policy.map_or(true, |policy| {
+        policy.should_emit_stage(
+            info,
+            user_name,
+            &user_groups,
+            crate::audit::event::STAGE_RESPONSE_COMPLETE,
+        )
+    }) {
+        log_audit_event(
+            audit_id,
+            crate::audit::event::STAGE_RESPONSE_COMPLETE,
+            method,
+            path_str,
+            query,
+            user_agent,
+            identity,
+            peer,
+            status,
+            audit_sink,
+            &BTreeMap::new(),
+        );
+    }
 }
 
 /// The pure half of [`log_audit_event`] — everything up to the built
@@ -5220,6 +5373,41 @@ mod tests {
     fn build_audit_event_carries_a_denied_response_code() {
         let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403, &BTreeMap::new());
         assert_eq!(event["responseStatus"]["code"], 403);
+    }
+
+    #[test]
+    fn rejected_requests_are_written_to_the_audit_sink_without_a_policy() {
+        let path = std::env::temp_dir().join(format!(
+            "nodeapiserver-audit-rejected-{}.log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let sink = crate::audit::sink::AuditSink::open(&path).unwrap();
+        let info = path::parse("GET", "/version", "");
+        log_audit_rejected_request(
+            "audit-id",
+            &info,
+            "GET",
+            "/version",
+            "",
+            None,
+            None,
+            &test_peer(),
+            401,
+            Some(&sink),
+            None,
+        );
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let events: Vec<serde_json::Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["auditID"], "audit-id");
+        assert_eq!(events[0]["stage"], "ResponseComplete");
+        assert_eq!(events[0]["responseStatus"]["code"], 401);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
