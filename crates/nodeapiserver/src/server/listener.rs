@@ -1525,7 +1525,7 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
 /// `NODEAPISERVER_AUDIT_LOG_PATH`; rotation and webhook delivery remain
 /// separate backends. See
 /// `audit::event`'s own doc comment for exactly which real `Event`
-/// fields are populated and which stage/level this always uses.
+/// fields are populated and which stages/levels this uses.
 async fn handle_with_audit(
     req: Request<Incoming>,
     storage: Option<StorageClient>,
@@ -1562,9 +1562,49 @@ async fn handle_with_audit(
         .as_ref()
         .map(|identity| identity.groups.clone())
         .unwrap_or_else(|| vec![UNAUTHENTICATED_GROUP.to_string()]);
-    let audit_response_complete = audit_policy
-        .as_ref()
-        .map_or(true, |policy| policy.should_emit_response_complete(&request_info, audit_user, &audit_groups));
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    let long_running = is_long_running_request(&request_info, &query);
+    let audit_request_received = audit_policy.as_ref().is_some_and(|policy| {
+        policy.should_emit_stage(
+            &request_info,
+            audit_user,
+            &audit_groups,
+            crate::audit::event::STAGE_REQUEST_RECEIVED,
+        )
+    });
+    let audit_response_started = long_running
+        && audit_policy.as_ref().map_or(true, |policy| {
+            policy.should_emit_stage(
+                &request_info,
+                audit_user,
+                &audit_groups,
+                crate::audit::event::STAGE_RESPONSE_STARTED,
+            )
+        });
+    let audit_response_complete = !long_running
+        && audit_policy.as_ref().map_or(true, |policy| {
+            policy.should_emit_stage(
+                &request_info,
+                audit_user,
+                &audit_groups,
+                crate::audit::event::STAGE_RESPONSE_COMPLETE,
+            )
+        });
+    if audit_request_received {
+        log_audit_event(
+            &audit_id,
+            crate::audit::event::STAGE_REQUEST_RECEIVED,
+            &method,
+            &path_str,
+            &query,
+            user_agent.as_deref(),
+            audit_identity.as_ref(),
+            &peer,
+            0,
+            audit_sink.as_deref(),
+            &BTreeMap::new(),
+        );
+    }
     let mut authorization_webhook_allowed = false;
     if let Some(authorizer) = authorization_webhook {
         match authorizer.authorize(&request_info, identity.as_ref()).await {
@@ -1638,9 +1678,7 @@ async fn handle_with_audit(
     // `apiserver_request_total` are both already keyed off of. For
     // `watch` specifically this measures time-to-first-byte (when
     // `handle()` returns the still-streaming response), not the full
-    // stream lifetime — the identical, already-named caveat
-    // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
-    // has, not a new gap this metric introduces.
+    // stream lifetime.
     let start = std::time::Instant::now();
     let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await;
     let elapsed = start.elapsed().as_secs_f64();
@@ -1650,8 +1688,35 @@ async fn handle_with_audit(
         apply_admission_warnings(resp, &metadata.warnings);
         let audit_annotations = audit_annotations(&metadata);
         let status = resp.status().as_u16();
+        if audit_response_started {
+            log_audit_event(
+                &audit_id,
+                crate::audit::event::STAGE_RESPONSE_STARTED,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                audit_identity.as_ref(),
+                &peer,
+                status,
+                audit_sink.as_deref(),
+                &audit_annotations,
+            );
+        }
         if audit_response_complete {
-            log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref(), &audit_annotations);
+            log_audit_event(
+                &audit_id,
+                crate::audit::event::STAGE_RESPONSE_COMPLETE,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                audit_identity.as_ref(),
+                &peer,
+                status,
+                audit_sink.as_deref(),
+                &audit_annotations,
+            );
         }
         // Group M: `/metrics`'s own request counter (`server::metrics`) —
         // recorded from the exact same parsed `RequestInfo` the audit
@@ -1698,8 +1763,43 @@ fn is_mutating_request(info: &path::RequestInfo) -> bool {
     )
 }
 
-fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, audit_sink: Option<&crate::audit::sink::AuditSink>, annotations: &BTreeMap<String, String>) {
-    let event = build_audit_event(method, path_str, query, user_agent, identity, peer, status, annotations);
+fn is_long_running_request(info: &path::RequestInfo, query: &str) -> bool {
+    if matches!(info.verb.as_str(), "watch" | "proxy")
+        || matches!(info.subresource.as_str(), "exec" | "attach" | "portforward")
+    {
+        return true;
+    }
+    info.subresource == "log"
+        && path::parse_query(query).iter().any(|(key, value)| {
+            key == "follow" && !matches!(value.as_str(), "" | "0" | "false")
+        })
+}
+
+fn log_audit_event(
+    audit_id: &str,
+    stage: &str,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    user_agent: Option<&str>,
+    identity: Option<&crate::authn::x509::Identity>,
+    peer: &SocketAddr,
+    status: u16,
+    audit_sink: Option<&crate::audit::sink::AuditSink>,
+    annotations: &BTreeMap<String, String>,
+) {
+    let event = build_audit_event_at_stage(
+        audit_id,
+        stage,
+        method,
+        path_str,
+        query,
+        user_agent,
+        identity,
+        peer,
+        status,
+        annotations,
+    );
     if let Some(sink) = audit_sink {
         if let Err(error) = sink.write(&event) {
             warn!(error = ?error, "nodeapiserver: failed to write audit event");
@@ -1711,7 +1811,43 @@ fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option
 /// The pure half of [`log_audit_event`] — everything up to the built
 /// `Value`, factored out so it's unit-testable without capturing
 /// `tracing`'s own log output.
-fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, annotations: &BTreeMap<String, String>) -> serde_json::Value {
+fn build_audit_event(
+    method: &str,
+    path_str: &str,
+    query: &str,
+    user_agent: Option<&str>,
+    identity: Option<&crate::authn::x509::Identity>,
+    peer: &SocketAddr,
+    status: u16,
+    annotations: &BTreeMap<String, String>,
+) -> serde_json::Value {
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    build_audit_event_at_stage(
+        &audit_id,
+        crate::audit::event::STAGE_RESPONSE_COMPLETE,
+        method,
+        path_str,
+        query,
+        user_agent,
+        identity,
+        peer,
+        status,
+        annotations,
+    )
+}
+
+fn build_audit_event_at_stage(
+    audit_id: &str,
+    stage: &str,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    user_agent: Option<&str>,
+    identity: Option<&crate::authn::x509::Identity>,
+    peer: &SocketAddr,
+    status: u16,
+    annotations: &BTreeMap<String, String>,
+) -> serde_json::Value {
     let info = path::parse(method, path_str, query);
     let (user_name, user_uid, user_groups): (&str, Option<&str>, Vec<String>) = match identity {
         Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
@@ -1719,11 +1855,10 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
     };
     let object_ref = info.is_resource_request.then(|| crate::audit::event::ObjectRef { group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name, api_version: &info.api_version });
     let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
-    let audit_id = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().to_rfc3339();
     let source_ip = peer.ip().to_string();
-    crate::audit::event::build_event(&crate::audit::event::EventInput {
-        audit_id: &audit_id,
+    crate::audit::event::build_event_at_stage(&crate::audit::event::EventInput {
+        audit_id,
         request_uri: &request_uri,
         verb: &info.verb,
         user_name,
@@ -1735,7 +1870,7 @@ fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Opti
         response_code: status,
         annotations: (!annotations.is_empty()).then_some(annotations),
         timestamp: &timestamp,
-    })
+    }, stage)
 }
 
 async fn authenticate_request(
@@ -5080,6 +5215,67 @@ mod tests {
     fn build_audit_event_carries_a_denied_response_code() {
         let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403, &BTreeMap::new());
         assert_eq!(event["responseStatus"]["code"], 403);
+    }
+
+    #[test]
+    fn long_running_requests_are_not_logged_as_response_complete() {
+        assert!(is_long_running_request(
+            &path::parse("GET", "/api/v1/pods", "watch=true"),
+            "watch=true"
+        ));
+        assert!(is_long_running_request(
+            &path::parse("POST", "/api/v1/namespaces/default/pods/web/exec", ""),
+            ""
+        ));
+        assert!(is_long_running_request(
+            &path::parse(
+                "GET",
+                "/api/v1/namespaces/default/pods/web/log",
+                "follow=true"
+            ),
+            "follow=true"
+        ));
+        assert!(!is_long_running_request(
+            &path::parse(
+                "GET",
+                "/api/v1/namespaces/default/pods/web/log",
+                "follow=false"
+            ),
+            "follow=false"
+        ));
+    }
+
+    #[test]
+    fn staged_audit_events_share_the_request_audit_id() {
+        let audit_id = "11111111-1111-1111-1111-111111111111";
+        let received = build_audit_event_at_stage(
+            audit_id,
+            crate::audit::event::STAGE_REQUEST_RECEIVED,
+            "GET",
+            "/api/v1/pods",
+            "watch=true",
+            None,
+            None,
+            &test_peer(),
+            0,
+            &BTreeMap::new(),
+        );
+        let started = build_audit_event_at_stage(
+            audit_id,
+            crate::audit::event::STAGE_RESPONSE_STARTED,
+            "GET",
+            "/api/v1/pods",
+            "watch=true",
+            None,
+            None,
+            &test_peer(),
+            200,
+            &BTreeMap::new(),
+        );
+        assert_eq!(received["auditID"], started["auditID"]);
+        assert_eq!(received["stage"], "RequestReceived");
+        assert_eq!(started["stage"], "ResponseStarted");
+        assert_eq!(started["responseStatus"]["code"], 200);
     }
 
     #[test]

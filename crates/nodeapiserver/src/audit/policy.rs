@@ -4,6 +4,8 @@
 //! evaluated in order and the first matching rule wins. `None` suppresses
 //! the event, while the other levels currently select this crate's existing
 //! metadata event; request/response object capture remains a separate scope.
+//! Stage filtering follows the policy's global and first-matching-rule
+//! `omitStages` values.
 
 use crate::server::path::RequestInfo;
 use serde::Deserialize;
@@ -176,14 +178,28 @@ impl AuditPolicy {
         }
     }
 
+    pub fn should_emit_stage(
+        &self,
+        info: &RequestInfo,
+        user: &str,
+        groups: &[String],
+        stage: &str,
+    ) -> bool {
+        let Some(rule) = self.rules.iter().find(|rule| rule_matches(rule, info, user, groups)) else {
+            return false;
+        };
+        !matches!(rule.level, Level::None)
+            && !self.omit_stages.iter().any(|omitted| omitted == stage)
+            && !rule.omit_stages.iter().any(|omitted| omitted == stage)
+    }
+
     pub fn should_emit_response_complete(
         &self,
         info: &RequestInfo,
         user: &str,
         groups: &[String],
     ) -> bool {
-        let decision = self.decide(info, user, groups);
-        !matches!(decision.level, Level::None) && !decision.omit_response_complete
+        self.should_emit_stage(info, user, groups, "ResponseComplete")
     }
 }
 
@@ -326,6 +342,14 @@ mod tests {
     fn policy_omit_stages_suppresses_the_existing_response_complete_event() {
         let policy = policy("apiVersion: audit.k8s.io/v1\nomitStages: [ResponseComplete]\nrules:\n- level: Metadata\n");
         assert!(!policy.should_emit_response_complete(&info("/version"), "alice", &[]));
+    }
+
+    #[test]
+    fn policy_can_select_request_received_and_response_started_stages() {
+        let policy = policy("apiVersion: audit.k8s.io/v1\nrules:\n- level: Metadata\n  omitStages: [ResponseStarted]\n");
+        assert!(policy.should_emit_stage(&info("/version"), "alice", &[], "RequestReceived"));
+        assert!(!policy.should_emit_stage(&info("/version"), "alice", &[], "ResponseStarted"));
+        assert!(policy.should_emit_stage(&info("/version"), "alice", &[], "ResponseComplete"));
     }
 
     #[test]
