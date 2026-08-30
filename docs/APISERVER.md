@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `eec82d84` on
+This snapshot is checked against `origin/nodeapiserver` at `6cbd1ff6` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -54,7 +54,7 @@ explanation of each boundary.
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
-| M. APF/audit/observability | **in progress** | Audit stages, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
+| M. APF/audit/observability | **in progress** | Audit stages, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, and size-based audit-log rotation are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -2341,8 +2341,11 @@ request/response body levels and the `Panic` stage remain outside the current
 scope. **The sink is this crate's own `tracing` output**
 (`target: "nodeapiserver::audit"`, one JSON line per request) and an
 optional append-only JSON-lines file selected by
-`NODEAPISERVER_AUDIT_LOG_PATH`. Rotation and webhook delivery remain
-separate backends.
+`NODEAPISERVER_AUDIT_LOG_PATH`. When configured with
+`NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES`, the file rotates before a new
+event would exceed the limit and retains the configured numbered backups via
+`NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS`. Webhook delivery remains a separate
+backend.
 `/healthz`/`/readyz`/`/livez` now have real per-check output too
 (`server::healthz`, a faithful-but-scoped port of real upstream's own
 `k8s.io/apiserver/pkg/server/healthz`, fetched and read directly):
