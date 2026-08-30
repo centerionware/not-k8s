@@ -2927,7 +2927,8 @@ async fn handle(
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
     // Group L: aggregated APIs (`APIService`) — a genuine live reverse
-    // proxy to a real aggregated backend now, Phase 4's remaining wiring.
+    // proxy to a real aggregated backend, with discovery merge already
+    // wired through the request-time discovery path.
     // Checked before the generic verb dispatch (every other special-cased
     // route in this function is too), and before `pods/log` right below
     // since an aggregated group could in principle define its own `pods`
@@ -2938,12 +2939,10 @@ async fn handle(
     // inside it immediately). See `aggregator::route`/`::client_tls`/
     // `::availability`/`::proxy_target`'s own doc comments for the full
     // design; `aggregate_proxy` below is the dispatch glue, same split
-    // `pods/log`'s own branch already established. **Discovery merge
-    // (Phase 3) is still not done** — an aggregated group's own
-    // `/apis/{group}/{version}` discovery document isn't proxied yet, a
-    // real, separate, named gap (`aggregator::mod`'s own doc comment);
-    // only resource-shaped requests under an already-known `(group,
-    // version)` reach this branch at all, matching real upstream's own
+    // `pods/log`'s own branch already established. Discovery-shaped
+    // requests are handled above, including live `/apis/{group}/{version}`
+    // enumeration; only resource-shaped requests under an already-known
+    // `(group, version)` reach this branch, matching real upstream's own
     // "resource requests only" scope for its aggregation proxy handler.
     if info.is_resource_request && !info.api_group.is_empty() {
         if let Some(mut client) = storage.clone() {
