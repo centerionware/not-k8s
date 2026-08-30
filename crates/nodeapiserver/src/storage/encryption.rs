@@ -3,18 +3,19 @@
 //! upstream's `staging/src/k8s.io/apiserver/pkg/storage/value` package
 //! (fetched and read directly, not reconstructed from memory): the
 //! generic prefix-dispatch composition
-//! (`transformer.go`'s `prefixTransformers`) plus four real providers,
+//! (`transformer.go`'s `prefixTransformers`) plus six real providers,
 //! `Identity` (`encrypt/identity/identity.go`), AES-256-GCM
 //! (`encrypt/aes/aes.go`'s `gcm` type), and AES-256-CBC
 //! (`encrypt/aes/aes.go`'s `cbc` type), and Secretbox
-//! (`encrypt/secretbox/secretbox.go`).
+//! (`encrypt/secretbox/secretbox.go`), and the Kubernetes KMS v1/v2
+//! envelope providers.
 //!
-//! # What this deliberately doesn't cover yet
-//!
-//! KMS (v1/v2) is a real, separate provider upstream also has and remains
-//! outside this module's scope because it needs a gRPC plugin protocol this
-//! crate hasn't vendored. `EncryptionConfiguration` YAML parsing lives in
-//! the sibling `encryption_config` module.
+//! `EncryptionConfiguration` YAML parsing lives in the sibling
+//! `encryption_config` module. KMS plugins are reached over their upstream
+//! gRPC protocol, normally through a Unix-domain socket. The v1 provider
+//! wraps a locally encrypted DEK in a length-prefixed KMS ciphertext; v2
+//! stores upstream's `EncryptedObject` protobuf and supports both its
+//! AES-GCM-key and HKDF-seed DEK source formats.
 //!
 //! # Envelope format
 //!
@@ -28,8 +29,14 @@
 //! reads. This module's [`PrefixTransformers`] is that same generic
 //! two-level composition, not specific to any one provider.
 
+use crate::storage::pb::{kms_v1, kms_v2};
+use prost::Message;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
+use ring::hmac::{Key as HmacKey, HMAC_SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
+use std::future::Future;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::time::Duration;
 
 /// Deliberately opaque — matching upstream's own posture that a failed
 /// decrypt should leak nothing about *why* it failed (a padding- or
@@ -246,6 +253,349 @@ impl Transformer for Secretbox {
     }
 }
 
+fn random_bytes<const N: usize>() -> Result<[u8; N], Error> {
+    let mut bytes = [0u8; N];
+    SystemRandom::new().fill(&mut bytes).map_err(|_| Error("failed to generate random encryption material".to_string()))?;
+    Ok(bytes)
+}
+
+/// Runs a future from the synchronous [`Transformer`] interface. The storage
+/// codec is deliberately synchronous because it is also used by selector and
+/// watch encoding paths. Production nodeapiserver runs on the multithreaded
+/// Tokio runtime, where `block_in_place` keeps the RPC on that runtime; the
+/// thread fallback also keeps unit tests and non-Tokio callers usable without
+/// requiring every storage call site to become async.
+fn run_sync<T, F>(future: F) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, Error>> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Ok(_) => std::thread::Builder::new()
+            .name("nodeapiserver-kms-rpc".to_string())
+            .spawn(move || {
+                let runtime = tokio::runtime::Runtime::new().map_err(|error| Error(format!("creating KMS runtime failed: {error}")))?;
+                runtime.block_on(future)
+            })
+            .map_err(|error| Error(format!("spawning KMS runtime failed: {error}")))?
+            .join()
+            .map_err(|_| Error("KMS runtime thread panicked".to_string()))?,
+        Err(_) => {
+            let runtime = tokio::runtime::Runtime::new().map_err(|error| Error(format!("creating KMS runtime failed: {error}")))?;
+            runtime.block_on(future)
+        }
+    }
+}
+
+fn run_kms_rpc<T, F>(future: F, timeout: Duration) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, tonic::Status>> + Send + 'static,
+{
+    run_sync(async move {
+        match tokio::time::timeout(timeout, future).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(status)) => Err(Error(format!("KMS RPC failed: {status}"))),
+            Err(_) => Err(Error(format!("KMS RPC timed out after {}ms", timeout.as_millis()))),
+        }
+    })
+}
+
+fn kms_channel(endpoint: &str, timeout: Duration) -> Result<tonic::transport::Channel, Error> {
+    if let Some(path) = endpoint.strip_prefix("unix://") {
+        let path = path.to_string();
+        let endpoint = tonic::transport::Endpoint::from_static("http://localhost").connect_timeout(timeout);
+        Ok(endpoint.connect_with_connector_lazy(tower::service_fn(move |_: http::Uri| {
+            let path = path.clone();
+            async move {
+                let stream = tokio::net::UnixStream::connect(path).await?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+            }
+        })))
+    } else {
+        Ok(tonic::transport::Endpoint::from_shared(endpoint.to_string())
+            .map_err(|error| Error(format!("invalid KMS endpoint: {error}")))?
+            .connect_timeout(timeout)
+            .connect_lazy())
+    }
+}
+
+/// Kubernetes KMS v1: the plugin encrypts a random local AES-GCM key, while
+/// the apiserver encrypts the actual value locally. Its on-disk envelope is
+/// the big-endian uint16 length, encrypted DEK, and AES-GCM ciphertext.
+pub struct KmsV1 {
+    endpoint: String,
+    channel: Mutex<Option<tonic::transport::Channel>>,
+    timeout: Duration,
+    version_checked: AtomicBool,
+}
+
+impl KmsV1 {
+    pub fn new(endpoint: &str, timeout: Duration) -> Result<Self, Error> {
+        Ok(Self {
+            endpoint: endpoint.to_string(),
+            channel: Mutex::new(None),
+            timeout,
+            version_checked: AtomicBool::new(false),
+        })
+    }
+
+    fn client(&self) -> Result<kms_v1::key_management_service_client::KeyManagementServiceClient<tonic::transport::Channel>, Error> {
+        if let Some(channel) = self.channel.lock().map_err(|_| Error("KMS v1 channel lock poisoned".to_string()))?.as_ref() {
+            return Ok(kms_v1::key_management_service_client::KeyManagementServiceClient::new(channel.clone()));
+        }
+        let endpoint = self.endpoint.clone();
+        let timeout = self.timeout;
+        let channel = run_sync(async move { Ok::<_, Error>(kms_channel(&endpoint, timeout)?) })?;
+        *self.channel.lock().map_err(|_| Error("KMS v1 channel lock poisoned".to_string()))? = Some(channel.clone());
+        Ok(kms_v1::key_management_service_client::KeyManagementServiceClient::new(channel))
+    }
+
+    fn ensure_version(&self) -> Result<(), Error> {
+        if self.version_checked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut client = self.client()?;
+        let response = run_kms_rpc(
+            async move {
+                client
+                    .version(tonic::Request::new(kms_v1::VersionRequest { version: "v1beta1".to_string() }))
+                    .await
+            },
+            self.timeout,
+        )?;
+        if response.into_inner().version != "v1beta1" {
+            return Err(Error("KMS v1 plugin returned an unsupported version".to_string()));
+        }
+        self.version_checked.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn encrypt_dek(&self) -> Result<([u8; 32], Vec<u8>), Error> {
+        self.ensure_version()?;
+        let dek = random_bytes::<32>()?;
+        let mut client = self.client()?;
+        let response = run_kms_rpc(
+            async move {
+                client
+                    .encrypt(tonic::Request::new(kms_v1::EncryptRequest { version: "v1beta1".to_string(), plain: dek.to_vec() }))
+                    .await
+            },
+            self.timeout,
+        )?
+        .into_inner()
+        .cipher;
+        if response.is_empty() || response.len() > u16::MAX as usize {
+            return Err(Error("KMS v1 plugin returned an invalid encrypted DEK".to_string()));
+        }
+        Ok((dek, response))
+    }
+
+    fn decrypt_dek(&self, encrypted_dek: &[u8]) -> Result<[u8; 32], Error> {
+        self.ensure_version()?;
+        let encrypted_dek = encrypted_dek.to_vec();
+        let mut client = self.client()?;
+        let plain = run_kms_rpc(
+            async move {
+                client
+                    .decrypt(tonic::Request::new(kms_v1::DecryptRequest { version: "v1beta1".to_string(), cipher: encrypted_dek }))
+                    .await
+            },
+            self.timeout,
+        )?
+        .into_inner()
+        .plain;
+        plain.try_into().map_err(|plain: Vec<u8>| Error(format!("KMS v1 plugin returned a DEK of {} bytes, expected 32", plain.len())))
+    }
+}
+
+impl Transformer for KmsV1 {
+    fn transform_from_storage(&self, data: &[u8], authenticated_data: &[u8]) -> Result<(Vec<u8>, bool), Error> {
+        if data.len() < 2 {
+            return Err(Error("KMS v1 ciphertext is missing its encrypted DEK length".to_string()));
+        }
+        let encrypted_dek_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+        let encrypted_dek_end = 2 + encrypted_dek_len;
+        if encrypted_dek_len == 0 || data.len() <= encrypted_dek_end {
+            return Err(Error("KMS v1 ciphertext has an invalid encrypted DEK envelope".to_string()));
+        }
+        let dek = self.decrypt_dek(&data[2..encrypted_dek_end])?;
+        let (plaintext, _stale) = Gcm::new(dek).transform_from_storage(&data[encrypted_dek_end..], authenticated_data)?;
+        Ok((plaintext, false))
+    }
+
+    fn transform_to_storage(&self, data: &[u8], authenticated_data: &[u8]) -> Result<Vec<u8>, Error> {
+        let (dek, encrypted_dek) = self.encrypt_dek()?;
+        let encrypted_data = Gcm::new(dek).transform_to_storage(data, authenticated_data)?;
+        let mut output = Vec::with_capacity(2 + encrypted_dek.len() + encrypted_data.len());
+        output.extend_from_slice(&(encrypted_dek.len() as u16).to_be_bytes());
+        output.extend_from_slice(&encrypted_dek);
+        output.extend_from_slice(&encrypted_data);
+        Ok(output)
+    }
+}
+
+struct KmsV2State {
+    key_id: String,
+    seed: [u8; 32],
+    encrypted_seed: Vec<u8>,
+    annotations: std::collections::HashMap<String, Vec<u8>>,
+}
+
+/// Kubernetes KMS v2. A random seed is encrypted by the plugin and then
+/// expanded with HKDF-SHA256 for each value. The serialized `EncryptedObject`
+/// is the provider body, matching the upstream v2 envelope rather than a
+/// private ad-hoc format.
+pub struct KmsV2 {
+    endpoint: String,
+    channel: Mutex<Option<tonic::transport::Channel>>,
+    timeout: Duration,
+    state: Arc<Mutex<Option<KmsV2State>>>,
+}
+
+impl KmsV2 {
+    pub fn new(endpoint: &str, timeout: Duration) -> Result<Self, Error> {
+        Ok(Self {
+            endpoint: endpoint.to_string(),
+            channel: Mutex::new(None),
+            timeout,
+            state: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    fn client(&self) -> Result<kms_v2::key_management_service_client::KeyManagementServiceClient<tonic::transport::Channel>, Error> {
+        if let Some(channel) = self.channel.lock().map_err(|_| Error("KMS v2 channel lock poisoned".to_string()))?.as_ref() {
+            return Ok(kms_v2::key_management_service_client::KeyManagementServiceClient::new(channel.clone()));
+        }
+        let endpoint = self.endpoint.clone();
+        let timeout = self.timeout;
+        let channel = run_sync(async move { Ok::<_, Error>(kms_channel(&endpoint, timeout)?) })?;
+        *self.channel.lock().map_err(|_| Error("KMS v2 channel lock poisoned".to_string()))? = Some(channel.clone());
+        Ok(kms_v2::key_management_service_client::KeyManagementServiceClient::new(channel))
+    }
+
+    fn status(&self) -> Result<kms_v2::StatusResponse, Error> {
+        let mut client = self.client()?;
+        let response = run_kms_rpc(async move { client.status(tonic::Request::new(kms_v2::StatusRequest {})).await }, self.timeout)?.into_inner();
+        if response.version != "v2" && response.version != "v2beta1" {
+            return Err(Error("KMS v2 plugin returned an unsupported version".to_string()));
+        }
+        if response.healthz != "ok" {
+            return Err(Error(format!("KMS v2 plugin is unhealthy: {}", response.healthz)));
+        }
+        if response.key_id.is_empty() || response.key_id.len() > 1024 {
+            return Err(Error("KMS v2 plugin returned an invalid key ID".to_string()));
+        }
+        Ok(response)
+    }
+
+    fn ensure_seed(&self) -> Result<KmsV2State, Error> {
+        let status = self.status()?;
+        if let Some(state) = self.state.lock().map_err(|_| Error("KMS v2 state lock poisoned".to_string()))?.as_ref() {
+            if state.key_id == status.key_id {
+                return Ok(KmsV2State { key_id: state.key_id.clone(), seed: state.seed, encrypted_seed: state.encrypted_seed.clone(), annotations: state.annotations.clone() });
+            }
+        }
+
+        let seed = random_bytes::<32>()?;
+        let mut client = self.client()?;
+        let response = run_kms_rpc(
+            async move {
+                client
+                    .encrypt(tonic::Request::new(kms_v2::EncryptRequest { plaintext: seed.to_vec(), uid: uuid::Uuid::new_v4().to_string() }))
+                    .await
+            },
+            self.timeout,
+        )?
+        .into_inner();
+        if response.ciphertext.is_empty() || response.key_id != status.key_id {
+            return Err(Error("KMS v2 plugin returned an invalid encrypted seed".to_string()));
+        }
+        let state = KmsV2State { key_id: response.key_id, seed, encrypted_seed: response.ciphertext, annotations: response.annotations };
+        *self.state.lock().map_err(|_| Error("KMS v2 state lock poisoned".to_string()))? = Some(KmsV2State { key_id: state.key_id.clone(), seed: state.seed, encrypted_seed: state.encrypted_seed.clone(), annotations: state.annotations.clone() });
+        Ok(state)
+    }
+
+    fn decrypt_seed(&self, object: &kms_v2::EncryptedObject) -> Result<[u8; 32], Error> {
+        let ciphertext = object.encrypted_dek_source.clone();
+        let key_id = object.key_id.clone();
+        let annotations = object.annotations.clone();
+        let mut client = self.client()?;
+        let response = run_kms_rpc(
+            async move {
+                client
+                    .decrypt(tonic::Request::new(kms_v2::DecryptRequest {
+                        ciphertext,
+                        uid: uuid::Uuid::new_v4().to_string(),
+                        key_id,
+                        annotations,
+                    }))
+                    .await
+            },
+            self.timeout,
+        )?
+        .into_inner()
+        .plaintext;
+        response.try_into().map_err(|plain: Vec<u8>| Error(format!("KMS v2 plugin returned a DEK of {} bytes, expected 32", plain.len())))
+    }
+}
+
+fn derive_kms_v2_dek(seed: &[u8; 32], info: &[u8; 32]) -> [u8; 32] {
+    let key = HmacKey::new(HMAC_SHA256, seed);
+    let mut input = Vec::with_capacity(info.len() + 1);
+    input.extend_from_slice(info);
+    input.push(1);
+    let digest = ring::hmac::sign(&key, &input);
+    let mut dek = [0u8; 32];
+    dek.copy_from_slice(digest.as_ref());
+    dek
+}
+
+impl Transformer for KmsV2 {
+    fn transform_from_storage(&self, data: &[u8], authenticated_data: &[u8]) -> Result<(Vec<u8>, bool), Error> {
+        let object = kms_v2::EncryptedObject::decode(data).map_err(|error| Error(format!("KMS v2 encrypted object is invalid: {error}")))?;
+        if object.encrypted_data.is_empty() || object.key_id.is_empty() || object.key_id.len() > 1024 || object.encrypted_dek_source.is_empty() || object.encrypted_dek_source.len() > 1024 {
+            return Err(Error("KMS v2 encrypted object is missing its key ID or encrypted seed".to_string()));
+        }
+        let seed = self.decrypt_seed(&object)?;
+        let (key, encrypted_data) = match object.encrypted_dek_source_type {
+            0 => (seed, object.encrypted_data.as_slice()),
+            1 => {
+                if object.encrypted_data.len() <= 32 {
+                    return Err(Error("KMS v2 HKDF encrypted object is missing its derivation info".to_string()));
+                }
+                let mut info = [0u8; 32];
+                info.copy_from_slice(&object.encrypted_data[..32]);
+                (derive_kms_v2_dek(&seed, &info), &object.encrypted_data[32..])
+            }
+            other => return Err(Error(format!("KMS v2 encrypted object has unsupported DEK source type {other}"))),
+        };
+        let (plaintext, _stale) = Gcm::new(key).transform_from_storage(encrypted_data, authenticated_data)?;
+        let stale = self.status().map(|status| status.key_id != object.key_id).unwrap_or(false);
+        Ok((plaintext, stale))
+    }
+
+    fn transform_to_storage(&self, data: &[u8], authenticated_data: &[u8]) -> Result<Vec<u8>, Error> {
+        let state = self.ensure_seed()?;
+        let info = random_bytes::<32>()?;
+        let encrypted_data = Gcm::new(derive_kms_v2_dek(&state.seed, &info)).transform_to_storage(data, authenticated_data)?;
+        let mut data_with_info = Vec::with_capacity(info.len() + encrypted_data.len());
+        data_with_info.extend_from_slice(&info);
+        data_with_info.extend_from_slice(&encrypted_data);
+        let object = kms_v2::EncryptedObject {
+            encrypted_data: data_with_info,
+            key_id: state.key_id,
+            encrypted_dek_source: state.encrypted_seed,
+            annotations: state.annotations,
+            encrypted_dek_source_type: 1,
+        };
+        let mut encoded = Vec::with_capacity(object.encoded_len());
+        object.encode(&mut encoded).map_err(|error| Error(format!("encoding KMS v2 encrypted object failed: {error}")))?;
+        Ok(encoded)
+    }
+}
+
 /// One entry in a [`PrefixTransformers`] list — `transformer.go`'s
 /// `PrefixTransformer` struct.
 pub struct PrefixTransformer {
@@ -313,6 +663,10 @@ pub const AES_GCM_PREFIX_V1: &str = "k8s:enc:aesgcm:v1:";
 pub const AES_CBC_PREFIX_V1: &str = "k8s:enc:aescbc:v1:";
 /// The real outer prefix for upstream's Secretbox provider.
 pub const SECRETBOX_PREFIX_V1: &str = "k8s:enc:secretbox:v1:";
+/// The real outer prefix for Kubernetes' KMS v1 provider.
+pub const KMS_PREFIX_V1: &str = "k8s:enc:kms:v1:";
+/// The real outer prefix for Kubernetes' KMS v2 provider.
+pub const KMS_PREFIX_V2: &str = "k8s:enc:kms:v2:";
 
 #[cfg(test)]
 mod tests {
