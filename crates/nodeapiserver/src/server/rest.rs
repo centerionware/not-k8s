@@ -2700,6 +2700,160 @@ fn managers_for_request(
         .collect()
 }
 
+#[derive(Debug, Clone)]
+enum ManagedFieldSchema {
+    Builtin(&'static str),
+    Crd(Value),
+}
+
+async fn managed_field_schema(
+    storage: &mut StorageClient,
+    group: &str,
+    request_api_version: &str,
+    request_open_api_schema: Option<&Value>,
+    request_schema: Option<&str>,
+    resource: &str,
+    kind: &str,
+    api_version: &str,
+) -> Result<Option<ManagedFieldSchema>, Error> {
+    let (version_group, version) = split_api_version(api_version);
+    let version_group = if version_group.is_empty() { group } else { version_group };
+    if request_schema.is_some() {
+        return Ok(protobuf::schema_for_gvk(version_group, version, kind).map(ManagedFieldSchema::Builtin));
+    }
+    let schema = if api_version == request_api_version {
+        request_open_api_schema.cloned()
+    } else {
+        resolve_resource(storage, version_group, version, resource)
+            .await?
+            .and_then(|resolved| resolved.open_api_schema)
+    };
+    Ok(schema.map(ManagedFieldSchema::Crd))
+}
+
+fn managed_field_set(schema: &ManagedFieldSchema, object: &Value) -> crate::patch::fieldset::Set {
+    match schema {
+        ManagedFieldSchema::Builtin(schema) => crate::patch::fieldset::set_from_object(schema, object),
+        ManagedFieldSchema::Crd(schema) => crate::patch::crd_apply::set_from_object(schema, object),
+    }
+}
+
+fn managed_field_members(schema: &ManagedFieldSchema, fields: &crate::patch::fieldset::Set) -> crate::patch::fieldset::Set {
+    match schema {
+        ManagedFieldSchema::Builtin(schema) => crate::patch::fieldset::ensure_named_fields_are_members(schema, fields),
+        ManagedFieldSchema::Crd(_) => fields.clone(),
+    }
+}
+
+fn managed_field_remove(schema: &ManagedFieldSchema, object: &Value, fields: &crate::patch::fieldset::Set) -> Value {
+    match schema {
+        ManagedFieldSchema::Builtin(schema) => {
+            let fields = crate::patch::fieldset::ensure_named_fields_are_members(schema, fields);
+            crate::patch::fieldset::remove_items(schema, object, &fields)
+        }
+        ManagedFieldSchema::Crd(schema) => crate::patch::crd_apply::remove_items(schema, object, fields),
+    }
+}
+
+/// Performs Apply's version-aware prune step. The request-schema updater can
+/// only prune a manager's previous fields when that manager used the current
+/// request version; upstream instead converts the merged candidate into the
+/// previous Apply version, removes the fields no longer configured, adds back
+/// fields still owned at any version, and converts the result forward again.
+async fn prune_versioned_apply(
+    storage: &mut StorageClient,
+    group: &str,
+    request_version: &str,
+    resource: &str,
+    kind: &str,
+    request_schema: Option<&str>,
+    request_open_api_schema: Option<&Value>,
+    conversion_webhook: Option<&apiextensions::registry::ConversionWebhook>,
+    candidate: Value,
+    managers: &crate::patch::managed_fields::VersionedManagers,
+    manager: &str,
+    last_state: &crate::patch::managed_fields::VersionedManager,
+    request_fields: &crate::patch::fieldset::Set,
+) -> Result<Value, Error> {
+    if last_state.fields.is_empty() {
+        return Ok(candidate);
+    }
+    let request_api_version = if group.is_empty() { request_version.to_string() } else { format!("{group}/{request_version}") };
+    let last_api_version = if last_state.api_version.is_empty() { request_api_version.clone() } else { last_state.api_version.clone() };
+    let Some(last_schema) = managed_field_schema(
+        storage,
+        group,
+        &request_api_version,
+        request_open_api_schema,
+        request_schema,
+        resource,
+        kind,
+        &last_api_version,
+    )
+    .await? else {
+        // An obsolete previous version has the same safe behavior as
+        // upstream's missing-version converter: retain the merged object.
+        return Ok(candidate);
+    };
+    let (_, last_version) = split_api_version(&last_api_version);
+    let mut merged = convert_to_requested_version(storage, group, last_version, kind, conversion_webhook, candidate).await?;
+    let mut pruned = managed_field_remove(&last_schema, &merged, &last_state.fields);
+
+    let mut all_managers = managers.clone();
+    all_managers.insert(
+        manager.to_string(),
+        crate::patch::managed_fields::VersionedManager {
+            fields: request_fields.clone(),
+            api_version: request_api_version.clone(),
+            applied: true,
+        },
+    );
+    let mut fields_by_version = BTreeMap::<String, crate::patch::fieldset::Set>::new();
+    for state in all_managers.values() {
+        let entry = fields_by_version.entry(state.api_version.clone()).or_default();
+        *entry = entry.union(&state.fields);
+    }
+
+    let mut versions = vec![last_api_version.clone()];
+    for api_version in fields_by_version.keys() {
+        if api_version != &last_api_version {
+            versions.push(api_version.clone());
+        }
+    }
+    for api_version in versions {
+        let Some(schema) = managed_field_schema(
+            storage,
+            group,
+            &request_api_version,
+            request_open_api_schema,
+            request_schema,
+            resource,
+            kind,
+            &api_version,
+        )
+        .await? else {
+            continue;
+        };
+        let (_, version) = split_api_version(&api_version);
+        merged = convert_to_requested_version(storage, group, version, kind, conversion_webhook, merged).await?;
+        pruned = convert_to_requested_version(storage, group, version, kind, conversion_webhook, pruned).await?;
+        let merged_fields = managed_field_set(&schema, &merged);
+        let pruned_fields = managed_field_set(&schema, &pruned);
+        let managed = fields_by_version.get(&api_version).cloned().unwrap_or_default();
+        let to_remove = merged_fields.difference(&pruned_fields.union(&managed));
+        pruned = managed_field_remove(&schema, &merged, &to_remove);
+    }
+
+    merged = convert_to_requested_version(storage, group, last_version, kind, conversion_webhook, merged).await?;
+    pruned = convert_to_requested_version(storage, group, last_version, kind, conversion_webhook, pruned).await?;
+    let merged_fields = managed_field_set(&last_schema, &merged);
+    let pruned_fields = managed_field_set(&last_schema, &pruned);
+    let last_fields = managed_field_members(&last_schema, &last_state.fields);
+    let dangling = merged_fields.difference(&pruned_fields).intersection(&last_fields);
+    pruned = managed_field_remove(&last_schema, &merged, &dangling);
+    convert_to_requested_version(storage, group, request_version, kind, conversion_webhook, pruned).await
+}
+
 /// Compare the live object and Apply candidate in each manager's recorded
 /// version. Upstream's managed fields are versioned because a field path is
 /// only meaningful under the schema that produced it; for example, HPA v1's
@@ -2911,9 +3065,51 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
     };
 
-    let Some(candidate) = applied.object else {
-        let live = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live).await?;
-        return Ok(ApplyPrepareOutcome::NoOp(live));
+    let candidate = match applied.object {
+        Some(candidate) => candidate,
+        None if managers
+            .get(manager)
+            .is_some_and(|state| state.api_version != api_version && !state.fields.is_empty()) => {
+            // A request-version no-op can still be a real cross-version
+            // Apply: the manager may have stopped claiming a field whose
+            // representation only exists in its previous API version.
+            // Keep the live candidate so the versioned prune/reconciliation
+            // phase can remove that field and refresh the manager entry.
+            live_for_request.clone()
+        }
+        None => {
+            let live = convert_to_requested_version(storage, group, version, &resolved.kind, resolved.conversion_webhook.as_ref(), live).await?;
+            return Ok(ApplyPrepareOutcome::NoOp(live));
+        }
+    };
+
+    let request_fields = match (schema, open_api_schema.as_ref()) {
+        (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config),
+        (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config),
+        (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
+    };
+    let candidate = if let Some(last_state) = managers
+        .get(manager)
+        .filter(|state| state.api_version != api_version && !state.fields.is_empty())
+    {
+        prune_versioned_apply(
+            storage,
+            group,
+            version,
+            resource,
+            &resolved.kind,
+            schema,
+            open_api_schema.as_ref(),
+            resolved.conversion_webhook.as_ref(),
+            candidate,
+            &managers,
+            manager,
+            last_state,
+            &request_fields,
+        )
+        .await?
+    } else {
+        candidate
     };
 
     let comparisons = compare_managed_fields_in_recorded_versions(
@@ -2931,11 +3127,6 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         &entries,
     )
     .await?;
-    let request_fields = match (schema, open_api_schema.as_ref()) {
-        (Some(schema), _) => crate::patch::fieldset::set_from_object(schema, &effective_config),
-        (None, Some(schema)) => crate::patch::crd_apply::set_from_object(schema, &effective_config),
-        (None, None) => return Ok(ApplyPrepareOutcome::UnsupportedForCrd),
-    };
     let applied = match crate::patch::updater::reconcile_versioned_apply(
         &live_for_request,
         &candidate,
