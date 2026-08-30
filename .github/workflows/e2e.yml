@@ -19,7 +19,7 @@ on:
       apiserver:
         description: 'Select the upstream or repository API server target'
         required: false
-        default: upstream
+        default: nodeapiserver
         type: choice
         options: [upstream, nodeapiserver]
       network:
@@ -344,9 +344,11 @@ jobs:
           kubectl_cmd get lease kube-scheduler -n kube-system -o yaml | head -30
           echo "── controller-manager lease ──"
           kubectl_cmd get lease kube-controller-manager -n kube-system -o yaml | head -30
-          echo "── kube-apiserver request/readiness signals ──"
-          sudo journalctl -u kube-apiserver.service --no-pager -n 800 \
-            | grep -iE '429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed' || true
+          echo "── apiserver request/readiness signals ──"
+          for api_service in nodeapiserver kube-apiserver; do
+            sudo journalctl -u "$api_service.service" --no-pager -n 800 \
+              | grep -iE '429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed' || true
+          done
           echo "── nodecontroller volume/attach signals ──"
           sudo journalctl -u nodecontroller.service --no-pager -n 1200 \
             | grep -iE 'attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat' || true

@@ -39,11 +39,9 @@ pub enum Layout {
 }
 
 /// Which apiserver/controller-manager/scheduler combination `targets/`
-/// installs and points the generated PKI/kubeconfig/RBAC at. See
-/// `docs/NODEBOOTSTRAP_PLAN.md`'s point 3: `main` defaults to `Upstream`
-/// (real `kube-apiserver`, no k3s); the nodeapiserver integration branch
-/// exposes `NodeApiserver` as an explicit target until its full acceptance
-/// gate is complete.
+/// installs and points the generated PKI/kubeconfig/RBAC at. The replacement
+/// `NodeApiserver` is the default; `Upstream` remains an explicit comparison
+/// target while compatibility work is completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Upstream,
@@ -503,13 +501,7 @@ impl Config {
             build_profile,
             layout,
             release_tag: std::env::var("NODEBOOTSTRAP_RELEASE_TAG").ok(),
-            target: match std::env::var("NODEBOOTSTRAP_APISERVER").as_deref() {
-                Ok("nodeapiserver") => Target::NodeApiserver,
-                Ok("upstream") | Err(_) => Target::Upstream,
-                Ok(other) => anyhow::bail!(
-                    "NODEBOOTSTRAP_APISERVER must be upstream or nodeapiserver, got '{other}'"
-                ),
-            },
+            target: target_from_env(std::env::var("NODEBOOTSTRAP_APISERVER").ok().as_deref())?,
             skip_pki: flag("NODEBOOTSTRAP_SKIP_PKI"),
             skip_kubeconfig: flag("NODEBOOTSTRAP_SKIP_KUBECONFIG"),
             skip_rbac: flag("NODEBOOTSTRAP_SKIP_RBAC"),
@@ -521,6 +513,16 @@ impl Config {
             skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET") || control_plane,
             advertise_address,
         })
+    }
+}
+
+fn target_from_env(value: Option<&str>) -> Result<Target> {
+    match value {
+        Some("nodeapiserver") | None => Ok(Target::NodeApiserver),
+        Some("upstream") => Ok(Target::Upstream),
+        Some(other) => anyhow::bail!(
+            "NODEBOOTSTRAP_APISERVER must be upstream or nodeapiserver, got '{other}'"
+        ),
     }
 }
 
@@ -578,7 +580,10 @@ fn service_cidr_address6(value: &str, offset: u32) -> std::net::Ipv6Addr {
 
 #[cfg(test)]
 mod tests {
-    use super::{service_cidr_address, service_cidr_address6, validate_service_cidr, validate_service_cidr6};
+    use super::{
+        service_cidr_address, service_cidr_address6, target_from_env, validate_service_cidr,
+        validate_service_cidr6, Target,
+    };
 
     #[test]
     fn validates_service_cidrs_and_derives_reserved_addresses() {
@@ -597,6 +602,13 @@ mod tests {
         assert!(validate_service_cidr("fd00::/64").is_err());
         assert!(validate_service_cidr6("fd00:99::1/112").is_err());
         assert!(validate_service_cidr6("fd00:99::/125").is_err());
+    }
+
+    #[test]
+    fn nodeapiserver_is_the_default_target() {
+        assert_eq!(target_from_env(None).expect("default target"), Target::NodeApiserver);
+        assert_eq!(target_from_env(Some("nodeapiserver")).expect("replacement target"), Target::NodeApiserver);
+        assert_eq!(target_from_env(Some("upstream")).expect("explicit comparison target"), Target::Upstream);
     }
 }
 
