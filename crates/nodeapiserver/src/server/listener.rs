@@ -1852,10 +1852,11 @@ async fn handle(
     // to the collection URL), single-object DELETE (`delete`, name
     // required — no name means `deletecollection`, now real too — see its
     // own dedicated branch below), and UPDATE (`update`, name
-    // required — a PUT). The scheduler's core `pods/binding` subresource
-    // is handled separately below; the remaining subresources still
-    // fall through (see `rest`'s own doc comment). Everything else still
-    // falls through to the RequestInfo echo below. `storage` is only
+    // required — a PUT). The scheduler's core `pods/binding` and Pod
+    // `pods/ephemeralcontainers` subresources are handled separately below;
+    // the remaining subresources still fall through (see `rest`'s own doc
+    // comment). Everything else still falls through to the RequestInfo echo
+    // below. `storage` is only
     // ever consumed once (moved into `client` here), which is why all
     // five verbs share this one `if let` rather than each checking it
     // separately.
@@ -1925,6 +1926,86 @@ async fn handle(
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
             }
         };
+    }
+
+    // The core Pod `ephemeralcontainers` subresource has its own update
+    // strategy: GET returns the Pod, while PUT/PATCH may change only
+    // `spec.ephemeralContainers`. The REST helpers reset every other field
+    // and reject removal or mutation of an existing ephemeral container
+    // before using the normal MVCC write path.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.api_version == "v1"
+        && info.resource == "pods"
+        && info.subresource == "ephemeralcontainers"
+        && !info.name.is_empty()
+    {
+        if info.namespace.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "Pod ephemeralcontainers requires a namespace")));
+        }
+        if info.verb == "get" {
+            let Some(mut client) = storage else {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            };
+            return match rest::get_ephemeral_containers(&mut client, &info.namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "rest::get_ephemeral_containers failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
+
+        if info.verb == "update" || info.verb == "patch" {
+            let Some(mut client) = storage else {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            };
+            let dry_run = match dry_run_query(&query) {
+                Ok(value) => value,
+                Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+            };
+            let content_type = req.headers().get("content-type").and_then(|value| value.to_str().ok()).map(str::to_string);
+            let body_bytes = match read_body_bytes(req).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "reading the ephemeralcontainers request failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+                Ok(body) => body,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            };
+            let outcome = if info.verb == "update" {
+                rest::update_ephemeral_containers(&mut client, &info.namespace, &info.name, &body, dry_run, request_field_manager.as_deref()).await
+            } else {
+                let kind_of_patch = match content_type.as_deref() {
+                    Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                        Some(kind) => kind,
+                        None => {
+                            return Ok(json_response(
+                                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                                &bad_request_status(&path_str, "unsupported Content-Type for the ephemeralcontainers subresource"),
+                            ));
+                        }
+                    },
+                    None => rest::PatchKind::StrategicMerge,
+                };
+                rest::patch_ephemeral_containers(&mut client, &info.namespace, &info.name, kind_of_patch, &body, dry_run, request_field_manager.as_deref()).await
+            };
+            return match outcome {
+                Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "ephemeralcontainers update failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
     }
 
     // `PATCH` is handled in its own branch, not folded into the five-verb

@@ -1359,6 +1359,107 @@ pub(super) async fn nodeapiserver_serves_generic_status_subresource(context: &E2
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_serves_ephemeralcontainers_subresource(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "ephemeralcontainers checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-ephemeral-{}", std::process::id());
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name},
+        "spec": {
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "3600"]
+            }]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod)
+        .await
+        .context("creating the nodeapiserver ephemeralcontainers fixture")?;
+    context
+        .wait_until(
+            "nodeapiserver ephemeralcontainers fixture to become Running",
+            Duration::from_secs(90),
+            || {
+                let pods = pods.clone();
+                let name = name.clone();
+                async move {
+                    Ok(pods
+                        .get(&name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            },
+        )
+        .await?;
+
+    let response = context
+        .client
+        .request::<Value>(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/namespaces/{}/pods/{name}/ephemeralcontainers",
+                    context.namespace
+                ))
+                .header("Content-Type", "application/strategic-merge-patch+json")
+                .body(serde_json::to_vec(&json!({
+                    "metadata": {"labels": {"must-be-reset": "true"}},
+                    "spec": {"ephemeralContainers": [{
+                        "name": "debugger",
+                        "image": "busybox:latest",
+                        "command": ["sleep", "3600"],
+                        "targetContainerName": "app"
+                    }]}
+                })))?,
+        )?
+        .await
+        .context("patching nodeapiserver ephemeralcontainers")?;
+    anyhow::ensure!(
+        response.pointer("/spec/ephemeralContainers/0/name").and_then(Value::as_str)
+            == Some("debugger"),
+        "nodeapiserver did not return the appended ephemeral container: {response}"
+    );
+
+    let persisted = pods
+        .get(&name)
+        .await
+        .context("reading the Pod after the ephemeralcontainers patch")?;
+    anyhow::ensure!(
+        persisted
+            .metadata
+            .labels
+            .as_ref()
+            .is_none_or(|labels| !labels.contains_key("must-be-reset")),
+        "ephemeralcontainers accepted an unrelated metadata mutation"
+    );
+    anyhow::ensure!(
+        persisted
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.ephemeral_containers.as_ref())
+            .is_some_and(|containers| containers.iter().any(|container| container.name == "debugger")),
+        "nodeapiserver did not persist the appended ephemeral container"
+    );
+    pods.delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the nodeapiserver ephemeralcontainers fixture")?;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_watches_an_uncommon_builtin_resource(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
