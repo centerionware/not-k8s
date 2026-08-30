@@ -1424,8 +1424,8 @@ pub(super) async fn nodeapiserver_serves_ephemeralcontainers_subresource(
                         "command": ["sleep", "3600"],
                         "targetContainerName": "app"
                     }]}
-                })))?,
-        )?
+                }))?)?,
+        )
         .await
         .context("patching nodeapiserver ephemeralcontainers")?;
     anyhow::ensure!(
@@ -1498,6 +1498,33 @@ pub(super) async fn nodeapiserver_watches_an_uncommon_builtin_resource(context: 
     .await;
     let _ = priority_classes.delete(&name, &DeleteParams::default()).await;
     result
+}
+
+pub(super) async fn nodeapiserver_honors_watch_options(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("watch option compatibility is a nodeapiserver-only check"));
+    }
+
+    let name = format!("nodeapiserver-watch-options-{}", std::process::id());
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/namespaces/{}/configmaps?watch=true&resourceVersion=0&allowWatchBookmarks=false&timeoutSeconds=1&fieldSelector=metadata.name%3D{}",
+            context.namespace, name
+        ))
+        .body(Vec::new())?;
+    let mut stream = context
+        .client
+        .request_stream(request)
+        .await
+        .context("starting the watch-options compatibility check")?;
+    let mut line = String::new();
+    let bytes = tokio::time::timeout(Duration::from_secs(5), stream.read_line(&mut line))
+        .await
+        .context("watch did not honor timeoutSeconds")??;
+    anyhow::ensure!(bytes == 0, "watch returned an unexpected event before timeout: {line}");
+    Ok(())
 }
 
 pub(super) async fn nodeapiserver_recreates_a_dynamic_watch_cache(
