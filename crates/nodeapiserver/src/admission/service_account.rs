@@ -24,9 +24,9 @@
 //! `enforceMountableSecrets` (upstream's own default is `false` unless an
 //! operator sets `kubernetes.io/enforce-mountable-secrets: "true"` on the
 //! `ServiceAccount` — a real but off-by-default check most real clusters
-//! never exercise), and the `ephemeralcontainers` subresource validation
-//! path (this crate doesn't serve any subresource yet — a named, separate
-//! gap `server::rest`'s own doc comment already tracks).
+//! never exercise), and the `pods/ephemeralcontainers` subresource
+//! validation path (that subresource is not served by this crate yet — a
+//! named, separate gap `server::rest`'s own doc comment already tracks).
 //!
 //! Mirror-pod handling is ported too: a pod carrying real upstream's own
 //! `kubernetes.io/config.mirror` annotation is never mutated (mutating a
