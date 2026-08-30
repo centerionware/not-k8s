@@ -74,6 +74,17 @@ impl Comparison {
     pub fn is_same(&self) -> bool {
         self.removed.is_empty() && self.modified.is_empty() && self.added.is_empty()
     }
+
+    /// Removes an ignored field and every path below it, matching upstream's
+    /// `Comparison.ExcludeFields` used for server-managed fields such as a
+    /// resource's `status` subresource.
+    pub fn exclude_fields(&self, ignored: &Set) -> Self {
+        Self {
+            removed: self.removed.recursive_difference(ignored),
+            modified: self.modified.recursive_difference(ignored),
+            added: self.added.recursive_difference(ignored),
+        }
+    }
 }
 
 /// Compares `lhs` (the "before") against `rhs` (the "after"), both
@@ -306,6 +317,23 @@ mod tests {
         let v = json!({"replicas": 3});
         let c = compare("io.k8s.api.apps.v1.DeploymentSpec", &v, &v);
         assert!(c.is_same());
+    }
+
+    #[test]
+    fn excluding_a_parent_field_removes_its_entire_comparison_subtree() {
+        let lhs = json!({"replicas": 3, "status": {"ready": false}});
+        let rhs = json!({"replicas": 5, "status": {"ready": true}});
+        let comparison = compare("io.k8s.api.apps.v1.DeploymentSpec", &lhs, &rhs);
+        let mut ignored = Set::new();
+        ignored.insert(&[PathElement::Field("status".to_string())]);
+
+        let filtered = comparison.exclude_fields(&ignored);
+
+        assert!(filtered.modified.has(&[PathElement::Field("replicas".to_string())]));
+        assert!(!filtered.modified.has(&[
+            PathElement::Field("status".to_string()),
+            PathElement::Field("ready".to_string()),
+        ]));
     }
 
     #[test]
