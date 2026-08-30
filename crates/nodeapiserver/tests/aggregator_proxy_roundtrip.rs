@@ -144,6 +144,75 @@ async fn spawn_https_echo_server() -> (std::net::SocketAddr, Vec<u8>) {
     (addr, cert_pem.into_bytes())
 }
 
+/// Same backend shape as [`spawn_https_echo_server`], but requires the
+/// aggregation proxy's client certificate. A successful request therefore
+/// proves both halves of the front-proxy contract: the TLS identity is
+/// presented and the backend can read the generated remote-user header.
+async fn spawn_mtls_echo_server(client_ca_der: Vec<u8>) -> (std::net::SocketAddr, Vec<u8>) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let server_cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("generating a backend certificate");
+    let server_cert_der = server_cert.cert.der().clone();
+    let server_cert_pem = server_cert.cert.pem();
+    let server_key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(server_cert.key_pair.serialize_der()));
+    let mut client_roots = rustls::RootCertStore::empty();
+    client_roots.add(rustls::pki_types::CertificateDer::from(client_ca_der)).expect("adding the front-proxy CA");
+    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(client_roots)).build().expect("building the client certificate verifier");
+    let server_config = rustls::ServerConfig::builder().with_client_cert_verifier(verifier).with_single_cert(vec![server_cert_der], server_key).expect("building the mTLS backend config");
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binding the mTLS echo server");
+    let addr = listener.local_addr().expect("reading the bound address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else { return };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(tls_stream) = acceptor.accept(tcp).await else { return };
+                let io = TokioIo::new(tls_stream);
+                let service = service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let user = req
+                        .headers()
+                        .get("x-remote-user")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("missing");
+                    let body = format!("{} {} {user}", req.method(), req.uri());
+                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from(body)).boxed()))
+                });
+                let _ = server_http1::Builder::new().serve_connection(io, service).await;
+            });
+        }
+    });
+    (addr, server_cert_pem.into_bytes())
+}
+
+fn write_front_proxy_client_material(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+    use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose};
+
+    let mut ca_params = CertificateParams::default();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let mut ca_name = DistinguishedName::new();
+    ca_name.push(DnType::CommonName, "front-proxy-test-ca");
+    ca_params.distinguished_name = ca_name;
+    let ca_key = KeyPair::generate().expect("generating the front-proxy CA key");
+    let ca_cert = ca_params.self_signed(&ca_key).expect("self-signing the front-proxy CA");
+
+    let mut client_params = CertificateParams::default();
+    client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let mut client_name = DistinguishedName::new();
+    client_name.push(DnType::CommonName, "system:kube-aggregator");
+    client_params.distinguished_name = client_name;
+    let client_key = KeyPair::generate().expect("generating the front-proxy client key");
+    let client_cert = client_params
+        .signed_by(&client_key, &ca_cert, &ca_key)
+        .expect("signing the front-proxy client certificate");
+    let cert_path = root.join("front-proxy-client.crt");
+    let key_path = root.join("front-proxy-client.key");
+    std::fs::write(&cert_path, client_cert.pem()).expect("writing the front-proxy client certificate");
+    std::fs::write(&key_path, client_key.serialize_pem()).expect("writing the front-proxy client key");
+    (cert_path, key_path, ca_cert.der().to_vec())
+}
+
 #[tokio::test]
 async fn an_aggregated_apiservice_resolves_and_relays_through_a_real_tls_backend() {
     let Some(nodestore_bin) = find_nodestore_binary() else {
@@ -240,6 +309,33 @@ async fn an_aggregated_apiservice_resolves_and_relays_through_a_real_tls_backend
 
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn aggregation_proxy_presents_its_client_certificate_to_the_backend() {
+    let root = tempfile::tempdir().expect("creating front-proxy test directory");
+    let (client_cert, client_key, client_ca_der) = write_front_proxy_client_material(root.path());
+    let (backend_addr, backend_ca_pem) = spawn_mtls_echo_server(client_ca_der).await;
+    let identity = client_tls::ClientIdentity::from_files(&client_cert, &client_key).expect("loading the front-proxy client identity");
+    let config = client_tls::build_client_config_with_identity(Some(&backend_ca_pem), false, Some(&identity)).expect("building the mTLS aggregation client config");
+    let target = nodeapiserver::proxy::pod_log::Target {
+        scheme: "https",
+        host: backend_addr.ip().to_string(),
+        port: backend_addr.port(),
+        path: "/apis/metrics.k8s.io/v1beta1/nodes".to_string(),
+        query: "".to_string(),
+    };
+    let response = http_client::relay(
+        &target,
+        Arc::new(config),
+        "GET",
+        &[("X-Remote-User".to_string(), "alice".to_string())],
+        Vec::new(),
+    )
+    .await
+    .expect("the mTLS backend must accept the configured proxy client certificate");
+    let body = response.into_body().collect().await.expect("reading the backend response").to_bytes();
+    assert_eq!(body, Bytes::from_static(b"GET /apis/metrics.k8s.io/v1beta1/nodes alice"));
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

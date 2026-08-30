@@ -896,6 +896,21 @@ pub async fn run(cfg: Config) {
         None => None,
     };
 
+    // Group L: aggregated API servers may use the request-header authenticator
+    // and therefore require the apiserver's trusted front-proxy client
+    // certificate. Load it once here; the per-APIService CA bundle still
+    // controls the backend serving certificate independently.
+    let aggregation_proxy_identity = match (&cfg.proxy_client_cert_file, &cfg.proxy_client_key_file) {
+        (Some(cert), Some(key)) => match crate::aggregator::client_tls::ClientIdentity::from_files(cert, key) {
+            Ok(identity) => Some(Arc::new(identity)),
+            Err(error) => {
+                warn!(cert = %cert.display(), key = %key.display(), error = ?error, "failed to load the aggregation proxy client identity; the REST/watch listener will not run");
+                return;
+            }
+        },
+        _ => None,
+    };
+
     let audit_sink = match cfg.audit_log_path.as_deref() {
         Some(path) => match crate::audit::sink::AuditSink::open(path) {
             Ok(sink) => {
@@ -1081,6 +1096,7 @@ pub async fn run(cfg: Config) {
         let oidc_authenticator = oidc_authenticator.clone();
         let bootstrap_token_authenticator = bootstrap_token_authenticator.clone();
         let authorization_webhook = authorization_webhook.clone();
+        let aggregation_proxy_identity = aggregation_proxy_identity.clone();
         let concurrency_limiter = concurrency_limiter.clone();
         let audit_sink = audit_sink.clone();
         let audit_policy = audit_policy.clone();
@@ -1110,7 +1126,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1519,6 +1535,7 @@ async fn handle_with_audit(
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
+    aggregation_proxy_identity: Option<Arc<crate::aggregator::client_tls::ClientIdentity>>,
     concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
     audit_sink: Option<Arc<crate::audit::sink::AuditSink>>,
     audit_policy: Option<Arc<crate::audit::policy::AuditPolicy>>,
@@ -1625,7 +1642,7 @@ async fn handle_with_audit(
     // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
     // has, not a new gap this metric introduces.
     let start = std::time::Instant::now();
-    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, kubelet_tls).await;
+    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await;
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
@@ -1771,6 +1788,7 @@ async fn handle(
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     enforce_rbac: bool,
     authorization_webhook_allowed: bool,
+    aggregation_proxy_identity: Option<Arc<crate::aggregator::client_tls::ClientIdentity>>,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {
     let method = req.method().as_str().to_string();
@@ -1860,7 +1878,7 @@ async fn handle(
                 if let Some((group, version)) = aggregated_discovery_group_version(&parts, &aggregated) {
                     if let Some(mut client) = storage.clone() {
                         if let Ok(Some(api_service)) = aggregator::route::resolve(&mut client, group, version).await {
-                            return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query).await);
+                            return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query, identity.as_ref(), aggregation_proxy_identity.as_deref()).await);
                         }
                     }
                 }
@@ -3054,7 +3072,7 @@ async fn handle(
     if info.is_resource_request && !info.api_group.is_empty() {
         if let Some(mut client) = storage.clone() {
             match aggregator::route::resolve(&mut client, &info.api_group, &info.api_version).await {
-                Ok(Some(api_service)) => return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query).await),
+                Ok(Some(api_service)) => return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query, identity.as_ref(), aggregation_proxy_identity.as_deref()).await),
                 Ok(None) => {}
                 Err(e) => warn!(path = %path_str, error = ?e, "aggregation: looking up a matching APIService failed"),
             }
@@ -4124,11 +4142,10 @@ const HOP_BY_HOP_HEADERS: &[&str] = &["host", "connection", "keep-alive", "proxy
 /// would run before a live discovery-endpoint dial, resolve the actual
 /// dial target (`aggregator::proxy_target`), build this backend's own
 /// TLS trust (`aggregator::client_tls`), and relay the whole request —
-/// method, headers minus [`HOP_BY_HOP_HEADERS`], body — unmodified
-/// (`proxy::http_client::relay`). A real transparent proxy, matching
-/// real upstream's own aggregation posture exactly: nothing about the
-/// request or response is inspected or altered beyond what dialing
-/// itself requires.
+/// method, headers minus [`HOP_BY_HOP_HEADERS`] and untrusted front-proxy
+/// headers, body — through (`proxy::http_client::relay`). When configured,
+/// the trusted front-proxy certificate and authenticated identity headers
+/// are added in the same way as real kube-aggregator.
 ///
 /// A cached `Available: False` condition (`aggregator::reconcile`'s own
 /// periodic write, `availability::cached_available`) short-circuits
@@ -4138,7 +4155,16 @@ const HOP_BY_HOP_HEADERS: &[&str] = &["host", "connection", "keep-alive", "proxy
 /// condition yet both fall through to the full check unchanged (the
 /// backing Service still has to be fetched either way, to resolve the
 /// actual dial target — this only ever saves the *negative* path).
-async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &serde_json::Value, mut client: StorageClient, path_str: &str, query: &str) -> Response<BoxedBody> {
+async fn aggregate_proxy(
+    req: Request<Incoming>,
+    method: &str,
+    api_service: &serde_json::Value,
+    mut client: StorageClient,
+    path_str: &str,
+    query: &str,
+    identity: Option<&crate::authn::x509::Identity>,
+    proxy_identity: Option<&crate::aggregator::client_tls::ClientIdentity>,
+) -> Response<BoxedBody> {
     if aggregator::availability::cached_available(api_service) == Some(false) {
         return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, "backing service is not currently available (cached)"));
     }
@@ -4195,7 +4221,7 @@ async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &ser
         }
         _ => None,
     };
-    let client_config = match aggregator::client_tls::build_client_config(ca_bundle_pem.as_deref(), insecure_skip_tls_verify) {
+    let client_config = match aggregator::client_tls::build_client_config_with_identity(ca_bundle_pem.as_deref(), insecure_skip_tls_verify, proxy_identity) {
         Ok(cfg) => std::sync::Arc::new(cfg),
         Err(e) => {
             warn!(path = %path_str, error = ?e, "aggregation: building the backend TLS client config failed");
@@ -4203,12 +4229,7 @@ async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &ser
         }
     };
 
-    let headers = req
-        .headers()
-        .iter()
-        .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str().to_ascii_lowercase().as_str()))
-        .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str().to_string(), v.to_string())))
-        .collect::<Vec<_>>();
+    let headers = aggregation_proxy_headers(req.headers(), identity, proxy_identity.is_some());
     let body = match read_body_bytes(req).await {
         Ok(b) => b,
         Err(e) => {
@@ -4224,6 +4245,67 @@ async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &ser
             json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, &e.to_string()))
         }
     }
+}
+
+fn is_auth_proxy_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("x-remote-user")
+        || name.eq_ignore_ascii_case("x-remote-group")
+        || name.eq_ignore_ascii_case("x-remote-uid")
+        || name.len() >= "x-remote-extra-".len()
+            && name[.."x-remote-extra-".len()].eq_ignore_ascii_case("x-remote-extra-")
+}
+
+/// Matches client-go's `headerKeyEscape`: HTTP field names cannot contain
+/// arbitrary user-extra keys (the standard credential-id key contains `/`),
+/// so escape non-token bytes as uppercase percent-encoded octets. The
+/// request-header authenticator reverses this with `url.PathUnescape`.
+fn escape_auth_proxy_extra_key(key: &str) -> String {
+    let mut escaped = String::with_capacity(key.len());
+    for byte in key.bytes() {
+        if byte.is_ascii_alphanumeric() || b"!#$&'*+-.^_`|~".contains(&byte) {
+            escaped.push(byte as char);
+        } else {
+            escaped.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    escaped
+}
+
+fn aggregation_proxy_headers(
+    incoming: &http::HeaderMap,
+    identity: Option<&crate::authn::x509::Identity>,
+    add_identity: bool,
+) -> Vec<(String, String)> {
+    let mut headers = incoming
+        .iter()
+        .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str().to_ascii_lowercase().as_str()))
+        .filter(|(name, _)| !is_auth_proxy_header(name.as_str()))
+        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
+        .collect::<Vec<_>>();
+    if !add_identity {
+        return headers;
+    }
+
+    let anonymous_groups = [UNAUTHENTICATED_GROUP.to_string()];
+    let (user, groups, uid, extra) = match identity {
+        Some(identity) => (
+            identity.name.as_str(),
+            identity.groups.as_slice(),
+            identity.uid.as_deref(),
+            Some(&identity.credential_id),
+        ),
+        None => (ANONYMOUS_USERNAME, &anonymous_groups[..], None, None),
+    };
+    headers.push(("X-Remote-User".to_string(), user.to_string()));
+    headers.extend(groups.iter().cloned().map(|group| ("X-Remote-Group".to_string(), group)));
+    if let Some(uid) = uid {
+        headers.push(("X-Remote-Uid".to_string(), uid.to_string()));
+    }
+    if let Some((name, values)) = extra {
+        let header_name = format!("X-Remote-Extra-{}", escape_auth_proxy_extra_key(name));
+        headers.extend(values.iter().cloned().map(|value| (header_name.clone(), value)));
+    }
+    headers
 }
 
 fn is_proxy_request(info: &path::RequestInfo) -> bool {
@@ -4605,6 +4687,38 @@ mod tests {
         assert!(should_run_local_authorization(&pod, true, false));
         assert!(!should_run_local_authorization(&review, true, false));
         assert!(!should_run_local_authorization(&pod, false, false));
+    }
+
+    #[test]
+    fn aggregation_proxy_headers_replace_caller_supplied_identity_headers() {
+        let mut incoming = http::HeaderMap::new();
+        incoming.insert("X-Remote-User", "attacker".parse().unwrap());
+        incoming.append("X-Remote-Group", "untrusted".parse().unwrap());
+        incoming.insert("X-Remote-Extra-tenant", "untrusted".parse().unwrap());
+        incoming.insert("X-Trace-Id", "trace-1".parse().unwrap());
+        let identity = crate::authn::x509::Identity {
+            name: "alice".to_string(),
+            groups: vec!["developers".to_string(), "system:authenticated".to_string()],
+            uid: Some("uid-1".to_string()),
+            credential_id: ("authentication.kubernetes.io/credential-id".to_string(), vec!["X509SHA256=abc".to_string()]),
+        };
+
+        let headers = aggregation_proxy_headers(&incoming, Some(&identity), true);
+        assert_eq!(headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-user")).map(|(_, value)| value.as_str()).collect::<Vec<_>>(), ["alice"]);
+        assert_eq!(headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-group")).map(|(_, value)| value.as_str()).collect::<Vec<_>>(), ["developers", "system:authenticated"]);
+        assert_eq!(headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("x-remote-uid")).map(|(_, value)| value.as_str()), Some("uid-1"));
+        assert_eq!(headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("x-remote-extra-authentication.kubernetes.io%2Fcredential-id")).map(|(_, value)| value.as_str()), Some("X509SHA256=abc"));
+        assert!(headers.iter().any(|(name, value)| name == "x-trace-id" && value == "trace-1"));
+        assert!(!headers.iter().any(|(_, value)| value == "attacker" || value == "untrusted"));
+    }
+
+    #[test]
+    fn aggregation_proxy_headers_strip_identity_headers_without_a_proxy_identity() {
+        let mut incoming = http::HeaderMap::new();
+        incoming.insert("X-Remote-User", "attacker".parse().unwrap());
+        incoming.insert("X-Remote-Group", "untrusted".parse().unwrap());
+        let headers = aggregation_proxy_headers(&incoming, None, false);
+        assert!(headers.is_empty());
     }
 
     #[test]

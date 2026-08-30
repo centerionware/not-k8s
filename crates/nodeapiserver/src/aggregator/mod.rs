@@ -48,12 +48,12 @@
 //! set), and relays the whole request — method, headers, body — through
 //! `proxy::http_client::relay` (the method/header/body-forwarding sibling
 //! `fetch` needed, since an aggregated backend is a real transparent
-//! proxy for arbitrary verbs, not `pods/log`'s one fixed GET). **Not
-//! attempted**: this build presenting its own client identity to the
-//! backend (real upstream's own front-proxy `X-Remote-User`/`--proxy-
-//! client-cert-file` chain — `client_tls`'s own doc comment names this
-//! honestly), and streaming upgrade support (SPDY/websocket — the same
-//! real, separate gap Group N's exec/attach still has).
+//! proxy for arbitrary verbs, not `pods/log`'s one fixed GET). The
+//! configured front-proxy client certificate is presented to the backend,
+//! and authenticated request identity is rebuilt as `X-Remote-*` headers
+//! after stripping caller-supplied values. Streaming upgrade support
+//! (SPDY/websocket) remains the separate gap Group N's exec/attach still
+//! has.
 //!
 //! **Phase 3 done, including live resource enumeration.**
 //! `aggregator::route::discoverable_group_versions` lists every stored,
