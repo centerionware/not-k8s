@@ -86,6 +86,24 @@ resources:
     )
 }
 
+fn aescbc_encryption_config_yaml() -> String {
+    format!(
+        r#"
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      - aescbc:
+          keys:
+            - name: cbc-key
+              secret: {TEST_AES_KEY_B64}
+      - identity: {{}}
+"#
+    )
+}
+
 fn rotated_encryption_config_yaml() -> String {
     use base64::Engine;
     let rotated_key = base64::engine::general_purpose::STANDARD.encode([1u8; 32]);
@@ -211,6 +229,29 @@ async fn secrets_are_encrypted_and_stale_values_rotate_on_read() {
     };
     assert_eq!(read_back["data"]["password"], "c2VjcmV0");
     assert_eq!(read_back["metadata"]["name"], "test-secret");
+
+    // Exercise the same real storage wiring with the upstream AES-CBC
+    // provider, not only the transform unit test and config parser.
+    let cbc_config = nodeapiserver::storage::encryption_config::parse(&aescbc_encryption_config_yaml()).expect("parsing the AES-CBC EncryptionConfiguration");
+    let mut storage_with_cbc = storage.clone().with_encryption(Some(cbc_config));
+    let cbc_body = json!({
+        "metadata": {"name": "test-cbc", "namespace": "default"},
+        "data": {"password": "Y2JjLXNlY3JldA=="},
+    });
+    let cbc_created = match rest::create(&mut storage_with_cbc, "", "v1", "secrets", Some("default"), &cbc_body).await.expect("AES-CBC rest::create must not itself error") {
+        rest::CreateOutcome::Created(object) => object,
+        other => panic!("expected AES-CBC Created, got {other:?}"),
+    };
+    assert_eq!(cbc_created["metadata"]["name"], "test-cbc");
+    let cbc_key_bytes = nodeapiserver::storage::keys::object_key("", "secrets", Some("default"), "test-cbc").into_bytes();
+    let cbc_raw = storage.range(RangeRequest { key: cbc_key_bytes, ..Default::default() }).await.expect("raw AES-CBC Range must succeed").kvs;
+    assert_eq!(cbc_raw.len(), 1);
+    assert!(cbc_raw[0].value.starts_with(nodeapiserver::storage::encryption::AES_CBC_PREFIX_V1.as_bytes()));
+    let cbc_read_back = match rest::get(&mut storage_with_cbc, None, "", "v1", "secrets", Some("default"), "test-cbc").await.expect("AES-CBC rest::get must not error") {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected AES-CBC Found, got {other:?}"),
+    };
+    assert_eq!(cbc_read_back["data"]["password"], "Y2JjLXNlY3JldA==");
 
     // A live key rotation keeps the old key as a read fallback while
     // selecting the new key for writes. The first read below must still
