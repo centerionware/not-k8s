@@ -2374,7 +2374,20 @@ async fn handle(
         let params = path::parse_query(&query);
         let verbose = params.iter().any(|(key, _)| key == "verbose");
         let excluded = params.into_iter().filter(|(key, _)| key == "exclude").map(|(_, value)| value).collect::<Vec<_>>();
-        let (checks, unknown_excluded) = healthz::run_checks(check_name, storage.is_some(), &excluded);
+        let storage_healthy = if check_name == "readyz" {
+            match storage.as_mut() {
+                Some(client) => tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    client.is_healthy(),
+                )
+                .await
+                .unwrap_or(false),
+                None => false,
+            }
+        } else {
+            storage.is_some()
+        };
+        let (checks, unknown_excluded) = healthz::run_checks(check_name, storage_healthy, &excluded);
         let (status, body) = healthz::render(check_name, &checks, &unknown_excluded, verbose);
         let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return Ok(Response::builder().status(code).header("Content-Type", "text/plain; charset=utf-8").header("X-Content-Type-Options", "nosniff").body(body_from_bytes(body.into_bytes())).unwrap());
