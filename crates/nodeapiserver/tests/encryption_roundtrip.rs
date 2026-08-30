@@ -104,6 +104,24 @@ resources:
     )
 }
 
+fn secretbox_encryption_config_yaml() -> String {
+    format!(
+        r#"
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      - secretbox:
+          keys:
+            - name: secretbox-key
+              secret: {TEST_AES_KEY_B64}
+      - identity: {{}}
+"#
+    )
+}
+
 fn rotated_encryption_config_yaml() -> String {
     use base64::Engine;
     let rotated_key = base64::engine::general_purpose::STANDARD.encode([1u8; 32]);
@@ -252,6 +270,27 @@ async fn secrets_are_encrypted_and_stale_values_rotate_on_read() {
         other => panic!("expected AES-CBC Found, got {other:?}"),
     };
     assert_eq!(cbc_read_back["data"]["password"], "Y2JjLXNlY3JldA==");
+
+    let secretbox_config = nodeapiserver::storage::encryption_config::parse(&secretbox_encryption_config_yaml()).expect("parsing the Secretbox EncryptionConfiguration");
+    let mut storage_with_secretbox = storage.clone().with_encryption(Some(secretbox_config));
+    let secretbox_body = json!({
+        "metadata": {"name": "test-secretbox", "namespace": "default"},
+        "data": {"password": "c2VjcmV0Ym94LXNlY3JldA=="},
+    });
+    let secretbox_created = match rest::create(&mut storage_with_secretbox, "", "v1", "secrets", Some("default"), &secretbox_body).await.expect("Secretbox rest::create must not itself error") {
+        rest::CreateOutcome::Created(object) => object,
+        other => panic!("expected Secretbox Created, got {other:?}"),
+    };
+    assert_eq!(secretbox_created["metadata"]["name"], "test-secretbox");
+    let secretbox_key = nodeapiserver::storage::keys::object_key("", "secrets", Some("default"), "test-secretbox").into_bytes();
+    let secretbox_raw = storage.range(RangeRequest { key: secretbox_key, ..Default::default() }).await.expect("raw Secretbox Range must succeed").kvs;
+    assert_eq!(secretbox_raw.len(), 1);
+    assert!(secretbox_raw[0].value.starts_with(nodeapiserver::storage::encryption::SECRETBOX_PREFIX_V1.as_bytes()));
+    let secretbox_read_back = match rest::get(&mut storage_with_secretbox, None, "", "v1", "secrets", Some("default"), "test-secretbox").await.expect("Secretbox rest::get must not error") {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected Secretbox Found, got {other:?}"),
+    };
+    assert_eq!(secretbox_read_back["data"]["password"], "c2VjcmV0Ym94LXNlY3JldA==");
 
     // A live key rotation keeps the old key as a read fallback while
     // selecting the new key for writes. The first read below must still
