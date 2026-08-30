@@ -94,10 +94,6 @@ pub fn evaluate_validations(validations: &[Validation], vars: &[(&'static str, &
     evaluate_validations_with_cel_vars(validations, vars, &[], failure_policy)
 }
 
-fn evaluate_validation(v: &Validation, vars: &[(&'static str, &Value)], failure_policy: FailurePolicy) -> Decision {
-    evaluate_validation_with_cel_vars(v, vars, &[], failure_policy)
-}
-
 /// [`evaluate_validations`] with native CEL values in addition to JSON
 /// values. The extra values are used for opaque Kubernetes CEL bindings.
 pub fn evaluate_validations_with_cel_vars(validations: &[Validation], vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, cel::Value)], failure_policy: FailurePolicy) -> Vec<Decision> {
