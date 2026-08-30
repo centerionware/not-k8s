@@ -30,8 +30,8 @@
 //! `windowsHostProcess`, `appArmorProfile` (both the deprecated
 //! annotation form and the real `securityContext.appArmorProfile.type`
 //! field form — `spec.ephemeralContainers` is real upstream scope this
-//! doesn't cover, since this crate serves no subresources/ephemeral
-//! containers at all), `seLinuxOptions` (the 1.31+ allowed-type set,
+//! plugin doesn't cover because it applies only to top-level Pod `CREATE`,
+//! while the subresource has its own update strategy), `seLinuxOptions` (the 1.31+ allowed-type set,
 //! which is the widest one upstream has defined).
 //!
 //! **All six real `restricted`-level checks are ported too**:
