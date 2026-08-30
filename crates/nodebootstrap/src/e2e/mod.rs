@@ -207,6 +207,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_serves_workload_scale_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_authentication_modes",
         group: TestGroup::General,
     },
@@ -1659,6 +1663,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_nodeapiserver_advertises_subresources" => {
             bootstrap::nodeapiserver_advertises_subresources(context).await
+        }
+        "test_nodeapiserver_serves_workload_scale_subresource" => {
+            bootstrap::nodeapiserver_serves_workload_scale_subresource(context).await
         }
         "test_nodeapiserver_authentication_modes" => {
             bootstrap::nodeapiserver_authentication_modes(context).await
