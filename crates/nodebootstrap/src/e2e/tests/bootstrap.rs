@@ -1686,7 +1686,7 @@ pub(super) async fn nodeapiserver_enforces_mountable_secrets_for_ephemeral_conta
         }))?)?;
     let denied = context.client.request::<Value>(denied_request).await;
     match denied {
-        Err(KubeError::Api(error)) if error.code == 403 => {}
+        Err(KubeError::Api(error)) if error.code == 422 => {}
         Err(error) => anyhow::bail!(
             "an unlisted ephemeral-container secret returned the wrong API error: {error}"
         ),
