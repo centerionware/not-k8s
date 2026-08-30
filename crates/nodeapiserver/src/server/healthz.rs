@@ -6,14 +6,8 @@
 //! **Checks ported**: `ping` (real upstream's own `PingHealthz` — always
 //! passes; installed on every path, matching upstream's own "no checks
 //! given -> install the ping check" default) on all three paths, plus
-//! `storage` (this crate's own addition, `/readyz` only — whether the
-//! `StorageClient` connection this listener opened at startup is
-//! present). **Named simplification**: `storage` reflects the one
-//! connection attempt made at listener startup, not a live per-request
-//! round trip to nodestore the way real upstream's own etcd health
-//! checker actually pings on each call — a coarser but real signal
-//! (matches `server::listener`'s own doc comment: storage is
-//! "best-effort, `None` on failure" at startup). Not ported: `log`
+//! `storage` (this crate's own addition, `/readyz` only — a bounded live
+//! read-only RPC against nodestore). Not ported: `log`
 //! (klog-specific, meaningless for this crate's `tracing` output),
 //! `informer-sync`, `shutdown` (no graceful-shutdown machinery in this
 //! crate yet). The `?exclude=` query parameter is supported too: excluded
@@ -46,8 +40,8 @@ pub struct CheckResult {
 /// `/livez` both just install the default `ping` check (upstream's own
 /// `InstallHandler`/`InstallLivezHandler` are called with no explicit
 /// checks in the common case); `/readyz` adds this crate's own `storage`
-/// check (see this module's own doc comment for what it actually
-/// reflects). `excluded` contains the requested check names, and the second
+/// check. The caller supplies the result of its live probe. `excluded`
+/// contains the requested check names, and the second
 /// return value contains unknown names for the verbose warning output.
 pub fn run_checks(path: &str, storage_connected: bool, excluded: &[String]) -> (Vec<CheckResult>, Vec<String>) {
     let mut checks = vec![CheckResult { name: "ping", ok: true, excluded: excluded.iter().any(|name| name == "ping") }];

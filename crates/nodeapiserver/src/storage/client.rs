@@ -148,6 +148,22 @@ impl StorageClient {
         Ok(self.kv.range(req).await?.into_inner())
     }
 
+    /// Performs a small read-only RPC against a key range that this server
+    /// never uses.  The result is deliberately reduced to a boolean so the
+    /// health endpoint cannot expose storage errors to an unauthenticated
+    /// caller.  Keeping this as a real RPC, rather than checking that the
+    /// channel was opened once, makes readiness reflect a live nodestore.
+    pub async fn is_healthy(&mut self) -> bool {
+        self.range(RangeRequest {
+            key: vec![0],
+            range_end: vec![1],
+            count_only: true,
+            ..Default::default()
+        })
+        .await
+        .is_ok()
+    }
+
     pub async fn put(&mut self, req: PutRequest) -> Result<PutResponse> {
         Ok(self.kv.put(req).await?.into_inner())
     }
