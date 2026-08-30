@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `fb57ea58` on
+This snapshot is checked against `origin/nodeapiserver` at `55f67686` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -53,7 +53,7 @@ explanation of each boundary.
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
-| L. Aggregation | **done for current scope** | Front-proxy identity and streaming upgrade parity remain explicitly outside the current scope. |
+| L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
 | M. APF/audit/observability | **in progress** | Audit, health, metrics, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, and one-second sampled inflight gauges are present; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
@@ -2319,9 +2319,11 @@ current scope of each piece; summarized here:
    generates those files plus a separate `front-proxy-ca` and migrates
    older PKI directories. Caller-supplied `X-Remote-*` headers are removed
    and rebuilt from the authenticated request identity, including the
-   Kubernetes percent-escaped `X-Remote-Extra-*` form. **Not attempted**:
-   streaming upgrade support (SPDY/websocket — the same gap Group N's
-   exec/attach still has).
+   Kubernetes percent-escaped `X-Remote-Extra-*` form. HTTP/1.1 streaming
+   upgrades are forwarded through `proxy::http_client::upgrade_with_headers`,
+   which applies the same trusted-header replacement before splicing the
+   upgraded streams. Less-common transport details such as legacy SPDY and
+   HTTP/2 extended CONNECT remain outside the current scope.
 
 
 **M. APF, audit, observability** — **in progress**. `audit::event::build_event`
