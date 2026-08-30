@@ -295,6 +295,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_rejects_oversized_request_body",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_validating_admission_policy_denies_create",
         group: TestGroup::General,
     },
@@ -1731,6 +1735,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_rejects_unsupported_resource_route" => {
             bootstrap::nodeapiserver_rejects_unsupported_resource_route(context).await
+        },
+        "test_nodeapiserver_rejects_oversized_request_body" => {
+            bootstrap::nodeapiserver_rejects_oversized_request_body(context).await
         },
         "test_nodeapiserver_validating_admission_policy_denies_create" => {
             bootstrap::nodeapiserver_validating_admission_policy_denies_create(context).await

@@ -126,6 +126,32 @@ struct AdmissionMetadata {
 
 type SharedAdmissionMetadata = Arc<Mutex<AdmissionMetadata>>;
 
+#[derive(Clone, Copy)]
+struct RequestBodyLimit(usize);
+
+#[derive(Debug)]
+enum BodyReadError {
+    TooLarge { limit: usize },
+    Hyper(hyper::Error),
+}
+
+impl std::fmt::Display for BodyReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { limit } => write!(formatter, "request body exceeds the {limit}-byte limit"),
+            Self::Hyper(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for BodyReadError {}
+
+impl From<hyper::Error> for BodyReadError {
+    fn from(error: hyper::Error) -> Self {
+        Self::Hyper(error)
+    }
+}
+
 fn record_admission_outcome(metadata: Option<&SharedAdmissionMetadata>, outcome: &admission::policy_enforcement::ValidationOutcome) {
     let Some(metadata) = metadata else {
         return;
@@ -243,15 +269,41 @@ fn body_from_bytes(bytes: Vec<u8>) -> BoxedBody {
     Full::new(hyper::body::Bytes::from(bytes)).map_err(|never: std::convert::Infallible| match never {}).boxed()
 }
 
-/// Buffers a request's entire body into memory — fine for the object
-/// sizes this build's own resources actually reach (real kube-apiserver
-/// itself has no streaming write path either; every write is a single
-/// decoded object). No size cap yet — a named, real gap, not a
-/// forgotten one: real upstream enforces `--max-request-body-bytes`.
-async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, hyper::Error> {
+/// Buffers a request's body into memory while enforcing the listener's
+/// configured maximum. The frame-by-frame check also covers chunked bodies,
+/// for which `Content-Length` cannot provide an early bound.
+async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, BodyReadError> {
     use http_body_util::BodyExt;
-    let collected = req.into_body().collect().await?;
-    Ok(collected.to_bytes().to_vec())
+    let limit = req
+        .extensions()
+        .get::<RequestBodyLimit>()
+        .map_or(usize::MAX, |limit| limit.0);
+    let mut body = req.into_body();
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if data.len() > limit.saturating_sub(bytes.len()) {
+            return Err(BodyReadError::TooLarge { limit });
+        }
+        bytes.extend_from_slice(&data);
+    }
+    Ok(bytes)
+}
+
+fn body_read_error_response(path_str: &str, error: &BodyReadError) -> Response<BoxedBody> {
+    match error {
+        BodyReadError::TooLarge { limit } => json_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &request_entity_too_large_status(path_str, *limit),
+        ),
+        BodyReadError::Hyper(_) => json_response(
+            StatusCode::BAD_REQUEST,
+            &bad_request_status(path_str, "request body could not be read"),
+        ),
+    }
 }
 
 fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxedBody> {
@@ -971,8 +1023,8 @@ pub async fn run(cfg: Config) {
     // Best-effort, matching every other failure in this function: a
     // nodestore that isn't reachable yet at startup shouldn't stop the
     // listener from serving discovery (which needs no storage at all) —
-    // `rest::get` degrades to the bring-up echo stub when this is `None`
-    // (see its own call site's comment). Connected once here and cloned
+    // resource requests return a real 503 when this is `None` (see the
+    // request handler's own call-site guard). Connected once here and cloned
     // per connection below: `StorageClient` wraps a cheap-to-clone
     // `tonic::transport::Channel`, the same "clone per use, don't share a
     // `&mut` behind a lock" posture `cacher`'s own driver takes.
@@ -983,7 +1035,7 @@ pub async fn run(cfg: Config) {
     let storage = match StorageClient::connect(&cfg).await {
         Ok(c) => Some(c.with_encryption(encryption_config)),
         Err(e) => {
-            warn!(error = ?e, "failed to connect to nodestore at startup; resource GET requests will fall back to the bring-up echo stub until this succeeds");
+            warn!(error = ?e, "failed to connect to nodestore at startup; resource requests will return 503 until this succeeds");
             None
         }
     };
@@ -1053,7 +1105,7 @@ pub async fn run(cfg: Config) {
             return;
         }
     };
-    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = crate::codegen::api_resources::API_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE/PATCH/DELETECOLLECTION/WATCH are real; unsupported paths remain bring-up stubs — see server::listener's own doc comment)");
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, max_request_body_bytes = cfg.max_request_body_bytes, cached_resources = crate::codegen::api_resources::API_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE/PATCH/DELETECOLLECTION/WATCH are real; unsupported paths return Kubernetes errors — see server::listener's own doc comment)");
     let enforce_rbac = cfg.enforce_rbac;
     let concurrency_limiter = Arc::new(crate::flowcontrol::limiter::ConcurrencyLimiter::new(
         cfg.apf_max_requests_inflight,
@@ -1061,6 +1113,7 @@ pub async fn run(cfg: Config) {
         cfg.apf_queue_length_limit,
     ));
     let anonymous_auth = cfg.anonymous_auth;
+    let max_request_body_bytes = cfg.max_request_body_bytes;
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -1104,6 +1157,7 @@ pub async fn run(cfg: Config) {
         let concurrency_limiter = concurrency_limiter.clone();
         let audit_sink = audit_sink.clone();
         let audit_policy = audit_policy.clone();
+        let max_request_body_bytes = max_request_body_bytes;
         tokio::spawn(async move {
             let client_ca_store = client_ca.as_ref().map(super::tls::ReloadableClientCa::current);
             let server_config = match cert.server_config(client_ca_store.as_ref()) {
@@ -1130,7 +1184,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1143,7 +1197,7 @@ pub async fn run(cfg: Config) {
 /// caller can tell "not a discovery-shaped path at all, fall through to
 /// resource handling" apart from "was discovery-shaped, but this build
 /// serves no such group/version" — the latter is a real `404`, not a
-/// silent fallthrough into the resource-request echo stub, which would
+/// silent fallthrough into the resource-request handler, which would
 /// otherwise mis-describe a `/apis/totally.made.up/v1` request as some
 /// kind of resource request.
 enum DiscoveryRoute {
@@ -1307,6 +1361,19 @@ fn bad_request_status(path_str: &str, detail: &str) -> serde_json::Value {
         "reason": "BadRequest",
         "details": {},
         "code": 400,
+    })
+}
+
+fn request_entity_too_large_status(path_str: &str, limit: usize) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: request body exceeds the {limit}-byte limit"),
+        "reason": "RequestEntityTooLarge",
+        "details": {},
+        "code": 413,
     })
 }
 
@@ -1542,12 +1609,14 @@ async fn handle_with_audit(
     audit_policy: Option<Arc<crate::audit::policy::AuditPolicy>>,
     anonymous_auth: bool,
     enforce_rbac: bool,
+    max_request_body_bytes: usize,
     peer: SocketAddr,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<Response<BoxedBody>, Infallible> {
     let admission_metadata = Arc::new(Mutex::new(AdmissionMetadata::default()));
     let mut req = req;
     req.extensions_mut().insert(admission_metadata.clone());
+    req.extensions_mut().insert(RequestBodyLimit(max_request_body_bytes));
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -2286,7 +2355,7 @@ async fn handle(
             Ok(bytes) => bytes,
             Err(error) => {
                 warn!(path = %path_str, error = ?error, "reading the Pod binding request failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &error));
             }
         };
         let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -2413,7 +2482,7 @@ async fn handle(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     warn!(path = %path_str, error = ?error, "reading the ephemeralcontainers request failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    return Ok(body_read_error_response(&path_str, &error));
                 }
             };
             let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -2503,7 +2572,7 @@ async fn handle(
                 Ok(b) => b,
                 Err(e) => {
                     warn!(path = %path_str, error = ?e, "reading the request body failed");
-                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    return Ok(body_read_error_response(&path_str, &e));
                 }
             };
             let config: serde_json::Value = match crate::codec::yaml::decode(&body_bytes) {
@@ -2663,7 +2732,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the request body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let patch_doc: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -2819,7 +2888,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the request body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -2886,7 +2955,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the request body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let patch_doc: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -3036,7 +3105,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the request body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -3099,7 +3168,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the request body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -3126,7 +3195,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the request body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -3158,7 +3227,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the TokenReview body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let mut response_body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -3206,7 +3275,7 @@ async fn handle(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %path_str, error = ?e, "reading the TokenRequest body failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &e));
             }
         };
         let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
@@ -3301,7 +3370,7 @@ async fn handle(
             Ok(bytes) => bytes,
             Err(error) => {
                 warn!(path = %path_str, error = ?error, "reading the Scale request failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                return Ok(body_read_error_response(&path_str, &error));
             }
         };
         let body: Value = if info.verb == "update" && content_type.as_deref().and_then(negotiation::content_type) == Some(negotiation::Format::Yaml) {
@@ -3592,7 +3661,7 @@ async fn handle(
                     Ok(b) => b,
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "reading the request body failed");
-                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        return Ok(body_read_error_response(&path_str, &e));
                     }
                 };
                 if is_delete {
@@ -4527,7 +4596,7 @@ async fn aggregate_proxy(
         Ok(b) => b,
         Err(e) => {
             warn!(path = %path_str, error = ?e, "aggregation: reading the request body failed");
-            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            return body_read_error_response(path_str, &e);
         }
     };
 
@@ -4740,7 +4809,7 @@ async fn proxy_resource(
         Ok(body) => body,
         Err(error) => {
             warn!(path = %path_str, error = ?error, "proxy: reading the request body failed");
-            return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "request body could not be read"));
+            return body_read_error_response(path_str, &error);
         }
     };
 
@@ -4938,6 +5007,15 @@ mod tests {
         assert_eq!(status["reason"], "BadRequest");
         assert_eq!(status["code"], 400);
         assert!(status["message"].as_str().unwrap().contains("malformed selector"));
+    }
+
+    #[test]
+    fn oversized_body_status_uses_the_real_http_error_shape() {
+        let status = request_entity_too_large_status("/api/v1/configmaps", 8192);
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "RequestEntityTooLarge");
+        assert_eq!(status["code"], 413);
+        assert!(status["message"].as_str().unwrap().contains("8192-byte limit"));
     }
 
     #[test]
