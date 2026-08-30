@@ -110,6 +110,10 @@ pub struct Config {
     /// controls how many numbered backups are retained.
     pub audit_log_max_size_bytes: Option<u64>,
     pub audit_log_max_backups: usize,
+    /// `NODEAPISERVER_AUDIT_WEBHOOK_URL` enables the asynchronous Kubernetes
+    /// audit webhook backend. Events are sent as bounded `EventList` batches;
+    /// delivery failures never block an API request.
+    pub audit_webhook_url: Option<String>,
     /// `NODEAPISERVER_AUDIT_POLICY_FILE` selects an upstream-shaped
     /// `audit.k8s.io/v1` policy. When unset, every request keeps the existing
     /// metadata audit behavior.
@@ -185,6 +189,7 @@ impl Default for Config {
             audit_log_path: None,
             audit_log_max_size_bytes: None,
             audit_log_max_backups: 5,
+            audit_webhook_url: None,
             audit_policy_file: None,
             enforce_rbac: false,
             encryption_config_file: None,
@@ -323,6 +328,7 @@ impl Config {
             "NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS",
             cfg.audit_log_max_backups,
         )?;
+        cfg.audit_webhook_url = string_env("NODEAPISERVER_AUDIT_WEBHOOK_URL");
         cfg.audit_policy_file = path_env("NODEAPISERVER_AUDIT_POLICY_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
@@ -457,6 +463,7 @@ mod tests {
         assert!(cfg.audit_log_path.is_none());
         assert_eq!(cfg.audit_log_max_size_bytes, None);
         assert_eq!(cfg.audit_log_max_backups, 5);
+        assert!(cfg.audit_webhook_url.is_none());
         assert!(cfg.audit_policy_file.is_none());
     }
 
@@ -470,6 +477,7 @@ mod tests {
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_PATH", "/tmp/nodeapiserver-audit.log");
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES", "4096");
         std::env::set_var("NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS", "3");
+        std::env::set_var("NODEAPISERVER_AUDIT_WEBHOOK_URL", "http://127.0.0.1:9000/audit");
         std::env::set_var("NODEAPISERVER_AUDIT_POLICY_FILE", "/tmp/nodeapiserver-audit-policy.yaml");
         let _cleanup = EnvGuard(&[
             "NODEAPISERVER_APF_MAX_REQUESTS_INFLIGHT",
@@ -479,6 +487,7 @@ mod tests {
             "NODEAPISERVER_AUDIT_LOG_PATH",
             "NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES",
             "NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS",
+            "NODEAPISERVER_AUDIT_WEBHOOK_URL",
             "NODEAPISERVER_AUDIT_POLICY_FILE",
         ]);
         let cfg = Config::from_env().unwrap();
@@ -489,6 +498,7 @@ mod tests {
         assert_eq!(cfg.audit_log_path.as_deref(), Some(std::path::Path::new("/tmp/nodeapiserver-audit.log")));
         assert_eq!(cfg.audit_log_max_size_bytes, Some(4096));
         assert_eq!(cfg.audit_log_max_backups, 3);
+        assert_eq!(cfg.audit_webhook_url.as_deref(), Some("http://127.0.0.1:9000/audit"));
         assert_eq!(cfg.audit_policy_file.as_deref(), Some(std::path::Path::new("/tmp/nodeapiserver-audit-policy.yaml")));
     }
 

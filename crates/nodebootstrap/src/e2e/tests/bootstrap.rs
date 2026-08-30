@@ -295,6 +295,51 @@ impl Drop for NodeapiserverAuditLogOverride {
     }
 }
 
+struct NodeapiserverAuditWebhookOverride {
+    drop_in: PathBuf,
+}
+
+impl NodeapiserverAuditWebhookOverride {
+    fn install(url: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; audit-webhook checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-audit-webhook-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-audit-webhook-{suffix}.conf"));
+        fs::write(
+            &local_drop_in,
+            format!("[Service]\nEnvironment=NODEAPISERVER_AUDIT_WEBHOOK_URL={url}\n"),
+        )
+        .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverAuditWebhookOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+    }
+}
+
 /// This check is selected by the external-CNI workflow mode. A normal
 /// single-node run intentionally skips it because flannel is expected there.
 pub(super) async fn external_cni_mode_disables_flannel(context: &E2eContext) -> Result<()> {
@@ -1714,6 +1759,163 @@ pub(super) async fn nodeapiserver_rotates_audit_log(context: &E2eContext) -> Res
             },
         )
         .await
+}
+
+pub(super) async fn nodeapiserver_delivers_audit_webhook(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "audit-webhook checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .context("binding the e2e audit webhook")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?;
+    let batches = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let server_batches = batches.clone();
+    let server_stopping = stopping.clone();
+    let server = thread::spawn(move || {
+        while !server_stopping.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_audit_webhook_connection(stream, &server_batches);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let webhook = match NodeapiserverAuditWebhookOverride::install(&format!("http://{address}/audit")) {
+        Ok(webhook) => webhook,
+        Err(error) => {
+            stopping.store(true, Ordering::Relaxed);
+            let _ = server.join();
+            return Err(error);
+        }
+    };
+    let result = async {
+        context
+            .wait_until(
+                "nodeapiserver to answer requests after audit webhook configuration",
+                Duration::from_secs(60),
+                || async {
+                    let output = Command::new("curl")
+                        .args([
+                            "-k",
+                            "-sS",
+                            "--max-time",
+                            "2",
+                            "-o",
+                            "/dev/null",
+                            "-w",
+                            "%{http_code}",
+                            "https://127.0.0.1:6443/healthz",
+                        ])
+                        .output();
+                    Ok(output.is_ok_and(|output| {
+                        output.status.success()
+                            && String::from_utf8_lossy(&output.stdout).trim() != "000"
+                    }))
+                },
+            )
+            .await?;
+
+        let response = Command::new("curl")
+            .args(["-k", "-sS", "--max-time", "10", "https://127.0.0.1:6443/version"])
+            .output()
+            .context("calling nodeapiserver while audit webhook is enabled")?;
+        anyhow::ensure!(
+            response.status.success(),
+            "nodeapiserver request failed: {}",
+            String::from_utf8_lossy(&response.stderr)
+        );
+
+        context
+            .wait_until(
+                "audit webhook to receive an EventList containing the version request",
+                Duration::from_secs(45),
+                || {
+                    let batches = batches.clone();
+                    async move {
+                        Ok(batches.lock().is_ok_and(|batches| {
+                            batches.iter().any(|batch| {
+                                batch["kind"] == "EventList"
+                                    && batch["apiVersion"] == "audit.k8s.io/v1"
+                                    && batch["items"].as_array().is_some_and(|items| {
+                                        items.iter().any(|event| {
+                                            event["requestURI"] == "/version"
+                                                && event["stage"] == "ResponseComplete"
+                                        })
+                                    })
+                            })
+                        }))
+                    }
+                },
+            )
+            .await
+    }
+    .await;
+
+    drop(webhook);
+    stopping.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    result
+}
+
+fn serve_audit_webhook_connection(
+    mut stream: std::net::TcpStream,
+    batches: &Mutex<Vec<Value>>,
+) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let content_length = loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        request.extend_from_slice(&buffer[..read]);
+        let Some(headers_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&request[..headers_end]);
+        break headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Content-Length:")
+                    .or_else(|| line.strip_prefix("content-length:"))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+    };
+    let headers_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP headers were found above")
+        + 4;
+    while request.len() < headers_end + content_length {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    let payload: Value = serde_json::from_slice(&request[headers_end..headers_end + content_length])
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    batches
+        .lock()
+        .map_err(|_| std::io::Error::other("audit webhook batch list was poisoned"))?
+        .push(payload);
+    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 }
 
 pub(super) async fn nodeapiserver_rejects_unsupported_field_selector(context: &E2eContext) -> Result<()> {
