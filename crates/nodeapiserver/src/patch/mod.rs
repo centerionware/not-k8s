@@ -47,9 +47,8 @@
 //! config in, record the applying manager's new `Set`, prune what it
 //! stopped claiming, run real conflict detection against every other
 //! manager). Single-schema-version scoped throughout (see `updater`'s own
-//! module doc): this build has no multi-version conversion machinery at
-//! all, so every place real upstream caches one `Comparison`/converts an
-//! object per served API version collapses to one shared computation.
+//! module doc): the REST conversion boundary is real, while the updater's
+//! per-manager multi-version comparison cache remains separate work.
 //!
 //! `managed_fields` — the real `metadata.managedFields[]` wire shape
 //! (`ManagedFieldsEntry`, confirmed directly against the vendored
@@ -74,8 +73,10 @@
 //! against the real candidate object, matching the ordinary
 //! three-patch-kind `PATCH` branch's own coverage exactly. CRD-defined
 //! resources use the runtime-schema counterpart in [`crd_apply`], with
-//! multi-version conversion and advanced directives remaining separate,
-//! named scope.
+//! per-manager multi-version SSA comparison remains separate scope; REST
+//! CRUD/watch conversion webhooks are handled by `server::rest` and
+//! `server::watch_event`. Advanced patch directives are implemented for
+//! both compiled and runtime schemas.
 //!
 //! The `$patch`/`$setElementOrder`/`$deleteFromPrimitiveList` directive set
 //! is supported for both compiled and runtime CRD schemas. When

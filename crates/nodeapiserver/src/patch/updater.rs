@@ -13,13 +13,13 @@
 //! Comparison`), since two managers can have last written the object at
 //! different served versions and a `Converter` re-converts old/new into each
 //! one before comparing. This build has **no multi-version conversion
-//! machinery at all** — confirmed: no CRD conversion webhooks, no
-//! `Converter` equivalent anywhere in the crate, `nodeapiserver` serves
-//! exactly one storage schema per resource — so every manager's `Set` here
-//! is assumed to already be expressed against the one `schema` being
-//! compared, collapsing upstream's per-version `Comparison` cache down to
-//! one shared `Comparison` computed once. If multi-version storage is ever
-//! added, this is where the per-version cache would need to come back.
+//! machinery in this module** — the REST layer now handles CRD conversion
+//! webhooks, but every manager's `Set` here is still assumed to already be
+//! expressed against the one `schema` being compared. That collapses
+//! upstream's per-version `Comparison` cache down to one shared
+//! `Comparison` computed once. If per-manager multi-version SSA comparison
+//! is ever added, this is where the per-version cache would need to come
+//! back.
 //!
 //! Landed here: `update()` (the shared conflict-detection/bookkeeping core
 //! both `Update` and `Apply` build on), `apply_update()` (real upstream's

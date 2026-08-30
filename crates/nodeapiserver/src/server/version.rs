@@ -1,5 +1,5 @@
-//! `/version` — the last item on Group E's own "not yet landed" list
-//! (`docs/APISERVER.md`). Real shape confirmed directly against upstream's
+//! `/version` — the version.Info response for Group E. Real shape confirmed
+//! directly against upstream's
 //! `staging/src/k8s.io/apimachinery/pkg/version/types.go` `Info` struct,
 //! not assumed from memory: `major`/`minor`/`gitVersion`/`gitCommit`/
 //! `gitTreeState`/`buildDate`/`goVersion`/`compiler`/`platform`. The

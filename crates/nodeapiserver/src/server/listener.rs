@@ -325,7 +325,7 @@ fn is_apply_patch_content_type(content_type: &str) -> bool {
 /// `None` when absent, so the caller can reject with a real `400` rather
 /// than inventing a manager name.
 fn field_manager_query(query: &str) -> Option<String> {
-    path::parse_query(query).into_iter().find(|(k, _)| k == "fieldManager").map(|(_, v)| v)
+    path::parse_query(query).into_iter().find(|(k, _)| k == "fieldManager").map(|(_, v)| v).filter(|value| !value.is_empty())
 }
 
 /// Real upstream's own `?force=` query parameter — Server-Side Apply's
@@ -1711,6 +1711,9 @@ async fn handle(
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
+    let request_field_manager = field_manager_query(&query)
+        .or_else(|| req.headers().get("user-agent").and_then(|value| value.to_str().ok()).map(str::to_string))
+        .filter(|value| !value.is_empty());
     let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
 
     if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
@@ -2239,7 +2242,7 @@ async fn handle(
             }
         }
 
-        return match rest::patch_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, context, candidate, dry_run).await {
+        return match rest::patch_persist_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, context, candidate, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
@@ -2293,7 +2296,7 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-        return match rest::update_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run).await {
+        return match rest::update_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::MissingResourceVersion) => {
@@ -2360,7 +2363,7 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
-        return match rest::patch_status(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run).await {
+        return match rest::patch_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
@@ -3541,7 +3544,7 @@ async fn handle(
                 // `has_body` guarantees this is `Some` — the decode
                 // happened above, before this branch was even chosen.
                 let body_value = body_value.expect("body_value is Some whenever is_create is true (has_body covers it)");
-                match rest::create_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value, dry_run).await {
+                match rest::create_with_options_and_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value, dry_run, request_field_manager.as_deref()).await {
                     Ok(rest::CreateOutcome::Created(object)) => {
                         // Group J: persist `ResourceQuota.status.used` now
                         // that the object this usage total was computed
@@ -3574,7 +3577,7 @@ async fn handle(
                 }
             } else if is_update {
                 let body_value = body_value.expect("body_value is Some whenever is_update is true (has_body covers it)");
-                match rest::update_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run).await {
+                match rest::update_with_options_and_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run, request_field_manager.as_deref()).await {
                     Ok(rest::UpdateOutcome::Updated(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
