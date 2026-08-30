@@ -34,7 +34,7 @@ group where the throwaway rig described below can reach it), **deferred**.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `ef14eab2` on
+This snapshot is checked against `origin/nodeapiserver` at `2ed5309c` on
 2026-08-30. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -484,8 +484,8 @@ async handler) dispatches all five non-resource discovery routes (`/api`,
 `Status` body — `kind`/`apiVersion`/`status`/`message`/`reason`/`code`,
 the exact subset `client-go`'s own `errors.NewNotFound` decoding path
 reads, not the full `Status` type's `details.causes` machinery) for an
-unknown group/version rather than a silent fallthrough into the
-resource-request echo stub. A resource-shaped path (`/api/v1/namespaces/
+unknown group/version rather than a false-success response. A
+resource-shaped path (`/api/v1/namespaces/
 default/pods`) is handled by the resource dispatch described below, not by
 the discovery-only route.
 `/openapi/v3` and `/openapi/v3/<path>` are also now real, wired the same
@@ -558,6 +558,9 @@ Named honestly, not overclaimed: `GET`/`LIST` consult the registered
 `cacher::store::SharedCache` for synchronized, non-paginated reads and
 fall back to nodestore for cache misses, unsynchronized caches, paginated
 reads, or callers without a cache. `WATCH` is served from the same cache;
+request bodies are bounded by `NODEAPISERVER_MAX_REQUEST_BODY_BYTES` and
+return a Kubernetes `413 RequestEntityTooLarge` before decoding when the
+limit is exceeded; the default is 3 MiB, matching kube-apiserver's default.
 no subresources are included in these generic read paths.
 `list` now filters by label/field selector for real —
 `cacher::selector::object_matches` (Group D's own generic adapter,
