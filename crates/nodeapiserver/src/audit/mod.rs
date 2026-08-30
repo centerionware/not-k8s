@@ -8,16 +8,17 @@
 //! `server::listener::handle_with_audit`**, logged one JSON line per
 //! request via this crate's own `tracing` output and, when configured,
 //! an append-only JSON-lines file sink selected by
-//! `NODEAPISERVER_AUDIT_LOG_PATH`. Rotation and webhook delivery remain
-//! separate backends. `policy` matches an upstream-shaped
+//! `NODEAPISERVER_AUDIT_LOG_PATH`. The same sink can also enqueue bounded
+//! `EventList` batches for the asynchronous webhook backend selected by
+//! `NODEAPISERVER_AUDIT_WEBHOOK_URL`. `policy` matches an upstream-shaped
 //! `audit.k8s.io/v1` policy in order and supports `None` suppression and
 //! `omitStages` for the emitted audit stages. Request and response object
 //! capture remains separate work.
 //!
-//! Status: started (Group M — see docs/APISERVER.md). File
-//! rotation/webhook delivery and request/response object capture remain
-//! separate work.
+//! Status: started (Group M — see docs/APISERVER.md). Request/response object
+//! capture and the Panic stage remain separate work.
 
 pub mod event;
 pub mod policy;
 pub mod sink;
+pub mod webhook;
