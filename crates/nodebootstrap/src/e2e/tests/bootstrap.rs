@@ -75,6 +75,51 @@ fn systemd_service_available(name: &str) -> bool {
         })
 }
 
+fn nodeapiserver_is_ready() -> bool {
+    let active = run_privileged_output("systemctl", &["is-active", "--quiet", "nodeapiserver.service"])
+        .is_ok_and(|output| output.status.success());
+    if !active {
+        return false;
+    }
+
+    Command::new("curl")
+        .args([
+            "-k",
+            "-sS",
+            "--max-time",
+            "3",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "https://127.0.0.1:6443/healthz",
+        ])
+        .output()
+        .is_ok_and(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "200")
+}
+
+fn wait_for_nodeapiserver_ready(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if nodeapiserver_is_ready() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn restart_nodeapiserver_and_wait() -> Result<()> {
+    run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+    anyhow::ensure!(
+        wait_for_nodeapiserver_ready(Duration::from_secs(60)),
+        "nodeapiserver did not become ready after restart"
+    );
+    Ok(())
+}
+
 fn crd_is_established(crd: &CustomResourceDefinition) -> bool {
     crd.status.as_ref().is_some_and(|status| {
         status.conditions.as_ref().is_some_and(|conditions| {
@@ -126,7 +171,7 @@ impl NodeapiserverAuthenticationOverride {
         let _ = fs::remove_file(local_drop_in.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
-        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        restart_nodeapiserver_and_wait()?;
         Ok(guard)
     }
 
@@ -167,7 +212,7 @@ impl NodeapiserverAuthenticationOverride {
         let _ = fs::remove_file(local_drop_in.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
-        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        restart_nodeapiserver_and_wait()?;
         Ok(guard)
     }
 }
@@ -177,7 +222,7 @@ impl Drop for NodeapiserverAuthenticationOverride {
         let drop_in = self.drop_in.to_string_lossy();
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
-        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = restart_nodeapiserver_and_wait();
         let _ = fs::remove_file(&self.token_file);
     }
 }
@@ -216,7 +261,7 @@ impl NodeapiserverAuthorizationWebhookOverride {
         let _ = fs::remove_file(local_drop_in.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
-        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        restart_nodeapiserver_and_wait()?;
         Ok(guard)
     }
 }
@@ -226,7 +271,7 @@ impl Drop for NodeapiserverAuthorizationWebhookOverride {
         let drop_in = self.drop_in.to_string_lossy();
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
-        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = restart_nodeapiserver_and_wait();
     }
 }
 
@@ -278,7 +323,7 @@ impl NodeapiserverAuditLogOverride {
         let _ = fs::remove_file(local_drop_in.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
-        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        restart_nodeapiserver_and_wait()?;
         Ok(guard)
     }
 }
@@ -288,7 +333,7 @@ impl Drop for NodeapiserverAuditLogOverride {
         let drop_in = self.drop_in.to_string_lossy();
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
-        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = restart_nodeapiserver_and_wait();
         let _ = fs::remove_file(&self.audit_log);
         for index in 1..=self.max_backups {
             let backup = PathBuf::from(format!("{}.{}", self.audit_log.display(), index));
@@ -344,7 +389,7 @@ impl NodeapiserverAuditWebhookOverride {
         let _ = fs::remove_file(local_drop_in.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
-        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        restart_nodeapiserver_and_wait()?;
         Ok(guard)
     }
 }
@@ -354,7 +399,7 @@ impl Drop for NodeapiserverAuditWebhookOverride {
         let drop_in = self.drop_in.to_string_lossy();
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
-        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = restart_nodeapiserver_and_wait();
         if let Some(policy_file) = &self.policy_file {
             let _ = fs::remove_file(policy_file);
         }
