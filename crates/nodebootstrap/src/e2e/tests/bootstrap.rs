@@ -10,9 +10,8 @@ use k8s_openapi::api::authentication::v1::{
 };
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Endpoints, LocalObjectReference, Node, ObjectReference, PersistentVolume,
-    PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount,
-    Namespace,
+    ConfigMap, Endpoints, LocalObjectReference, Namespace, Node, ObjectReference, PersistentVolume,
+    PersistentVolumeClaim, Pod, ResourceQuota, Secret, Service, ServiceAccount,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::api::storage::v1::StorageClass;
@@ -1387,6 +1386,91 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = service_accounts
+        .delete("default", &DeleteParams::default())
+        .await;
+    let _ = namespaces
+        .delete(&namespace_name, &DeleteParams::default())
+        .await;
+    result
+}
+
+pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "ResourceQuota concurrency checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let namespace_name = format!("nodeapiserver-quota-{suffix}");
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let quotas: Api<ResourceQuota> = Api::namespaced(context.client.clone(), &namespace_name);
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &namespace_name);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &namespace_name);
+    let namespace: Namespace = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {"name": &namespace_name}
+    }))?;
+    let quota: ResourceQuota = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ResourceQuota",
+        "metadata": {"name": "one-pod", "namespace": &namespace_name},
+        "spec": {"hard": {"pods": "1"}}
+    }))?;
+    let service_account: ServiceAccount = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": "default", "namespace": &namespace_name}
+    }))?;
+    let pod = |name: &str| -> Result<Pod> {
+        Ok(serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name, "namespace": &namespace_name},
+            "spec": {
+                "serviceAccountName": "default",
+                "containers": [{"name": "app", "image": "example.invalid/not-k8s-quota"}]
+            }
+        }))?)
+    };
+    let first = pod("quota-first")?;
+    let second = pod("quota-second")?;
+
+    let result = async {
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .context("creating the ResourceQuota namespace")?;
+        service_accounts
+            .create(&PostParams::default(), &service_account)
+            .await
+            .context("creating the ResourceQuota ServiceAccount")?;
+        quotas
+            .create(&PostParams::default(), &quota)
+            .await
+            .context("creating the one-Pod ResourceQuota")?;
+
+        let params = PostParams::default();
+        let (first_result, second_result) =
+            tokio::join!(pods.create(&params, &first), pods.create(&params, &second));
+        let admitted = usize::from(first_result.is_ok()) + usize::from(second_result.is_ok());
+        anyhow::ensure!(
+            admitted == 1,
+            "a one-Pod ResourceQuota admitted {admitted} concurrent creates: first={first_result:?}, second={second_result:?}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = pods.delete("quota-first", &DeleteParams::default()).await;
+    let _ = pods.delete("quota-second", &DeleteParams::default()).await;
+    let _ = quotas.delete("one-pod", &DeleteParams::default()).await;
     let _ = service_accounts
         .delete("default", &DeleteParams::default())
         .await;

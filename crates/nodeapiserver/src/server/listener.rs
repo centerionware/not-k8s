@@ -108,6 +108,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -117,6 +118,14 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type BoxedBody = http_body_util::combinators::BoxBody<hyper::body::Bytes, BoxError>;
 
 type DynamicCacheState = HashMap<Vec<u8>, HashSet<crate::cacher::registry::ResourceKey>>;
+
+// ResourceQuota usage is derived from a live LIST immediately before the
+// object CREATE. Serialize namespaced creates in this process so two
+// simultaneous requests cannot both observe the same pre-create usage and
+// exceed a quota. The nodestore transaction still supplies the final
+// object-level uniqueness/concurrency check; this lock closes the quota's
+// separate read/check/create window for a single nodeapiserver process.
+static RESOURCE_QUOTA_ADMISSION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
 struct AdmissionMetadata {
@@ -3965,6 +3974,16 @@ async fn handle(
 
         if let Some(mut client) = storage {
             let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+            // ResourceQuota admission derives usage from a live object list
+            // and persists the object later in this same request. Hold the
+            // process-local reservation lock across that whole sequence so
+            // concurrent namespaced creates cannot both pass against the
+            // same pre-create snapshot.
+            let _quota_admission_guard = if is_create && namespace.is_some() {
+                Some(RESOURCE_QUOTA_ADMISSION_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await)
+            } else {
+                None
+            };
             let crd_printer_columns = if wants_table {
                 match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
                     Ok(Some(resolved)) => Some(resolved.additional_printer_columns),
