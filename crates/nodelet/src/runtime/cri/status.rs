@@ -194,15 +194,29 @@ pub(crate) const HOST_NETWORK_LABEL: &str = "nodelet.dev/host-network";
 impl CriRuntime {
     pub(crate) async fn pod_ip(&self, sandbox_id: &str) -> Option<String> {
         let mut rt = self.rt.clone();
-        let resp = rt
-            .pod_sandbox_status(PodSandboxStatusRequest {
+        let resp = match tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.pod_sandbox_status(PodSandboxStatusRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 verbose: false,
-            })
-            .await
-            .ok()?
-            .into_inner();
-        let status = resp.status?;
+            }),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp.into_inner(),
+            Ok(Err(error)) => {
+                warn!(sandbox = %sandbox_id, ?error, "PodSandboxStatus failed while resolving Pod IP");
+                return None;
+            }
+            Err(_) => {
+                warn!(sandbox = %sandbox_id, timeout_secs = STARTUP_RPC_TIMEOUT.as_secs(), "PodSandboxStatus timed out while resolving Pod IP");
+                return None;
+            }
+        };
+        let Some(status) = resp.status else {
+            warn!(sandbox = %sandbox_id, "PodSandboxStatus returned no status while resolving Pod IP");
+            return None;
+        };
         // CRI runtimes commonly report 127.0.0.1 (or no network entry at
         // all) for a sandbox sharing the node network namespace. Kubernetes
         // exposes the node's InternalIP as the Pod IP in that case, and the
@@ -216,8 +230,60 @@ impl CriRuntime {
         {
             return Some(crate::node::detect_internal_ip());
         }
-        let ip = status.network?.ip;
-        (!ip.is_empty()).then_some(ip)
+        if let Some(ip) = status
+            .network
+            .as_ref()
+            .and_then(|network| (!network.ip.is_empty()).then_some(network.ip.clone()))
+            .or_else(|| {
+                status
+                    .network
+                    .as_ref()?
+                    .additional_ips
+                    .iter()
+                    .find_map(|ip| (!ip.ip.is_empty()).then_some(ip.ip.clone()))
+            })
+        {
+            return Some(ip);
+        }
+
+        // containerd 2.x's CRI plugin persists the CNI result in the
+        // verbose sandbox-info payload as well as its normal Network field.
+        // A runtime restart or a sandbox-controller implementation can leave
+        // the latter temporarily empty even though the namespace and CNI
+        // result are healthy. Recover that IP without weakening the normal
+        // CRI contract or making every healthy status call pay for verbose
+        // metadata.
+        let mut rt = self.rt.clone();
+        let verbose = match tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.pod_sandbox_status(PodSandboxStatusRequest {
+                pod_sandbox_id: sandbox_id.to_string(),
+                verbose: true,
+            }),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp.into_inner(),
+            Ok(Err(error)) => {
+                warn!(sandbox = %sandbox_id, ?error, "verbose PodSandboxStatus failed while recovering Pod IP");
+                return None;
+            }
+            Err(_) => {
+                warn!(sandbox = %sandbox_id, timeout_secs = STARTUP_RPC_TIMEOUT.as_secs(), "verbose PodSandboxStatus timed out while recovering Pod IP");
+                return None;
+            }
+        };
+        let ip = verbose
+            .info
+            .get("info")
+            .and_then(|info| serde_json::from_str::<serde_json::Value>(info).ok())
+            .and_then(|info| cni_result_ip(&info));
+        if let Some(ip) = ip {
+            debug!(sandbox = %sandbox_id, %ip, "recovered Pod IP from verbose CRI sandbox metadata");
+        } else {
+            warn!(sandbox = %sandbox_id, state = status.state, "CRI sandbox status has no Pod IP");
+        }
+        ip
     }
 
     pub(crate) async fn build_status(&self, sandbox_id: &str, pod_uid: &str, restart_policy: &str) -> Result<RuntimeStatus> {
@@ -476,4 +542,58 @@ impl CriRuntime {
         Ok(out)
     }
 
+}
+
+/// Extract the first non-loopback IP from containerd's verbose CRI sandbox
+/// info. This is deliberately a fallback for runtimes that expose the CNI
+/// result there but omit `PodSandboxStatus.network.ip`; the standard CRI
+/// status field remains authoritative whenever it is populated.
+fn cni_result_ip(info: &serde_json::Value) -> Option<String> {
+    let interfaces = info.pointer("/cniResult/Interfaces")?.as_object()?;
+    let mut names: Vec<_> = interfaces.keys().collect();
+    names.sort_by_key(|name| if *name == "eth0" { 0 } else { 1 });
+    names
+        .into_iter()
+        .filter_map(|name| interfaces.get(name))
+        .filter_map(|interface| interface.get("IPConfigs").and_then(serde_json::Value::as_array))
+        .flatten()
+        .filter_map(|config| config.get("IP").and_then(serde_json::Value::as_str))
+        .find_map(|ip| {
+            let parsed = ip.parse::<std::net::IpAddr>().ok()?;
+            (!parsed.is_loopback()).then(|| ip.to_string())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cni_result_ip;
+    use serde_json::json;
+
+    #[test]
+    fn cni_result_ip_prefers_eth0_and_ignores_loopback() {
+        let info = json!({
+            "cniResult": {
+                "Interfaces": {
+                    "lo": {"IPConfigs": [{"IP": "127.0.0.1"}]},
+                    "eth0": {"IPConfigs": [{"IP": "10.42.0.7"}]},
+                    "eth1": {"IPConfigs": [{"IP": "10.42.0.8"}]}
+                }
+            }
+        });
+
+        assert_eq!(cni_result_ip(&info).as_deref(), Some("10.42.0.7"));
+    }
+
+    #[test]
+    fn cni_result_ip_returns_none_without_a_non_loopback_address() {
+        let info = json!({
+            "cniResult": {
+                "Interfaces": {
+                    "lo": {"IPConfigs": [{"IP": "127.0.0.1"}, {"IP": "::1"}]}
+                }
+            }
+        });
+
+        assert_eq!(cni_result_ip(&info), None);
+    }
 }
