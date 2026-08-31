@@ -149,6 +149,8 @@ pub fn build_event_at_stage_with_level(
 mod tests {
     use super::*;
 
+    static EMPTY_EXTRA: std::sync::OnceLock<BTreeMap<String, Vec<String>>> = std::sync::OnceLock::new();
+
     fn minimal_input() -> EventInput<'static> {
         EventInput {
             audit_id: "11111111-1111-1111-1111-111111111111",
@@ -157,7 +159,7 @@ mod tests {
             user_name: "alice",
             user_uid: None,
             user_groups: &[],
-            user_extra: &BTreeMap::new(),
+            user_extra: EMPTY_EXTRA.get_or_init(BTreeMap::new),
             source_ip: None,
             user_agent: None,
             object_ref: None,
