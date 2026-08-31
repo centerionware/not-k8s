@@ -24,7 +24,7 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::Api;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
@@ -500,35 +500,38 @@ async fn probe_container(
         .flatten()
         .min()
         .unwrap_or(Duration::from_secs(10));
-    let initial_delay = [liveness.as_ref().map(|(t, _)| t.initial_delay), readiness.as_ref().map(|(t, _)| t.initial_delay)]
-        .into_iter()
-        .flatten()
-        .max()
-        .unwrap_or_default();
-    tokio::time::sleep(initial_delay).await;
+    // Each probe has its own initial delay. Waiting for the maximum here
+    // would incorrectly hold a readiness probe behind a much later liveness
+    // probe; CoreDNS, for example, must become Ready immediately while its
+    // liveness probe intentionally waits 60 seconds.
+    let probes_started_at = Instant::now();
 
     let mut live_tracker = liveness.as_ref().map(|(_, _)| ProbeTracker::new(true));
     let mut ready_tracker = readiness.as_ref().map(|(_, _)| ProbeTracker::new(false));
 
     loop {
         if let (Some((t, check)), Some(tracker)) = (&liveness, &mut live_tracker) {
-            let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
-            let was_passing = tracker.passing;
-            tracker.record(ok, t.success_threshold, t.failure_threshold);
-            if was_passing && !tracker.passing {
-                let grace = probe_grace_period_seconds(container.liveness_probe.as_ref().unwrap(), pod_grace_period_seconds);
-                warn!(pod = %key, container = %cname, grace_period_seconds = grace, "liveness probe failed; restarting container");
-                restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
-                *tracker = ProbeTracker::new(true); // give the fresh container a clean slate
+            if probes_started_at.elapsed() >= t.initial_delay {
+                let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+                let was_passing = tracker.passing;
+                tracker.record(ok, t.success_threshold, t.failure_threshold);
+                if was_passing && !tracker.passing {
+                    let grace = probe_grace_period_seconds(container.liveness_probe.as_ref().unwrap(), pod_grace_period_seconds);
+                    warn!(pod = %key, container = %cname, grace_period_seconds = grace, "liveness probe failed; restarting container");
+                    restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
+                    *tracker = ProbeTracker::new(true); // give the fresh container a clean slate
+                }
             }
         }
         if let (Some((t, check)), Some(tracker)) = (&readiness, &mut ready_tracker) {
-            let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
-            let was_passing = tracker.passing;
-            tracker.record(ok, t.success_threshold, t.failure_threshold);
-            set_health(&health, &ns, &name, &cname, |h| h.ready = tracker.passing);
-            if tracker.passing != was_passing {
-                notify_reconcile();
+            if probes_started_at.elapsed() >= t.initial_delay {
+                let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+                let was_passing = tracker.passing;
+                tracker.record(ok, t.success_threshold, t.failure_threshold);
+                set_health(&health, &ns, &name, &cname, |h| h.ready = tracker.passing);
+                if tracker.passing != was_passing {
+                    notify_reconcile();
+                }
             }
         }
         tokio::time::sleep(period).await;
