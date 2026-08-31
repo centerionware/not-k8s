@@ -10,10 +10,11 @@ use k8s_openapi::api::authentication::v1::{
 };
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Endpoints, LocalObjectReference, Node, ObjectReference, Pod, Secret, Service,
-    ServiceAccount,
+    ConfigMap, Endpoints, LocalObjectReference, Node, ObjectReference, PersistentVolume,
+    PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
+use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
@@ -1417,6 +1418,104 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
         .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{name}")).body(Vec::new())?)
         .await;
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_rejects_unsupported_pvc_resize(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "PVC resize admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let class_name = format!("nodeapiserver-resize-class-{suffix}");
+    let pv_name = format!("nodeapiserver-resize-pv-{suffix}");
+    let pvc_name = format!("nodeapiserver-resize-pvc-{suffix}");
+    let classes: Api<StorageClass> = Api::all(context.client.clone());
+    let pvs: Api<PersistentVolume> = Api::all(context.client.clone());
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(context.client.clone(), &context.namespace);
+    let class: StorageClass = serde_json::from_value(json!({
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "StorageClass",
+        "metadata": {"name": &class_name},
+        "provisioner": "nodeapiserver.test/no-provisioner",
+        "allowVolumeExpansion": false,
+        "reclaimPolicy": "Retain",
+        "volumeBindingMode": "Immediate"
+    }))?;
+    let pv: PersistentVolume = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": &pv_name},
+        "spec": {
+            "capacity": {"storage": "2Gi"},
+            "accessModes": ["ReadWriteOnce"],
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": &class_name,
+            "volumeMode": "Filesystem",
+            "hostPath": {"path": "/tmp/nodeapiserver-pvc-resize"}
+        }
+    }))?;
+    let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": &pvc_name, "namespace": &context.namespace},
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": "1Gi"}},
+            "storageClassName": &class_name,
+            "volumeName": &pv_name
+        }
+    }))?;
+
+    let result = async {
+        classes
+            .create(&PostParams::default(), &class)
+            .await
+            .context("creating the PVC resize StorageClass")?;
+        pvs.create(&PostParams::default(), &pv)
+            .await
+            .context("creating the PVC resize PersistentVolume")?;
+        pvcs.create(&PostParams::default(), &pvc)
+            .await
+            .context("creating the PVC resize claim")?;
+        context
+            .wait_until("PVC to become Bound before resize admission", Duration::from_secs(60), || {
+                let pvcs = pvcs.clone();
+                let pvc_name = pvc_name.clone();
+                async move {
+                    Ok(pvcs
+                        .get(&pvc_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Bound"))
+                }
+            })
+            .await?;
+        let resize = pvcs
+            .patch(
+                &pvc_name,
+                &PatchParams::default(),
+                &Patch::Merge(&json!({"spec": {"resources": {"requests": {"storage": "2Gi"}}}})),
+            )
+            .await;
+        match resize {
+            Err(KubeError::Api(error)) if error.code == 403 => Ok(()),
+            Err(error) => anyhow::bail!("PVC resize returned the wrong API error: {error}"),
+            Ok(updated) => anyhow::bail!("PVC resize was accepted despite a non-expanding StorageClass: {updated:?}"),
+        }
+    }
+    .await;
+
+    let _ = pvcs.delete(&pvc_name, &DeleteParams::default()).await;
+    let _ = pvs.delete(&pv_name, &DeleteParams::default()).await;
+    let _ = classes.delete(&class_name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
