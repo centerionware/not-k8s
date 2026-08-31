@@ -278,7 +278,7 @@ impl CriRuntime {
             .get("info")
             .and_then(|info| serde_json::from_str::<serde_json::Value>(info).ok())
             .and_then(|info| cni_result_ip(&info));
-        if let Some(ip) = ip {
+        if let Some(ip) = ip.as_ref() {
             debug!(sandbox = %sandbox_id, %ip, "recovered Pod IP from verbose CRI sandbox metadata");
         } else {
             warn!(sandbox = %sandbox_id, state = status.state, "CRI sandbox status has no Pod IP");
