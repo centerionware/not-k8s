@@ -847,7 +847,7 @@ pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
             "data": {"token": "not-base64"}
         }))?)?;
 
-    match context.client.request::<Value>(request).await {
+    let result = match context.client.request::<Value>(request).await {
         Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
         Err(error) => anyhow::bail!(
             "invalid built-in schema constraint returned the wrong API error: {error}"
@@ -855,7 +855,8 @@ pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
         Ok(value) => anyhow::bail!(
             "invalid built-in schema constraint was accepted: {value}"
         ),
-    }
+    };
+    result?;
 
     // Quantity is published as a oneOf(string, number) schema. A boolean
     // here must be rejected by the same generic OpenAPI validator rather
