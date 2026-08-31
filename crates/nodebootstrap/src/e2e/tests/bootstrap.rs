@@ -1149,6 +1149,81 @@ pub(super) async fn nodeapiserver_rejects_invalid_metadata_keys(
     }
 }
 
+pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "DefaultIngressClass checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let class_name = format!("nodeapiserver-default-{suffix}");
+    let ingress_name = format!("nodeapiserver-ingress-{suffix}");
+    let class_uri = "/apis/networking.k8s.io/v1/ingressclasses";
+    let ingress_uri = format!(
+        "/apis/networking.k8s.io/v1/namespaces/{}/ingresses",
+        context.namespace
+    );
+
+    let class: Value = context
+        .client
+        .request(
+            Request::builder()
+                .method("POST")
+                .uri(class_uri)
+                .body(serde_json::to_vec(&json!({
+                    "apiVersion": "networking.k8s.io/v1",
+                    "kind": "IngressClass",
+                    "metadata": {
+                        "name": &class_name,
+                        "annotations": {"ingressclass.kubernetes.io/is-default-class": "true"}
+                    },
+                    "spec": {"controller": "nodeapiserver.test/default-ingress"}
+                }))?)?,
+            )
+        .await
+        .context("creating the default IngressClass")?;
+    anyhow::ensure!(
+        class["metadata"]["name"] == class_name,
+        "nodeapiserver returned the wrong IngressClass: {class}"
+    );
+
+    let result = async {
+        let ingress: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("POST")
+                    .uri(&ingress_uri)
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "networking.k8s.io/v1",
+                        "kind": "Ingress",
+                        "metadata": {"name": &ingress_name, "namespace": &context.namespace},
+                        "spec": {}
+                    }))?)?,
+                )
+            .await
+            .context("creating an Ingress without a class")?;
+        anyhow::ensure!(
+            ingress["spec"]["ingressClassName"] == class_name,
+            "nodeapiserver did not default the IngressClass: {ingress}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(format!("{ingress_uri}/{ingress_name}")).body(Vec::new())?)
+        .await;
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(format!("{class_uri}/{class_name}")).body(Vec::new())?)
+        .await;
+    result
+}
+
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     context: &E2eContext,
 ) -> Result<()> {

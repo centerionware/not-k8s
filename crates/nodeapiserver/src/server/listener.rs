@@ -4145,6 +4145,27 @@ async fn handle(
                 }
             }
 
+            // Group J: `DefaultIngressClass` — mutating, `CREATE` only.
+            // Keep this after the pure mutators and before validators so
+            // later admission sees the final Ingress candidate.
+            if is_create {
+                if let Some(ingress) = body_value.as_mut() {
+                    if admission::default_ingress_class::applies_to(&info.api_group, &info.resource, &info.subresource) {
+                        match rest::list(&mut client, None, "networking.k8s.io", "v1", "ingressclasses", None, "", "", 0, "").await {
+                            Ok(rest::ListOutcome::Found(list)) => {
+                                let classes = list["items"].as_array().cloned().unwrap_or_default();
+                                admission::default_ingress_class::mutate(ingress, &classes);
+                            }
+                            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                            Err(error) => {
+                                warn!(path = %path_str, error = ?error, "admission: listing ingress classes failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Group J: `LimitRanger` — mutating (pods only, `CREATE` only)
             // + validating (pods and PVCs; see
             // `admission::limit_ranger`'s own doc comment for exact scope
