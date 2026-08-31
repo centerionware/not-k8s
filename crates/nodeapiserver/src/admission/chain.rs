@@ -55,6 +55,7 @@ impl MutatingRegistry {
         let mut registry = Self::new();
         registry.register(DefaultTolerationSeconds);
         registry.register(ServiceAccountDefaults);
+        registry.register(TaintNodesByCondition);
         registry
     }
 
@@ -119,6 +120,27 @@ impl MutatingPlugin for ServiceAccountDefaults {
     }
 }
 
+struct TaintNodesByCondition;
+
+impl MutatingPlugin for TaintNodesByCondition {
+    fn name(&self) -> &'static str {
+        "TaintNodesByCondition"
+    }
+
+    fn applies(&self, request: &Request<'_>) -> bool {
+        super::taint_nodes_by_condition::applies_to(
+            request.operation,
+            request.group,
+            request.resource,
+            request.subresource,
+        )
+    }
+
+    fn mutate(&self, object: &mut Value) {
+        super::taint_nodes_by_condition::mutate(object);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,7 +189,10 @@ mod tests {
     #[test]
     fn builtins_preserve_the_existing_mutation_order_and_scope() {
         let registry = MutatingRegistry::with_builtins();
-        assert_eq!(registry.names().collect::<Vec<_>>(), ["DefaultTolerationSeconds", "ServiceAccount"]);
+        assert_eq!(
+            registry.names().collect::<Vec<_>>(),
+            ["DefaultTolerationSeconds", "ServiceAccount", "TaintNodesByCondition"]
+        );
 
         let mut pod = json!({"spec": {}});
         registry.run(&mut request(&mut pod, Operation::Create));
