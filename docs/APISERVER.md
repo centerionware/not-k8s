@@ -43,7 +43,7 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against nodeapiserver source commit `ccce263a` on
+This snapshot is checked against nodeapiserver source commit `feb3e0df` on
 2026-08-31. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
