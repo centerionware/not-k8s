@@ -12,9 +12,8 @@
 //! # Module map
 //!
 //! Mirrors `docs/APISERVER.md`'s delivery groups so the two can be read
-//! side by side. Groups not yet landed have an empty or near-empty module
-//! present as a placeholder — see each module's own doc comment for its
-//! real status; this file does not duplicate that bookkeeping.
+//! side by side. Each module carries its own scoped status and compatibility
+//! notes; this file does not duplicate that bookkeeping.
 //!
 //!   `codegen`      — Group A: build-time-generated protobuf field table and
 //!                    OpenAPI SMP/SSA/discovery metadata (`build.rs`).

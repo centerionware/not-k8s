@@ -20,7 +20,7 @@ pub mod openapi_v3_docs {
     include!(concat!(env!("OUT_DIR"), "/openapi_v3_docs.rs"));
 }
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 
 /// `(message, json_field_name) -> &ProtoField`, built once from
@@ -154,6 +154,87 @@ pub fn openapi_v3_document(path: &str) -> Option<&'static serde_json::Value> {
                 .collect()
         })
         .get(path)
+}
+
+/// Returns the expanded OpenAPI schema for one built-in GVK.
+///
+/// The published documents are already the source of truth for the built-in
+/// wire shape. Keeping this lookup here lets validation and CEL mutation use
+/// that same source without each caller inventing a second GVK-to-schema
+/// table. Recursive references are left as dynamic object nodes; Kubernetes
+/// has recursive API types, and expanding those indefinitely would make the
+/// finite runtime schema impossible to represent.
+pub fn openapi_schema_for_gvk(group: &str, version: &str, kind: &str) -> Option<serde_json::Value> {
+    let path = if group.is_empty() {
+        format!("api/{version}")
+    } else {
+        format!("apis/{group}/{version}")
+    };
+    let document = openapi_v3_document(&path)?;
+    let schemas = document.pointer("/components/schemas")?.as_object()?;
+    let root = schemas.values().find(|schema| {
+        schema
+            .get("x-kubernetes-group-version-kind")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|gvks| {
+                gvks.iter().any(|gvk| {
+                    gvk.get("group").and_then(serde_json::Value::as_str) == Some(group)
+                        && gvk.get("version").and_then(serde_json::Value::as_str) == Some(version)
+                        && gvk.get("kind").and_then(serde_json::Value::as_str) == Some(kind)
+                })
+            })
+    })?;
+    Some(expand_openapi_refs(root, schemas, &mut BTreeSet::new()))
+}
+
+fn expand_openapi_refs(
+    value: &serde_json::Value,
+    schemas: &serde_json::Map<String, serde_json::Value>,
+    active: &mut BTreeSet<String>,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .map(|value| expand_openapi_refs(value, schemas, active))
+                .collect(),
+        ),
+        serde_json::Value::Object(object) => {
+            if let Some(reference) = object
+                .get("$ref")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+            {
+                if let Some(target) = schemas.get(reference) {
+                    if active.insert(reference.to_string()) {
+                        let mut expanded = expand_openapi_refs(target, schemas, active);
+                        active.remove(reference);
+                        if let serde_json::Value::Object(expanded_object) = &mut expanded {
+                            for (key, value) in object {
+                                if key != "$ref" {
+                                    expanded_object.insert(
+                                        key.clone(),
+                                        expand_openapi_refs(value, schemas, active),
+                                    );
+                                }
+                            }
+                        }
+                        return expanded;
+                    }
+                    return serde_json::json!({"type": "object"});
+                }
+            }
+            serde_json::Value::Object(
+                object
+                    .iter()
+                    .map(|(key, value)| {
+                        (key.clone(), expand_openapi_refs(value, schemas, active))
+                    })
+                    .collect(),
+            )
+        }
+        _ => value.clone(),
+    }
 }
 
 /// Resolves a field's `proto_type` (as `proto_fields::ProtoField` stores
