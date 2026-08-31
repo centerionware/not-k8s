@@ -4181,6 +4181,69 @@ async fn handle(
                 }
             }
 
+            // Group J: `RuntimeClass` — mutating and validating, `CREATE`
+            // only for ordinary Pods. The RuntimeClass plugin's informer
+            // lookup is represented by this live read; the pure module owns
+            // the same overhead validation/defaulting and scheduling merge
+            // once the object is available.
+            if is_create
+                && admission::runtime_class::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                if let Some(pod) = body_value.as_mut() {
+                    let runtime_class_name = pod
+                        .pointer("/spec/runtimeClassName")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let runtime_class = if let Some(runtime_class_name) = runtime_class_name {
+                        match rest::get(
+                            &mut client,
+                            None,
+                            "node.k8s.io",
+                            "v1",
+                            "runtimeclasses",
+                            None,
+                            &runtime_class_name,
+                        )
+                        .await
+                        {
+                            Ok(rest::GetOutcome::Found(runtime_class)) => Some(runtime_class),
+                            Ok(rest::GetOutcome::ObjectNotFound)
+                            | Ok(rest::GetOutcome::UnknownResource) => {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(
+                                        &path_str,
+                                        &format!(
+                                            "pod rejected: RuntimeClass {runtime_class_name:?} not found"
+                                        ),
+                                    ),
+                                ));
+                            }
+                            Err(error) => {
+                                warn!(path = %path_str, error = ?error, "admission: RuntimeClass lookup failed");
+                                return Ok(json_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    &internal_error_status(&path_str),
+                                ));
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let Err(error) = admission::runtime_class::mutate_and_validate(pod, runtime_class.as_ref()) {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &error),
+                        ));
+                    }
+                }
+            }
+
             // Group J: `LimitRanger` — mutating (pods only, `CREATE` only)
             // + validating (pods and PVCs; see
             // `admission::limit_ranger`'s own doc comment for exact scope

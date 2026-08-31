@@ -1362,6 +1362,17 @@ the request candidate before the remaining admission stages and is covered
 by unit tests for all three resource families, duplicate-finalizer handling,
 and subresource exclusion.
 
+`admission::runtime_class` is mutating and validating, `CREATE`-only for
+ordinary Pods — a faithful port of real upstream's `RuntimeClass` plugin
+(`plugin/pkg/admission/runtimeclass/admission.go`, fetched and read
+directly): a named `RuntimeClass` is resolved from the cluster, its
+`overhead.podFixed` is copied into the Pod, its scheduling `nodeSelector` is
+merged with conflicts rejected, and its tolerations are appended without
+duplicates. A Pod-supplied overhead must match the RuntimeClass's overhead,
+or is rejected when no matching RuntimeClass overhead exists. The listener
+performs the live RuntimeClass lookup and the pure module applies the
+mutation/validation before the remaining Pod admission stages.
+
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
 upstream's own `LimitRanger` plugin
