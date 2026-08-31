@@ -80,6 +80,11 @@ pub struct WatchCache {
     /// real kube-apiserver's own cache size limit does.
     history: VecDeque<WatchEvent>,
     history_limit: usize,
+    /// The oldest resource version a new watch can safely start from. This
+    /// begins at the LIST snapshot revision, not the first live event: a
+    /// client is allowed to start at the exact RV returned by that LIST even
+    /// when the first event after it has a higher revision.
+    history_floor: i64,
     revision: i64,
     /// Broadcasts every applied event to live watchers. Bounded — a slow
     /// watcher that falls behind the channel's capacity gets `Lagged` from
@@ -109,6 +114,7 @@ impl WatchCache {
             items: initial.into_iter().collect(),
             history: VecDeque::with_capacity(history_limit),
             history_limit,
+            history_floor: revision,
             revision,
             events,
             revision_tx,
@@ -165,10 +171,16 @@ impl WatchCache {
         self.revision = revision;
         let event = WatchEvent { kind, key, value, revision };
         if self.history.len() == self.history_limit && self.history_limit > 0 {
-            self.history.pop_front();
+            if let Some(evicted) = self.history.pop_front() {
+                self.history_floor = evicted.revision;
+            }
         }
         if self.history_limit > 0 {
             self.history.push_back(event.clone());
+        } else {
+            // With no retained history, only a watch starting at the cache's
+            // current revision can be resumed without a relist.
+            self.history_floor = revision;
         }
         // No live receiver is not an error — a cache with nobody watching
         // yet still needs to keep its own state current.
@@ -203,22 +215,15 @@ impl WatchCache {
     /// `range()` reuses etcd's `revision <= 0` convention).
     ///
     /// [`Error::TooOld`] if `start_revision` is older than the oldest
-    /// retained history entry — the caller's only correct response is a
+    /// safely resumable revision — the caller's only correct response is a
     /// fresh LIST and a new `watch_from` at the RV that LIST returned.
     pub fn watch_from(&self, start_revision: i64) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
         let rx = self.events.subscribe();
         if start_revision <= 0 {
             return Ok((Vec::new(), rx));
         }
-        if let Some(oldest) = self.history.front() {
-            if start_revision < oldest.revision {
-                return Err(Error::TooOld { requested: start_revision, oldest: oldest.revision });
-            }
-        } else if start_revision < self.revision {
-            // No history retained at all (history_limit == 0) but the
-            // cache has moved past start_revision — nothing to replay
-            // from, same conclusion as the oldest-entry check above.
-            return Err(Error::TooOld { requested: start_revision, oldest: self.revision });
+        if start_revision < self.history_floor {
+            return Err(Error::TooOld { requested: start_revision, oldest: self.history_floor });
         }
         let replay: Vec<WatchEvent> = self.history.iter().filter(|e| e.revision > start_revision).cloned().collect();
         Ok((replay, rx))
@@ -413,11 +418,8 @@ mod tests {
         // caller (cacher::driver, mirroring nodestore's own watch stream)
         // always passes an empty value for a Deleted event — WatchCache
         // itself is responsible for retaining the pre-delete value.
-        // An unrelated seed event at revision 2 first, purely so
-        // `watch_from`'s own "not older than the oldest retained history
-        // entry" check has something at or before the requested
-        // start_revision — `watch_from`'s semantics are unrelated to what
-        // this test is proving and untouched by this fix.
+        // An unrelated seed event at revision 2 first, purely so the
+        // watch has a retained revision at or before its requested start.
         let mut cache = WatchCache::new(vec![(b"a".to_vec(), entry("last-value", 1))], 1, 16, 16);
         cache.apply(EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
         cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 3);
@@ -550,8 +552,20 @@ mod tests {
         cache.apply(EventKind::Added, b"b".to_vec(), b"v2".to_vec(), 3);
         cache.apply(EventKind::Added, b"c".to_vec(), b"v3".to_vec(), 4);
         // history_limit=2 means only revisions 3 and 4 are still retained.
-        let err = cache.watch_from(2).expect_err("revision 2 has been evicted from the retained window");
-        assert!(matches!(err, Error::TooOld { requested: 2, oldest: 3 }));
+        let err = cache.watch_from(1).expect_err("revision 1 predates the retained window");
+        assert!(matches!(err, Error::TooOld { requested: 1, oldest: 2 }));
+    }
+
+    #[test]
+    fn watch_from_the_list_revision_replays_the_first_live_event() {
+        let mut cache = WatchCache::new(vec![], 5, 16, 16);
+        cache.apply(EventKind::Added, b"a".to_vec(), b"v".to_vec(), 6);
+
+        let (replay, _rx) = cache
+            .watch_from(5)
+            .expect("a watch may start at the exact resource version returned by LIST");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].revision, 6);
     }
 
     #[test]
