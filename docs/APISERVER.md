@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/7 |
-| J — Admission | in progress | 13/15 |
+| J — Admission | in progress | 14/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 8/9 |
@@ -43,8 +43,8 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `b983dbff` on
-2026-08-30. It describes what is integrated on that branch; open child PRs
+This snapshot is checked against `origin/nodeapiserver` at `6503c4c5` on
+2026-08-31. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
 
@@ -1325,6 +1325,12 @@ ephemeral containers' `env[].valueFrom.secretKeyRef` and
 `envFrom[].secretRef` references against the annotated account's allowed
 secrets before the update is persisted.
 
+`admission::taint_nodes_by_condition` is the default-on, pure
+`TaintNodesByCondition` mutation for core `Node` `CREATE` requests. It adds
+the upstream `node.kubernetes.io/not-ready`/`NoSchedule` taint when absent,
+preserves submitted taints, and is idempotent so node lifecycle reconciliation
+can remove the taint after the node becomes Ready.
+
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
 (`plugin/pkg/admission/storage/storageclass/setdefault/admission.go`,
@@ -1674,7 +1680,7 @@ selected object). Dry-run requests are rejected with a
 `Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
 AdmissionReview path.
 
-**Not yet landed**: every other built-in plugin, a complete registry covering
+**Not yet landed**: the remaining built-in plugins, a complete registry covering
 storage-backed mutators and validators, the remaining typed-CEL /
 variable surface of MutatingAdmissionPolicy, and interpreter-level fuel
 accounting. The ValidatingAdmissionPolicy path uses the existing
