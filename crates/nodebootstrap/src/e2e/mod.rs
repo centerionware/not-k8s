@@ -1729,7 +1729,6 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             bootstrap::nodeapiserver_adds_storage_protection_finalizer(context).await
         },
         "test_nodeapiserver_applies_runtime_class_admission" => {
-        "test_nodeapiserver_applies_runtime_class_admission" => {
             bootstrap::nodeapiserver_applies_runtime_class_admission(context).await
         },
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
