@@ -2,7 +2,7 @@
 //! (`NamespaceLifecycle`, `LimitRanger`, `ServiceAccount`, `ResourceQuota`,
 //! `PodSecurity`, ...) plus mutating/validating webhooks and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy ahead of every
-//! write. **Seven built-in plugins are now landed and wired** (listed
+//! write. **Eight built-in plugins are now landed and wired** (listed
 //! below). Pure mutators run through [`chain::MutatingRegistry`]; the
 //! storage-backed mutators and validators still need a broader async
 //! registry because their I/O and failure-policy behavior is request-specific.
@@ -42,6 +42,10 @@
 //! `spec.storageClassName` set to whichever `StorageClass` is marked
 //! default (real upstream's own default-selection + tie-break rules,
 //! ported exactly — see that module's own doc comment).
+//!
+//! `default_ingress_class` — `DefaultIngressClass`, mutating, `CREATE`-only:
+//! an Ingress without an explicit class or legacy class annotation gets the
+//! newest default `IngressClass`, matching upstream's lister and tie-break.
 //!
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
@@ -105,7 +109,7 @@
 //! `pod_requests`/`pod_limits` for the aggregation, since real upstream's
 //! quota usage function calls the exact same underlying helper.
 //!
-//! All seven plugins are **wired into `server::listener`, unconditionally**
+//! All eight plugins are **wired into `server::listener`, unconditionally**
 //! — pure mutators are invoked through `chain::MutatingRegistry`, while
 //! storage-backed stages remain in the listener until their async registry
 //! adapter lands. None needs operator-provisioned bootstrap data (unlike
@@ -192,6 +196,7 @@
 
 pub mod attributes;
 pub mod chain;
+pub mod default_ingress_class;
 pub mod default_storage_class;
 pub mod default_toleration_seconds;
 pub mod limit_ranger;
