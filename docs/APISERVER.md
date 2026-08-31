@@ -43,7 +43,7 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `efa2b3a1` on
+This snapshot is checked against nodeapiserver source commit `ccce263a` on
 2026-08-31. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -154,6 +154,12 @@ status line is updated as its own PR merges into `nodeapiserver`.
 field removals across 572 shared structs), and `crates/nodescheduler` now
 uses `cel = "0.14"` with its migrated dynamic-resource execution path and
 regression tests.
+
+The current v1.34 API surface is sufficient for the DRA contract exercised by
+this branch, including the stable `resource.k8s.io/v1` resources. The DRA
+ResourceSlice compatibility fix is in the nodeapiserver path; moving the
+comparison control plane or vendored schemas to v1.35 or v1.37 would be a
+separate compatibility migration, not a prerequisite for this implementation.
 
 **A. Vendoring + build-time codegen** — **done**. `crates/nodeapiserver`
 exists; `vendor/refresh.sh` vendored `release-1.34`'s 64 openapi-spec v3
@@ -369,11 +375,12 @@ The selector matchers are now wired onto a decoded object:
 decoded-object shape). The two halves are deliberately asymmetric, named
 honestly: `object_labels` is genuinely generic — every Kind's labels live
 at `metadata.labels`, `ObjectMeta` being shared structurally — but
-`field_value` is only a generic dotted-JSON-path fallback
-(`"spec.nodeName"` -> pointer `/spec/nodeName`), a strict superset of what
-real upstream allows; real kube-apiserver restricts which fields are even
-selectable per Kind via a hand-written `SelectableFields` function per
-type (`pkg/registry/*/*/strategy.go`), which isn't built here yet.
+`field_value` is the generic dotted-JSON-path reader used by the per-resource
+allowlists (`"spec.nodeName"` -> pointer `/spec/nodeName`); unsupported fields
+are rejected like upstream rather than being accepted as arbitrary paths.
+The allowlists currently cover the built-in resources implemented here,
+including `spec.nodeName` and `spec.driver` for DRA `ResourceSlice` objects,
+and are extended as new resource strategies are added.
 `object_matches` is now called for real, from `server::rest::list`
 (Group E), filtering every item a real `LIST` request decodes.
 
@@ -483,9 +490,9 @@ Subresources are emitted as their own discoverable entries (`pods/status`,
 `pods/log`, `pods/exec`, and the other single-item subresource paths), with
 the advertised `connect` verb retained for streaming subresources.
 `singularName` uses real kube-apiserver's own RESTMapper default (lowercased
-kind) since no per-type override table is vendored;
-`shortNames`/`categories` aren't emitted at all (not present anywhere in
-the vendored spec). **Now wired into the listener's actual routing**:
+kind) since no per-type override table is vendored; standard built-in
+`shortNames` and CRD-declared `spec.names.shortNames` are emitted, while
+`categories` remain unmodeled. **Now wired into the listener's actual routing**:
 `server::listener`'s `route_discovery` (pure, unit-tested apart from the
 async handler) dispatches all five non-resource discovery routes (`/api`,
 `/api/{version}`, `/apis`, `/apis/{group}`, `/apis/{group}/{version}`) to
@@ -1134,9 +1141,10 @@ authentication logic, never persisted (same virtual-resource posture
 `authz::sar`'s review kinds established). `authn::service_account` is now
 wired for the nodeapiserver bootstrap target: it signs ES256
 projected/bound tokens from the cluster `sa.key`, serves the core
-`serviceaccounts/token` TokenRequest subresource, validates
-issuer/audience/lifetime, and answers authentication.k8s.io `TokenReview`
-for nodelet's bearer-token webhook path. `authn::oidc` is now an optional
+`serviceaccounts/token` TokenRequest subresource. It includes the bound Pod
+and assigned Node identity in authenticated `UserInfo.extra`, validates
+issuer/audience/lifetime, and answers authentication.k8s.io `TokenReview` for
+nodelet's bearer-token webhook path. `authn::oidc` is now an optional
 discovery-backed bearer-token authenticator: when
 `NODEAPISERVER_OIDC_ISSUER_URL` and `NODEAPISERVER_OIDC_CLIENT_ID` are set,
 the listener validates the issuer metadata, loads its JWKS, verifies
