@@ -199,6 +199,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_enforces_node_restriction",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_applies_core_defaults",
         group: TestGroup::General,
     },
@@ -1698,6 +1702,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
+        "test_nodeapiserver_enforces_node_restriction" => {
+            bootstrap::nodeapiserver_enforces_node_restriction(context).await
+        },
         "test_nodeapiserver_applies_core_defaults" => bootstrap::nodeapiserver_applies_core_defaults(context).await,
         "test_nodeapiserver_rejects_invalid_builtin_schema_constraints" => {
             bootstrap::nodeapiserver_rejects_invalid_builtin_schema_constraints(context).await
