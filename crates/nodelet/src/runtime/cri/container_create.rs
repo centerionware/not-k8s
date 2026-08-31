@@ -716,8 +716,10 @@ impl CriRuntime {
         // actually running (a duplicate/orphaned creation), not this one.
         info!(container = %container.name, container_id = %created.container_id, "CreateContainer succeeded");
         let had_allocated_devices = !allocated_devices.is_empty();
+        info!(container = %container.name, had_allocated_devices, "recording container device allocations");
         self.record_device_allocations(sandbox_id, &container.name, &crate::runtime::pod_key(&id.namespace, &id.name), allocated_devices);
 
+        info!(container = %container.name, "starting container");
         let start_result = tokio::time::timeout(
             STARTUP_RPC_TIMEOUT,
             rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }),
@@ -729,6 +731,7 @@ impl CriRuntime {
             self.release_container_devices(sandbox_id, &container.name).await;
             return Err(e).context("starting container");
         }
+        info!(container = %container.name, "container started");
         // Device allocation changes the Pod status surface, but a successful
         // Create/StartContainer sequence is not guaranteed to emit a CRI
         // event. Notify only after the allocation checkpoint and the running
@@ -746,8 +749,10 @@ impl CriRuntime {
         // build_status()'s own per-reconcile path never touches this.
         // Best-effort: a failure here is cosmetic (the field is simply
         // absent), never worth failing the whole container creation over.
+        info!(container = %container.name, "reading container status after start");
         match self.container_status_details(&created.container_id).await {
             Ok(status) => {
+                info!(container = %container.name, "read container status after start");
                 if let Some(linux) = status.user.and_then(|u| u.linux) {
                     self.container_users
                         .lock()
