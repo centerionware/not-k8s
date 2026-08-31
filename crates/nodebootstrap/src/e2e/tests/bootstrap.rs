@@ -1314,6 +1314,66 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
     result
 }
 
+pub(super) async fn nodeapiserver_applies_priority_admission(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "Priority admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let class_name = format!("nodeapiserver-priority-class-{suffix}");
+    let pod_name = format!("nodeapiserver-priority-pod-{suffix}");
+    let priority_classes: Api<PriorityClass> = Api::all(context.client.clone());
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let priority_class: PriorityClass = serde_json::from_value(json!({
+        "apiVersion": "scheduling.k8s.io/v1",
+        "kind": "PriorityClass",
+        "metadata": {"name": &class_name},
+        "value": 1234,
+        "globalDefault": false,
+        "preemptionPolicy": "Never",
+        "description": "nodeapiserver admission fixture"
+    }))?;
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": &pod_name, "namespace": &context.namespace},
+        "spec": {
+            "priorityClassName": &class_name,
+            "containers": [{"name": "app", "image": "example.invalid/not-k8s-priority"}]
+        }
+    }))?;
+
+    let result = async {
+        priority_classes
+            .create(&PostParams::default(), &priority_class)
+            .await
+            .context("creating the PriorityClass admission fixture")?;
+        let created = pods
+            .create(&PostParams::default(), &pod)
+            .await
+            .context("creating a Pod through Priority admission")?;
+        let returned = serde_json::to_value(created)?;
+        anyhow::ensure!(
+            returned.pointer("/spec/priority").and_then(Value::as_i64) == Some(1234)
+                && returned.pointer("/spec/preemptionPolicy").and_then(Value::as_str) == Some("Never"),
+            "Priority admission did not resolve the PriorityClass: {returned}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = priority_classes
+        .delete(&class_name, &DeleteParams::default())
+        .await;
+    result
+}
+
 pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
