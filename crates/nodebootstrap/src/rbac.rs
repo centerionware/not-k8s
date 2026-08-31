@@ -503,6 +503,29 @@ subjects:
 /// controller-manager. The existing supplemental manifest still applies the
 /// explicit impersonation and patch grants used by the upstream target.
 fn nodeapiserver_bootstrap() -> String {
+    // kube-apiserver normally creates these built-in classes as part of its
+    // bootstrap policy. The replacement server has no post-start hook, and
+    // CoreDNS uses system-cluster-critical before ordinary workloads can
+    // become useful, so seed the same two classes before nodecontroller is
+    // started.
+    let system_priority_classes = r#"
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-node-critical
+value: 2000001000
+globalDefault: false
+description: " system-node-critical"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-cluster-critical
+value: 2000000000
+globalDefault: false
+description: " system-cluster-critical"
+---
+"#;
     let controller_roles: String = CONTROLLER_SA_NAMES
         .iter()
         .map(|name| {
@@ -523,7 +546,7 @@ rules:
         })
         .collect();
     format!(
-        r#"
+        r#"{system_priority_classes}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -751,6 +774,10 @@ mod tests {
     fn nodeapiserver_bootstrap_contains_the_static_identities() {
         let manifest = nodeapiserver_bootstrap();
         for expected in [
+            "name: system-node-critical",
+            "value: 2000001000",
+            "name: system-cluster-critical",
+            "value: 2000000000",
             "name: cluster-admin",
             "name: system:kube-scheduler",
             "name: system:kube-controller-manager",
