@@ -215,6 +215,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_defaults_ingress_class",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_binds_a_pod_through_binding_subresource",
         group: TestGroup::General,
     },
@@ -1712,6 +1716,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_rejects_invalid_metadata_keys" => {
             bootstrap::nodeapiserver_rejects_invalid_metadata_keys(context).await
         },
+        "test_nodeapiserver_defaults_ingress_class" => bootstrap::nodeapiserver_defaults_ingress_class(context).await,
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
             bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await
         }
