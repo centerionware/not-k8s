@@ -15,7 +15,8 @@
 //! These are the format-check *primitives* real upstream's own
 //! `NameIsDNSSubdomain`/`NameIsDNSLabel`/`NameIsDNS1035Label`
 //! (`apimachinery/pkg/api/validation/generic.go`) wrap into a
-//! `ValidateNameFunc`. **Which validator applies to which resource is
+//! `ValidateNameFunc`. The qualified-name and label-value helpers below also
+//! cover the universal metadata grammar. **Which validator applies to which resource is
 //! real, separate, hand-maintained-per-type knowledge upstream itself
 //! keeps this way** (confirmed directly: `ValidateNamespaceName =
 //! NameIsDNSLabel`, `ValidateServiceAccountName = NameIsDNSSubdomain`,
@@ -24,9 +25,9 @@
 //! validates its name with rule Y," the same "verified genuinely absent,
 //! not just unchecked" finding `validate_types`'s own module doc records
 //! for enum constraints). Wiring a specific validator to a specific
-//! resource in `server::rest::create`/`update` is real, separate,
-//! not-yet-started follow-up work — this module is the primitives that
-//! wiring would call.
+//! resource in `server::rest::create`/`update` remains separate work for the
+//! resources whose name rule has not yet been verified; the universal
+//! metadata helpers are already called by the generic write paths.
 
 const DNS1123_LABEL_MAX_LEN: usize = 63;
 const DNS1123_SUBDOMAIN_MAX_LEN: usize = 253;
@@ -93,6 +94,53 @@ pub fn is_dns1035_label(value: &str) -> Vec<String> {
         );
     }
     errs
+}
+
+/// Validates the value portion of a Kubernetes label. The empty value is
+/// valid; the key is validated separately as a qualified name.
+pub fn is_label_value(value: &str) -> Vec<String> {
+    if value.len() > DNS1123_LABEL_MAX_LEN {
+        return vec![format!("must be no more than {DNS1123_LABEL_MAX_LEN} characters")];
+    }
+    if value.is_empty() {
+        return Vec::new();
+    }
+    let bytes = value.as_bytes();
+    if bytes[0].is_ascii_alphanumeric()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.'))
+    {
+        Vec::new()
+    } else {
+        vec!["must be an alphanumeric string with '-', '_' or '.'".to_string()]
+    }
+}
+
+/// Validates a Kubernetes qualified name, used for label/annotation keys and
+/// finalizers: an optional DNS subdomain prefix followed by a name segment.
+pub fn is_qualified_name(value: &str) -> Vec<String> {
+    let Some((prefix, name)) = value.split_once('/') else {
+        if value.is_empty() {
+            return vec!["must not be empty".to_string()];
+        }
+        return is_label_value(value);
+    };
+    if value.matches('/').count() != 1 {
+        return vec!["must contain a single '/' separator".to_string()];
+    }
+    let mut errors = if prefix.is_empty() {
+        vec!["prefix must not be empty".to_string()]
+    } else {
+        is_dns1123_subdomain(prefix)
+    };
+    if name.is_empty() {
+        errors.push("name must not be empty".to_string());
+    } else {
+        errors.extend(is_label_value(name));
+    }
+    errors
 }
 
 #[cfg(test)]
@@ -174,5 +222,14 @@ mod tests {
         assert!(!is_dns1035_label("-abc").is_empty());
         assert!(!is_dns1035_label("abc-").is_empty());
         assert!(!is_dns1035_label("").is_empty());
+    }
+
+    #[test]
+    fn qualified_names_and_label_values_follow_metadata_rules() {
+        assert!(is_qualified_name("example.com/owner").is_empty());
+        assert!(is_label_value("").is_empty());
+        assert!(!is_qualified_name("example.com/bad/key").is_empty());
+        assert!(!is_qualified_name("/owner").is_empty());
+        assert!(!is_label_value("has/slash").is_empty());
     }
 }
