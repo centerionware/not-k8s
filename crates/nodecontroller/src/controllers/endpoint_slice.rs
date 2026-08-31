@@ -128,7 +128,13 @@ pub fn build_ports(service_ports: &[ServicePort], sample_pod: Option<&Pod>) -> V
     service_ports
         .iter()
         .map(|sp| EndpointPort {
-            name: sp.name.clone(),
+            // ServicePort.Name is optional on the wire, but upstream's
+            // EndpointSlice controller always projects its string field to
+            // a pointer.  Preserve that distinction: an unnamed Service
+            // port is represented as `name: ""` in EndpointSlice rather
+            // than omitting the field.  kubectl's Service describer relies
+            // on the upstream shape when matching EndpointSlice ports.
+            name: Some(sp.name.clone().unwrap_or_default()),
             port: Some(resolve_target_port(
                 sp.target_port.as_ref(),
                 sp.port,
@@ -486,6 +492,19 @@ mod tests {
             ),
             80
         );
+    }
+
+    #[test]
+    fn unnamed_service_port_is_an_empty_endpoint_port_name() {
+        let ports = build_ports(
+            &[ServicePort {
+                port: 10000,
+                ..Default::default()
+            }],
+            None,
+        );
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].name.as_deref(), Some(""));
     }
 
     #[test]
