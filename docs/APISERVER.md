@@ -7,17 +7,22 @@
 | B — Wire formats | done for current scope | 7/7 |
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
-| E — Generic server, handler chain, and REST | in progress | 10/10 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 8/8 |
-| G — Patch and Server-Side Apply | in progress | 6/6 |
+| E — Generic server, handler chain, and REST | in progress | 10/12 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 8/10 |
+| G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
-| I — Authorization | in progress | 6/6 |
-| J — Admission | in progress | 9/9 |
+| I — Authorization | in progress | 6/7 |
+| J — Admission | in progress | 9/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
-| M — APF, audit, and observability | in progress | 8/8 |
+| M — APF, audit, and observability | in progress | 8/9 |
 | N — Streaming and proxy subresources | done for current scope | 5/5 |
 | O — nodebootstrap integration | done for current scope | 1/1 |
+
+For in-progress groups, the denominator includes each explicitly named
+remaining work item in the live sections below; “done for current scope”
+counts the currently supported scope and may still name broader follow-up
+compatibility work.
 
 kube-apiserver's job: the one thing every other component in this project
 talks to — REST + watch over every built-in and CRD-defined resource, backed
@@ -1624,7 +1629,7 @@ webhooks, validating/mutating admission policies, and ResourceQuota's
 persisted usage counter are integrated; their remaining compatibility edges
 are tracked in the paragraphs above.
 
-**K. CRDs (apiextensions)** — **in progress**. Found on inspection, not
+**K. CRDs (apiextensions)** — **done for current scope**. Found on inspection, not
 assumed: `CustomResourceDefinition` itself needed *zero* new plumbing —
 `apiextensions.k8s.io/v1` is a real group in the vendored OpenAPI/proto
 sets (Group A's codegen has no group allowlist, it walks every `.json`
