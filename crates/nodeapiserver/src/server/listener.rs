@@ -54,7 +54,7 @@
 //! the caller's real rules (`authz::resolve::rules_for` — the real
 //! anonymous identity, `system:anonymous`/`system:unauthenticated`, when
 //! no x509 identity was established) and deny with a real `403` unless
-//! `authz::rbac::rules_allow` says yes. Group J admission (seven
+//! `authz::rbac::rules_allow` says yes. Group J admission (eight
 //! unconditional plugins as of this revision, `admission`'s own doc
 //! comment has the running list) also runs, on the real write verbs only
 //! — real upstream's own admission posture too, admission never gates a
