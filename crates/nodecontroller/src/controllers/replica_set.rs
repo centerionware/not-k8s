@@ -53,6 +53,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const CREATION_EXPECTATION_TIMEOUT: Duration = Duration::from_secs(30);
+const STATUS_PATCH_ATTEMPTS: usize = 3;
+const STATUS_PATCH_BACKOFF: Duration = Duration::from_millis(25);
 
 #[derive(Debug)]
 struct PendingCreates {
@@ -313,11 +315,31 @@ async fn reconcile_replica_set(
     };
     if rs.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
-        if let Err(e) = rs_api
-            .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await
-        {
-            tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status");
+        for attempt in 0..STATUS_PATCH_ATTEMPTS {
+            match rs_api
+                .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
+                .await
+            {
+                Ok(_) => break,
+                Err(e) if attempt + 1 < STATUS_PATCH_ATTEMPTS => {
+                    // Deployment reconciliation and ReplicaSet status
+                    // bookkeeping can legitimately update the same object
+                    // at startup. A lost optimistic-concurrency race must
+                    // not strand the Deployment at availableReplicas=0.
+                    tracing::debug!(
+                        namespace = %namespace,
+                        replicaset = %name,
+                        attempt = attempt + 1,
+                        error = ?e,
+                        "ReplicaSet status patch conflicted; retrying"
+                    );
+                    tokio::time::sleep(STATUS_PATCH_BACKOFF * (attempt as u32 + 1)).await;
+                }
+                Err(e) => {
+                    tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status");
+                    break;
+                }
+            }
         }
     }
 }
