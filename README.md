@@ -5,7 +5,10 @@ Started because I wanted to run a dev cluster on my phone without destroying the
 **A drop-in kubelet replacement small enough to run where kubelet won't fit.**
 **Another Rust-based Kubernetes clone.**
 
-`not-k8s` is **becoming** a Kubernetes distro.
+`not-k8s` is a Kubernetes distro in active development. The `nodeapiserver`
+integration branch replaces the upstream API server with the repository's
+Rust implementation; it is kept separate from `main` until its final
+full-cluster acceptance gate is complete.
 
 Older Measured idle, no pods scheduled, 120s window, 3 replicates per agent:
 
@@ -23,11 +26,15 @@ both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/l
 It's going to be something like
 
 ```
-wget https://github.com/centerionware/not-k8s/releases/download/v0.7.1/notk8s-0.7.1-linux-aarch64-release
-chmod +x notk8s-0.7.1-linux-aarch64-release
-ln -s ./notk8s-0.7.1-linux-aarch64-release bootstrap
+wget https://github.com/centerionware/not-k8s/releases/latest/download/notk8s-VERSION-linux-aarch64-release
+chmod +x notk8s-VERSION-linux-aarch64-release
+ln -s ./notk8s-VERSION-linux-aarch64-release bootstrap
 ./bootstrap
 ```
+
+Replace `VERSION` with the version in the release asset for your architecture.
+The combined binary dispatches through `argv[0]`, so the `bootstrap` symlink
+and the component names use the same executable.
 
 Common commands after downloading the release binary:
 
@@ -38,6 +45,10 @@ Common commands after downloading the release binary:
 ./bootstrap --without-flannel      # use an external CNI and remember it on updates
 ./bootstrap --without-flannel --proxy=none
                                      # full single-node CP+worker for Cilium-style setups
+./bootstrap --cluster-domain=cluster.example --cidr=10.44.0.0/16
+                                     # customize service DNS and the IPv4 service range
+./bootstrap --cidr6=fd00:44::/112  # add an IPv6 service range
+./bootstrap --disable-dns           # omit CoreDNS and its nodelet DNS configuration
 ./bootstrap --worker --kubeconfig=/path/to/cluster.kubeconfig --proxy=none
                                      # nodelet; no local control plane, flannel, or proxy
 ./bootstrap --control-plane --join=https://cp-1:2379 --peer-url=https://cp-2:2380
@@ -55,13 +66,11 @@ Common commands after downloading the release binary:
 `--e2e` does not install or restart anything. It uses `$KUBECONFIG` when set,
 otherwise it discovers the admin kubeconfig written by nodebootstrap at
 `/etc/nodebootstrap/admin.kubeconfig` (or `NODEBOOTSTRAP_KUBECONFIG_DIR`).
-The bootstrap applet is the only repository e2e entrypoint: it uses the Rust
-Kubernetes client directly and currently checks API resource serving, node
-readiness, and the default Kubernetes Service endpoint. The former installer
-and shell e2e tree is preserved on the
-[`archive-shell-scripts-0.7.1`](https://github.com/centerionware/not-k8s/tree/archive-shell-scripts-0.7.1)
-branch while the remaining checks move into the applet under
-[issue #242](https://github.com/centerionware/not-k8s/issues/242).
+The bootstrap applet is the repository's e2e entrypoint: it uses the Rust
+Kubernetes client directly and runs the registered cluster checks, including
+node readiness, API-server compatibility, admission, CRDs, storage, CSI/DRA,
+networking, streaming, and recovery cases. Use `--only=<substring>` while
+iterating and `--shard=N/5` for the CI shard layout.
 
 The no-role invocation is the single-node convenience path: it installs both
 the control plane and node services. --worker is the multi-node path and
@@ -89,18 +98,22 @@ Use the address reachable by the other control-plane nodes and by the cluster;
 when omitted, single-node flannel bootstrap discovers the CNI bridge after the
 initial startup.
 
-There is no shell installer or shell e2e command in the 0.7.1 tree. Download
+There is no shell installer or shell e2e command in the current tree. Download
 the combined `notk8s` binary, symlink it to `bootstrap`, and use the commands
-above. Performance-only helpers remain temporarily for the 0.7.4 profiling
+above. Performance-only helpers remain temporarily for the profiling
 migration.
 
 ## Scope
 
-most everything except apiserver (apiserver in progress)
+The `nodeapiserver` integration branch contains the replacement API server;
+see [`docs/APISERVER.md`](docs/APISERVER.md) for the live compatibility
+checklist and its explicit current-scope boundaries.
 
 ## Testing
 
-A ridiculous amount of unit regression testing and a good amount of e2e testing, it could use more.
+The workspace has extensive unit regression coverage and a bootstrap-native
+real-infrastructure e2e suite. The final `nodeapiserver` cutover requires the
+full unfiltered suite against a fresh cluster with no k3s installation.
 
 ## Profiling
 
