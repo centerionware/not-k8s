@@ -3047,6 +3047,43 @@ async fn handle(
             }
         }
 
+        // `PersistentVolumeClaimResize` also runs after a PATCH has been
+        // materialized into an Update candidate. Re-read the old object so
+        // the same bound-claim and StorageClass checks cover both PUT and
+        // PATCH request shapes.
+        if admission::pvc_resize::applies_to(
+            admission::attributes::Operation::Update,
+            &info.api_group,
+            &info.resource,
+            &info.subresource,
+        ) {
+            let old_pvc = match rest::get(&mut client, None, "", "v1", "persistentvolumeclaims", namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(old_pvc)) => old_pvc,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Value::Null,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the existing PVC for patch resize failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "", 0, "").await {
+                Ok(rest::ListOutcome::Found(list)) => {
+                    let classes = list["items"].as_array().cloned().unwrap_or_default();
+                    if let Err(error) = admission::pvc_resize::validate_resize(&candidate, &old_pvc, &classes) {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                    }
+                }
+                Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                    if let Err(error) = admission::pvc_resize::validate_resize(&candidate, &old_pvc, &[]) {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                    }
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: listing StorageClasses for patch resize failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+
         let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
             Ok(rest::GetOutcome::Found(object)) => Some(object),
             Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
@@ -4377,6 +4414,46 @@ async fn handle(
                                 warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
                                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                             }
+                        }
+                    }
+                }
+            }
+
+            // Group J: `PersistentVolumeClaimResize` — a PVC expansion is
+            // allowed only for a bound claim whose unchanged StorageClass
+            // explicitly permits volume expansion.
+            if is_update
+                && admission::pvc_resize::applies_to(
+                    admission::attributes::Operation::Update,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                if let Some(candidate) = body_value.as_ref() {
+                    let old_pvc = match rest::get(&mut client, None, "", "v1", "persistentvolumeclaims", namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(old_pvc)) => old_pvc,
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Value::Null,
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: reading the existing PVC for resize failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    };
+                    match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "", 0, "").await {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let classes = list["items"].as_array().cloned().unwrap_or_default();
+                            if let Err(error) = admission::pvc_resize::validate_resize(candidate, &old_pvc, &classes) {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                            }
+                        }
+                        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                            if let Err(error) = admission::pvc_resize::validate_resize(candidate, &old_pvc, &[]) {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                            }
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing StorageClasses for PVC resize failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                         }
                     }
                 }
