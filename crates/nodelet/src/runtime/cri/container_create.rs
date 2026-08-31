@@ -769,9 +769,11 @@ impl CriRuntime {
         // just took a new exclusive claim — sweep every other already-
         // running shared-pool container to exclude these cores now.
         let key = restart_count_key(sandbox_id, &container.name);
+        info!(container = %container.name, "recording container resources");
         self.container_resources.lock().unwrap().insert(key.clone(), (created.container_id.clone(), resources_for_record));
         self.applied_resources.lock().unwrap().insert(key, container.resources.clone().unwrap_or_default());
         if cpu_manager_key.is_some() {
+            info!(container = %container.name, "refreshing shared CPU pool");
             self.refresh_shared_pool_cpusets().await;
         }
 
@@ -786,6 +788,7 @@ impl CriRuntime {
             }
         }
 
+        info!(container = %container.name, "container creation complete");
         Ok(())
     }
 
