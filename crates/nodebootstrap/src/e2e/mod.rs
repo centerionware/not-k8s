@@ -227,6 +227,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_applies_priority_admission",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_binds_a_pod_through_binding_subresource",
         group: TestGroup::General,
     },
@@ -1742,6 +1746,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_applies_runtime_class_admission" => {
             bootstrap::nodeapiserver_applies_runtime_class_admission(context).await
+        },
+        "test_nodeapiserver_applies_priority_admission" => {
+            bootstrap::nodeapiserver_applies_priority_admission(context).await
         },
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
             bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await

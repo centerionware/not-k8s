@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/7 |
-| J — Admission | in progress | 9/15 |
+| J — Admission | in progress | 10/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 8/9 |
@@ -1372,6 +1372,16 @@ duplicates. A Pod-supplied overhead must match the RuntimeClass's overhead,
 or is rejected when no matching RuntimeClass overhead exists. The listener
 performs the live RuntimeClass lookup and the pure module applies the
 mutation/validation before the remaining Pod admission stages.
+
+`admission::priority` is mutating for Pod `CREATE`/`UPDATE` and validating
+for `PriorityClass` `CREATE`/`UPDATE` — a faithful port of real upstream's
+`Priority` plugin (`plugin/pkg/admission/priority/admission.go`, fetched and
+read directly): a Pod's named PriorityClass is resolved and its integer
+priority/preemption policy are applied; a global-default class is selected by
+the lowest priority value when the Pod names none; plugin-owned fields are
+preserved across updates; and creating or updating a second global-default
+PriorityClass is rejected. The listener performs the storage lookups while
+the object rules remain pure and unit tested.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
