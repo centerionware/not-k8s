@@ -1714,14 +1714,14 @@ pub(super) async fn nodeapiserver_taints_new_nodes_not_ready(context: &E2eContex
         .context("admitted Node did not contain a taint list")?;
     anyhow::ensure!(
         taints.iter().any(|taint| {
-            taint.key.as_deref() == Some("node.kubernetes.io/not-ready")
+            taint.key.as_ref().is_some_and(|key| key == "node.kubernetes.io/not-ready")
                 && taint.effect == "NoSchedule"
         }),
         "TaintNodesByCondition did not add the NotReady/NoSchedule taint: {taints:?}"
     );
     anyhow::ensure!(
         taints.iter().any(|taint| {
-            taint.key.as_deref() == Some("example.com/custom")
+            taint.key.as_ref().is_some_and(|key| key == "example.com/custom")
                 && taint.effect == "NoExecute"
         }),
         "TaintNodesByCondition did not preserve the submitted taint: {taints:?}"
