@@ -1304,6 +1304,24 @@ mod tests {
     }
 
     #[test]
+    fn container_probes_round_trip_through_the_real_nested_wire_shape() {
+        let message = "io.k8s.api.core.v1.Container";
+        let value = json!({
+            "name": "coredns",
+            "livenessProbe": {
+                "httpGet": {"path": "/health", "port": 8080, "scheme": "HTTP"},
+                "initialDelaySeconds": 60,
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/ready", "port": 8181, "scheme": "HTTP"},
+            },
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
     fn a_bytes_field_round_trips_through_base64() {
         // ConfigMap.binaryData is map<string, bytes>; Secret.data too.
         // Use Secret.data to exercise both bytes and map in one field.
