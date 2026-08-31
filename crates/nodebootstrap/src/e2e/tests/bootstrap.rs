@@ -1180,8 +1180,8 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
                         "annotations": {"ingressclass.kubernetes.io/is-default-class": "true"}
                     },
                     "spec": {"controller": "nodeapiserver.test/default-ingress"}
-                }))?,
-        )?
+                }))?)?,
+            )
         .await
         .context("creating the default IngressClass")?;
     anyhow::ensure!(
@@ -1201,8 +1201,8 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
                         "kind": "Ingress",
                         "metadata": {"name": &ingress_name, "namespace": &context.namespace},
                         "spec": {}
-                    }))?,
-            )?
+                    }))?)?,
+                )
             .await
             .context("creating an Ingress without a class")?;
         anyhow::ensure!(
