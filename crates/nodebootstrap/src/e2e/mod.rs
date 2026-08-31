@@ -239,6 +239,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_serializes_resource_quota_creates",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_binds_a_pod_through_binding_subresource",
         group: TestGroup::General,
     },
@@ -1763,6 +1767,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_applies_namespace_node_selector" => {
             bootstrap::nodeapiserver_applies_namespace_node_selector(context).await
+        },
+        "test_nodeapiserver_serializes_resource_quota_creates" => {
+            bootstrap::nodeapiserver_serializes_resource_quota_creates(context).await
         },
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
             bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await
