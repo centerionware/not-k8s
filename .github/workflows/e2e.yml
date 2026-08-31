@@ -311,6 +311,26 @@ jobs:
           kubectl_cmd describe nodes
           echo "── all pods (every namespace) ──"
           kubectl_cmd get pods -A -o wide
+          echo "── CoreDNS container logs ──"
+          mapfile -t coredns_pods < <(kubectl_cmd get pods -n kube-system -l k8s-app=kube-dns \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+          for pod in "${coredns_pods[@]}"; do
+            [[ -n "$pod" ]] || continue
+            echo "── $pod logs ──"
+            kubectl_cmd logs -n kube-system "$pod" --all-containers --tail=200 || true
+          done
+          echo "── DRA ResourceSlices ──"
+          kubectl_cmd get resourceslices.resource.k8s.io -o yaml || true
+          echo "── DRA driver pod describe/logs ──"
+          mapfile -t dra_pods < <(kubectl_cmd get pods -n dra-example-driver \
+            -l app.kubernetes.io/component=kubeletplugin \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+          for pod in "${dra_pods[@]}"; do
+            [[ -n "$pod" ]] || continue
+            kubectl_cmd describe pod -n dra-example-driver "$pod" || true
+            kubectl_cmd logs -n dra-example-driver "$pod" -c plugin --tail=300 || true
+            kubectl_cmd logs -n dra-example-driver "$pod" -c plugin --previous --tail=300 || true
+          done
           echo "── pods not Running/Completed ──"
           kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
           echo "── Service datapath prerequisites ──"

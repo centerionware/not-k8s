@@ -1364,3 +1364,24 @@ The e2e failure dump now passes the nodebootstrap kubeconfig explicitly,
 falls back to sudo when the bootstrap ran as root, and includes flanneld's
 unit status/logs; the previous dump's `/etc/rancher/k3s` errors obscured this
 diagnosis.
+
+### 26. Fixed: a late Pod watch event could destroy a same-name replacement
+
+**Severity: high — found while bringing the reference DRA driver up against
+the replacement apiserver.**
+
+The DRA setup deliberately deletes and recreates its DaemonSet Pod so the
+fresh registrar socket is exercised. The replacement Pod received a new UID,
+but nodelet could still process an older watch object for the deleted UID.
+Because runtime sandbox lookup was keyed by namespace/name, nodelet treated
+that stale object as authoritative and alternated between tearing down the
+new sandbox and recreating the old one. The driver consequently never stayed
+alive long enough to publish a `resource.k8s.io/v1` `ResourceSlice`; the API
+group itself was already discoverable and listable.
+
+Nodelet now rejects Pod watch objects older than the accepted etcd
+`resourceVersion`, retains the UID across delete events, and refuses a
+UID-scoped teardown when the matching sandbox belongs to another Pod
+incarnation. The DRA e2e coverage now directly waits for a published
+ResourceSlice, and failure diagnostics include the DRA Pod's description and
+current/previous container logs.
