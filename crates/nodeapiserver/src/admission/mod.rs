@@ -52,6 +52,11 @@
 //! VolumeAttributesClass protection finalizers that the nodecontroller
 //! protection controllers later remove when the object is safe to delete.
 //!
+//! `runtime_class` — `RuntimeClass`, mutating and validating, `CREATE`-only
+//! for ordinary Pods: resolves the named cluster-scoped RuntimeClass, applies
+//! its overhead and scheduling constraints, rejects selector conflicts, and
+//! rejects Pod overhead without a matching RuntimeClass definition.
+//!
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
 //! missing requests/limits from its namespace's `LimitRange` objects and
@@ -215,6 +220,7 @@ pub mod policy_enforcement;
 pub mod policy_matching;
 pub mod policy_validations;
 pub mod resource_quota;
+pub mod runtime_class;
 pub mod service_account;
 pub mod storage_object_in_use_protection;
 pub mod validating_admission_policy;
