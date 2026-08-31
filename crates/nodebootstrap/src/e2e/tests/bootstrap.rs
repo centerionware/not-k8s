@@ -1683,6 +1683,52 @@ pub(super) async fn nodeapiserver_rejects_unsupported_pvc_resize(
     result
 }
 
+pub(super) async fn nodeapiserver_taints_new_nodes_not_ready(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("Node admission checks are only exercised against nodeapiserver"));
+    }
+
+    let name = format!("nodeapiserver-taint-{}", std::process::id());
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let node: Node = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Node",
+        "metadata": {"name": name.clone()},
+        "spec": {"taints": [{"key": "example.com/custom", "effect": "NoExecute"}]}
+    }))?;
+    let created = nodes
+        .create(&PostParams::default(), &node)
+        .await
+        .context("creating a Node to verify TaintNodesByCondition")?;
+    let delete_result = nodes.delete(&name, &DeleteParams::default()).await;
+    anyhow::ensure!(
+        delete_result.is_ok(),
+        "cleanup of the TaintNodesByCondition test Node failed: {:?}",
+        delete_result.err()
+    );
+
+    let taints = created
+        .spec
+        .and_then(|spec| spec.taints)
+        .context("admitted Node did not contain a taint list")?;
+    anyhow::ensure!(
+        taints.iter().any(|taint| {
+            taint.key == "node.kubernetes.io/not-ready"
+                && taint.effect == "NoSchedule"
+        }),
+        "TaintNodesByCondition did not add the NotReady/NoSchedule taint: {taints:?}"
+    );
+    anyhow::ensure!(
+        taints.iter().any(|taint| {
+            taint.key == "example.com/custom"
+                && taint.effect == "NoExecute"
+        }),
+        "TaintNodesByCondition did not preserve the submitted taint: {taints:?}"
+    );
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     context: &E2eContext,
 ) -> Result<()> {
