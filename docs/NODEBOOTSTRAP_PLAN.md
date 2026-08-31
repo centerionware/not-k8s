@@ -117,7 +117,7 @@ crates/nodebootstrap/
 `targets/` is the seam that makes point 3 above real: everything above it
 (PKI, RBAC, kubeconfig, Service reconciler, manifests) is target-agnostic;
 only `targets/*.rs` knows how to install and start a specific apiserver
-target.  Scheduler and controller services remain this projects own units.
+target. Scheduler and controller services remain this project's own units.
 
 ## `nodebootstrap` as a `notk8s` applet and self-replacement
 
