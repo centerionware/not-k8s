@@ -439,9 +439,17 @@ impl PodController {
             containers.extend(init_containers.iter().filter(|c| c.restart_policy.as_deref() == Some("Always")).cloned());
         }
         if !probes::has_any_probe(&containers) {
+            if ns == COREDNS_NAMESPACE && name.starts_with("coredns-") {
+                info!(pod = %format!("{ns}/{name}"), container_count = containers.len(), "CoreDNS Pod has no probes to supervise");
+            }
             return;
         }
-        let Some(pod_ip) = pod_ip else { return }; // no IP yet; wait for the next reconcile
+        let Some(pod_ip) = pod_ip else {
+            if ns == COREDNS_NAMESPACE && name.starts_with("coredns-") {
+                info!(pod = %format!("{ns}/{name}"), "CoreDNS Pod probes found but Pod has no IP yet");
+            }
+            return;
+        }; // no IP yet; wait for the next reconcile
         let mut tasks = self.probe_tasks.lock().unwrap();
         if tasks.contains_key(&key) {
             return;
@@ -468,6 +476,9 @@ impl PodController {
             pod_grace_period_seconds,
         );
         tasks.insert(key, handles);
+        if ns == COREDNS_NAMESPACE && name.starts_with("coredns-") {
+            info!(pod = %format!("{ns}/{name}"), "CoreDNS probe supervisor started");
+        }
     }
 
     fn stop_probe_supervisor(&self, ns: &str, name: &str) {

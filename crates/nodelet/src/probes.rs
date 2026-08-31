@@ -443,6 +443,7 @@ async fn probe_container(
 ) {
     let cname = container.name.clone();
     let key = pod_key(&ns, &name);
+    let is_coredns = ns == "kube-system" && name.starts_with("coredns-");
     // Round 123: a readiness/started transition changes real pod status
     // (conditions[Ready], containerStatuses[].ready/started) but never
     // touches the apiserver or the CRI event stream on its own — nothing
@@ -494,6 +495,17 @@ async fn probe_container(
     if liveness.is_none() && readiness.is_none() {
         return;
     }
+    if is_coredns {
+        info!(
+            pod = %key,
+            container = %cname,
+            liveness = liveness.is_some(),
+            readiness = readiness.is_some(),
+            liveness_initial_delay = ?liveness.as_ref().map(|(timing, _)| timing.initial_delay),
+            readiness_initial_delay = ?readiness.as_ref().map(|(timing, _)| timing.initial_delay),
+            "CoreDNS probe loop started"
+        );
+    }
 
     let period = [liveness.as_ref().map(|(t, _)| t.period), readiness.as_ref().map(|(t, _)| t.period)]
         .into_iter()
@@ -508,6 +520,7 @@ async fn probe_container(
 
     let mut live_tracker = liveness.as_ref().map(|(_, _)| ProbeTracker::new(true));
     let mut ready_tracker = readiness.as_ref().map(|(_, _)| ProbeTracker::new(false));
+    let mut readiness_result_logged = false;
 
     loop {
         if let (Some((t, check)), Some(tracker)) = (&liveness, &mut live_tracker) {
@@ -528,8 +541,15 @@ async fn probe_container(
                 let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
                 let was_passing = tracker.passing;
                 tracker.record(ok, t.success_threshold, t.failure_threshold);
+                if is_coredns && !readiness_result_logged {
+                    info!(pod = %key, container = %cname, ok, "CoreDNS readiness probe first result");
+                    readiness_result_logged = true;
+                }
                 set_health(&health, &ns, &name, &cname, |h| h.ready = tracker.passing);
                 if tracker.passing != was_passing {
+                    if is_coredns {
+                        info!(pod = %key, container = %cname, ready = tracker.passing, "CoreDNS readiness state changed");
+                    }
                     notify_reconcile();
                 }
             }
