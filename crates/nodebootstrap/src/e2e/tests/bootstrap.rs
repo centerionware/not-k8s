@@ -1251,12 +1251,12 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
                         "hostPath": {"path": "/tmp/nodeapiserver-storage-protection"}
                     }
                 }))?,
-            )
+            )?
         )
         .await
         .context("creating a PersistentVolume for storage-protection admission")?;
 
-    let result = anyhow::ensure!(
+    anyhow::ensure!(
         object["metadata"]["finalizers"]
             .as_array()
             .is_some_and(|finalizers| finalizers.iter().any(|finalizer| finalizer == "kubernetes.io/pv-protection")),
@@ -1266,7 +1266,7 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
         .client
         .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{name}")).body(Vec::new())?)
         .await;
-    result
+    Ok(())
 }
 
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
