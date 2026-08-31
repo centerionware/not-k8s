@@ -78,6 +78,10 @@ pub struct PodController {
     /// `Arc` because `spawn_teardown` hands it to a detached task, which is
     /// what clears the entry once the teardown has actually finished.
     torn_down: Arc<Mutex<HashSet<String>>>,
+    /// The latest UID/resourceVersion seen for each namespace/name in the
+    /// Pod watch. Kept across delete events so a late event for an old UID
+    /// cannot tear down a replacement Pod with the same name.
+    observed_pods: Mutex<HashMap<String, ObservedPod>>,
     /// Every pod this node currently runs, keyed by `pod_key(ns, name)`, to
     /// the ConfigMap/Secret names its own volumes reference — a local
     /// mirror of exactly what `on_referenced_object_changed()` needs,
@@ -102,6 +106,27 @@ struct PodRefs {
     name: String,
     configmaps: HashSet<String>,
     secrets: HashSet<String>,
+}
+
+/// The newest Pod watch object observed for one namespace/name.
+///
+/// A Pod name can be reused immediately after deletion. The watch stream can
+/// still deliver an older status update for the deleted UID after the
+/// replacement UID has been created. Remembering the resource version lets
+/// the controller discard that stale object before it can make the runtime
+/// tear down the replacement sandbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ObservedPod {
+    uid: String,
+    resource_version: Option<u64>,
+}
+
+fn watch_event_is_stale(previous: Option<&ObservedPod>, current: &ObservedPod) -> bool {
+    let Some(previous) = previous else { return false };
+    previous
+        .resource_version
+        .zip(current.resource_version)
+        .is_some_and(|(previous, current)| current < previous)
 }
 
 /// Releases a pod's `torn_down` entry when its teardown task ends.
@@ -272,8 +297,34 @@ impl PodController {
             priority_events,
             probe_tasks: Mutex::new(HashMap::new()),
             torn_down: Arc::new(Mutex::new(HashSet::new())),
+            observed_pods: Mutex::new(HashMap::new()),
             pod_refs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Record a Pod watch event unless it is older than the event already
+    /// accepted for this namespace/name. Kubernetes resource versions are
+    /// decimal etcd revisions in this implementation; if an implementation
+    /// supplies a non-numeric version, there is no safe ordering comparison.
+    fn observe_watch_pod(&self, pod: &Pod) -> bool {
+        let Some((namespace, name)) = key_parts(pod) else { return true };
+        let Some(uid) = pod.metadata.uid.clone() else { return true };
+        let key = pod_key(&namespace, &name);
+        let observed = ObservedPod {
+            uid,
+            resource_version: pod
+                .metadata
+                .resource_version
+                .as_deref()
+                .and_then(|value| value.parse().ok()),
+        };
+        let mut known = self.observed_pods.lock().unwrap();
+        if watch_event_is_stale(known.get(&key), &observed) {
+            debug!(pod = %key, uid = %observed.uid, resource_version = ?observed.resource_version, "ignoring stale Pod watch event");
+            return false;
+        }
+        known.insert(key, observed);
+        true
     }
 
     /// Wait for cluster DNS before allowing ordinary workloads to start.
@@ -672,7 +723,11 @@ impl PodController {
 
     async fn on_watch(&self, ev: Event<Pod>) {
         match ev {
-            Event::Apply(pod) | Event::InitApply(pod) => self.reconcile(pod).await,
+            Event::Apply(pod) | Event::InitApply(pod) => {
+                if self.observe_watch_pod(&pod) {
+                    self.reconcile(pod).await;
+                }
+            }
             Event::Delete(pod) => {
                 // The real, final removal. Everything teardown does already
                 // tolerates "target already gone" with a warn rather than a
@@ -680,7 +735,9 @@ impl PodController {
                 // branch below has already run one — and spawn_teardown's own
                 // UID guard means the common case (both events for one pod)
                 // does not start a second concurrent teardown at all.
-                self.spawn_teardown(pod);
+                if self.observe_watch_pod(&pod) {
+                    self.spawn_teardown(pod);
+                }
             }
             Event::Init | Event::InitDone => {}
         }
@@ -1669,3 +1726,6 @@ mod tests_watch_backoff;
 #[cfg(test)]
 #[path = "pods_tests/referenced_object_changed.rs"]
 mod tests_referenced_object_changed;
+#[cfg(test)]
+#[path = "pods_tests/pod_watch_order.rs"]
+mod tests_pod_watch_order;

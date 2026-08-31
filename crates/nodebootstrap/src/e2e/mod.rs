@@ -903,6 +903,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
+        name: "test_dra_resource_slices_are_published",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_dynamic_csi_registration_actually_registered_the_driver",
         group: TestGroup::CsiDra,
     },
@@ -2237,6 +2241,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_plugin_registry_watches_for_dra_drivers_too" => {
             dra::plugin_registry_watches_for_dra_drivers_too(context).await
         }
+        "test_dra_resource_slices_are_published" => dra::dra_resource_slices_are_published(context).await,
         "test_dynamic_csi_registration_actually_registered_the_driver" => {
             pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
         }
