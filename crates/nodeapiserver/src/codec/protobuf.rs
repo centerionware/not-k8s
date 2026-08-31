@@ -171,6 +171,7 @@ fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
             | ("io.k8s.api.core.v1.SecretKeySelector", "localObjectReference")
             | ("io.k8s.api.core.v1.SecretProjection", "localObjectReference")
             | ("io.k8s.api.core.v1.SecretVolumeSource", "localObjectReference")
+            | ("io.k8s.api.core.v1.Probe", "handler")
     )
 }
 
@@ -1301,6 +1302,24 @@ mod tests {
         assert_eq!(containers.len(), 2);
         assert_eq!(containers[0].get("name").unwrap(), "a");
         assert_eq!(containers[1].get("image").unwrap(), "redis");
+    }
+
+    #[test]
+    fn container_probes_round_trip_through_the_real_nested_wire_shape() {
+        let message = "io.k8s.api.core.v1.Container";
+        let value = json!({
+            "name": "coredns",
+            "livenessProbe": {
+                "httpGet": {"path": "/health", "port": 8080, "scheme": "HTTP"},
+                "initialDelaySeconds": 60,
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/ready", "port": 8181, "scheme": "HTTP"},
+            },
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
     }
 
     #[test]

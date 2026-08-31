@@ -32,7 +32,7 @@
 //! can be started at once.
 
 use crate::cel_ext::{eval_bool_with_deadline, eval_bool_with_optional_old_self_and_deadline, Error as CelError};
-use crate::cel_ext::type_check::rule_references_old_self;
+use crate::cel_ext::type_check::{cel_field_name, rule_references_old_self};
 use serde_json::Value;
 use std::cmp::min;
 use std::time::Duration;
@@ -101,10 +101,15 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, de
                 *budget_exhausted = true;
                 return;
             }
+            // Kubernetes evaluates rules against a CEL-shaped object whose
+            // declared OpenAPI properties use escaped identifiers. Keep
+            // persisted JSON untouched and translate only the bound value.
+            let cel_value = cel_value_for_scope(schema, value, path.is_empty());
+            let cel_old_value = old_value.map(|old| cel_value_for_scope(schema, old, path.is_empty()));
             let rule_result = if optional_old_self {
-                eval_bool_with_optional_old_self_and_deadline(rule_str, value, old_value, min(PER_RULE_DEADLINE, remaining))
+                eval_bool_with_optional_old_self_and_deadline(rule_str, &cel_value, cel_old_value.as_ref(), min(PER_RULE_DEADLINE, remaining))
             } else {
-                eval_bool_with_deadline(rule_str, value, old_value, min(PER_RULE_DEADLINE, remaining))
+                eval_bool_with_deadline(rule_str, &cel_value, cel_old_value.as_ref(), min(PER_RULE_DEADLINE, remaining))
             };
             match rule_result {
                 Ok(true) => {}
@@ -168,6 +173,46 @@ fn walk(schema: &Value, value: &Value, old_value: Option<&Value>, path: &str, de
             }
         }
     }
+}
+
+/// Convert one JSON value into the object shape visible to Kubernetes CEL.
+/// Only declared object properties are renamed; map keys remain unchanged.
+fn cel_value_for_scope(schema: &Value, value: &Value, is_root: bool) -> Value {
+    match value {
+        Value::Object(object) => {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            let additional = schema.get("additionalProperties").filter(|value| value.is_object());
+            Value::Object(object.iter().map(|(name, child)| {
+                let child_schema = properties.and_then(|properties| properties.get(name)).or_else(|| {
+                    if is_root && name == "metadata" { None } else { additional }
+                });
+                let child_value = if is_root && name == "metadata" {
+                    cel_metadata_value(child)
+                } else {
+                    child_schema.map(|schema| cel_value_for_scope(schema, child, false)).unwrap_or_else(|| child.clone())
+                };
+                let cel_name = if properties.is_some_and(|properties| properties.contains_key(name)) {
+                    cel_field_name(name)
+                } else {
+                    name.clone()
+                };
+                (cel_name, child_value)
+            }).collect())
+        }
+        Value::Array(items) => {
+            let Some(items_schema) = schema.get("items") else { return value.clone() };
+            Value::Array(items.iter().map(|item| cel_value_for_scope(items_schema, item, false)).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn cel_metadata_value(value: &Value) -> Value {
+    let Some(object) = value.as_object() else { return value.clone() };
+    Value::Object(object.iter().map(|(name, child)| {
+        let cel_name = if name == "namespace" { cel_field_name(name) } else { name.clone() };
+        (cel_name, child.clone())
+    }).collect())
 }
 
 fn join_path(prefix: &str, field: &str) -> String {
@@ -306,6 +351,22 @@ mod tests {
         let violations = validate_object(&schema, &value, None);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].path, "tags[1]");
+    }
+
+    #[test]
+    fn a_reserved_schema_property_is_available_under_its_kubernetes_cel_name() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "volumeSnapshotRef": {
+                    "type": "object",
+                    "properties": {"namespace": {"type": "string"}},
+                    "x-kubernetes-validations": [{"rule": "self.__namespace__ == 'default'"}],
+                },
+            },
+        });
+        let value = json!({"volumeSnapshotRef": {"namespace": "default"}});
+        assert!(validate_object(&schema, &value, None).is_empty());
     }
 
     #[test]
