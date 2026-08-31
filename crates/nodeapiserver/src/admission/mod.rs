@@ -65,6 +65,10 @@
 //! `pvc_resize` — `PersistentVolumeClaimResize`, validating, `UPDATE`-only:
 //! allows a PVC expansion only when it is Bound, retains the same class, and
 //! that StorageClass explicitly permits volume expansion.
+
+//! `pod_node_selector` — the namespace-annotation form of `PodNodeSelector`,
+//! mutating Pod `CREATE`s by merging the exact-match selector from
+//! `scheduler.alpha.kubernetes.io/node-selector` and rejecting conflicts.
 //!
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
@@ -223,6 +227,7 @@ pub mod match_conditions;
 pub mod mutating_admission_policy;
 pub mod namespace_lifecycle;
 pub mod node_restriction;
+pub mod pod_node_selector;
 pub mod pod_security;
 pub mod policy_decode;
 pub mod policy_enforcement;

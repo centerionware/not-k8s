@@ -235,6 +235,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_applies_namespace_node_selector",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_binds_a_pod_through_binding_subresource",
         group: TestGroup::General,
     },
@@ -1756,6 +1760,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_rejects_unsupported_pvc_resize" => {
             bootstrap::nodeapiserver_rejects_unsupported_pvc_resize(context).await
+        },
+        "test_nodeapiserver_applies_namespace_node_selector" => {
+            bootstrap::nodeapiserver_applies_namespace_node_selector(context).await
         },
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
             bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await
