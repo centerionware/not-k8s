@@ -4174,6 +4174,93 @@ async fn handle(
                             Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
                             Err(error) => {
                                 warn!(path = %path_str, error = ?error, "admission: listing ingress classes failed");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Group J: `Priority` — resolve a Pod's named or global-default
+            // PriorityClass on create, preserve the plugin-owned fields on
+            // update, and reject competing global defaults.
+            if is_create || is_update {
+                let operation = if is_create {
+                    admission::attributes::Operation::Create
+                } else {
+                    admission::attributes::Operation::Update
+                };
+                if let Some(object) = body_value.as_mut() {
+                    if admission::priority::applies_to_pod(
+                        operation,
+                        &info.api_group,
+                        &info.resource,
+                        &info.subresource,
+                    ) {
+                        if is_update {
+                            match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
+                                Ok(rest::GetOutcome::Found(old_pod)) => {
+                                    if let Err(error) = admission::priority::preserve_update_fields(object, &old_pod) {
+                                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                                    }
+                                }
+                                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {}
+                                Err(error) => {
+                                    warn!(path = %path_str, error = ?error, "admission: reading the existing Pod for Priority failed");
+                                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                                }
+                            }
+                        } else {
+                            let class_name = object.pointer("/spec/priorityClassName").and_then(Value::as_str).unwrap_or("").to_string();
+                            let named_class = if class_name.is_empty() {
+                                None
+                            } else {
+                                match rest::get(&mut client, None, "scheduling.k8s.io", "v1", "priorityclasses", None, &class_name).await {
+                                    Ok(rest::GetOutcome::Found(priority_class)) => Some(priority_class),
+                                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &format!("no PriorityClass with name {class_name} was found"))));
+                                    }
+                                    Err(error) => {
+                                        warn!(path = %path_str, error = ?error, "admission: PriorityClass lookup failed");
+                                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                                    }
+                                }
+                            };
+                            let default_class = if named_class.is_none() {
+                                match rest::list(&mut client, None, "scheduling.k8s.io", "v1", "priorityclasses", None, "", "", 0, "").await {
+                                    Ok(rest::ListOutcome::Found(list)) => {
+                                        let classes = list["items"].as_array().cloned().unwrap_or_default();
+                                        admission::priority::select_default(&classes).cloned()
+                                    }
+                                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => None,
+                                    Err(error) => {
+                                        warn!(path = %path_str, error = ?error, "admission: listing PriorityClasses failed");
+                                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            if let Err(error) = admission::priority::mutate_pod(object, named_class.as_ref(), default_class.as_ref()) {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                            }
+                        }
+                    } else if admission::priority::applies_to_priority_class(
+                        operation,
+                        &info.api_group,
+                        &info.resource,
+                        &info.subresource,
+                    ) && object.pointer("/globalDefault").and_then(Value::as_bool) == Some(true)
+                    {
+                        match rest::list(&mut client, None, "scheduling.k8s.io", "v1", "priorityclasses", None, "", "", 0, "").await {
+                            Ok(rest::ListOutcome::Found(list)) => {
+                                let existing = list["items"].as_array().cloned().unwrap_or_default();
+                                if let Some(error) = admission::priority::validate_priority_class(object, &existing) {
+                                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &error)));
+                                }
+                            }
+                            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                            Err(error) => {
+                                warn!(path = %path_str, error = ?error, "admission: listing PriorityClasses for validation failed");
                                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
                             }
                         }
