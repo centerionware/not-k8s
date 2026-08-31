@@ -478,6 +478,7 @@ async fn connect_uds(endpoint: &str) -> Result<Channel> {
     // The URI is a placeholder; the custom connector ignores it and dials the socket.
     let channel = Endpoint::try_from("http://localhost")
         .context("invalid endpoint")?
+        .timeout(STATUS_RPC_TIMEOUT)
         .connect_with_connector(tower::service_fn(move |_: Uri| {
             let path = path.clone();
             async move {
