@@ -54,7 +54,7 @@
 //! the caller's real rules (`authz::resolve::rules_for` — the real
 //! anonymous identity, `system:anonymous`/`system:unauthenticated`, when
 //! no x509 identity was established) and deny with a real `403` unless
-//! `authz::rbac::rules_allow` says yes. Group J admission (seven
+//! `authz::rbac::rules_allow` says yes. Group J admission (eight
 //! unconditional plugins as of this revision, `admission`'s own doc
 //! comment has the running list) also runs, on the real write verbs only
 //! — real upstream's own admission posture too, admission never gates a
@@ -4364,6 +4364,53 @@ async fn handle(
                             StatusCode::FORBIDDEN,
                             &admission_forbidden_status(&path_str, &error),
                         ));
+                    }
+                }
+            }
+
+            // Group J: `PodNodeSelector` — the namespace annotation form of
+            // the upstream plugin. The annotation is an explicit opt-in, so
+            // the live namespace read is harmless for ordinary namespaces.
+            if is_create
+                && admission::pod_node_selector::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                if let Some(pod) = body_value.as_mut() {
+                    match rest::get(
+                        &mut client,
+                        None,
+                        "",
+                        "v1",
+                        "namespaces",
+                        None,
+                        namespace.unwrap_or(""),
+                    )
+                    .await
+                    {
+                        Ok(rest::GetOutcome::Found(namespace_object)) => {
+                            let selector = namespace_object
+                                .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            if let Err(error) = admission::pod_node_selector::merge_namespace_selector(pod, selector) {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {}
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
                     }
                 }
             }
