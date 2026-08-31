@@ -20,6 +20,7 @@ use p256::ecdsa::{
 };
 use p256::pkcs8::DecodePrivateKey;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
@@ -27,6 +28,10 @@ use std::time::SystemTime;
 const JWT_HEADER: &str = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9";
 const DEFAULT_EXPIRATION_SECONDS: i64 = 3600;
 const MIN_EXPIRATION_SECONDS: i64 = 600;
+pub const POD_NAME_KEY: &str = "authentication.kubernetes.io/pod-name";
+pub const POD_UID_KEY: &str = "authentication.kubernetes.io/pod-uid";
+pub const NODE_NAME_KEY: &str = "authentication.kubernetes.io/node-name";
+pub const NODE_UID_KEY: &str = "authentication.kubernetes.io/node-uid";
 
 #[derive(Clone)]
 pub struct Authenticator {
@@ -73,6 +78,9 @@ pub struct TokenRequestSpec {
     pub audiences: Vec<String>,
     pub expiration_seconds: Option<i64>,
     pub bound_pod: Option<(String, String)>,
+    /// Resolved by the TokenRequest handler from the bound Pod. Clients do
+    /// not provide this; it is signed into the token from live API objects.
+    pub bound_pod_node: Option<(String, Option<String>)>,
 }
 
 impl Authenticator {
@@ -139,6 +147,13 @@ impl Authenticator {
         });
         if let Some((pod_name, pod_uid)) = &request.bound_pod {
             kubernetes_claims["pod"] = json!({"name": pod_name, "uid": pod_uid});
+        }
+        if let Some((node_name, node_uid)) = &request.bound_pod_node {
+            let mut node = json!({"name": node_name});
+            if let Some(node_uid) = node_uid {
+                node["uid"] = json!(node_uid);
+            }
+            kubernetes_claims["node"] = node;
         }
         kubernetes_claims["warnafter"] = json!(expiration.timestamp() - 60);
         let claims = json!({
@@ -232,6 +247,24 @@ impl Authenticator {
             .get("uid")
             .and_then(Value::as_str)?
             .to_string();
+        let mut extra = BTreeMap::new();
+        if let Some(pod) = claims.pointer("/kubernetes.io/pod") {
+            if let (Some(name), Some(pod_uid)) = (
+                pod.get("name").and_then(Value::as_str),
+                pod.get("uid").and_then(Value::as_str),
+            ) {
+                extra.insert(POD_NAME_KEY.to_string(), vec![name.to_string()]);
+                extra.insert(POD_UID_KEY.to_string(), vec![pod_uid.to_string()]);
+            }
+        }
+        if let Some(node) = claims.pointer("/kubernetes.io/node") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                extra.insert(NODE_NAME_KEY.to_string(), vec![name.to_string()]);
+                if let Some(node_uid) = node.get("uid").and_then(Value::as_str) {
+                    extra.insert(NODE_UID_KEY.to_string(), vec![node_uid.to_string()]);
+                }
+            }
+        }
         Some(AuthenticatedToken {
             identity: crate::authn::x509::Identity {
                 name: format!("system:serviceaccount:{namespace}:{service_account}"),
@@ -241,6 +274,7 @@ impl Authenticator {
                     "system:authenticated".to_string(),
                 ],
                 uid: Some(uid.clone()),
+                extra,
                 credential_id: (String::new(), Vec::new()),
             },
             service_account_uid: uid,
@@ -400,6 +434,7 @@ pub fn parse_token_request(body: &Value) -> std::result::Result<TokenRequestSpec
         audiences,
         expiration_seconds,
         bound_pod,
+        bound_pod_node: None,
     })
 }
 
@@ -429,6 +464,7 @@ mod tests {
                     audiences: Vec::new(),
                     expiration_seconds: Some(600),
                     bound_pod: Some(("coredns-0".to_string(), "pod-uid".to_string())),
+                    bound_pod_node: Some(("node-1".to_string(), Some("node-uid".to_string()))),
                 },
             )
             .unwrap();
@@ -438,6 +474,10 @@ mod tests {
             "system:serviceaccount:kube-system:coredns"
         );
         assert_eq!(authenticated.service_account_uid, "sa-uid");
+        assert_eq!(authenticated.identity.extra[POD_NAME_KEY], vec!["coredns-0".to_string()]);
+        assert_eq!(authenticated.identity.extra[POD_UID_KEY], vec!["pod-uid".to_string()]);
+        assert_eq!(authenticated.identity.extra[NODE_NAME_KEY], vec!["node-1".to_string()]);
+        assert_eq!(authenticated.identity.extra[NODE_UID_KEY], vec!["node-uid".to_string()]);
         assert_eq!(
             authenticated.identity.groups,
             vec![
@@ -461,6 +501,7 @@ mod tests {
                     audiences: vec!["https://other.example".to_string()],
                     expiration_seconds: Some(600),
                     bound_pod: None,
+                    bound_pod_node: None,
                 },
             )
             .unwrap();
@@ -502,6 +543,7 @@ mod tests {
             audiences: Vec::new(),
             expiration_seconds: Some(600),
             bound_pod: None,
+            bound_pod_node: None,
         };
         let old_token = authenticator
             .issue_token("default", "default", "sa-uid", &request)

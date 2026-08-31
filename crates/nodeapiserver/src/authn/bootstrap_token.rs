@@ -117,6 +117,7 @@ impl Authenticator {
                 name: entry.username.clone(),
                 groups: entry.groups.clone(),
                 uid: Some(entry.uid.clone()),
+                extra: Default::default(),
                 credential_id: (String::new(), Vec::new()),
             },
             uid: entry.uid.clone(),

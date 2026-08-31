@@ -2406,9 +2406,10 @@ fn build_audit_event_at_stage_with_objects(
     response_object: Option<&Value>,
 ) -> serde_json::Value {
     let info = path::parse(method, path_str, query);
-    let (user_name, user_uid, user_groups): (&str, Option<&str>, Vec<String>) = match identity {
-        Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
-        None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()]),
+    let anonymous_extra = BTreeMap::new();
+    let (user_name, user_uid, user_groups, user_extra): (&str, Option<&str>, Vec<String>, &BTreeMap<String, Vec<String>>) = match identity {
+        Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone(), &id.extra),
+        None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()], &anonymous_extra),
     };
     let object_ref = info.is_resource_request.then(|| crate::audit::event::ObjectRef { group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name, api_version: &info.api_version });
     let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
@@ -2421,6 +2422,7 @@ fn build_audit_event_at_stage_with_objects(
         user_name,
         user_uid,
         user_groups: user_groups.as_slice(),
+        user_extra,
         source_ip: Some(&source_ip),
         user_agent,
         object_ref,
@@ -3642,12 +3644,13 @@ async fn handle(
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
-        let (username, uid, groups): (&str, Option<&str>, Vec<String>) = match &identity {
-            Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
-            None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        let anonymous_extra = BTreeMap::new();
+        let (username, uid, groups, extra): (&str, Option<&str>, Vec<String>, &BTreeMap<String, Vec<String>>) = match &identity {
+            Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone(), &id.extra),
+            None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()], &anonymous_extra),
         };
         let mut response_body = body_value;
-        response_body["status"] = crate::authn::self_review::build_status(username, uid, &groups);
+        response_body["status"] = crate::authn::self_review::build_status(username, uid, &groups, extra);
         return Ok(json_response(StatusCode::CREATED, &response_body));
     }
     // Group H: TokenReview is the webhook endpoint nodelet uses when a pod
@@ -3687,6 +3690,7 @@ async fn handle(
                     "username": authenticated.identity.name,
                     "uid": authenticated.service_account_uid,
                     "groups": authenticated.identity.groups,
+                    "extra": authenticated.identity.extra,
                 }
             }),
             None => serde_json::json!({"authenticated": false}),
@@ -3722,7 +3726,7 @@ async fn handle(
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
-        let request = match crate::authn::service_account::parse_token_request(&body_value) {
+        let mut request = match crate::authn::service_account::parse_token_request(&body_value) {
             Ok(request) => request,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
         };
@@ -3742,7 +3746,27 @@ async fn handle(
             .unwrap_or("");
         if let Some((pod_name, pod_uid)) = &request.bound_pod {
             match rest::get(&mut client, None, "", "v1", "pods", Some(&info.namespace), pod_name).await {
-                Ok(rest::GetOutcome::Found(pod)) if pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str) == Some(pod_uid) => {}
+                Ok(rest::GetOutcome::Found(pod)) if pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str) == Some(pod_uid) => {
+                    if let Some(node_name) = pod
+                        .pointer("/spec/nodeName")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|name| !name.is_empty())
+                    {
+                        let node_uid = match rest::get(&mut client, None, "", "v1", "nodes", None, node_name).await {
+                            Ok(rest::GetOutcome::Found(node)) => node
+                                .pointer("/metadata/uid")
+                                .and_then(serde_json::Value::as_str)
+                                .filter(|uid| !uid.is_empty())
+                                .map(str::to_string),
+                            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                            Err(error) => {
+                                warn!(error = ?error, node = %node_name, "TokenRequest node lookup failed; issuing the node-name claim without a node UID");
+                                None
+                            }
+                        };
+                        request.bound_pod_node = Some((node_name.to_string(), node_uid));
+                    }
+                }
                 Ok(rest::GetOutcome::Found(_)) => {
                     return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "bound Pod UID does not match the current Pod")));
                 }
@@ -5485,24 +5509,24 @@ fn auth_proxy_headers(
         return Vec::new();
     }
     let anonymous_groups = [UNAUTHENTICATED_GROUP.to_string()];
-    let (user, groups, uid, extra) = match identity {
-        Some(identity) => (
-            identity.name.as_str(),
-            identity.groups.as_slice(),
-            identity.uid.as_deref(),
-            (!identity.credential_id.0.is_empty() && !identity.credential_id.1.is_empty())
-                .then_some(&identity.credential_id),
-        ),
-        None => (ANONYMOUS_USERNAME, &anonymous_groups[..], None, None),
+    let (user, groups, uid) = match identity {
+        Some(identity) => (identity.name.as_str(), identity.groups.as_slice(), identity.uid.as_deref()),
+        None => (ANONYMOUS_USERNAME, &anonymous_groups[..], None),
     };
     let mut headers = vec![("X-Remote-User".to_string(), user.to_string())];
     headers.extend(groups.iter().cloned().map(|group| ("X-Remote-Group".to_string(), group)));
     if let Some(uid) = uid {
         headers.push(("X-Remote-Uid".to_string(), uid.to_string()));
     }
-    if let Some((name, values)) = extra {
-        let header_name = format!("X-Remote-Extra-{}", escape_auth_proxy_extra_key(name));
-        headers.extend(values.iter().cloned().map(|value| (header_name.clone(), value)));
+    let mut extra = identity.map(|identity| identity.extra.clone()).unwrap_or_default();
+    if let Some(identity) = identity {
+        if !identity.credential_id.0.is_empty() && !identity.credential_id.1.is_empty() {
+            extra.entry(identity.credential_id.0.clone()).or_insert_with(|| identity.credential_id.1.clone());
+        }
+    }
+    for (name, values) in extra {
+        let header_name = format!("X-Remote-Extra-{}", escape_auth_proxy_extra_key(&name));
+        headers.extend(values.into_iter().map(|value| (header_name.clone(), value)));
     }
     headers
 }
@@ -5908,6 +5932,7 @@ mod tests {
             name: "alice".to_string(),
             groups: vec!["developers".to_string(), "system:authenticated".to_string()],
             uid: Some("uid-1".to_string()),
+            extra: Default::default(),
             credential_id: ("authentication.kubernetes.io/credential-id".to_string(), vec!["X509SHA256=abc".to_string()]),
         };
 
@@ -5935,6 +5960,7 @@ mod tests {
             name: "system:serviceaccount:default:builder".to_string(),
             groups: vec!["system:serviceaccounts".to_string()],
             uid: None,
+            extra: Default::default(),
             credential_id: (String::new(), Vec::new()),
         };
         let headers = aggregation_proxy_headers(&http::HeaderMap::new(), Some(&identity), true);
@@ -6308,7 +6334,7 @@ mod tests {
 
     #[test]
     fn build_audit_event_carries_the_real_identity_when_present() {
-        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], uid: None, credential_id: (String::new(), Vec::new()) };
+        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], uid: None, extra: Default::default(), credential_id: (String::new(), Vec::new()) };
         let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200, &BTreeMap::new());
         assert_eq!(event["user"]["username"], "alice");
         assert_eq!(event["user"]["groups"], serde_json::json!(["developers"]));

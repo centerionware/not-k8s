@@ -40,11 +40,12 @@ pub struct EventInput<'a> {
     pub request_uri: &'a str,
     pub verb: &'a str,
     /// Real upstream's own `authn/v1.UserInfo` shape: `username` +
-    /// `groups` and the optional `uid` are the identity fields this crate's
-    /// authenticators currently expose. `extra` remains unsupported.
+    /// `groups`, optional `uid`, and `extra` are the identity fields exposed
+    /// by the authenticator.
     pub user_name: &'a str,
     pub user_uid: Option<&'a str>,
     pub user_groups: &'a [String],
+    pub user_extra: &'a BTreeMap<String, Vec<String>>,
     pub source_ip: Option<&'a str>,
     pub user_agent: Option<&'a str>,
     /// `None` for a non-resource request (real upstream's own
@@ -112,6 +113,9 @@ pub fn build_event_at_stage_with_level(
     if let Some(uid) = input.user_uid {
         event["user"]["uid"] = json!(uid);
     }
+    if !input.user_extra.is_empty() {
+        event["user"]["extra"] = json!(input.user_extra);
+    }
 
     if let Some(ip) = input.source_ip {
         event["sourceIPs"] = json!([ip]);
@@ -153,6 +157,7 @@ mod tests {
             user_name: "alice",
             user_uid: None,
             user_groups: &[],
+            user_extra: &BTreeMap::new(),
             source_ip: None,
             user_agent: None,
             object_ref: None,
