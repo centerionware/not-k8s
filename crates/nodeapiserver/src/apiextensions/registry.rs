@@ -182,6 +182,7 @@ pub struct DiscoverableResource {
     pub kind: String,
     pub namespaced: bool,
     pub short_names: Vec<String>,
+    pub categories: Vec<String>,
 }
 
 /// Every `(group, version, resource)` triple every served, `Established`
@@ -211,6 +212,14 @@ pub fn discoverable_resources<'a>(crds: impl IntoIterator<Item = &'a Value>) -> 
                     .filter_map(Value::as_str)
                     .map(str::to_string)
                     .collect();
+                let categories = crd
+                    .pointer("/spec/names/categories")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
                 out.push(DiscoverableResource {
                     group: group.to_string(),
                     version: version.to_string(),
@@ -218,6 +227,7 @@ pub fn discoverable_resources<'a>(crds: impl IntoIterator<Item = &'a Value>) -> 
                     kind: resolved.kind,
                     namespaced: resolved.namespaced,
                     short_names,
+                    categories,
                 });
             }
         }
@@ -344,6 +354,7 @@ mod tests {
     fn discoverable_resources_lists_only_served_versions_of_established_crds() {
         let mut crd = established_crd();
         crd["spec"]["names"]["shortNames"] = json!(["wd"]);
+        crd["spec"]["names"]["categories"] = json!(["widgets"]);
         let crds = vec![crd];
         let resources = discoverable_resources(crds.iter());
         // v1 is served, v1beta1 isn't -- exactly one entry, not two.
@@ -357,6 +368,7 @@ mod tests {
                 kind: "Widget".to_string(),
                 namespaced: true,
                 short_names: vec!["wd".to_string()],
+                categories: vec!["widgets".to_string()],
             }
         );
     }

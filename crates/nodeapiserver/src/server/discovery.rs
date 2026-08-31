@@ -86,6 +86,19 @@ fn short_names_for(group: &str, resource: &str) -> &'static [&'static str] {
     }
 }
 
+/// Kubernetes discovery categories are API conventions rather than OpenAPI
+/// metadata. The `all` category lets clients such as kubectl expand
+/// `kubectl get/describe all` into the standard workload resources.
+fn categories_for(group: &str, resource: &str) -> &'static [&'static str] {
+    match (group, resource) {
+        ("", "pods" | "replicationcontrollers" | "services")
+        | ("apps", "daemonsets" | "deployments" | "replicasets" | "statefulsets")
+        | ("autoscaling", "horizontalpodautoscalers")
+        | ("batch", "cronjobs" | "jobs") => &["all"],
+        _ => &[],
+    }
+}
+
 /// `/api` — the legacy, groupless core group's own version list. This
 /// build always serves exactly `v1` for the core group (verified: every
 /// generated resource entry with `group == ""` has `version == "v1"`, since
@@ -288,6 +301,10 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
             if !short_names.is_empty() {
                 value["shortNames"] = json!(short_names);
             }
+            let categories = categories_for(group, r.resource);
+            if !categories.is_empty() {
+                value["categories"] = json!(categories);
+            }
             value
         })
         .collect();
@@ -330,6 +347,10 @@ pub fn api_resource_list_with_crds(group: &str, version: &str, crds: &[Discovera
                     if !short_names.is_empty() {
                         value["shortNames"] = json!(short_names);
                     }
+                    let categories = categories_for(group, r.resource);
+                    if !categories.is_empty() {
+                        value["categories"] = json!(categories);
+                    }
                     value
                 })
                 .collect()
@@ -354,6 +375,9 @@ fn crd_api_resource_value(r: &DiscoverableResource) -> Value {
     let mut value = json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": CRD_VERBS});
     if !r.short_names.is_empty() {
         value["shortNames"] = json!(r.short_names);
+    }
+    if !r.categories.is_empty() {
+        value["categories"] = json!(r.categories);
     }
     value
 }
@@ -501,6 +525,9 @@ fn crd_resource_discovery_value(r: &DiscoverableResource) -> Value {
     if !r.short_names.is_empty() {
         value["shortNames"] = json!(r.short_names);
     }
+    if !r.categories.is_empty() {
+        value["categories"] = json!(r.categories);
+    }
     value
 }
 
@@ -517,6 +544,10 @@ fn api_resource_discovery_value(r: &codegen::api_resources::ApiResource) -> Valu
     let short_names = short_names_for(r.response_group, r.resource);
     if !short_names.is_empty() {
         value["shortNames"] = json!(short_names);
+    }
+    let categories = categories_for(r.response_group, r.resource);
+    if !categories.is_empty() {
+        value["categories"] = json!(categories);
     }
     value
 }
@@ -585,6 +616,7 @@ mod tests {
         assert_eq!(pods["singularName"], "pod");
         let verbs: Vec<&str> = pods["verbs"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert!(verbs.contains(&"watch"));
+        assert_eq!(pods["categories"], json!(["all"]));
     }
 
     #[test]
@@ -669,6 +701,7 @@ mod tests {
             kind: "Widget".to_string(),
             namespaced: true,
             short_names: vec![],
+            categories: vec!["widgets".to_string()],
         }
     }
 
@@ -736,6 +769,7 @@ mod tests {
         assert_eq!(widgets["kind"], "Widget");
         assert_eq!(widgets["namespaced"], true);
         assert_eq!(widgets["singularName"], "widget");
+        assert_eq!(widgets["categories"], json!(["widgets"]));
         let verbs: Vec<&str> = widgets["verbs"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         for expected in ["create", "get", "list", "update", "patch", "delete", "deletecollection", "watch"] {
             assert!(verbs.contains(&expected), "expected {expected:?} among {verbs:?}");
@@ -755,6 +789,7 @@ mod tests {
             kind: "Widget".to_string(),
             namespaced: true,
             short_names: vec![],
+            categories: vec![],
         }];
         let list = api_resource_list_with_crds("apps", "v1", &crds).expect("apps/v1 must still resolve");
         let names: Vec<&str> = list["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
