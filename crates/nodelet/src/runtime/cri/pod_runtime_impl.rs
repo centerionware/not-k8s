@@ -247,6 +247,7 @@ impl PodRuntime for CriRuntime {
                 let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
                 self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices, &runtime_handler_for_containers, privileged)
                     .await?;
+                info!(pod = %format!("{}/{}", id.namespace, id.name), container = %c.name, "ensured container");
             }
             // Added post-hoc via the `ephemeralcontainers` subresource (e.g.
             // `kubectl debug`), never present when a pod is first created —
@@ -263,7 +264,9 @@ impl PodRuntime for CriRuntime {
             }
         }
 
+        info!(pod = %format!("{}/{}", id.namespace, id.name), "building pod runtime status");
         let mut status = self.build_status(&sandbox_id, &id.uid, &restart_policy).await?;
+        info!(pod = %format!("{}/{}", id.namespace, id.name), phase = status.phase.as_str(), pod_ip = ?status.pod_ip, "built pod runtime status");
         // Round 124 (found live in CI): a container whose image pull is
         // failing has no real CRI object at all (CreateContainer never
         // ran), so build_status() above — which only ever looks at what
