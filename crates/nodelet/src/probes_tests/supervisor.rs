@@ -126,6 +126,40 @@ async fn readiness_starts_false_and_flips_true_once_the_exec_probe_passes() {
 }
 
 #[tokio::test]
+async fn readiness_is_not_delayed_by_a_later_liveness_initial_delay() {
+    let runtime = FakeRuntime::new(true);
+    let health = new_health_map();
+    let mut liveness = exec_probe("live-check", 1);
+    liveness.initial_delay_seconds = Some(60);
+    let container = Container {
+        name: "app".to_string(),
+        liveness_probe: Some(liveness),
+        readiness_probe: Some(exec_probe("ready-check", 1)),
+        ..Default::default()
+    };
+
+    let handle = tokio::spawn(probe_container(
+        runtime,
+        not_found_client(),
+        health.clone(),
+        discard_notify(),
+        "default".to_string(),
+        "web".to_string(),
+        container,
+        "10.0.0.5".to_string(),
+        30,
+    ));
+
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    assert!(
+        container_health(&health, "default", "web", "app").ready,
+        "readiness must run on its own schedule instead of waiting for liveness initial delay"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn liveness_failure_past_threshold_triggers_a_container_restart() {
     let runtime = FakeRuntime::new(true); // starts healthy
     let health = new_health_map();
