@@ -1,15 +1,17 @@
 //! Service (ClusterIP + NodePort) proxy — nftables, not iptables.
 //!
-//! Real kube-proxy watches Services + EndpointSlices and programs iptables/
+//! Real kube-proxy watches Services + EndpointSlices (and legacy Endpoints)
+//! and programs iptables/
 //! ipvs rules to make ClusterIPs (which no interface ever owns) resolve to a
 //! real backend pod. This does the same job with nftables, scoped to what a
 //! single-node edge cluster needs: reconcile-on-event (no periodic resync,
 //! no polling), the whole ruleset rebuilt atomically from current state
-//! every time a Service or EndpointSlice changes. Initial relists are folded
-//! into one rebuild after both snapshots are complete, rather than rebuilding
-//! once for every `InitApply` item.
+//! every time a Service, EndpointSlice, or Endpoints object changes. Initial
+//! relists are folded into one rebuild after all snapshots are complete,
+//! rather than rebuilding once for every `InitApply` item.
 //!
-//! The whole ruleset is rebuilt on each Service or EndpointSlice event. NAT
+//! The whole ruleset is rebuilt on each Service, EndpointSlice, or Endpoints
+//! event. NAT
 //! rules select only the first packet of a flow; conntrack owns the later
 //! packets and reuses the NAT binding after a ruleset replacement. The
 //! end-to-end `nftables_rebuild_established_conns.sh` test keeps a real watch
@@ -33,10 +35,11 @@
 //! matches, unlike the `ip`/`ip6` families which are single-stack only.
 //! `config::IpFamily` (auto-detected by default: dual if the node has both
 //! stacks, single if it only has one) gates which families get rules at all.
-//! Backends come from `EndpointSlice` (not the legacy `Endpoints` API)
-//! specifically because dual-stack Services get *separate* slices per
-//! address family (`addressType: IPv4` / `IPv6`) — the legacy Endpoints
-//! mirror only ever carries one family, which would silently break v6.
+//! Backends come from `EndpointSlice` where available, with a legacy
+//! `Endpoints` fallback for selector-less Services such as
+//! `default/kubernetes`. Dual-stack Services get *separate* slices per
+//! address family (`addressType: IPv4` / `IPv6`); legacy Endpoints are
+//! filtered to the requested family when they are the only source.
 //!
 //! Two real nftables quirks shaped the rule format:
 //!   - A `dnat to <verdict-map>` whose values are an `addr . port`
@@ -121,7 +124,7 @@
 use crate::config::{IpFamily, LbMethod};
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{Service, ServicePort};
+use k8s_openapi::api::core::v1::{Endpoints, Service, ServicePort};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -169,8 +172,10 @@ impl Family {
 struct State {
     services: HashMap<String, Service>,
     endpoint_slices: HashMap<String, EndpointSlice>,
+    endpoints: HashMap<String, Endpoints>,
     services_initialized: bool,
     endpoint_slices_initialized: bool,
+    endpoints_initialized: bool,
     dirty: bool,
 }
 
@@ -183,18 +188,25 @@ enum EventPhase {
     InitDone,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResourceKind {
+    Services,
+    EndpointSlices,
+    Endpoints,
+}
+
 impl State {
     /// Records one watch event and reports whether the current snapshot is
     /// ready for a rebuild. `watcher` emits one `InitApply` per existing
     /// object during a relist; those events only dirty the mirror. Rebuild
-    /// once both resource kinds have reached `InitDone`, then rebuild
+    /// once all resource kinds have reached `InitDone`, then rebuild
     /// immediately for ordinary live changes.
-    fn record_event(&mut self, services: bool, phase: EventPhase) -> bool {
+    fn record_event(&mut self, resource: ResourceKind, phase: EventPhase) -> bool {
         self.dirty = true;
-        let initialized = if services {
-            &mut self.services_initialized
-        } else {
-            &mut self.endpoint_slices_initialized
+        let initialized = match resource {
+            ResourceKind::Services => &mut self.services_initialized,
+            ResourceKind::EndpointSlices => &mut self.endpoint_slices_initialized,
+            ResourceKind::Endpoints => &mut self.endpoints_initialized,
         };
         match phase {
             EventPhase::Init => *initialized = false,
@@ -202,7 +214,11 @@ impl State {
             EventPhase::InitApply | EventPhase::Apply | EventPhase::Delete => {}
         }
 
-        if self.dirty && self.services_initialized && self.endpoint_slices_initialized {
+        if self.dirty
+            && self.services_initialized
+            && self.endpoint_slices_initialized
+            && self.endpoints_initialized
+        {
             self.dirty = false;
             true
         } else {
@@ -243,12 +259,13 @@ unaffected either way",
             ip_family = ?self.ip_family,
             lb_method = ?self.lb_method,
             fib = caps.fib, numgen = caps.numgen, jhash = caps.jhash,
-            "service proxy watching Services + EndpointSlices (nftables backend)"
+            "service proxy watching Services + EndpointSlices + Endpoints (nftables backend)"
         );
 
         let mut state = State::default();
         let mut svc_stream = watch_services(&self.client);
         let mut ep_stream = watch_endpoint_slices(&self.client);
+        let mut endpoints_stream = watch_endpoints(&self.client);
 
         loop {
             let mut changed = false;
@@ -257,7 +274,7 @@ unaffected either way",
                     match item {
                         Some(Ok(ev)) => {
                             let phase = apply_event(&mut state.services, ev);
-                            changed |= state.record_event(true, phase);
+                            changed |= state.record_event(ResourceKind::Services, phase);
                         }
                         Some(Err(e)) => warn!(error = ?e, "service watch error"),
                         None => {
@@ -271,13 +288,27 @@ unaffected either way",
                     match item {
                         Some(Ok(ev)) => {
                             let phase = apply_event(&mut state.endpoint_slices, ev);
-                            changed |= state.record_event(false, phase);
+                            changed |= state.record_event(ResourceKind::EndpointSlices, phase);
                         }
                         Some(Err(e)) => warn!(error = ?e, "endpointslice watch error"),
                         None => {
                             warn!("endpointslice watch ended; restarting");
                             tokio::time::sleep(Duration::from_secs(2)).await;
                             ep_stream = watch_endpoint_slices(&self.client);
+                        }
+                    }
+                }
+                item = endpoints_stream.next() => {
+                    match item {
+                        Some(Ok(ev)) => {
+                            let phase = apply_event(&mut state.endpoints, ev);
+                            changed |= state.record_event(ResourceKind::Endpoints, phase);
+                        }
+                        Some(Err(e)) => warn!(error = ?e, "Endpoints watch error"),
+                        None => {
+                            warn!("Endpoints watch ended; restarting");
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            endpoints_stream = watch_endpoints(&self.client);
                         }
                     }
                 }
@@ -347,6 +378,13 @@ fn watch_endpoint_slices(
     watcher(api, watcher::Config::default()).boxed()
 }
 
+fn watch_endpoints(
+    client: &Client,
+) -> futures::stream::BoxStream<'static, watcher::Result<Event<Endpoints>>> {
+    let api: Api<Endpoints> = Api::all(client.clone());
+    watcher(api, watcher::Config::default()).boxed()
+}
+
 fn obj_key<T: ResourceExt>(obj: &T) -> String {
     format!("{}/{}", obj.namespace().unwrap_or_default(), obj.name_any())
 }
@@ -354,7 +392,7 @@ fn obj_key<T: ResourceExt>(obj: &T) -> String {
 /// Fold a watch event into our local mirror. `Init` means a relist just
 /// started (drop anything stale from before a reconnect); `InitApply`/`Apply`
 /// upsert; `Delete` removes; `InitDone` marks the snapshot complete. The
-/// caller batches `InitApply` events and rebuilds only after both resource
+/// caller batches `InitApply` events and rebuilds only after all resource
 /// kinds finish their initial relist.
 fn apply_event<T: Clone + ResourceExt>(map: &mut HashMap<String, T>, ev: Event<T>) -> EventPhase {
     match ev {
@@ -380,16 +418,22 @@ fn apply_event<T: Clone + ResourceExt>(map: &mut HashMap<String, T>, ev: Event<T
 
 /// Resolve one Service port to its ready backends (ip, port) of one address
 /// family, via the EndpointSlice(s) owned by that Service (labeled
-/// `kubernetes.io/service-name`). Matches subset ports by name the same way
-/// a real kube-proxy would (a single unnamed port is the common case).
+/// `kubernetes.io/service-name`), falling back to the legacy `Endpoints`
+/// object when no matching slices exist. The fallback is required for
+/// selector-less Services such as the control plane's `default/kubernetes`
+/// Service, which is maintained as an Endpoints object by the apiserver and
+/// does not get an EndpointSlice. Matches ports by name the same way a real
+/// kube-proxy would (a single unnamed port is the common case).
 fn backends_for(
     namespace: &str,
     svc_name: &str,
     port: &ServicePort,
     family: Family,
     slices: &HashMap<String, EndpointSlice>,
+    endpoints: &HashMap<String, Endpoints>,
 ) -> Vec<(String, i32)> {
     let mut out = Vec::new();
+    let mut matching_slice = false;
     for slice in slices.values() {
         if slice.metadata.namespace.as_deref() != Some(namespace) {
             continue;
@@ -405,6 +449,7 @@ fn backends_for(
         if owner.map(String::as_str) != Some(svc_name) {
             continue;
         }
+        matching_slice = true;
 
         let eps_ports = slice.ports.as_deref().unwrap_or(&[]);
         let matched = eps_ports
@@ -432,6 +477,43 @@ fn backends_for(
             }
             for addr in &ep.addresses {
                 out.push((addr.clone(), ep_port));
+            }
+        }
+    }
+
+    // EndpointSlices are authoritative whenever one exists for this
+    // Service, even when it currently has no ready endpoints. Otherwise a
+    // stale legacy Endpoints object could resurrect traffic that the modern
+    // controller deliberately removed.
+    if matching_slice {
+        return out;
+    }
+
+    let Some(endpoint) = endpoints.get(&format!("{namespace}/{svc_name}")) else {
+        return out;
+    };
+    for subset in endpoint.subsets.as_deref().unwrap_or(&[]) {
+        let endpoint_ports = subset.ports.as_deref().unwrap_or(&[]);
+        let matched = endpoint_ports
+            .iter()
+            .find(|p| match (&port.name, &p.name) {
+                (Some(service_name), Some(endpoint_name)) => service_name == endpoint_name,
+                (None, None) => true,
+                _ => false,
+            })
+            .or_else(|| {
+                if endpoint_ports.len() == 1 {
+                    endpoint_ports.first()
+                } else {
+                    None
+                }
+            });
+        let Some(endpoint_port) = matched.map(|p| p.port) else {
+            continue;
+        };
+        for address in subset.addresses.as_deref().unwrap_or(&[]) {
+            if Family::of(&address.ip) == family {
+                out.push((address.ip.clone(), endpoint_port));
             }
         }
     }
@@ -557,7 +639,14 @@ fn build_ruleset(
             let f = family.nft_word();
 
             for port in spec.ports.as_deref().unwrap_or(&[]) {
-                let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
+                let backends = backends_for(
+                    namespace,
+                    name,
+                    port,
+                    family,
+                    &state.endpoint_slices,
+                    &state.endpoints,
+                );
                 // Owned by the xtables statistic chain instead — emitting
                 // here too would mean two DNAT rules racing for the same
                 // connection.
@@ -939,7 +1028,14 @@ fn build_statistic_ruleset(
                 continue;
             }
             for port in spec.ports.as_deref().unwrap_or(&[]) {
-                let backends = backends_for(namespace, name, port, family, &state.endpoint_slices);
+                let backends = backends_for(
+                    namespace,
+                    name,
+                    port,
+                    family,
+                    &state.endpoint_slices,
+                    &state.endpoints,
+                );
                 if !caps.delegates_to_statistic(
                     family,
                     backends.len(),
@@ -1229,8 +1325,37 @@ mod tests {
                     format!("10.42.0.{}", i + 5)
                 };
                 (ip, 8080)
-            })
-            .collect()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn selectorless_services_use_legacy_endpoints_when_no_slice_exists() {
+        let svc = fake_service(vec!["10.43.0.1"], None);
+        let port = svc.spec.as_ref().unwrap().ports.as_ref().unwrap()[0].clone();
+        let endpoints: Endpoints = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Endpoints",
+            "metadata": {"name": "kubernetes", "namespace": "default"},
+            "subsets": [{
+                "addresses": [{"ip": "10.42.0.1"}],
+                "ports": [{"port": 6443, "protocol": "TCP"}]
+            }]
+        }))
+        .unwrap();
+        let legacy = [("default/kubernetes".to_string(), endpoints)].into_iter().collect();
+
+        assert_eq!(
+            backends_for(
+                "default",
+                "kubernetes",
+                &port,
+                Family::V4,
+                &HashMap::new(),
+                &legacy,
+            ),
+            vec![("10.42.0.1".to_string(), 6443)]
+        );
     }
 
     #[test]
@@ -1355,22 +1480,25 @@ mod tests {
     fn initial_relists_rebuild_once_after_both_snapshots_finish() {
         let mut state = State::default();
 
-        assert!(!state.record_event(true, EventPhase::Init));
-        assert!(!state.record_event(true, EventPhase::InitApply));
-        assert!(!state.record_event(true, EventPhase::InitDone));
-        assert!(!state.record_event(false, EventPhase::Init));
-        assert!(!state.record_event(false, EventPhase::InitApply));
-        assert!(state.record_event(false, EventPhase::InitDone));
+        assert!(!state.record_event(ResourceKind::Services, EventPhase::Init));
+        assert!(!state.record_event(ResourceKind::Services, EventPhase::InitApply));
+        assert!(!state.record_event(ResourceKind::Services, EventPhase::InitDone));
+        assert!(!state.record_event(ResourceKind::EndpointSlices, EventPhase::Init));
+        assert!(!state.record_event(ResourceKind::EndpointSlices, EventPhase::InitApply));
+        assert!(!state.record_event(ResourceKind::EndpointSlices, EventPhase::InitDone));
+        assert!(!state.record_event(ResourceKind::Endpoints, EventPhase::Init));
+        assert!(!state.record_event(ResourceKind::Endpoints, EventPhase::InitApply));
+        assert!(state.record_event(ResourceKind::Endpoints, EventPhase::InitDone));
         assert!(!state.dirty);
 
         // Live changes stay immediate after the initial snapshots are ready.
-        assert!(state.record_event(true, EventPhase::Apply));
+        assert!(state.record_event(ResourceKind::Services, EventPhase::Apply));
 
         // A reconnect batches again until that resource's new snapshot is
         // complete, so stale state is never applied one object at a time.
-        assert!(!state.record_event(true, EventPhase::Init));
-        assert!(!state.record_event(true, EventPhase::InitApply));
-        assert!(state.record_event(true, EventPhase::InitDone));
+        assert!(!state.record_event(ResourceKind::Services, EventPhase::Init));
+        assert!(!state.record_event(ResourceKind::Services, EventPhase::InitApply));
+        assert!(state.record_event(ResourceKind::Services, EventPhase::InitDone));
     }
 
     /// `build_ruleset()`'s real output — not a hand-written stand-in script
