@@ -319,6 +319,14 @@ jobs:
           kubectl_cmd describe nodes
           echo "── all pods (every namespace) ──"
           kubectl_cmd get pods -A -o wide
+          echo "── CoreDNS container logs ──"
+          mapfile -t coredns_pods < <(kubectl_cmd get pods -n kube-system -l k8s-app=kube-dns \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+          for pod in "${coredns_pods[@]}"; do
+            [[ -n "$pod" ]] || continue
+            echo "── $pod logs ──"
+            kubectl_cmd logs -n kube-system "$pod" --all-containers --tail=200 || true
+          done
           echo "── pods not Running/Completed ──"
           kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
           echo "── Service datapath prerequisites ──"

@@ -159,6 +159,15 @@ impl PodRuntime for CriRuntime {
             .resolve_service_env(&id.namespace, enable_service_links)
             .await
             .context("resolving Service environment")?;
+        if id.namespace == "kube-system" && id.name.starts_with("coredns-") {
+            let service_link_names: Vec<_> = service_env.keys().cloned().collect();
+            info!(
+                pod = %format!("{}/{}", id.namespace, id.name),
+                enable_service_links,
+                service_link_names = ?service_link_names,
+                "resolved CoreDNS service-link environment"
+            );
+        }
         // Dynamic Resource Allocation (round 63): resolved/prepared once
         // up front, same as volumes/service_env above — a pod with no
         // resourceClaims costs nothing (see resolve_pod_claim_devices()).
