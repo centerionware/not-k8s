@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/7 |
-| J — Admission | in progress | 12/15 |
+| J — Admission | in progress | 13/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 8/9 |
@@ -1631,10 +1631,12 @@ individually fit can still both be admitted, together exceeding the
 quota, exactly as before. What's new is that `status.used` genuinely
 reflects real usage afterward (`kubectl describe resourcequota` now
 shows accurate data) rather than never being written at all. This
-closes `resource_quota`'s persisted-counter gap completely — the
-remaining, still-real gap is the concurrency race itself, which needs
-a genuinely different mechanism (in-flight reservation tracking, not
-just persistence) to close.
+closes `resource_quota`'s persisted-counter gap completely. A process-local
+admission reservation lock now also serializes namespaced creates across the
+live quota check and the following object write, so concurrent requests to
+one nodeapiserver cannot both pass against the same pre-create usage snapshot.
+Multi-process quota reservation remains outside this crate's single-process
+scope.
 Placed last among this crate's admission blocks (after `LimitRanger`'s
 own defaulting), the same relative position real upstream's own default
 plugin order uses, so quota sees the final, fully-defaulted object.
