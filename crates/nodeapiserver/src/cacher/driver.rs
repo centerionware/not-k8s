@@ -131,7 +131,17 @@ pub async fn reflect(
             tokio::select! {
                 msg = handle.responses.message() => {
                     match msg {
-                        Ok(Some(resp)) => apply_watch_response_shared(cache, &resp),
+                        Ok(Some(resp)) => {
+                            let canceled = resp.canceled;
+                            apply_watch_response_shared(cache, &resp);
+                            if canceled {
+                                // A compacted/canceled watch is no longer a
+                                // trustworthy continuation. Start over with
+                                // a fresh LIST, as an upstream reflector does.
+                                tracing::info!("cacher: watch canceled; relisting");
+                                break;
+                            }
+                        }
                         Ok(None) => {
                             // Stream ended cleanly (server closed it) — same
                             // response as an error: relist, don't just stop.
@@ -179,8 +189,9 @@ async fn wait_or_stop(stop: &mut watch::Receiver<bool>, delay: std::time::Durati
 /// (`ARCHITECTURE.md` §4); nodestore's own `progress_notify` mechanism is
 /// what would drive one on a schedule, and this module explicitly requests
 /// those progress notifications. The
-/// `created`/`canceled` acknowledgement responses carry no events and no
-/// revision advance worth applying, so they're a no-op here.
+/// `created` acknowledgements carry no events and no revision advance worth
+/// applying; a canceled watch is likewise not a cache event and makes the
+/// reflector start a fresh LIST/WATCH cycle.
 pub fn apply_watch_response(cache: &mut WatchCache, resp: &WatchResponse) {
     for (kind, key, value, revision) in decode_applies(resp, cache.revision()) {
         cache.apply(kind, key, value, revision);
@@ -202,9 +213,22 @@ pub fn apply_watch_response_shared(cache: &crate::cacher::store::SharedCache, re
 /// factored out so it's exercised by the same unit tests regardless of
 /// which applier (bare `WatchCache` or `SharedCache`) ends up calling it.
 fn decode_applies(resp: &WatchResponse, current_revision: i64) -> Vec<(EventKind, Vec<u8>, Vec<u8>, i64)> {
+    // `created: true` is the acknowledgement for opening a watch, not a
+    // progress notification. Its header describes the store revision when
+    // the watch was opened and may be ahead of this resource cache's LIST
+    // revision because unrelated resources were written in between. Moving
+    // the cache to that revision would make it discard the real event at the
+    // same revision when the watch replays it immediately afterwards.
+    // Likewise, a canceled watch is not a cache event; the reflector will
+    // observe the closed/failed stream and establish a new LIST/WATCH cycle.
+    if resp.created || resp.canceled {
+        return Vec::new();
+    }
     let header_revision = resp.header.as_ref().map(|h| h.revision).unwrap_or(0);
     if resp.events.is_empty() {
-        if header_revision > current_revision {
+        // nodestore uses watch_id=-1 for an explicit progress response,
+        // matching etcd's multiplexed progress-notification convention.
+        if resp.watch_id == -1 && header_revision > current_revision {
             return vec![(EventKind::Bookmark, Vec::new(), Vec::new(), header_revision)];
         }
         return Vec::new();
@@ -319,18 +343,48 @@ mod tests {
     #[test]
     fn apply_watch_response_with_no_events_but_a_newer_header_is_a_bookmark() {
         let mut cache = WatchCache::new(vec![(b"a".to_vec(), CacheEntry { value: b"v".to_vec(), mod_revision: 1 })], 1, 16, 16);
-        let resp = watch_response(vec![], 9);
+        let mut resp = watch_response(vec![], 9);
+        resp.watch_id = -1;
         apply_watch_response(&mut cache, &resp);
         assert_eq!(cache.revision(), 9, "a progress notification must still advance the cache's revision");
         assert_eq!(cache.list().0.len(), 1, "a bookmark must not touch any key");
     }
 
     #[test]
-    fn apply_watch_response_with_no_events_and_no_newer_header_is_a_true_no_op() {
-        // The created:true acknowledgement response, or a stale progress
-        // notification — neither should touch the cache at all.
+    fn apply_watch_response_does_not_advance_for_a_created_ack() {
         let mut cache = WatchCache::new(vec![], 5, 16, 16);
-        let resp = WatchResponse { header: Some(ResponseHeader { revision: 5, ..Default::default() }), created: true, ..Default::default() };
+        let resp = WatchResponse { header: Some(ResponseHeader { revision: 9, ..Default::default() }), created: true, ..Default::default() };
+        apply_watch_response(&mut cache, &resp);
+        assert_eq!(cache.revision(), 5);
+    }
+
+    #[test]
+    fn apply_watch_response_does_not_lose_an_event_at_the_created_revision() {
+        let mut cache = WatchCache::new(vec![], 5, 16, 16);
+        let created = WatchResponse {
+            header: Some(ResponseHeader { revision: 9, ..Default::default() }),
+            created: true,
+            ..Default::default()
+        };
+        apply_watch_response(&mut cache, &created);
+
+        // This is the event the watch server replays after its created ack.
+        // It must remain visible even though the ack's header was newer than
+        // the cache's LIST snapshot.
+        let event = watch_response(vec![put_event("a", "v", 1, 9)], 9);
+        apply_watch_response(&mut cache, &event);
+        assert_eq!(cache.revision(), 9);
+        assert_eq!(cache.get(b"a").map(|entry| entry.value), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn apply_watch_response_does_not_advance_for_a_canceled_watch() {
+        let mut cache = WatchCache::new(vec![], 5, 16, 16);
+        let resp = WatchResponse {
+            header: Some(ResponseHeader { revision: 9, ..Default::default() }),
+            canceled: true,
+            ..Default::default()
+        };
         apply_watch_response(&mut cache, &resp);
         assert_eq!(cache.revision(), 5);
     }
