@@ -776,6 +776,228 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_enforces_node_restriction(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "NodeRestriction checks are only exercised against nodeapiserver",
+        ));
+    }
+    if !Command::new("openssl")
+        .arg("version")
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return Err(skip_test("NodeRestriction e2e needs openssl"));
+    }
+
+    let nodes: Api<Node> = Api::all(context.client.clone());
+    let node = nodes
+        .list(&ListParams::default())
+        .await?
+        .items
+        .into_iter()
+        .next()
+        .context("the cluster has no Node for NodeRestriction e2e")?;
+    let node_name = node
+        .metadata
+        .name
+        .clone()
+        .context("the Node has no name for NodeRestriction e2e")?;
+    let node_uid = node
+        .metadata
+        .uid
+        .clone()
+        .context("the Node has no UID for NodeRestriction e2e")?;
+
+    let scratch = std::env::temp_dir().join(format!(
+        "nodeapiserver-node-restriction-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&scratch)?;
+    let client_key = scratch.join("node.key");
+    let client_csr = scratch.join("node.csr");
+    let client_crt = scratch.join("node.crt");
+    let client_ext = scratch.join("node.ext");
+    let client_serial = scratch.join("node.srl");
+    let ca_crt = cfg.pki_dir().join("ca.crt");
+    let ca_key = cfg.pki_dir().join("ca.key");
+    if !ca_crt.is_file() || !ca_key.is_file() {
+        let _ = fs::remove_dir_all(&scratch);
+        return Err(skip_test(
+            "NodeRestriction e2e needs the nodeapiserver cluster CA key material",
+        ));
+    }
+
+    let run_privileged_owned = |program: &str, args: &[String]| -> Result<Output> {
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_privileged_output(program, &args)
+    };
+    let run_success = |program: &str, args: &[String]| -> Result<()> {
+        let output = run_privileged_owned(program, args)?;
+        anyhow::ensure!(
+            output.status.success(),
+            "{program} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    };
+
+    fs::write(
+        &client_ext,
+        "basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n",
+    )?;
+    run_success(
+        "openssl",
+        &[
+            "req".to_string(),
+            "-newkey".to_string(),
+            "rsa:2048".to_string(),
+            "-nodes".to_string(),
+            "-keyout".to_string(),
+            client_key.to_string_lossy().into_owned(),
+            "-out".to_string(),
+            client_csr.to_string_lossy().into_owned(),
+            "-subj".to_string(),
+            format!("/CN=system:node:{node_name}/O=system:nodes"),
+        ],
+    )?;
+    run_success(
+        "openssl",
+        &[
+            "x509".to_string(),
+            "-req".to_string(),
+            "-in".to_string(),
+            client_csr.to_string_lossy().into_owned(),
+            "-CA".to_string(),
+            ca_crt.to_string_lossy().into_owned(),
+            "-CAkey".to_string(),
+            ca_key.to_string_lossy().into_owned(),
+            "-CAcreateserial".to_string(),
+            "-CAserial".to_string(),
+            client_serial.to_string_lossy().into_owned(),
+            "-out".to_string(),
+            client_crt.to_string_lossy().into_owned(),
+            "-days".to_string(),
+            "1".to_string(),
+            "-extfile".to_string(),
+            client_ext.to_string_lossy().into_owned(),
+        ],
+    )?;
+
+    let endpoint = cfg.apiserver_server();
+    let cert = client_crt.to_string_lossy().into_owned();
+    let key = client_key.to_string_lossy().into_owned();
+    let ca = ca_crt.to_string_lossy().into_owned();
+    let curl = |method: &str, url: &str, data: Option<&str>| -> Result<Output> {
+        let mut args = vec![
+            "-k".to_string(),
+            "-sS".to_string(),
+            "--max-time".to_string(),
+            "10".to_string(),
+            "--cert".to_string(),
+            cert.clone(),
+            "--key".to_string(),
+            key.clone(),
+            "--cacert".to_string(),
+            ca.clone(),
+            "-X".to_string(),
+            method.to_string(),
+            "-w".to_string(),
+            "\n%{http_code}".to_string(),
+            url.to_string(),
+        ];
+        if let Some(data) = data {
+            let content_type = if method == "PATCH" {
+                "application/merge-patch+json"
+            } else {
+                "application/json"
+            };
+            args.splice(
+                12..12,
+                [
+                    "-H".to_string(),
+                    format!("Content-Type: {content_type}"),
+                    "--data-binary".to_string(),
+                    data.to_string(),
+                ],
+            );
+        }
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_privileged_output("curl", &refs)
+    };
+    let response = |output: Output| -> Result<(u16, String)> {
+        anyhow::ensure!(
+            output.status.success(),
+            "curl failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let (body, code) = text
+            .rsplit_once('\n')
+            .context("curl response did not contain an HTTP status")?;
+        Ok((code.trim().parse()?, body.to_string()))
+    };
+
+    let pod_name = format!("nodeapiserver-mirror-{}", std::process::id());
+    let pod_url = format!(
+        "{}/api/v1/namespaces/{}/pods",
+        endpoint.trim_end_matches('/'),
+        context.namespace
+    );
+    let mirror_pod = json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": &pod_name,
+            "namespace": &context.namespace,
+            "annotations": {"kubernetes.io/config.mirror": "nodeapiserver-e2e"},
+            "ownerReferences": [{
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": &node_name,
+                "uid": &node_uid,
+                "controller": true
+            }]
+        },
+        "spec": {
+            "nodeName": &node_name,
+            "restartPolicy": "Never",
+            "containers": [{"name": "app", "image": "example.invalid/node-restriction-e2e"}]
+        }
+    });
+    let (code, body) = response(curl("POST", &pod_url, Some(&serde_json::to_string(&mirror_pod)?))?)?;
+    anyhow::ensure!(
+        code == 201,
+        "node identity could not create a valid mirror Pod (HTTP {code}): {body}"
+    );
+
+    let node_url = format!(
+        "{}/api/v1/nodes/{node_name}",
+        endpoint.trim_end_matches('/')
+    );
+    let (code, body) = response(curl(
+        "PATCH",
+        &node_url,
+        Some(r#"{"metadata":{"labels":{"node-restriction.kubernetes.io/blocked":"true"}}}"#),
+    )?)?;
+    anyhow::ensure!(
+        code == 403 && body.contains("node-restriction.kubernetes.io/blocked"),
+        "NodeRestriction did not reject a forbidden node label (HTTP {code}): {body}"
+    );
+
+    let pod_delete_url = format!("{pod_url}/{pod_name}");
+    let (code, body) = response(curl("DELETE", &pod_delete_url, None)?)?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = fs::remove_dir_all(&scratch);
+    anyhow::ensure!(
+        code == 200 || code == 202,
+        "node identity could not delete its own mirror Pod (HTTP {code}): {body}"
+    );
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_applies_core_defaults(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

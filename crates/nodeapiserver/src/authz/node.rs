@@ -11,9 +11,9 @@
 //! The result is deliberately tri-state. `Allow` short-circuits RBAC,
 //! `NoOpinion` falls through to the caller's normal RBAC rules, and `Deny`
 //! prevents a broad legacy `system:node` binding from bypassing a
-//! node-specific relationship check. The latter is necessary here because
-//! this implementation does not yet have upstream's NodeRestriction
-//! admission plugin to constrain create bodies after authorization.
+//! node-specific relationship check. Body-sensitive operations are completed
+//! by the admission-stage `NodeRestriction` plugin after this authorizer has
+//! selected the node identity.
 
 use crate::authn::x509::Identity;
 use crate::cacher::selector::parse_field_selector;
@@ -93,12 +93,12 @@ fn node_access(node_name: &str, info: &RequestInfo) -> Decision {
         return Decision::NoOpinion;
     }
     match (info.subresource.as_str(), info.verb.as_str()) {
+        // NodeRestriction validates the submitted object name and body after
+        // this authorizer grants the body-sensitive create.
+        ("", "create") => Decision::Allow,
         ("", "get" | "list" | "watch") if info.name == node_name => Decision::Allow,
         ("", "update" | "patch") if info.name == node_name => Decision::Allow,
         ("status", "update" | "patch") if info.name == node_name => Decision::Allow,
-        // The request body is not available to the authorizer. Leave node
-        // creation to a future NodeRestriction implementation instead of
-        // allowing a node to create an arbitrary Node object.
         _ => Decision::Deny,
     }
 }
@@ -154,9 +154,9 @@ async fn pod_access(
                 Decision::Deny
             }
         }),
-        // Creates/deletes need the request object to distinguish mirror pods;
-        // the NodeRestriction plugin is the component that supplies that
-        // check upstream, so do not grant them here.
+        // NodeRestriction checks that creates/deletes are mirror Pods owned by
+        // this node; the authorizer must allow them to reach that plugin.
+        "create" | "delete" => Ok(Decision::Allow),
         _ => Ok(Decision::Deny),
     }
 }
@@ -625,6 +625,16 @@ mod tests {
         let other = info("get", "nodes", "worker-2");
         assert_eq!(node_access("worker-1", &own), Decision::Allow);
         assert_eq!(node_access("worker-1", &other), Decision::Deny);
+    }
+
+    #[test]
+    fn body_sensitive_node_operations_are_left_for_node_restriction() {
+        // NodeRestriction admits only a node object whose body names this
+        // node, so the body-independent authorizer decision must be Allow.
+        assert_eq!(
+            node_access("worker-1", &info("create", "nodes", "")),
+            Decision::Allow
+        );
     }
 
     #[test]

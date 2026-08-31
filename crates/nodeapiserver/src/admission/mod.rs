@@ -32,6 +32,10 @@
 //! `enforce-mountable-secrets` check. Its separate
 //! `ephemeralcontainers` validation path also checks new ephemeral
 //! containers against the referenced account's allowed Secret references.
+//! `node_restriction` — `NodeRestriction`, the body-sensitive half of the
+//! Node authorizer chain: restricts node-owned objects to the requesting node
+//! and validates mirror-Pod ownership, node labels, token bindings, leases,
+//! CSINodes, and ResourceSlices.
 //!
 //! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
 //! a `PersistentVolumeClaim` with no class of its own gets
@@ -194,6 +198,7 @@ pub mod limit_ranger;
 pub mod match_conditions;
 pub mod mutating_admission_policy;
 pub mod namespace_lifecycle;
+pub mod node_restriction;
 pub mod pod_security;
 pub mod policy_decode;
 pub mod policy_enforcement;

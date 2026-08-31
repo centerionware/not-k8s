@@ -3055,6 +3055,31 @@ async fn handle(
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             }
         };
+        if authz::node::node_name(identity.as_ref()).is_some() {
+            match admission::node_restriction::validate(
+                &mut client,
+                identity.as_ref(),
+                admission::attributes::Operation::Update,
+                &info.api_group,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                &info.name,
+                Some(&candidate),
+                old_object.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(admission::node_restriction::Error::Forbidden(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(admission::node_restriction::Error::Lookup(error)) => {
+                    warn!(path = %path_str, error = %error, "admission: NodeRestriction lookup failed for patch");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         match admission::webhook::admit(
             &mut client,
             admission::attributes::Operation::Update,
@@ -3135,6 +3160,39 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        if authz::node::node_name(identity.as_ref()).is_some() {
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the existing object for NodeRestriction status update failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            match admission::node_restriction::validate(
+                &mut client,
+                identity.as_ref(),
+                admission::attributes::Operation::Update,
+                &info.api_group,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                &info.name,
+                Some(&body_value),
+                old_object.as_ref(),
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(admission::node_restriction::Error::Forbidden(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(admission::node_restriction::Error::Lookup(error)) => {
+                    warn!(path = %path_str, error = %error, "admission: NodeRestriction lookup failed for status update");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         return match rest::update_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -3937,6 +3995,56 @@ async fn handle(
             } else {
                 (None, None)
             };
+
+            // Group I: the Node authorizer cannot inspect request bodies, so
+            // NodeRestriction supplies the body-sensitive half of the same
+            // upstream authorization chain. Fetch the old object only for a
+            // node identity and only when the operation needs it; ordinary
+            // users and controller requests keep the existing hot path.
+            if authz::node::node_name(identity.as_ref()).is_some() {
+                let operation = if is_create {
+                    admission::attributes::Operation::Create
+                } else if is_update {
+                    admission::attributes::Operation::Update
+                } else {
+                    admission::attributes::Operation::Delete
+                };
+                let old_object = if is_update || is_delete {
+                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(object)) => Some(object),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: reading the existing object for NodeRestriction failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                } else {
+                    None
+                };
+                match admission::node_restriction::validate(
+                    &mut client,
+                    identity.as_ref(),
+                    operation,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    &info.namespace,
+                    &info.name,
+                    body_value.as_ref(),
+                    old_object.as_ref(),
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(admission::node_restriction::Error::Forbidden(message)) => {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                    }
+                    Err(admission::node_restriction::Error::Lookup(error)) => {
+                        warn!(path = %path_str, error = %error, "admission: NodeRestriction lookup failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            }
 
             // Group J: run the pure mutating admission registry before the
             // storage-backed admission stages. This preserves the existing
