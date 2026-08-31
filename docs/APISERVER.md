@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/6 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/6 |
-| J — Admission | in progress | 8/8 |
+| J — Admission | in progress | 9/9 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 8/8 |
@@ -51,7 +51,7 @@ explanation of each boundary.
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
-| J. Admission | **in progress** | The implemented built-ins and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
+| J. Admission | **in progress** | The implemented built-ins (including DefaultIngressClass) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
 | M. APF/audit/observability | **in progress** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, and policy-selected request/response object capture are present; remaining observability refinements remain. |
@@ -1333,6 +1333,18 @@ same as upstream. The one real I/O step (`server::rest::list` over every
 even when the PVC already has a class — a real, named inefficiency
 (`mutate` itself no-ops in that case, but only after the list already
 happened), not silently optimized around with a duplicate has-class check.
+
+`admission::default_ingress_class` is mutating, `CREATE`-only — a faithful
+port of real upstream's `DefaultIngressClass` plugin
+(`plugin/pkg/admission/network/defaultingressclass/admission.go`, fetched
+and read directly): an Ingress without `spec.ingressClassName` and without
+the legacy `kubernetes.io/ingress.class` annotation gets the newest
+cluster-scoped `IngressClass` carrying
+`ingressclass.kubernetes.io/is-default-class: "true"`. Multiple defaults
+use the real newest-`creationTimestamp`, name-ascending tie-break. No
+default class, an explicit field, or the legacy annotation is a no-op. The
+listener performs one live `LIST` of `networking.k8s.io/v1/ingressclasses`
+before the candidate reaches the remaining admission stages.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
