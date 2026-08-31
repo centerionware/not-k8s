@@ -1898,7 +1898,8 @@ scoped here rather than under either group since it's shared
 infrastructure neither owns.
 
 *Crate choice*: `cel` (the `cel-rust` project, MIT-licensed, actively
-maintained — `0.14.3` as of 2026-08-21). **Correction to this section's
+maintained — `0.14.4` plus the narrowly scoped upstream optional-selection fix
+at `119a55d` as of 2026-08-31). **Correction to this section's
 own first draft**: initially written as `cel-interpreter` from external
 web research alone, before noticing `crates/nodescheduler` already
 depends on `cel` for a real, live, already-merged use
