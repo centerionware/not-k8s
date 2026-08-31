@@ -46,7 +46,7 @@ explanation of each boundary.
 | B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
 | C. Storage | **done for current scope** | etcd storage, encryption providers, stale-value key rotation/rewrite, and full read/write/transaction/watch wiring are integrated. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
-| E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the ordered admission/REST dispatcher and remaining compatibility edges remain. |
+| E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; remaining compatibility edges and internal dispatcher cleanup remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, published OpenAPI-local constraints, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
@@ -756,11 +756,11 @@ listener gate evaluates every resource request before any admission or
 REST-specific handler, including PATCH, status, deletecollection, watch,
 token, aggregation, and node/service/pod proxy routes. Virtual access-review
 resources remain outside that gate because they answer authorization
-questions rather than authorize a resource mutation. The remaining
-handler-chain work is to unify the admission and REST stages behind the same
-ordered dispatcher (authn -> authz -> APF -> admission -> REST — a hard
-requirement on order, not a style choice); the current admission plugins are
-still selected directly by the listener. `/openapi/v2` is now served as a Swagger 2.0
+questions rather than authorize a resource mutation. The request stages
+already execute in the required order (authn -> authz -> APF -> admission ->
+REST); the remaining cleanup is to hide the listener's explicit admission
+selection behind a reusable dispatcher without changing that ordering.
+`/openapi/v2` is now served as a Swagger 2.0
 document derived from the same vendored resource schemas and paths as
 `/openapi/v3`; the nodeapiserver target e2e check verifies it is populated.
 The throwaway e2e rig described above should land as part of this group,

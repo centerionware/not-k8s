@@ -4187,10 +4187,8 @@ async fn handle(
             } else {
                 None
             };
-            // Populated for the pod/PVC/service evaluators (the generic
-            // object-count evaluator doesn't persist its own status.used
-            // yet — a named follow-up), consumed after `rest::create`
-            // actually succeeds below. Computing this here (before
+            // Populated for whichever evaluator applies, consumed after
+            // `rest::create` actually succeeds below. Computing this here (before
             // creation) rather than re-listing after
             // is deliberate: it's the exact same existing-usage snapshot
             // `check_pod_create` just used to allow the request, so the

@@ -77,12 +77,13 @@
 //! The core Pod `ephemeralcontainers` GET/PUT/PATCH subresource is also
 //! real, with upstream's append-only existing-container strategy.
 //! `watch` is also real now (a real streaming HTTP response against a
-//! registered cache — this paragraph was stale about that; see
-//! `listener`'s own doc comment for the full, current picture). Every
-//! resource verb this build knows about is now real. **Not yet
-//! landed**: the real handler chain (authn -> authz -> APF -> admission
-//! -> REST — a hard requirement on order, not a style choice, once it
-//! exists).
+//! registered cache — see `listener`'s own doc comment for the full,
+//! current picture). Every resource verb this build knows about is now
+//! real. The remaining Group E work is compatibility behavior around the
+//! implemented stages, not their ordering. The stages execute in the
+//! required authn -> authz -> APF -> admission -> REST order in
+//! `listener::handle_with_audit`; they remain explicit branches rather
+//! than being hidden behind a second callback abstraction.
 
 pub mod path;
 pub mod tls;
