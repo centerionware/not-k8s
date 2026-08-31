@@ -1223,8 +1223,13 @@ scoping for pod and ResourceSlice watches, and storage-backed relationship
 checks for pods, Secrets, ConfigMaps, PVCs, PVs, ServiceAccount token
 requests, ResourceClaims, and VolumeAttachments. It runs before RBAC on
 the nodeapiserver target, so a broad legacy `system:node` binding cannot
-bypass those object-specific checks. The remaining authorization gap is
-webhook compatibility hardening. An optional
+bypass those object-specific checks. `admission::node_restriction` now
+completes the upstream Node authorizer chain for body-sensitive operations
+that authorization cannot inspect: node identity/name and restricted-label
+checks, mirror-Pod ownership and API-reference checks, Pod status/eviction
+relationships, ServiceAccount token bindings, node leases, CSINodes, and
+ResourceSlices. The remaining authorization gap is webhook compatibility
+hardening. An optional
 `NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL` delegates each parsed request to
 an external `authorization.k8s.io/v1` `SubjectAccessReview` authorizer and
 preserves its three decisions: `Allow` short-circuits the local Node/RBAC
