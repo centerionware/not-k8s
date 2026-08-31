@@ -287,6 +287,12 @@ impl CriRuntime {
     }
 
     pub(crate) async fn build_status(&self, sandbox_id: &str, pod_uid: &str, restart_policy: &str) -> Result<RuntimeStatus> {
+        tokio::time::timeout(STATUS_RPC_TIMEOUT, self.build_status_inner(sandbox_id, pod_uid, restart_policy))
+            .await
+            .context("building CRI runtime status timed out")?
+    }
+
+    async fn build_status_inner(&self, sandbox_id: &str, pod_uid: &str, restart_policy: &str) -> Result<RuntimeStatus> {
         // Init containers are excluded here — by the time app containers are
         // even started, every init container has already exited zero
         // (ensure_init_containers() gates on that), so counting them would

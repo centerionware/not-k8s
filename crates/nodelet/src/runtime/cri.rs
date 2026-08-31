@@ -50,6 +50,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::{debug, info, warn};
 
 const STARTUP_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+const STATUS_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Generated CRI v1 types and gRPC clients (from proto/cri.proto).
 pub mod v1 {

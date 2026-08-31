@@ -305,10 +305,14 @@ impl CriRuntime {
             ]),
             ..Default::default()
         };
-        let resp = rt
-            .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
-            .await?
-            .into_inner();
+        let resp = tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) }),
+        )
+        .await
+        .context("ListPodSandbox timed out")?
+        .context("ListPodSandbox")?
+        .into_inner();
         Ok(resp.items.into_iter().next().map(|s| (s.id, s.state)))
     }
 
@@ -338,10 +342,14 @@ impl CriRuntime {
             ]),
             ..Default::default()
         };
-        let resp = rt
-            .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
-            .await?
-            .into_inner();
+        let resp = tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) }),
+        )
+        .await
+        .context("ListPodSandbox timed out")?
+        .context("ListPodSandbox")?
+        .into_inner();
         Ok(resp.items.into_iter().next().map(|s| {
             let uid = s.metadata.map(|m| m.uid).unwrap_or_default();
             (s.id, s.state, uid)

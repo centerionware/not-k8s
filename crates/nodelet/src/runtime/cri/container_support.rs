@@ -204,10 +204,14 @@ impl CriRuntime {
             pod_sandbox_id: sandbox_id.to_string(),
             ..Default::default()
         };
-        let resp = rt
-            .list_containers(ListContainersRequest { filter: Some(filter) })
-            .await?
-            .into_inner();
+        let resp = tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.list_containers(ListContainersRequest { filter: Some(filter) }),
+        )
+        .await
+        .context("ListContainers timed out")?
+        .context("ListContainers")?
+        .into_inner();
         Ok(resp.containers)
     }
 
@@ -730,11 +734,14 @@ impl CriRuntime {
     /// terminated-state fields, not just decide pod phase.
     pub(crate) async fn container_status_details(&self, container_id: &str) -> Result<v1::ContainerStatus> {
         let mut rt = self.rt.clone();
-        let resp = rt
-            .container_status(ContainerStatusRequest { container_id: container_id.to_string(), verbose: false })
-            .await
-            .context("ContainerStatus")?
-            .into_inner();
+        let resp = tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.container_status(ContainerStatusRequest { container_id: container_id.to_string(), verbose: false }),
+        )
+        .await
+        .context("ContainerStatus timed out")?
+        .context("ContainerStatus")?
+        .into_inner();
         resp.status.context("ContainerStatus response had no status")
     }
 
