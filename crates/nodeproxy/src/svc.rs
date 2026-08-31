@@ -1331,18 +1331,25 @@ mod tests {
 
     #[test]
     fn selectorless_services_use_legacy_endpoints_when_no_slice_exists() {
+        use k8s_openapi::api::core::v1::{EndpointAddress, EndpointPort, EndpointSubset};
+
         let svc = fake_service(vec!["10.43.0.1"], None);
         let port = svc.spec.as_ref().unwrap().ports.as_ref().unwrap()[0].clone();
-        let endpoints: Endpoints = serde_json::from_value(serde_json::json!({
-            "apiVersion": "v1",
-            "kind": "Endpoints",
-            "metadata": {"name": "kubernetes", "namespace": "default"},
-            "subsets": [{
-                "addresses": [{"ip": "10.42.0.1"}],
-                "ports": [{"port": 6443, "protocol": "TCP"}]
-            }]
-        }))
-        .unwrap();
+        let endpoints = Endpoints {
+            subsets: Some(vec![EndpointSubset {
+                addresses: Some(vec![EndpointAddress {
+                    ip: "10.42.0.1".to_string(),
+                    ..Default::default()
+                }]),
+                ports: Some(vec![EndpointPort {
+                    port: 6443,
+                    protocol: Some("TCP".to_string()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
         let legacy = [("default/kubernetes".to_string(), endpoints)].into_iter().collect();
 
         assert_eq!(
