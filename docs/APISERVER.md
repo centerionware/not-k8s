@@ -483,8 +483,8 @@ async handler) dispatches all five non-resource discovery routes (`/api`,
 `server::discovery`'s real builders, with a genuine `404` (a minimal
 `Status` body — `kind`/`apiVersion`/`status`/`message`/`reason`/`code`,
 the exact subset `client-go`'s own `errors.NewNotFound` decoding path
-reads, not the full `Status` type's `details.causes` machinery) for an
-unknown group/version rather than a false-success response. A
+reads, not a full `Status` type) for an unknown group/version rather than a
+false-success response. A
 resource-shaped path (`/api/v1/namespaces/
 default/pods`) is handled by the resource dispatch described below, not by
 the discovery-only route.
@@ -605,8 +605,8 @@ admission, validation, defaulting, and
 conflict checks without persisting the object. Real,
 distinct `Status` responses per outcome: `201` created, `409
 AlreadyExists` (lost the create race), `422 Invalid` (validation
-failures, joined into one message — real upstream's structured
-`details.causes` isn't built), `400` when neither `metadata.name` nor
+failures, with both the aggregate message and structured
+`details.causes[]` field/reason entries), `400` when neither `metadata.name` nor
 `metadata.generateName` is supplied, or for a namespace mismatch between
 the body and the URL. When `generateName` is supplied, the server appends
 a collision-resistant suffix before validation and persistence.
@@ -867,12 +867,13 @@ conversion and is covered by a nodeapiserver-only live Pod round trip.
 Published OpenAPI-local constraints are now applied generically as well:
 `scheme::validation::validate_openapi_constraints` resolves the built-in
 GVK's vendored schema and reuses the CRD constraint walker for formats,
-enums, ranges, lengths, patterns, and uniqueness on create, update, patch,
-and apply. The generic write paths also enforce the universal Kubernetes
-metadata grammar for label/annotation keys and values and finalizers. This
-closes the schema-local and universal-metadata part of the generic validation
-gap; cross-field and per-kind semantic rules remain separate work, rather than
-pretending this is a full replacement for upstream's hand-maintained
+enums, ranges, lengths, patterns, uniqueness, and `allOf`/`anyOf`/`oneOf`/
+`not` alternatives on create, update, patch, and apply. The generic write
+paths also enforce the universal Kubernetes metadata grammar for
+label/annotation keys and values and finalizers. This closes the schema-local
+and universal-metadata part of the generic validation gap; cross-field and
+per-kind semantic rules remain separate work, rather than pretending this is
+a full replacement for upstream's hand-maintained
 `pkg/apis/*/v1/defaults.go` and validation packages.
 `scheme::validation::validate_required(schema, value)` lands the
 first validation slice: recursively checks every field a schema's own

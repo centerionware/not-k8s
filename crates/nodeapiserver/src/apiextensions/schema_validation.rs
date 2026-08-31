@@ -13,8 +13,9 @@
 //!
 //! The runtime walk also enforces the schema-local constraints represented
 //! directly in OpenAPI (`enum`, numeric/string/array/object bounds,
-//! `multipleOf`, `pattern`, and the standard scalar formats). Cross-field
-//! rules remain the CRD's `x-kubernetes-validations` CEL responsibility.
+//! `multipleOf`, `pattern`, standard scalar formats, and the
+//! `allOf`/`anyOf`/`oneOf`/`not` combinators). Cross-field rules remain the
+//! CRD's `x-kubernetes-validations` CEL responsibility.
 
 use crate::scheme::validation::{MissingField, TypeMismatch};
 use base64::Engine as _;
@@ -165,6 +166,7 @@ fn walk_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<Str
     if value.is_null() {
         return;
     }
+    validate_schema_combinators(schema, value, path, out);
     if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
         for branch in branches {
             walk_constraints(branch, value, path, out);
@@ -193,6 +195,109 @@ fn walk_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<Str
         }
         _ => {}
     }
+}
+
+/// Enforces JSON Schema combinators at the same point as the local scalar
+/// constraints. The published Kubernetes schemas use `oneOf` for wire-level
+/// union values such as Quantity and IntOrString; walking each branch's
+/// scalar constraints independently is insufficient because a value that
+/// matches no branch (or more than one branch) must be rejected as a whole.
+///
+/// This deliberately uses a small schema matcher instead of collecting a
+/// branch's error text: failed alternatives are expected while evaluating an
+/// `anyOf`/`oneOf`, and only the aggregate failure belongs in the response.
+fn validate_schema_combinators(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
+    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
+        if !branches.iter().any(|branch| schema_accepts(branch, value)) {
+            add_violation(path, "must validate against one of the schema alternatives", out);
+        }
+    }
+    if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+        let matches = branches.iter().filter(|branch| schema_accepts(branch, value)).count();
+        if matches != 1 {
+            add_violation(path, "must validate against exactly one schema alternative", out);
+        }
+    }
+    if let Some(branch) = schema.get("not") {
+        if schema_accepts(branch, value) {
+            add_violation(path, "must not validate against the excluded schema", out);
+        }
+    }
+}
+
+/// A deliberately side-effect-free matcher for one schema branch. It covers
+/// the OpenAPI/JSON-Schema vocabulary used by the vendored Kubernetes
+/// schemas, including nested properties/items and all combinators. The
+/// normal validator still emits the detailed path-local errors after this
+/// aggregate decision has been made.
+fn schema_accepts(schema: &Value, value: &Value) -> bool {
+    if value.is_null() {
+        return schema.get("nullable").and_then(Value::as_bool).unwrap_or(true);
+    }
+
+    if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
+        if !branches.iter().all(|branch| schema_accepts(branch, value)) {
+            return false;
+        }
+    }
+    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
+        if !branches.iter().any(|branch| schema_accepts(branch, value)) {
+            return false;
+        }
+    }
+    if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+        if branches.iter().filter(|branch| schema_accepts(branch, value)).count() != 1 {
+            return false;
+        }
+    }
+    if schema.get("not").is_some_and(|branch| schema_accepts(branch, value)) {
+        return false;
+    }
+    if !schema_type_accepts(schema, value) {
+        return false;
+    }
+    let mut local_errors = Vec::new();
+    validate_node_constraints(schema, value, "", &mut local_errors);
+    if !local_errors.is_empty() {
+        return false;
+    }
+
+    match value {
+        Value::Object(object) => {
+            if schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|required| required.iter().filter_map(Value::as_str).any(|field| object.get(field).is_none_or(Value::is_null)))
+            {
+                return false;
+            }
+            let properties = schema.get("properties").and_then(Value::as_object);
+            for (field, field_value) in object {
+                let Some(field_schema) = properties.and_then(|fields| fields.get(field)) else {
+                    continue;
+                };
+                if !schema_accepts(field_schema, field_value) {
+                    return false;
+                }
+            }
+        }
+        Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                if !items.iter().all(|item| schema_accepts(item_schema, item)) {
+                    return false;
+                }
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+fn schema_type_accepts(schema: &Value, value: &Value) -> bool {
+    schema
+        .get("type")
+        .and_then(Value::as_str)
+        .is_none_or(|expected| matches_kind(expected, value))
 }
 
 fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
@@ -432,5 +537,40 @@ mod tests {
         });
         let violations = validate_constraints(&schema, &json!({"token": "not-a-uuid"}));
         assert!(violations.iter().any(|violation| violation.contains("token") && violation.contains("uuid")));
+    }
+
+    #[test]
+    fn one_of_rejects_values_that_match_no_branch_or_multiple_branches() {
+        let schema = json!({
+            "oneOf": [
+                {"type": "string"},
+                {"type": "number"}
+            ]
+        });
+        assert!(validate_constraints(&schema, &json!(true)).iter().any(|violation| violation.contains("exactly one")));
+
+        let overlapping = json!({
+            "oneOf": [
+                {"type": "number"},
+                {"type": "integer"}
+            ]
+        });
+        assert!(validate_constraints(&overlapping, &json!(3)).iter().any(|violation| violation.contains("exactly one")));
+        assert!(validate_constraints(&schema, &json!("ok")).is_empty());
+    }
+
+    #[test]
+    fn any_of_and_not_are_enforced_as_aggregate_constraints() {
+        let schema = json!({
+            "anyOf": [
+                {"type": "string", "minLength": 3},
+                {"type": "integer", "minimum": 10}
+            ],
+            "not": {"enum": ["blocked"]}
+        });
+        assert!(validate_constraints(&schema, &json!(true)).iter().any(|violation| violation.contains("one of")));
+        assert!(validate_constraints(&schema, &json!(5)).iter().any(|violation| violation.contains("one of")));
+        assert!(validate_constraints(&schema, &json!("blocked")).iter().any(|violation| violation.contains("excluded")));
+        assert!(validate_constraints(&schema, &json!(12)).is_empty());
     }
 }

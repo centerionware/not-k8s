@@ -1582,13 +1582,30 @@ fn precondition_failed_status(path_str: &str) -> serde_json::Value {
     })
 }
 
-/// Real upstream's own `Invalid` shape for a `CREATE` that failed
-/// `scheme::validation` — `reason: "Invalid"`, `code: 422`. Real
-/// upstream's full `Status.details.causes` (one structured entry per
-/// violation) isn't built — `message` joins every violation into one
-/// human-readable string instead, same "real subset, not the full type"
-/// posture every other `Status` builder in this module already takes.
+/// Real upstream's own `Invalid` shape for a write that failed validation —
+/// `reason: "Invalid"`, `code: 422`. Keep both the human-readable aggregate
+/// message and one `StatusCause` per violation: kubectl and controller
+/// clients use `details.causes[].field` to point at the invalid field rather
+/// than parsing the aggregate message.
 fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
+    let causes: Vec<serde_json::Value> = violations
+        .iter()
+        .map(|violation| {
+            let (field, message) = violation
+                .split_once(": ")
+                .map_or(("", violation.as_str()), |(field, message)| (field, message));
+            let reason = if message == "Required value" {
+                "FieldValueRequired"
+            } else {
+                "FieldValueInvalid"
+            };
+            serde_json::json!({
+                "reason": reason,
+                "message": message,
+                "field": field,
+            })
+        })
+        .collect();
     serde_json::json!({
         "kind": "Status",
         "apiVersion": "v1",
@@ -1596,7 +1613,7 @@ fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
         "status": "Failure",
         "message": format!("{path_str} is invalid: {}", violations.join("; ")),
         "reason": "Invalid",
-        "details": {},
+        "details": {"causes": causes},
         "code": 422,
     })
 }
@@ -5376,6 +5393,10 @@ mod tests {
         let message = status["message"].as_str().unwrap();
         assert!(message.contains("spec.containers: Required value"));
         assert!(message.contains("spec.foo: expected type string, got number"));
+        assert_eq!(status["details"]["causes"][0]["field"], "spec.containers");
+        assert_eq!(status["details"]["causes"][0]["reason"], "FieldValueRequired");
+        assert_eq!(status["details"]["causes"][1]["field"], "spec.foo");
+        assert_eq!(status["details"]["causes"][1]["reason"], "FieldValueInvalid");
     }
 
     #[test]

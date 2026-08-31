@@ -856,6 +856,38 @@ pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
             "invalid built-in schema constraint was accepted: {value}"
         ),
     }
+
+    // Quantity is published as a oneOf(string, number) schema. A boolean
+    // here must be rejected by the same generic OpenAPI validator rather
+    // than silently passing through because it is nested in a map.
+    let name = format!("nodeapiserver-invalid-quantity-{}", std::process::id());
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods",
+            context.namespace
+        ))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name, "namespace": context.namespace},
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "image": "example.invalid/not-k8s-invalid-quantity",
+                    "resources": {"requests": {"cpu": true}}
+                }]
+            }
+        }))?)?;
+
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "invalid oneOf schema value returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!("invalid oneOf schema value was accepted: {value}"),
+    }
 }
 
 pub(super) async fn nodeapiserver_rejects_invalid_metadata_keys(
