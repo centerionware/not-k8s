@@ -4070,6 +4070,21 @@ async fn handle(
                 registry.run(&mut request);
             }
 
+            // Group J: `StorageObjectInUseProtection` — mutating,
+            // `CREATE` only. Add the standard PV/PVC/VAC protection
+            // finalizer before any later admission stage observes the
+            // candidate; nodecontroller removes it when deletion is safe.
+            if is_create {
+                if let Some(body) = body_value.as_mut() {
+                    admission::storage_object_in_use_protection::mutate(
+                        &info.api_group,
+                        &info.resource,
+                        &info.subresource,
+                        body,
+                    );
+                }
+            }
+
             // `ServiceAccount`'s validating and I/O-backed mutation step
             // follows the pure registry. Defaulting has already happened;
             // `quick_decision` now says whether a real ServiceAccount lookup

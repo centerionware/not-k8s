@@ -1224,6 +1224,51 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
     result
 }
 
+pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2eContext) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "storage protection checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-protection-{}", std::process::id());
+    let uri = "/api/v1/persistentvolumes";
+    let object: Value = context
+        .client
+        .request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .body(serde_json::to_vec(&json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolume",
+                    "metadata": {"name": &name},
+                    "spec": {
+                        "capacity": {"storage": "1Gi"},
+                        "accessModes": ["ReadWriteOnce"],
+                        "persistentVolumeReclaimPolicy": "Retain",
+                        "hostPath": {"path": "/tmp/nodeapiserver-storage-protection"}
+                    }
+                }))?,
+            )
+        )
+        .await
+        .context("creating a PersistentVolume for storage-protection admission")?;
+
+    let result = anyhow::ensure!(
+        object["metadata"]["finalizers"]
+            .as_array()
+            .is_some_and(|finalizers| finalizers.iter().any(|finalizer| finalizer == "kubernetes.io/pv-protection")),
+        "nodeapiserver did not add the PV protection finalizer: {object}"
+    );
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{name}")).body(Vec::new())?)
+        .await;
+    result
+}
+
 pub(super) async fn nodeapiserver_binds_a_pod_through_binding_subresource(
     context: &E2eContext,
 ) -> Result<()> {

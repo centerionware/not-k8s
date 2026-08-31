@@ -219,6 +219,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_adds_storage_protection_finalizer",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_binds_a_pod_through_binding_subresource",
         group: TestGroup::General,
     },
@@ -1717,6 +1721,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             bootstrap::nodeapiserver_rejects_invalid_metadata_keys(context).await
         },
         "test_nodeapiserver_defaults_ingress_class" => bootstrap::nodeapiserver_defaults_ingress_class(context).await,
+        "test_nodeapiserver_adds_storage_protection_finalizer" => {
+            bootstrap::nodeapiserver_adds_storage_protection_finalizer(context).await
+        },
         "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
             bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await
         }
