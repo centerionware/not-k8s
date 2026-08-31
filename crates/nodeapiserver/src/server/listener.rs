@@ -5209,7 +5209,7 @@ async fn handle(
             // LIST-then-WATCH handoff without a gap.
             let initial_events = if watch_options.send_initial_events {
                 let (entries, revision) = cache.list();
-                let prefix = crate::storage::keys::list_prefix(&info.api_group, &info.resource, info.namespace.as_deref()).into_bytes();
+                let prefix = crate::storage::keys::list_prefix(&info.api_group, &info.resource, Some(&info.namespace)).into_bytes();
                 let events = entries
                     .into_iter()
                     .filter(|(key, _)| key.starts_with(&prefix))
