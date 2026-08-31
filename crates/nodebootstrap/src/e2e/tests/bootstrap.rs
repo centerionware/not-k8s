@@ -12,6 +12,7 @@ use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Endpoints, LocalObjectReference, Node, ObjectReference, PersistentVolume,
     PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount,
+    Namespace,
 };
 use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::api::storage::v1::StorageClass;
@@ -1047,7 +1048,6 @@ pub(super) async fn nodeapiserver_applies_core_defaults(context: &E2eContext) ->
 }
 
 pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
-
     context: &E2eContext,
 ) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
@@ -1311,6 +1311,87 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
     let _ = runtime_classes
         .delete(&class_name, &DeleteParams::default())
+        .await;
+    result
+}
+
+pub(super) async fn nodeapiserver_applies_namespace_node_selector(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "PodNodeSelector admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let namespace_name = format!("nodeapiserver-selector-{suffix}");
+    let pod_name = format!("nodeapiserver-selector-pod-{suffix}");
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &namespace_name);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &namespace_name);
+    let namespace: Namespace = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": &namespace_name,
+            "annotations": {
+                "scheduler.alpha.kubernetes.io/node-selector": "nodeapiserver.test/zone=blue"
+            }
+        }
+    }))?;
+    let service_account: ServiceAccount = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": "default", "namespace": &namespace_name}
+    }))?;
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": &pod_name, "namespace": &namespace_name},
+        "spec": {
+            "nodeSelector": {"nodeapiserver.test/workload": "demo"},
+            "containers": [{"name": "app", "image": "example.invalid/not-k8s-selector"}]
+        }
+    }))?;
+
+    let result = async {
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .context("creating the PodNodeSelector namespace")?;
+        service_accounts
+            .create(&PostParams::default(), &service_account)
+            .await
+            .context("creating the PodNodeSelector ServiceAccount")?;
+        let created = pods
+            .create(&PostParams::default(), &pod)
+            .await
+            .context("creating a Pod through PodNodeSelector admission")?;
+        let returned = serde_json::to_value(created)?;
+        anyhow::ensure!(
+            returned
+                .pointer("/spec/nodeSelector/nodeapiserver.test~1zone")
+                .and_then(Value::as_str)
+                == Some("blue")
+                && returned
+                    .pointer("/spec/nodeSelector/nodeapiserver.test~1workload")
+                    .and_then(Value::as_str)
+                    == Some("demo"),
+            "namespace node selector was not merged into the Pod: {returned}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = service_accounts
+        .delete("default", &DeleteParams::default())
+        .await;
+    let _ = namespaces
+        .delete(&namespace_name, &DeleteParams::default())
         .await;
     result
 }

@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/7 |
-| J — Admission | in progress | 11/15 |
+| J — Admission | in progress | 12/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 8/9 |
@@ -36,6 +36,10 @@ the plan file.
 
 Status legend: **not started**, **in progress**, **done** (e2e-verified, per
 group where the throwaway rig described below can reach it), **deferred**.
+
+For an in-progress group, the denominator includes each explicitly tracked
+remaining work item; “done for current scope” means the documented scope is
+complete while compatibility extensions remain.
 
 ## Current status snapshot
 
@@ -1390,6 +1394,14 @@ and read directly): a storage request may grow only when the existing claim
 is Bound, its StorageClass is unchanged, and that StorageClass explicitly
 allows volume expansion. The check runs for both full updates and patch
 candidates after the patch has been materialized.
+
+`admission::pod_node_selector` implements the namespace-annotation form of
+the upstream `PodNodeSelector` plugin. A Pod created in a Namespace carrying
+`scheduler.alpha.kubernetes.io/node-selector` gets those exact-match labels
+merged into `spec.nodeSelector`; conflicting Pod labels and unsupported
+selector syntax are rejected before persistence. The cluster-wide admission
+configuration-file form remains separate work because this crate does not yet
+have an admission plugin configuration-file surface.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real

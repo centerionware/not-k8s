@@ -48,7 +48,7 @@
 //! No authentication is consulted *inside*
 //! this module either way — `server::listener` is what applies Group
 //! H/I's identity/RBAC (opt-in, see that module's own doc comment)
-//! before ever calling in here; Group J admission (seven unconditional
+//! before ever calling in here; Group J admission (eight unconditional
 //! plugins as of this revision — see `admission`'s own doc comment) is
 //! applied in `server::listener`, also before dispatching in here.
 //! The generic `<resource>/status` subresource is real now
