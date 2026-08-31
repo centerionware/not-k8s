@@ -171,6 +171,7 @@ fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
             | ("io.k8s.api.core.v1.SecretKeySelector", "localObjectReference")
             | ("io.k8s.api.core.v1.SecretProjection", "localObjectReference")
             | ("io.k8s.api.core.v1.SecretVolumeSource", "localObjectReference")
+            | ("io.k8s.api.core.v1.Probe", "handler")
     )
 }
 
