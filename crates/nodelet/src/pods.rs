@@ -338,10 +338,23 @@ impl PodController {
                 // The API's old status is not proof that the corresponding
                 // containerd task survived the restart. Establish the local
                 // runtime state and probe supervisor before judging readiness.
-                let mut runtime_status = match self.runtime.status(&namespace, &name).await {
-                    Ok(status) => status,
-                    Err(error) => {
+                let mut runtime_status = match tokio::time::timeout(
+                    COREDNS_API_TIMEOUT,
+                    self.runtime.status(&namespace, &name),
+                )
+                .await
+                {
+                    Ok(Ok(status)) => status,
+                    Ok(Err(error)) => {
                         warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to inspect local CoreDNS runtime status; reconciling");
+                        None
+                    }
+                    Err(_) => {
+                        warn!(
+                            pod = %format!("{namespace}/{name}"),
+                            timeout_secs = COREDNS_API_TIMEOUT.as_secs(),
+                            "timed out inspecting local CoreDNS runtime status; reconciling"
+                        );
                         None
                     }
                 };
@@ -352,10 +365,23 @@ impl PodController {
                 });
                 if needs_reconcile {
                     self.reconcile(pod.clone()).await;
-                    runtime_status = match self.runtime.status(&namespace, &name).await {
-                        Ok(status) => status,
-                        Err(error) => {
+                    runtime_status = match tokio::time::timeout(
+                        COREDNS_API_TIMEOUT,
+                        self.runtime.status(&namespace, &name),
+                    )
+                    .await
+                    {
+                        Ok(Ok(status)) => status,
+                        Ok(Err(error)) => {
                             warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to re-read local CoreDNS runtime status");
+                            None
+                        }
+                        Err(_) => {
+                            warn!(
+                                pod = %format!("{namespace}/{name}"),
+                                timeout_secs = COREDNS_API_TIMEOUT.as_secs(),
+                                "timed out re-reading local CoreDNS runtime status"
+                            );
                             None
                         }
                     };
