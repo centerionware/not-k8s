@@ -37,6 +37,12 @@
 //! and validates mirror-Pod ownership, node labels, token bindings, leases,
 //! CSINodes, and ResourceSlices.
 //!
+//! `taint_nodes_by_condition` — `TaintNodesByCondition`, mutating, `CREATE`
+//! only for core `Node` objects: adds the upstream
+//! `node.kubernetes.io/not-ready`/`NoSchedule` taint when it is absent. The
+//! mutation is pure and idempotent; node lifecycle reconciliation removes it
+//! after the node reports Ready.
+//!
 //! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
 //! a `PersistentVolumeClaim` with no class of its own gets
 //! `spec.storageClassName` set to whichever `StorageClass` is marked
@@ -239,5 +245,6 @@ pub mod resource_quota;
 pub mod runtime_class;
 pub mod service_account;
 pub mod storage_object_in_use_protection;
+pub mod taint_nodes_by_condition;
 pub mod validating_admission_policy;
 pub mod webhook;
