@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | in progress | 6/7 |
-| J — Admission | in progress | 10/15 |
+| J — Admission | in progress | 11/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | in progress | 8/9 |
@@ -1382,6 +1382,14 @@ the lowest priority value when the Pod names none; plugin-owned fields are
 preserved across updates; and creating or updating a second global-default
 PriorityClass is rejected. The listener performs the storage lookups while
 the object rules remain pure and unit tested.
+
+`admission::pvc_resize` is validating, `UPDATE`-only — a faithful port of
+real upstream's `PersistentVolumeClaimResize` plugin
+(`plugin/pkg/admission/storage/persistentvolume/resize/admission.go`, fetched
+and read directly): a storage request may grow only when the existing claim
+is Bound, its StorageClass is unchanged, and that StorageClass explicitly
+allows volume expansion. The check runs for both full updates and patch
+candidates after the patch has been materialized.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real

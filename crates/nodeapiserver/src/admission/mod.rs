@@ -62,6 +62,10 @@
 //! PriorityClass, sets Pod priority and preemption policy, preserves those
 //! fields across updates, and prevents competing global defaults.
 //!
+//! `pvc_resize` — `PersistentVolumeClaimResize`, validating, `UPDATE`-only:
+//! allows a PVC expansion only when it is Bound, retains the same class, and
+//! that StorageClass explicitly permits volume expansion.
+//!
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
 //! missing requests/limits from its namespace's `LimitRange` objects and
@@ -225,6 +229,7 @@ pub mod policy_enforcement;
 pub mod policy_matching;
 pub mod policy_validations;
 pub mod priority;
+pub mod pvc_resize;
 pub mod resource_quota;
 pub mod runtime_class;
 pub mod service_account;
