@@ -744,6 +744,7 @@ impl PodController {
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
                 let qos = crate::eviction::qos_class(&pod);
+                info!(pod = %format!("{ns}/{name}"), "writing pod status");
                 if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos, pod.metadata.generation).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
@@ -1060,7 +1061,9 @@ pub(crate) async fn write_status(
     // list for replacement explicitly.
     let patch_status = strategic_status_patch(&status);
     let patch = serde_json::json!({ "status": patch_status });
+    info!(pod = %format!("{ns}/{name}"), "sending pod status patch");
     api.patch_status(name, &PatchParams::default(), &Patch::Strategic(patch)).await?;
+    info!(pod = %format!("{ns}/{name}"), "pod status patch completed");
     Ok(())
 }
 
