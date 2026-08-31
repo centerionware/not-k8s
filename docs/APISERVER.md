@@ -492,7 +492,8 @@ the advertised `connect` verb retained for streaming subresources.
 `singularName` uses real kube-apiserver's own RESTMapper default (lowercased
 kind) since no per-type override table is vendored; standard built-in
 `shortNames` and CRD-declared `spec.names.shortNames` are emitted, while
-`categories` remain unmodeled. **Now wired into the listener's actual routing**:
+standard built-in categories and CRD-declared `spec.names.categories` are
+emitted too. **Now wired into the listener's actual routing**:
 `server::listener`'s `route_discovery` (pure, unit-tested apart from the
 async handler) dispatches all five non-resource discovery routes (`/api`,
 `/api/{version}`, `/apis`, `/apis/{group}`, `/apis/{group}/{version}`) to
