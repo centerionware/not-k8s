@@ -718,7 +718,14 @@ impl CriRuntime {
         let had_allocated_devices = !allocated_devices.is_empty();
         self.record_device_allocations(sandbox_id, &container.name, &crate::runtime::pod_key(&id.namespace, &id.name), allocated_devices);
 
-        if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
+        let start_result = tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }),
+        )
+        .await
+        .context("StartContainer timed out")
+        .and_then(|result| result.context("StartContainer"));
+        if let Err(e) = start_result {
             self.release_container_devices(sandbox_id, &container.name).await;
             return Err(e).context("starting container");
         }
