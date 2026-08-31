@@ -25,8 +25,9 @@
 //! node), while `exec`, `attach`, and `portforward` translate their query
 //! parameters to nodelet's kubelet-style routes. `http_client::upgrade`
 //! forwards the upgrade headers and splices both upgraded connections after
-//! the `101` response. Node/service proxy subresources remain separate work
-//! (Group N — see `docs/APISERVER.md`).
+//! the `101` response. Node and Service proxy subresources use the same
+//! listener-level relay, while uncommon transport compatibility remains
+//! tracked in Group N (`docs/APISERVER.md`).
 
 pub mod client_tls;
 pub mod http_client;
