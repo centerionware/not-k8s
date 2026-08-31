@@ -447,7 +447,7 @@ fn integer_in_range(value: &Value, minimum: i128, maximum: i128) -> bool {
         return (minimum..=maximum).contains(&(signed as i128));
     }
     if let Some(unsigned) = value.as_u64() {
-        return unsigned <= maximum as u128;
+        return u128::from(unsigned) <= maximum as u128;
     }
     value.as_f64().is_some_and(|number| {
         number.is_finite()
