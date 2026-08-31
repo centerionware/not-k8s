@@ -13,6 +13,7 @@ use k8s_openapi::api::core::v1::{
     ConfigMap, Endpoints, LocalObjectReference, Node, ObjectReference, Pod, Secret, Service,
     ServiceAccount,
 };
+use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding};
 use kube::Error as KubeError;
@@ -1045,6 +1046,7 @@ pub(super) async fn nodeapiserver_applies_core_defaults(context: &E2eContext) ->
 }
 
 pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
+
     context: &E2eContext,
 ) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
@@ -1220,6 +1222,94 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
     let _ = context
         .client
         .request::<Value>(Request::builder().method("DELETE").uri(format!("{class_uri}/{class_name}")).body(Vec::new())?)
+        .await;
+    result
+}
+
+pub(super) async fn nodeapiserver_applies_runtime_class_admission(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "RuntimeClass admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let class_name = format!("nodeapiserver-runtime-class-{suffix}");
+    let pod_name = format!("nodeapiserver-runtime-pod-{suffix}");
+    let runtime_classes: Api<RuntimeClass> = Api::all(context.client.clone());
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    let runtime_class: RuntimeClass = serde_json::from_value(json!({
+        "apiVersion": "node.k8s.io/v1",
+        "kind": "RuntimeClass",
+        "metadata": {"name": &class_name},
+        "handler": "runc",
+        "overhead": {"podFixed": {"cpu": "10m", "memory": "16Mi"}},
+        "scheduling": {
+            "nodeSelector": {"nodeapiserver.test/runtime": "sandbox"},
+            "tolerations": [{
+                "key": "nodeapiserver.test/runtime",
+                "operator": "Exists",
+                "effect": "NoSchedule"
+            }]
+        }
+    }))?;
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": &pod_name, "namespace": &context.namespace},
+        "spec": {
+            "runtimeClassName": &class_name,
+            "nodeSelector": {"nodeapiserver.test/existing": "true"},
+            "containers": [{"name": "app", "image": "example.invalid/not-k8s-runtime-class"}]
+        }
+    }))?;
+
+    let result = async {
+        runtime_classes
+            .create(&PostParams::default(), &runtime_class)
+            .await
+            .context("creating the RuntimeClass admission fixture")?;
+        let created = pods
+            .create(&PostParams::default(), &pod)
+            .await
+            .context("creating a Pod through RuntimeClass admission")?;
+        let returned = serde_json::to_value(created)?;
+        anyhow::ensure!(
+            returned.pointer("/spec/overhead/cpu").and_then(Value::as_str) == Some("10m")
+                && returned.pointer("/spec/overhead/memory").and_then(Value::as_str) == Some("16Mi"),
+            "RuntimeClass overhead was not applied to the Pod: {returned}"
+        );
+        anyhow::ensure!(
+            returned
+                .pointer("/spec/nodeSelector")
+                .and_then(Value::as_object)
+                .is_some_and(|selector| {
+                    selector.get("nodeapiserver.test/existing").and_then(Value::as_str) == Some("true")
+                        && selector.get("nodeapiserver.test/runtime").and_then(Value::as_str) == Some("sandbox")
+                }),
+            "RuntimeClass nodeSelector was not merged into the Pod: {returned}"
+        );
+        anyhow::ensure!(
+            returned
+                .pointer("/spec/tolerations")
+                .and_then(Value::as_array)
+                .is_some_and(|tolerations| {
+                    tolerations.iter().any(|toleration| {
+                        toleration.get("key").and_then(Value::as_str) == Some("nodeapiserver.test/runtime")
+                    })
+                }),
+            "RuntimeClass toleration was not merged into the Pod: {returned}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = runtime_classes
+        .delete(&class_name, &DeleteParams::default())
         .await;
     result
 }
