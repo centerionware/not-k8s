@@ -1364,3 +1364,21 @@ The e2e failure dump now passes the nodebootstrap kubeconfig explicitly,
 falls back to sudo when the bootstrap ran as root, and includes flanneld's
 unit status/logs; the previous dump's `/etc/rancher/k3s` errors obscured this
 diagnosis.
+
+### 26. Fixed: the replacement apiserver could skip a Pod watch event at the
+watch-creation boundary
+
+**Severity: high — found while bringing the reference DRA driver up against
+the replacement apiserver.**
+
+The replacement apiserver's cacher treated every empty watch response with an
+advanced header revision as a bookmark, including the initial `created: true`
+acknowledgement. That header can be ahead of a per-resource LIST because
+unrelated objects were written in the meantime. The cacher then advanced
+past the replacement Pod event that the watch replayed at that revision,
+leaving clients with an incomplete view of the replacement even though the
+API group itself was already discoverable and listable.
+
+Nodeapiserver now distinguishes watch creation acknowledgements from real
+progress bookmarks and relists canceled watches, matching the upstream
+reflector contract.
