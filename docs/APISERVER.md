@@ -338,10 +338,11 @@ revision, `watch_from_revision()` opens a `Watch` from `revision + 1` (not
 reflects), `apply_watch_response`/`apply_watch_response_shared` decode
 `mvccpb::Event`s into `WatchCache::apply`/`SharedCache::apply` calls
 (`Added` vs `Modified` distinguished by `kv.version == 1`, matching
-`mvccpb::Event`'s own doc comment; an empty-events response with a newer
-header revision becomes a `Bookmark`), and `reflect()` is the reconnect
-loop — LIST, WATCH, and on any failure or stream end, relist and try
-again forever, the same "never give up" posture a real `client-go`
+`mvccpb::Event`'s own doc comment; only an explicit progress response with a
+newer header revision becomes a `Bookmark`; the initial `created: true`
+acknowledgement does not advance the resource cache), and `reflect()` is
+the reconnect loop — LIST, WATCH, and on any failure or stream end,
+relist and try again forever, the same "never give up" posture a real `client-go`
 Reflector takes. Decode logic is pure and unit-tested against constructed
 `mvccpb`/`etcdserverpb` values; the async orchestration around real
 `StorageClient` calls needs live infrastructure to test further.
