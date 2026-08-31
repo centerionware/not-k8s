@@ -223,6 +223,7 @@ pub mod match_conditions;
 pub mod mutating_admission_policy;
 pub mod namespace_lifecycle;
 pub mod node_restriction;
+pub mod pod_node_selector;
 pub mod pod_security;
 pub mod policy_decode;
 pub mod policy_enforcement;

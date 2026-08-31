@@ -4368,6 +4368,53 @@ async fn handle(
                 }
             }
 
+            // Group J: `PodNodeSelector` — the namespace annotation form of
+            // the upstream plugin. The annotation is an explicit opt-in, so
+            // the live namespace read is harmless for ordinary namespaces.
+            if is_create
+                && admission::pod_node_selector::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                if let Some(pod) = body_value.as_mut() {
+                    match rest::get(
+                        &mut client,
+                        None,
+                        "",
+                        "v1",
+                        "namespaces",
+                        None,
+                        namespace.unwrap_or(""),
+                    )
+                    .await
+                    {
+                        Ok(rest::GetOutcome::Found(namespace_object)) => {
+                            let selector = namespace_object
+                                .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            if let Err(error) = admission::pod_node_selector::merge_namespace_selector(pod, selector) {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {}
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
             // Group J: `LimitRanger` — mutating (pods only, `CREATE` only)
             // + validating (pods and PVCs; see
             // `admission::limit_ranger`'s own doc comment for exact scope
