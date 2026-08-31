@@ -47,6 +47,11 @@
 //! an Ingress without an explicit class or legacy class annotation gets the
 //! newest default `IngressClass`, matching upstream's lister and tie-break.
 //!
+//! `storage_object_in_use_protection` — `StorageObjectInUseProtection`,
+//! mutating, `CREATE`-only: adds the standard PV, PVC, and
+//! VolumeAttributesClass protection finalizers that the nodecontroller
+//! protection controllers later remove when the object is safe to delete.
+//!
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
 //! missing requests/limits from its namespace's `LimitRange` objects and
@@ -211,5 +216,6 @@ pub mod policy_matching;
 pub mod policy_validations;
 pub mod resource_quota;
 pub mod service_account;
+pub mod storage_object_in_use_protection;
 pub mod validating_admission_policy;
 pub mod webhook;
