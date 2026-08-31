@@ -57,6 +57,11 @@
 //! its overhead and scheduling constraints, rejects selector conflicts, and
 //! rejects Pod overhead without a matching RuntimeClass definition.
 //!
+//! `priority` — `Priority`, mutating Pod `CREATE`/`UPDATE` and validating
+//! `PriorityClass` `CREATE`/`UPDATE`: resolves a named or global-default
+//! PriorityClass, sets Pod priority and preemption policy, preserves those
+//! fields across updates, and prevents competing global defaults.
+//!
 //! `limit_ranger` — `LimitRanger`, mutating (pods, `CREATE` only) +
 //! validating (pods and `PersistentVolumeClaim`s): defaults a container's
 //! missing requests/limits from its namespace's `LimitRange` objects and
@@ -219,6 +224,7 @@ pub mod policy_decode;
 pub mod policy_enforcement;
 pub mod policy_matching;
 pub mod policy_validations;
+pub mod priority;
 pub mod resource_quota;
 pub mod runtime_class;
 pub mod service_account;
