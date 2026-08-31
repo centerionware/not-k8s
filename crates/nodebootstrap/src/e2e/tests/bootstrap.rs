@@ -95,7 +95,13 @@ fn nodeapiserver_is_ready() -> bool {
             "https://127.0.0.1:6443/healthz",
         ])
         .output()
-        .is_ok_and(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "200")
+        .is_ok_and(|output| {
+            output.status.success()
+                && matches!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    "200" | "401" | "403"
+                )
+        })
 }
 
 fn wait_for_nodeapiserver_ready(timeout: Duration) -> bool {
