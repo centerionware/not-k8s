@@ -416,14 +416,16 @@ fn resource_version_query(query: &str) -> i64 {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct WatchOptions {
     allow_watch_bookmarks: bool,
+    send_initial_events: bool,
     timeout: Option<std::time::Duration>,
 }
 
-/// Parses the two watch-only `ListOptions` this listener can honor without
+/// Parses the watch-only `ListOptions` this listener can honor without
 /// changing the cache protocol. `allowWatchBookmarks` controls delivery of
-/// the cache driver's synthetic bookmark events; `timeoutSeconds` bounds the
-/// complete stream, including a quiet watch, just as upstream's watch
-/// handler does. Zero means no server-side timeout.
+/// the cache driver's synthetic bookmark events; `sendInitialEvents` enables
+/// the streaming-list handshake used by newer client-go informers; and
+/// `timeoutSeconds` bounds the complete stream, including a quiet watch, just
+/// as upstream's watch handler does. Zero means no server-side timeout.
 fn watch_options_query(query: &str) -> Result<WatchOptions, &'static str> {
     let params = path::parse_query(query);
     let allow_watch_bookmarks = match params
@@ -435,6 +437,14 @@ fn watch_options_query(query: &str) -> Result<WatchOptions, &'static str> {
             "true" | "1" => true,
             "false" | "0" => false,
             _ => return Err("allowWatchBookmarks must be true or false"),
+        },
+    };
+    let send_initial_events = match params.iter().find(|(key, _)| key == "sendInitialEvents") {
+        None => false,
+        Some((_, value)) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => return Err("sendInitialEvents must be true or false"),
         },
     };
     let timeout = match params.iter().find(|(key, _)| key == "timeoutSeconds") {
@@ -452,6 +462,7 @@ fn watch_options_query(query: &str) -> Result<WatchOptions, &'static str> {
     };
     Ok(WatchOptions {
         allow_watch_bookmarks,
+        send_initial_events,
         timeout,
     })
 }
@@ -627,6 +638,7 @@ fn encode_watch_event(
     resource: &str,
     version: &str,
     partial_metadata: bool,
+    initial_events_end: bool,
 ) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
     match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
         None => None,
@@ -635,6 +647,9 @@ fn encode_watch_event(
                 if let Some(object) = event_json.get_mut("object") {
                     *object = crate::codec::partial_metadata::object(object);
                 }
+            }
+            if initial_events_end {
+                mark_initial_events_end(&mut event_json);
             }
             let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
             bytes.push(b'\n');
@@ -659,6 +674,7 @@ async fn encode_watch_event_with_conversion(
     resource: &str,
     version: &str,
     partial_metadata: bool,
+    initial_events_end: bool,
     conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
 ) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
     let mut storage = storage;
@@ -680,6 +696,9 @@ async fn encode_watch_event_with_conversion(
                     *object = crate::codec::partial_metadata::object(object);
                 }
             }
+            if initial_events_end {
+                mark_initial_events_end(&mut event_json);
+            }
             let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
             bytes.push(b'\n');
             metrics::record_watch_event(group, version, resource);
@@ -689,7 +708,26 @@ async fn encode_watch_event_with_conversion(
     }
 }
 
-type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send + Sync>>;
+fn mark_initial_events_end(event_json: &mut Value) {
+    let Some(object) = event_json.get_mut("object").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let metadata = object.entry("metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !metadata.is_object() {
+        *metadata = Value::Object(serde_json::Map::new());
+    }
+    let Some(metadata) = metadata.as_object_mut() else {
+        return;
+    };
+    let annotations = metadata.entry("annotations").or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !annotations.is_object() {
+        *annotations = Value::Object(serde_json::Map::new());
+    }
+    annotations["k8s.io/initial-events-end"] = Value::String("true".to_string());
+}
+
+type WatchStreamEvent = (crate::cacher::store::WatchEvent, bool);
+type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = WatchStreamEvent> + Send + Sync>>;
 type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
 
 struct ConversionWatchState {
@@ -728,7 +766,7 @@ impl tokio_stream::Stream for ConversionWatchStream {
                 }
             }
 
-            let event = match state.events.as_mut().poll_next(cx) {
+            let (event, initial_events_end) = match state.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(event)) => event,
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
@@ -751,6 +789,7 @@ impl tokio_stream::Stream for ConversionWatchStream {
                     &resource,
                     &version,
                     partial_metadata,
+                    initial_events_end,
                     conversion_webhook,
                 )
                 .await
@@ -843,15 +882,73 @@ fn watch_response_body(
     timeout: Option<std::time::Duration>,
     conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
 ) -> BoxedBody {
+    watch_response_body_with_initial_events(
+        replay,
+        rx,
+        kind,
+        api_version,
+        label_reqs,
+        field_reqs,
+        storage,
+        group,
+        resource,
+        version,
+        partial_metadata,
+        allow_watch_bookmarks,
+        timeout,
+        conversion_webhook,
+        None,
+    )
+}
+
+fn watch_response_body_with_initial_events(
+    replay: Vec<crate::cacher::store::WatchEvent>,
+    rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
+    kind: String,
+    api_version: String,
+    label_reqs: Vec<crate::cacher::selector::Requirement>,
+    field_reqs: Vec<crate::cacher::selector::FieldRequirement>,
+    storage: Option<StorageClient>,
+    group: String,
+    resource: String,
+    version: String,
+    partial_metadata: bool,
+    allow_watch_bookmarks: bool,
+    timeout: Option<std::time::Duration>,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+    initial_events: Option<(Vec<crate::cacher::store::WatchEvent>, i64)>,
+) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::wrappers::BroadcastStream;
     use tokio_stream::StreamExt;
 
-    let replay_stream = tokio_stream::iter(replay);
-    let live_stream = BroadcastStream::new(rx).map_while(|res| res.ok());
-    let events = replay_stream
+    let initial_stream: WatchEventStream = match initial_events {
+        Some((initial_events, revision)) => {
+            let end = crate::cacher::store::WatchEvent {
+                kind: crate::cacher::store::EventKind::Bookmark,
+                key: Vec::new(),
+                value: Vec::new(),
+                revision,
+            };
+            Box::pin(tokio_stream::iter(
+                initial_events
+                    .into_iter()
+                    .map(|event| (event, false))
+                    .chain(std::iter::once((end, true))),
+            ))
+        }
+        None => Box::pin(tokio_stream::empty()),
+    };
+    let replay_stream = tokio_stream::iter(replay).map(|event| (event, false));
+    let live_stream = BroadcastStream::new(rx)
+        .map_while(|res| res.ok())
+        .map(|event| (event, false));
+    let events = initial_stream
+        .chain(replay_stream)
         .chain(live_stream)
-        .filter(move |event| allow_watch_bookmarks || event.kind != crate::cacher::store::EventKind::Bookmark);
+        .filter(move |(event, initial_events_end)| {
+            allow_watch_bookmarks || *initial_events_end || event.kind != crate::cacher::store::EventKind::Bookmark
+        });
     let events: WatchEventStream = if let Some(timeout) = timeout {
         Box::pin(futures::StreamExt::take_until(
             events,
@@ -865,10 +962,10 @@ fn watch_response_body(
     // site in this crate already takes) — `filter`/`filter_map` each need
     // their own `'static`-owned copy of the encryption-lookup context.
     let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
-    let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
+    let filtered = events.filter(move |(event, _)| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
     if conversion_webhook.is_none() {
-        let frames = filtered.filter_map(move |event| {
-            encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata)
+        let frames = filtered.filter_map(move |(event, initial_events_end)| {
+            encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata, initial_events_end)
         });
         return StreamBody::new(frames).boxed();
     }
@@ -5103,25 +5200,75 @@ async fn handle(
                 Ok(options) => options,
                 Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, error))),
             };
-            match cache.watch_from(start_revision) {
+            // Newer client-go informers use the streaming-list form of WATCH:
+            // they request the current objects as synthetic ADDED events and
+            // do not consider the informer synchronized until the server
+            // sends a BOOKMARK annotated `k8s.io/initial-events-end=true`.
+            // Take the cache snapshot before subscribing; `watch_from` then
+            // replays any event racing that snapshot, preserving the normal
+            // LIST-then-WATCH handoff without a gap.
+            let initial_events = if watch_options.send_initial_events {
+                let (entries, revision) = cache.list();
+                let prefix = crate::storage::keys::list_prefix(&info.api_group, &info.resource, info.namespace.as_deref()).into_bytes();
+                let events = entries
+                    .into_iter()
+                    .filter(|(key, _)| key.starts_with(&prefix))
+                    .map(|(key, entry)| crate::cacher::store::WatchEvent {
+                        kind: crate::cacher::store::EventKind::Added,
+                        key,
+                        value: entry.value,
+                        revision,
+                    })
+                    .collect();
+                Some((events, revision))
+            } else {
+                None
+            };
+            let watch_start_revision = initial_events.as_ref().map(|(_, revision)| *revision).unwrap_or(start_revision);
+            let watch_result = if initial_events.is_some() {
+                cache.watch_from_snapshot(watch_start_revision)
+            } else {
+                cache.watch_from(watch_start_revision)
+            };
+            match watch_result {
                 Ok((replay, rx)) => {
                     let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
-                    let body = watch_response_body(
-                        replay,
-                        rx,
-                        kind,
-                        group_version,
-                        label_reqs,
-                        field_reqs,
-                        storage.clone(),
-                        info.api_group.clone(),
-                        info.resource.clone(),
-                        info.api_version.clone(),
-                        wants_partial_metadata,
-                        watch_options.allow_watch_bookmarks,
-                        watch_options.timeout,
-                        conversion_webhook,
-                    );
+                    let body = if initial_events.is_some() {
+                        watch_response_body_with_initial_events(
+                            replay,
+                            rx,
+                            kind,
+                            group_version,
+                            label_reqs,
+                            field_reqs,
+                            storage.clone(),
+                            info.api_group.clone(),
+                            info.resource.clone(),
+                            info.api_version.clone(),
+                            wants_partial_metadata,
+                            watch_options.allow_watch_bookmarks,
+                            watch_options.timeout,
+                            conversion_webhook,
+                            initial_events,
+                        )
+                    } else {
+                        watch_response_body(
+                            replay,
+                            rx,
+                            kind,
+                            group_version,
+                            label_reqs,
+                            field_reqs,
+                            storage.clone(),
+                            info.api_group.clone(),
+                            info.resource.clone(),
+                            info.api_version.clone(),
+                            wants_partial_metadata,
+                            watch_options.allow_watch_bookmarks,
+                            watch_options.timeout,
+                            conversion_webhook,
+                        )
+                    };
                     // No explicit `Transfer-Encoding` header: hyper's own
                     // h1/h2 connection handling already frames a body with
                     // no known length correctly for whichever protocol
@@ -5865,11 +6012,13 @@ mod tests {
 
     #[test]
     fn watch_options_parse_bookmarks_and_timeout() {
-        let options = watch_options_query("watch=true&allowWatchBookmarks=true&timeoutSeconds=7").unwrap();
+        let options = watch_options_query("watch=true&allowWatchBookmarks=true&sendInitialEvents=true&timeoutSeconds=7").unwrap();
         assert!(options.allow_watch_bookmarks);
+        assert!(options.send_initial_events);
         assert_eq!(options.timeout, Some(std::time::Duration::from_secs(7)));
-        assert_eq!(watch_options_query("allowWatchBookmarks=0&timeoutSeconds=0").unwrap(), WatchOptions::default());
+        assert_eq!(watch_options_query("allowWatchBookmarks=0&sendInitialEvents=0&timeoutSeconds=0").unwrap(), WatchOptions::default());
         assert!(watch_options_query("allowWatchBookmarks=maybe").is_err());
+        assert!(watch_options_query("sendInitialEvents=maybe").is_err());
         assert!(watch_options_query("timeoutSeconds=-1").is_err());
         assert!(watch_options_query("timeoutSeconds=not-a-number").is_err());
     }
@@ -5913,7 +6062,7 @@ mod tests {
     #[test]
     fn encode_watch_event_produces_a_newline_terminated_json_line() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false).expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, false).expect("Bookmark always converts").expect("Bookmark conversion never fails");
         let bytes = frame.into_data().unwrap();
         assert!(bytes.ends_with(b"\n"));
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
@@ -5922,9 +6071,26 @@ mod tests {
     }
 
     #[test]
+    fn encode_watch_event_marks_the_end_of_streaming_list_initial_events() {
+        let event = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Bookmark,
+            key: Vec::new(),
+            value: Vec::new(),
+            revision: 9,
+        };
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, true)
+            .expect("Bookmark always converts")
+            .expect("Bookmark conversion never fails");
+        let bytes = frame.into_data().unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(parsed["type"], "BOOKMARK");
+        assert_eq!(parsed["object"]["metadata"]["annotations"]["k8s.io/initial-events-end"], "true");
+    }
+
+    #[test]
     fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
         let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
-        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false).is_none());
+        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, false).is_none());
     }
 
     #[test]
@@ -5935,7 +6101,7 @@ mod tests {
             value: envelope_for("default", serde_json::json!({"app": "demo"})),
             revision: 9,
         };
-        let frame = encode_watch_event(&event, "Namespace", "v1", None, "", "namespaces", "v1", true)
+        let frame = encode_watch_event(&event, "Namespace", "v1", None, "", "namespaces", "v1", true, false)
             .expect("Added events always convert")
             .expect("the test envelope must decode");
         let bytes = frame.into_data().unwrap();
@@ -6078,6 +6244,50 @@ mod tests {
         );
         let bytes = tokio::time::timeout(std::time::Duration::from_secs(1), body.collect()).await.unwrap().unwrap().to_bytes();
         assert!(bytes.is_empty(), "an idle watch must terminate at timeoutSeconds");
+    }
+
+    #[tokio::test]
+    async fn watch_response_body_sends_streaming_list_initial_events_end_bookmark() {
+        use http_body_util::BodyExt;
+
+        let initial = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: b"/registry/namespaces/default".to_vec(),
+            value: envelope_for("default", serde_json::json!({})),
+            revision: 5,
+        };
+        let cache = crate::cacher::store::WatchCache::new(vec![], 5, 16, 16);
+        let (_, rx) = cache.watch_from(5).unwrap();
+        drop(cache);
+
+        let body = watch_response_body_with_initial_events(
+            Vec::new(),
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            true,
+            None,
+            None,
+            Some((vec![initial], 5)),
+        );
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let lines: Vec<serde_json::Value> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["type"], "ADDED");
+        assert_eq!(lines[1]["type"], "BOOKMARK");
+        assert_eq!(lines[1]["object"]["metadata"]["resourceVersion"], "5");
+        assert_eq!(lines[1]["object"]["metadata"]["annotations"]["k8s.io/initial-events-end"], "true");
     }
 
     fn test_peer() -> SocketAddr {

@@ -222,6 +222,19 @@ impl WatchCache {
         if start_revision <= 0 {
             return Ok((Vec::new(), rx));
         }
+        self.watch_from_with_receiver(start_revision, rx)
+    }
+
+    /// The LIST-then-WATCH handoff used by streaming-list requests. Unlike
+    /// [`Self::watch_from`], a zero snapshot revision still needs to replay
+    /// events that race the empty LIST; zero means "start from now" only for
+    /// an ordinary watch that has no preceding snapshot.
+    pub fn watch_from_snapshot(&self, start_revision: i64) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
+        let rx = self.events.subscribe();
+        self.watch_from_with_receiver(start_revision, rx)
+    }
+
+    fn watch_from_with_receiver(&self, start_revision: i64, rx: broadcast::Receiver<WatchEvent>) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
         if start_revision < self.history_floor {
             return Err(Error::TooOld { requested: start_revision, oldest: self.history_floor });
         }
@@ -345,6 +358,10 @@ impl SharedCache {
 
     pub fn watch_from(&self, start_revision: i64) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
         self.read().watch_from(start_revision)
+    }
+
+    pub fn watch_from_snapshot(&self, start_revision: i64) -> Result<(Vec<WatchEvent>, broadcast::Receiver<WatchEvent>)> {
+        self.read().watch_from_snapshot(start_revision)
     }
 
     /// Takes an atomic snapshot of the current cache and subscribes to
@@ -530,6 +547,17 @@ mod tests {
         cache.apply(EventKind::Added, b"a".to_vec(), b"v".to_vec(), 2);
         let (replay, _rx) = cache.watch_from(0).unwrap();
         assert!(replay.is_empty());
+    }
+
+    #[test]
+    fn snapshot_watch_replays_events_after_an_empty_list_revision() {
+        let mut cache = WatchCache::new(vec![], 0, 16, 16);
+        cache.apply(EventKind::Added, b"a".to_vec(), b"v".to_vec(), 1);
+        let (replay, _rx) = cache
+            .watch_from_snapshot(0)
+            .expect("a streaming-list watch must bridge an empty LIST to its live events");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].revision, 1);
     }
 
     #[test]
