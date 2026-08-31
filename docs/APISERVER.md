@@ -43,8 +43,8 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `b983dbff` on
-2026-08-30. It describes what is integrated on that branch; open child PRs
+This snapshot is checked against `origin/nodeapiserver` at `6503c4c5` on
+2026-08-31. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
 
