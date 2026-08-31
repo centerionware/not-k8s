@@ -56,7 +56,7 @@ explanation of each boundary.
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
-| J. Admission | **in progress** | The implemented built-ins (including DefaultIngressClass) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
+| J. Admission | **in progress** | The implemented built-ins (including DefaultIngressClass and StorageObjectInUseProtection) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
 | M. APF/audit/observability | **in progress** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, and policy-selected request/response object capture are present; remaining observability refinements remain. |
@@ -1350,6 +1350,17 @@ use the real newest-`creationTimestamp`, name-ascending tie-break. No
 default class, an explicit field, or the legacy annotation is a no-op. The
 listener performs one live `LIST` of `networking.k8s.io/v1/ingressclasses`
 before the candidate reaches the remaining admission stages.
+
+`admission::storage_object_in_use_protection` is mutating, `CREATE`-only — a
+faithful port of real upstream's `StorageObjectInUseProtection` plugin
+(`plugin/pkg/admission/storage/storageobjectinuseprotection/admission.go`,
+fetched and read directly): PersistentVolumes, PersistentVolumeClaims, and
+VolumeAttributesClasses receive their standard protection finalizer when
+created. The existing nodecontroller protection controllers remove those
+finalizers once the objects are no longer in use. The mutation is applied to
+the request candidate before the remaining admission stages and is covered
+by unit tests for all three resource families, duplicate-finalizer handling,
+and subresource exclusion.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
