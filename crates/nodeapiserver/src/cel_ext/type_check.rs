@@ -242,12 +242,27 @@ pub fn schema_type_for_root(schema: &Value) -> Option<CelType> {
     Some(root)
 }
 
+/// Return the CEL identifier Kubernetes exposes for an OpenAPI property.
+pub fn cel_field_name(name: &str) -> String {
+    const RESERVED: &[&str] = &[
+        "as", "break", "const", "continue", "else", "for", "function", "if", "import",
+        "in", "let", "loop", "namespace", "package", "return", "true", "false", "null",
+    ];
+    if RESERVED.contains(&name) {
+        return format!("__{name}__");
+    }
+    name.replace("__", "__underscores__")
+        .replace('.', "__dot__")
+        .replace('-', "__dash__")
+        .replace('/', "__slash__")
+}
+
 fn metadata_type() -> CelType {
     CelType::Object {
         fields: BTreeMap::from([
             ("name".to_string(), CelType::String),
             ("generateName".to_string(), CelType::String),
-            ("namespace".to_string(), CelType::String),
+            (cel_field_name("namespace"), CelType::String),
             (
                 "labels".to_string(),
                 CelType::Map(Box::new(CelType::String)),
@@ -288,7 +303,7 @@ fn schema_type(schema: &Value) -> Option<CelType> {
                     properties
                         .iter()
                         .map(|(name, value)| {
-                            (name.clone(), schema_type(value).unwrap_or(CelType::Dyn))
+                            (cel_field_name(name), schema_type(value).unwrap_or(CelType::Dyn))
                         })
                         .collect()
                 })
@@ -1291,5 +1306,22 @@ mod tests {
             error,
             TypeError::InvalidOperand { operation, .. } if operation == "hasValue"
         )));
+    }
+
+    #[test]
+    fn kubernetes_escapes_reserved_and_punctuation_bearing_property_names() {
+        assert_eq!(cel_field_name("namespace"), "__namespace__");
+        assert_eq!(cel_field_name("x-y.z/a"), "x__dash__y__dot__z__slash__a");
+        assert_eq!(cel_field_name("x__y"), "x__underscores__y");
+    }
+
+    #[test]
+    fn escaped_schema_properties_are_available_to_the_type_checker() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"namespace": {"type": "string"}},
+        });
+        assert!(check_rule(&schema, "self.__namespace__ == 'default'").is_empty());
+        assert!(!check_rule(&schema, "self.namespace == 'default'").is_empty());
     }
 }
