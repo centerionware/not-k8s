@@ -394,6 +394,7 @@ fn revalidate_storage_object(schema: Option<&Value>, object: Value) -> Result<Va
             .map(|violation| format!("{}: expected type {}, got {}", violation.path, violation.expected, violation.actual_kind)),
     );
     violations.extend(apiextensions::schema_validation::validate_constraints(schema, &object));
+    violations.extend(metadata_format_violations(&object));
     if violations.is_empty() { Ok(object) } else { Err(violations) }
 }
 

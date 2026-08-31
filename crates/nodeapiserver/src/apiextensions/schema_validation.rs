@@ -301,6 +301,18 @@ fn schema_type_accepts(schema: &Value, value: &Value) -> bool {
 }
 
 fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) {
+    // The callers already report nested type mismatches through
+    // `validate_types`; the root object has no field entry, so enforce its
+    // required object shape here without duplicating nested diagnostics.
+    if path.is_empty() {
+        if let Some(expected) = schema.get("type").and_then(Value::as_str) {
+            if !matches_kind(expected, value) {
+                add_violation(path, &format!("must be of type {expected}"), out);
+                return;
+            }
+        }
+    }
+
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
         if !allowed.iter().any(|candidate| candidate == value) {
             add_violation(path, "must be one of the values declared by the schema", out);
@@ -333,6 +345,11 @@ fn validate_node_constraints(schema: &Value, value: &Value, path: &str, out: &mu
         if let Some(multiple_of) = schema.get("multipleOf").and_then(Value::as_f64) {
             if multiple_of > 0.0 && (number / multiple_of - (number / multiple_of).round()).abs() > 1e-9 {
                 add_violation(path, &format!("must be a multiple of {multiple_of}"), out);
+            }
+        }
+        if let Some(format) = schema.get("format").and_then(Value::as_str) {
+            if !valid_numeric_format(format, value) {
+                add_violation(path, &format!("must conform to format {format}"), out);
             }
         }
     }
@@ -412,6 +429,32 @@ fn valid_format(format: &str, value: &str) -> bool {
         "password" | "uri" | "uri-reference" | "duration" | "int-or-string" => true,
         _ => true,
     }
+}
+
+fn valid_numeric_format(format: &str, value: &Value) -> bool {
+    match format {
+        "int32" => integer_in_range(value, i32::MIN as i128, i32::MAX as i128),
+        "int64" => integer_in_range(value, i64::MIN as i128, i64::MAX as i128),
+        // JSON numbers are parsed as finite serde_json numbers, so there is
+        // no additional representability check for the floating formats.
+        "float" | "double" => true,
+        _ => true,
+    }
+}
+
+fn integer_in_range(value: &Value, minimum: i128, maximum: i128) -> bool {
+    if let Some(signed) = value.as_i64() {
+        return (minimum..=maximum).contains(&(signed as i128));
+    }
+    if let Some(unsigned) = value.as_u64() {
+        return unsigned <= maximum as u128;
+    }
+    value.as_f64().is_some_and(|number| {
+        number.is_finite()
+            && number.fract() == 0.0
+            && number >= minimum as f64
+            && number <= maximum as f64
+    })
 }
 
 #[cfg(test)]
@@ -572,5 +615,29 @@ mod tests {
         assert!(validate_constraints(&schema, &json!(5)).iter().any(|violation| violation.contains("one of")));
         assert!(validate_constraints(&schema, &json!("blocked")).iter().any(|violation| violation.contains("excluded")));
         assert!(validate_constraints(&schema, &json!(12)).is_empty());
+    }
+
+    #[test]
+    fn the_root_schema_requires_an_object_for_a_resource_document() {
+        let schema = json!({"type": "object"});
+        let violations = validate_constraints(&schema, &json!("not-an-object"));
+        assert!(violations.iter().any(|violation| violation.contains("must be of type object")));
+    }
+
+    #[test]
+    fn numeric_formats_enforce_integer_ranges() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "small": {"type": "integer", "format": "int32"},
+                "large": {"type": "integer", "format": "int64"},
+            },
+        });
+        let violations = validate_constraints(&schema, &json!({
+            "small": 2_147_483_648_i64,
+            "large": 1.5,
+        }));
+        assert!(violations.iter().any(|violation| violation.contains("small: must conform to format int32")));
+        assert!(violations.iter().any(|violation| violation.contains("large: must conform to format int64")));
     }
 }
