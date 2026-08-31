@@ -1660,6 +1660,11 @@ annotation to the request's audit event. Multiple failures are accumulated so
 warnings and audit details survive even when another binding denies the
 request.
 
+The shared CEL evaluator enables Kubernetes' optional field and index selection
+syntax (`.?` and `[?...]`) while compiling policy expressions. This is required
+for current Kubernetes admission policies, including the reference DRA
+driver's `userInfo.extra` and optional `spec.nodeName` expressions.
+
 `MutatingAdmissionPolicy` and `MutatingAdmissionPolicyBinding` are now
 loaded from storage before validating admission. Matching bindings can apply
 multiple JSON Patch operations or an apply configuration in order, including
@@ -1895,9 +1900,13 @@ former crates.io name (confirmed both still resolve, but only `cel` has
 had a release in the last year). Real API shape confirmed directly
 against that already-working code, not docs.rs (whose auto-generated
 summaries disagreed with each other on `Context`'s own basic shape):
-`cel::Program::compile(expr)` -> `cel::Context::default()` +
+`cel::parser::Parser::new().enable_optional_syntax(true).parse(expr)` ->
+`cel::Context::default()` +
 `ctx.add_variable(name, value)`/`ctx.add_function(name, f)` ->
-`program.execute(&ctx)` -> `cel::Value::Bool(bool)` on success.
+`ctx.resolve(&expression)` -> `cel::Value::Bool(bool)` on success. The
+nodeapiserver path uses `cel::parser::Parser::enable_optional_syntax(true)`
+instead of the convenience compile function because Kubernetes policy
+expressions rely on optional field/index selection (`.?` and `[?...]`).
 `Context::add_variable`'s own bound (`TryIntoValue`, confirmed via a
 blanket `impl<T: Serialize> TryIntoValue for T`) means a bare
 `serde_json::Value` binds directly, no manual conversion needed. **No
