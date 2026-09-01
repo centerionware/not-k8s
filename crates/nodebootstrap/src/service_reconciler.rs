@@ -54,7 +54,7 @@ pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<(
         .into_iter()
         .map(|ip| ip.to_string())
         .collect::<Vec<_>>();
-    let endpoint = address.to_string();
+    let endpoint_address = address.to_string();
     crate::kube_api::block_on(&kubeconfig, move |client| async move {
         let services: Api<Service> = Api::namespaced(client.clone(), "default");
         let endpoints: Api<Endpoints> = Api::namespaced(client.clone(), "default");
@@ -99,7 +99,7 @@ pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<(
             "kind": "Endpoints",
             "metadata": {"name": "kubernetes", "namespace": "default"},
             "subsets": [{
-                "addresses": [{"ip": endpoint}],
+                "addresses": [{"ip": endpoint_address.clone()}],
                 "ports": [{"name": "https", "port": 6443, "protocol": "TCP"}]
             }]
         }))?;
@@ -127,10 +127,10 @@ pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<(
                     "endpointslice.kubernetes.io/managed-by": "nodebootstrap"
                 }
             },
-            "addressType": if endpoint.contains(':') { "IPv6" } else { "IPv4" },
+            "addressType": if endpoint_address.contains(':') { "IPv6" } else { "IPv4" },
             "ports": [{"name": "https", "port": 6443, "protocol": "TCP"}],
             "endpoints": [{
-                "addresses": [endpoint],
+                "addresses": [endpoint_address],
                 "conditions": {"ready": true, "serving": true, "terminating": false}
             }]
         }))?;
