@@ -1421,7 +1421,8 @@ cluster-scoped `IngressClass` carrying
 use the real newest-`creationTimestamp`, name-ascending tie-break. No
 default class, an explicit field, or the legacy annotation is a no-op. The
 listener performs one live `LIST` of `networking.k8s.io/v1/ingressclasses`
-before the candidate reaches the remaining admission stages.
+before the candidate reaches the remaining admission stages for both ordinary
+create and Server-Side Apply.
 
 `admission::storage_object_in_use_protection` is mutating, `CREATE`-only — a
 faithful port of real upstream's `StorageObjectInUseProtection` plugin

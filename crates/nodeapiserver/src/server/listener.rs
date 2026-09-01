@@ -3492,6 +3492,46 @@ async fn handle(
                 }
             }
 
+            // Apply must also run DefaultIngressClass against the candidate.
+            // Otherwise an Ingress created with POST and one created with
+            // Server-Side Apply receive different class defaulting.
+            if operation == admission::attributes::Operation::Create
+                && admission::default_ingress_class::applies_to(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                match rest::list(
+                    &mut client,
+                    None,
+                    "networking.k8s.io",
+                    "v1",
+                    "ingressclasses",
+                    None,
+                    "",
+                    "",
+                    0,
+                    "",
+                )
+                .await
+                {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let classes = list["items"].as_array().cloned().unwrap_or_default();
+                        admission::default_ingress_class::mutate(&mut candidate, &classes);
+                    }
+                    Ok(rest::ListOutcome::UnknownResource)
+                    | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: listing IngressClasses for apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
             // The pure registry only supplies the default ServiceAccount
             // name. Complete the storage-backed ServiceAccount plugin for
             // create-on-apply as well, so applied Pods receive the same
