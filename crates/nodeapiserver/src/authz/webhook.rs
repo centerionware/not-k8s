@@ -177,10 +177,6 @@ fn retryable_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
 }
 
-fn parse_decision(response: &Value) -> Result<Decision, Error> {
-    Ok(parse_details(response)?.decision)
-}
-
 fn parse_details(response: &Value) -> Result<DecisionDetails, Error> {
     let status = response
         .get("status")
@@ -338,29 +334,29 @@ mod tests {
     #[test]
     fn parses_the_three_subject_access_review_decisions() {
         assert_eq!(
-            parse_decision(&json!({"status": {"allowed": true}})).unwrap(),
+            parse_details(&json!({"status": {"allowed": true}})).unwrap().decision,
             Decision::Allow
         );
         assert_eq!(
-            parse_decision(&json!({"status": {"denied": true}})).unwrap(),
+            parse_details(&json!({"status": {"denied": true}})).unwrap().decision,
             Decision::Deny
         );
         assert_eq!(
-            parse_decision(&json!({"status": {"allowed": false, "denied": false}})).unwrap(),
+            parse_details(&json!({"status": {"allowed": false, "denied": false}})).unwrap().decision,
             Decision::NoOpinion
         );
         assert_eq!(
-            parse_decision(&json!({"status": {}})).unwrap(),
+            parse_details(&json!({"status": {}})).unwrap().decision,
             Decision::NoOpinion
         );
     }
 
     #[test]
     fn rejects_an_invalid_subject_access_review_decision() {
-        assert!(parse_decision(&json!({"status": {"allowed": true, "denied": true}})).is_err());
-        assert!(parse_decision(&json!({"status": {"allowed": "yes"}})).is_err());
-        assert!(parse_decision(&json!({"status": {"denied": "yes"}})).is_err());
-        assert!(parse_decision(&json!({})).is_err());
+        assert!(parse_details(&json!({"status": {"allowed": true, "denied": true}})).is_err());
+        assert!(parse_details(&json!({"status": {"allowed": "yes"}})).is_err());
+        assert!(parse_details(&json!({"status": {"denied": "yes"}})).is_err());
+        assert!(parse_details(&json!({})).is_err());
     }
 
     #[test]
