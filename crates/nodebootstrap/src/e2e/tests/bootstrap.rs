@@ -1225,6 +1225,52 @@ pub(super) async fn nodeapiserver_rejects_invalid_metadata_keys(
     }
 }
 
+pub(super) async fn nodeapiserver_rejects_invalid_batch_names(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "built-in batch name validation is only exercised against nodeapiserver",
+        ));
+    }
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/apis/batch/v1/namespaces/{}/jobs",
+            context.namespace
+        ))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": "Invalid_Job_Name",
+                "namespace": context.namespace
+            },
+            "spec": {
+                "template": {
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "containers": [{
+                            "name": "app",
+                            "image": "example.invalid/not-k8s-invalid-job-name"
+                        }]
+                    }
+                }
+            }
+        }))?)?;
+
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "invalid batch object name returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!("invalid batch object name was accepted: {value}"),
+    }
+}
+
 pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
