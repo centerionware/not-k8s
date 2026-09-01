@@ -1373,6 +1373,8 @@ same as upstream. The one real I/O step (`server::rest::list` over every
 even when the PVC already has a class — a real, named inefficiency
 (`mutate` itself no-ops in that case, but only after the list already
 happened), not silently optimized around with a duplicate has-class check.
+Server-Side Apply create candidates run the same lookup and mutation before
+persistence.
 
 `admission::default_ingress_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's `DefaultIngressClass` plugin

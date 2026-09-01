@@ -3147,6 +3147,47 @@ async fn handle(
             }
             run_pure_admission(&pure_admission, operation, &info, &mut candidate);
 
+            // Apply must run the storage-backed DefaultStorageClass plugin
+            // against the materialized candidate too. A PVC with no class
+            // is otherwise persisted differently depending on whether its
+            // creator used POST or Server-Side Apply.
+            if operation == admission::attributes::Operation::Create
+                && admission::default_storage_class::applies_to(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                match rest::list(
+                    &mut client,
+                    None,
+                    "storage.k8s.io",
+                    "v1",
+                    "storageclasses",
+                    None,
+                    "",
+                    "",
+                    0,
+                    "",
+                )
+                .await
+                {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let classes = list["items"].as_array().cloned().unwrap_or_default();
+                        admission::default_storage_class::mutate(&mut candidate, &classes);
+                    }
+                    Ok(rest::ListOutcome::UnknownResource)
+                    | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: listing StorageClasses for apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
             // The pure registry only supplies the default ServiceAccount
             // name. Complete the storage-backed ServiceAccount plugin for
             // create-on-apply as well, so applied Pods receive the same
