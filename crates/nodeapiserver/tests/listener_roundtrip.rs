@@ -28,6 +28,37 @@ fn find_binary(name: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+fn find_nodestore_binary() -> Option<PathBuf> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .parent()?
+        .to_path_buf();
+    let candidates = [
+        repo_root.join("target/debug/nodestore"),
+        repo_root.join("target/release/nodestore"),
+        repo_root.join("bin/nodestore"),
+    ];
+    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
+        return Some(path);
+    }
+    if !repo_root.join("crates/nodestore").is_dir() {
+        return None;
+    }
+    eprintln!("no nodestore binary found; building one for the throwaway rig");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "nodestore"])
+        .current_dir(repo_root)
+        .status()
+        .ok()?;
+    status.success().then(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repository root")
+            .join("target/debug/nodestore")
+    })
+}
+
 async fn spawn_nodestore(nodestore: &Path, port: u16) -> (Child, tempfile::TempDir, Vec<PathBuf>) {
     let data_dir = tempfile::tempdir().expect("creating a scratch nodestore data dir");
     let listen = format!("127.0.0.1:{port}");
@@ -51,7 +82,9 @@ async fn spawn_nodestore(nodestore: &Path, port: u16) -> (Child, tempfile::TempD
         if let Some(status) = child.try_wait().expect("checking nodestore startup") {
             panic!("nodestore exited during startup with {status:?}");
         }
-        if files.iter().all(|path| path.is_file()) {
+        if files.iter().all(|path| path.is_file())
+            && tokio::net::TcpStream::connect(&listen).await.is_ok()
+        {
             return (child, data_dir, files);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -73,7 +106,7 @@ async fn wait_ready(client: &Client, endpoint: &str) {
 
 #[tokio::test]
 async fn listener_serves_a_real_discovery_and_crud_round_trip() {
-    let Some(nodestore) = find_binary("nodestore") else {
+    let Some(nodestore) = find_nodestore_binary() else {
         eprintln!("SKIPPED: nodestore binary is not available for the throwaway rig");
         return;
     };
