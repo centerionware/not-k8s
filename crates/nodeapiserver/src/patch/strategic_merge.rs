@@ -35,8 +35,9 @@
 //!   wholesale list replacement rather than attempting to merge scalars
 //!   by value.
 //! - `map_type`/`x-kubernetes-map-type` (SSA's map-vs-granular distinction)
-//!   isn't consulted — SMP itself doesn't need it; Server-Side Apply
-//!   (unimplemented, see `patch/mod.rs`) will.
+//!   isn't consulted — SMP itself doesn't need it; the separate
+//!   Server-Side Apply implementation in `patch/mod.rs` consumes that
+//!   metadata when it calculates field ownership.
 
 use crate::codegen;
 use serde_json::{Map, Value};
