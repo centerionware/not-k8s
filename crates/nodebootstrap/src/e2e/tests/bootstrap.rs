@@ -1526,7 +1526,7 @@ pub(super) async fn nodeapiserver_defaults_storage_class_on_apply(
                 Request::builder()
                     .method("PATCH")
                     .uri(format!(
-                        "/api/v1/namespaces/{}/{claim_name}?fieldManager=nodeapiserver-apply-storage",
+                        "/api/v1/namespaces/{}/persistentvolumeclaims/{claim_name}?fieldManager=nodeapiserver-apply-storage",
                         context.namespace
                     ))
                     .header("Content-Type", "application/apply-patch+yaml")
