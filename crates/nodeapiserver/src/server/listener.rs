@@ -31,11 +31,13 @@
 //! `application/json-patch+json`/`application/merge-patch+json`/
 //! `application/strategic-merge-patch+json` — with Kubernetes' default
 //! strategic-merge/CRD merge-patch selection when `Content-Type` is
-//! omitted and a real `415` for an unsupported explicit type), **and now runs the two Group J plugins that ever
-//! apply to an `Update`-shaped write** (`namespace_lifecycle`,
-//! `LimitRanger`'s own PVC validation — the split between
-//! `rest::patch_prepare`/`patch_persist` exists specifically so admission
-//! can see the real candidate object in between the two). `deletecollection`
+//! omitted and a real `415` for an unsupported explicit type). PATCH runs
+//! the shared pure-mutator registry and the storage-backed Group J stages
+//! that apply to an `Update`-shaped write (`namespace_lifecycle`,
+//! `LimitRanger`'s own PVC validation, and the PVC resize check); the
+//! `rest::patch_prepare`/`patch_persist` split exists specifically so
+//! admission can see the real candidate object in between the two).
+//! `deletecollection`
 //! is real too now (it lists via the same selector filtering `LIST` already
 //! has, runs configured admission against each matched object, then deletes
 //! each match) — `watch` is the only remaining resource verb
