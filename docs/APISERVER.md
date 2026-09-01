@@ -43,7 +43,7 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `fe5253ac` on
+This snapshot is checked against `origin/nodeapiserver` at `449c5494` on
 2026-09-01. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -988,8 +988,12 @@ vendored spec `paths` table): `apps/v1`'s `controllerrevisions`,
 (`pkg/apis/flowcontrol/validation/validation.go`); `node.k8s.io/v1`'s
 `runtimeclasses` and `coordination.k8s.io/v1`'s `leases` (both inline
 `NameIsDNSSubdomain` directly rather than through a named var — same
-rule, confirmed the same way). `name_format_violations` now covers 28
-resources total. Every other resource is left unchecked rather than
+rule, confirmed the same way). `batch/v1` Jobs and CronJobs use the same
+DNS-subdomain rule through `ValidateReplicationControllerName`, while
+`events.k8s.io/v1` Events use `NameIsDNSSubdomain`. The legacy core `events`
+and `events.k8s.io/v1beta1` resources retain their older validation behavior
+and are intentionally not included in this mapping. `name_format_violations`
+now covers 31 resources total. Every other resource is left unchecked rather than
 guessing at a rule for it, gating both `create` and `update`. Extending
 this to more resources is real, separate follow-up work, one verified
 entry at a time (the function's own doc comment says so explicitly).
