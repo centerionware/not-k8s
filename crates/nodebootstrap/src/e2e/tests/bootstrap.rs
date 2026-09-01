@@ -1541,7 +1541,7 @@ pub(super) async fn nodeapiserver_defaults_storage_class_on_apply(
                             "accessModes": ["ReadWriteOnce"],
                             "resources": {"requests": {"storage": "1Gi"}}
                         }
-                    }))?,
+                    }))?)?,
             )
             .await
             .context("applying a PVC without a storage class")?;
