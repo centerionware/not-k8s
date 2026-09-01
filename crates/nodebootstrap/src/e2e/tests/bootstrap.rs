@@ -2074,7 +2074,7 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
                             "namespace": context.namespace
                         },
                         "spec": {}
-                    }))?,
+                    }))?)?,
             )
             .await
             .context("applying an Ingress without a class")?;
