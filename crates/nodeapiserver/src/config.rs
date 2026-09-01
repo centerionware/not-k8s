@@ -86,6 +86,10 @@ pub struct Config {
     /// When set, requests are denied if the webhook denies them and return
     /// `503` if the webhook cannot be reached or returns an invalid review.
     pub authorization_webhook_url: Option<String>,
+    /// `NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE` selects the standard
+    /// kubeconfig-shaped authorization webhook configuration. It supplies
+    /// the endpoint and optional CA/client credentials.
+    pub authorization_webhook_config_file: Option<PathBuf>,
     /// Cache lifetimes for successful authorization-webhook decisions. A
     /// zero duration disables the corresponding cache, matching the
     /// upstream authorization configuration.
@@ -184,6 +188,7 @@ impl Default for Config {
             proxy_client_cert_file: None,
             proxy_client_key_file: None,
             authorization_webhook_url: None,
+            authorization_webhook_config_file: None,
             authorization_webhook_authorized_ttl: DEFAULT_AUTHORIZATION_WEBHOOK_AUTHORIZED_TTL,
             authorization_webhook_unauthorized_ttl: DEFAULT_AUTHORIZATION_WEBHOOK_UNAUTHORIZED_TTL,
             apf_max_requests_inflight: 400,
@@ -303,6 +308,11 @@ impl Config {
             ));
         }
         cfg.authorization_webhook_url = string_env("NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL");
+        cfg.authorization_webhook_config_file = path_env("NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE");
+        anyhow::ensure!(
+            cfg.authorization_webhook_url.is_none() || cfg.authorization_webhook_config_file.is_none(),
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL and NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE are mutually exclusive"
+        );
         cfg.authorization_webhook_authorized_ttl = duration_env(
             "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL",
             cfg.authorization_webhook_authorized_ttl,
@@ -475,6 +485,8 @@ mod tests {
         assert_eq!(cfg.audit_log_max_backups, 5);
         assert!(cfg.audit_webhook_url.is_none());
         assert!(cfg.audit_webhook_config_file.is_none());
+        assert!(cfg.authorization_webhook_url.is_none());
+        assert!(cfg.authorization_webhook_config_file.is_none());
         assert!(cfg.audit_policy_file.is_none());
     }
 
@@ -768,6 +780,30 @@ mod tests {
             cfg.authorization_webhook_url.as_deref(),
             Some("https://authz.example/review")
         );
+    }
+
+    #[test]
+    fn authorization_webhook_config_file_is_read_and_cannot_be_combined_with_a_url() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE",
+            "/etc/nodeapiserver/authorization.yaml",
+        );
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE",
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.authorization_webhook_config_file,
+            Some(PathBuf::from("/etc/nodeapiserver/authorization.yaml"))
+        );
+
+        std::env::set_var(
+            "NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL",
+            "https://authz.example/review",
+        );
+        assert!(Config::from_env().is_err());
     }
 
     #[test]

@@ -42,6 +42,7 @@
 
 pub mod codegen;
 pub mod config;
+pub(crate) mod webhook_config;
 
 pub mod scheme;
 pub mod codec;

@@ -185,6 +185,7 @@ impl Drop for NodeapiserverAuthenticationOverride {
 
 struct NodeapiserverAuthorizationWebhookOverride {
     drop_in: PathBuf,
+    config_file: PathBuf,
 }
 
 impl NodeapiserverAuthorizationWebhookOverride {
@@ -199,22 +200,40 @@ impl NodeapiserverAuthorizationWebhookOverride {
         let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
         let drop_in = drop_in_dir.join(format!("nodebootstrap-e2e-authz-webhook-{suffix}.conf"));
         let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-authz-webhook-{suffix}.conf"));
+        let config_file = Path::new("/etc/nodeapiserver").join(format!("e2e-authz-webhook-{suffix}.yaml"));
+        let local_config = std::env::temp_dir().join(format!("nodeapiserver-authz-webhook-{suffix}.yaml"));
         let contents = format!(
-            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=1\nEnvironment=NODEAPISERVER_ENFORCE_RBAC=1\nEnvironment=NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL={url}\n"
+            "[Service]\nEnvironment=NODEAPISERVER_ANONYMOUS_AUTH=1\nEnvironment=NODEAPISERVER_ENFORCE_RBAC=1\nEnvironment=NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE={}\n",
+            config_file.display()
         );
         fs::write(&local_drop_in, contents)
             .with_context(|| format!("writing {}", local_drop_in.display()))?;
+        fs::write(
+            &local_config,
+            format!(
+                "apiVersion: v1\nkind: Config\ncurrent-context: authz\nclusters:\n- name: backend\n  cluster:\n    server: {url}\ncontexts:\n- name: authz\n  context:\n    cluster: backend\n"
+            ),
+        )
+        .with_context(|| format!("writing {}", local_config.display()))?;
 
-        let guard = Self { drop_in };
+        let guard = Self { drop_in, config_file };
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
         let drop_in = guard.drop_in.to_string_lossy();
+        let local_config = local_config.to_string_lossy();
+        let config_file = guard.config_file.to_string_lossy();
         run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", "/etc/nodeapiserver"])?;
         run_privileged(
             "install",
             &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()],
         )?;
+        run_privileged(
+            "install",
+            &["-m", "0644", local_config.as_ref(), config_file.as_ref()],
+        )?;
         let _ = fs::remove_file(local_drop_in.as_ref());
+        let _ = fs::remove_file(local_config.as_ref());
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
@@ -225,7 +244,9 @@ impl NodeapiserverAuthorizationWebhookOverride {
 impl Drop for NodeapiserverAuthorizationWebhookOverride {
     fn drop(&mut self) {
         let drop_in = self.drop_in.to_string_lossy();
+        let config_file = self.config_file.to_string_lossy();
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
     }
