@@ -1781,7 +1781,7 @@ pub(super) async fn nodeapiserver_honors_always_pull_images(
                         Ok(pod) => Ok(pod.pointer("/spec/containers/0/imagePullPolicy")
                             == Some(&Value::String("Always".to_string()))),
                         Err(KubeError::Api(error)) if error.code == 503 => Ok(false),
-                        Err(KubeError::Request(_)) => Ok(false),
+                        Err(KubeError::Service(_)) | Err(KubeError::HyperError(_)) => Ok(false),
                         Err(error) => Err(error.into()),
                     }
                 }
@@ -2447,7 +2447,7 @@ pub(super) async fn nodeapiserver_applies_configured_node_selector(
                             .and_then(Value::as_str)
                             == Some("selected")),
                         Err(KubeError::Api(error)) if error.code == 503 => Ok(false),
-                        Err(KubeError::Request(_)) => Ok(false),
+                        Err(KubeError::Service(_)) | Err(KubeError::HyperError(_)) => Ok(false),
                         Err(error) => Err(error.into()),
                     }
                 }
