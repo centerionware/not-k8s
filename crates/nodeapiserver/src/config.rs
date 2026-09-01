@@ -146,6 +146,11 @@ pub struct Config {
     /// decrypt_and_decode`/`encrypt_for_storage`), verified against a
     /// real live nodestore (`tests/encryption_roundtrip.rs`).
     pub encryption_config_file: Option<PathBuf>,
+    /// Additional admission plugins enabled by the operator, mirroring
+    /// kube-apiserver's `--enable-admission-plugins`. The default plugin set
+    /// remains enabled unconditionally; this list currently provides the
+    /// upstream opt-in `AlwaysPullImages` plugin.
+    pub enabled_admission_plugins: Vec<String>,
     /// `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE` — the
     /// client identity `proxy::client_tls` presents when dialing
     /// nodelet's own kubelet-style server for `pods/log` (Group N). The
@@ -203,6 +208,7 @@ impl Default for Config {
             audit_policy_file: None,
             enforce_rbac: false,
             encryption_config_file: None,
+            enabled_admission_plugins: Vec::new(),
             kubelet_client_cert_file: None,
             kubelet_client_key_file: None,
         }
@@ -352,6 +358,16 @@ impl Config {
         cfg.audit_policy_file = path_env("NODEAPISERVER_AUDIT_POLICY_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
+        cfg.enabled_admission_plugins = string_env("NODEAPISERVER_ENABLE_ADMISSION_PLUGINS")
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|plugin| !plugin.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
         cfg.kubelet_client_key_file = path_env("NODEAPISERVER_KUBELET_CLIENT_KEY_FILE");
         let kubelet_set = [cfg.kubelet_client_cert_file.is_some(), cfg.kubelet_client_key_file.is_some()];
@@ -612,6 +628,21 @@ mod tests {
         let _cleanup = EnvGuard(&["NODEAPISERVER_TOKEN_AUTH_FILE"]);
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.bootstrap_token_file, Some(PathBuf::from("/tmp/tokens.csv")));
+    }
+
+    #[test]
+    fn additional_admission_plugins_are_read_as_a_trimmed_list() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(
+            "NODEAPISERVER_ENABLE_ADMISSION_PLUGINS",
+            " AlwaysPullImages, ,ExamplePlugin ",
+        );
+        let _cleanup = EnvGuard(&["NODEAPISERVER_ENABLE_ADMISSION_PLUGINS"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.enabled_admission_plugins,
+            vec!["AlwaysPullImages".to_string(), "ExamplePlugin".to_string()]
+        );
     }
 
     #[test]

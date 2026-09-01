@@ -1341,7 +1341,7 @@ pub async fn run(cfg: Config) {
     // dispatcher for all connections instead of rebuilding its trait-object
     // chain for every write request; storage-backed plugins remain in the
     // request path because they require their own I/O and failure policy.
-    let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins());
+    let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins_enabled(&cfg.enabled_admission_plugins));
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -2567,6 +2567,7 @@ fn run_pure_admission(
     registry: &crate::admission::chain::MutatingRegistry,
     operation: admission::attributes::Operation,
     info: &path::RequestInfo,
+    old_object: Option<&Value>,
     object: &mut Value,
 ) {
     let mut request = admission::chain::Request {
@@ -2576,6 +2577,7 @@ fn run_pure_admission(
         subresource: &info.subresource,
         namespace: &info.namespace,
         name: &info.name,
+        old_object,
         object,
     };
     registry.run(&mut request);
@@ -3149,7 +3151,7 @@ async fn handle(
                     }
                 }
             }
-            run_pure_admission(&pure_admission, operation, &info, &mut candidate);
+            run_pure_admission(&pure_admission, operation, &info, old_object.as_ref(), &mut candidate);
 
             // Apply must run the storage-backed DefaultStorageClass plugin
             // against the materialized candidate too. A PVC with no class
@@ -4142,6 +4144,7 @@ async fn handle(
             &pure_admission,
             admission::attributes::Operation::Update,
             &info,
+            old_object.as_ref(),
             &mut candidate,
         );
         match admission::mutating_admission_policy::mutate(
@@ -5346,13 +5349,25 @@ async fn handle(
             // DefaultTolerationSeconds -> ServiceAccount defaulting order,
             // while making pure plugins extensible without another direct
             // listener call for each one.
+            let old_object_for_admission = if is_update {
+                match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                    Ok(rest::GetOutcome::Found(object)) => Some(object),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: reading the existing object for pure plugins failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else {
+                None
+            };
             if let Some(body) = body_value.as_mut() {
                 let operation = if is_create {
                     admission::attributes::Operation::Create
                 } else {
                     admission::attributes::Operation::Update
                 };
-                run_pure_admission(&pure_admission, operation, &info, body);
+                run_pure_admission(&pure_admission, operation, &info, old_object_for_admission.as_ref(), body);
             }
 
             // Group J: `StorageObjectInUseProtection` — mutating,
