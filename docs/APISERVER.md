@@ -1469,10 +1469,12 @@ candidates after the patch has been materialized.
 the upstream `PodNodeSelector` plugin. A Pod created in a Namespace carrying
 `scheduler.alpha.kubernetes.io/node-selector` gets those exact-match labels
 merged into `spec.nodeSelector`; conflicting Pod labels and unsupported
-selector syntax are rejected before persistence. The cluster-wide admission
-configuration-file form remains separate work because this crate does not yet
-have an admission plugin configuration-file surface. The namespace annotation
-merge is also applied to Server-Side Apply Pod candidates.
+selector syntax are rejected before persistence. The cluster-wide form is
+available through `NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE`, an
+upstream-shaped YAML object with `clusterDefaultNodeSelector` and
+namespace-name keys. A namespace-specific configured selector overrides the
+cluster default, while the Namespace annotation overrides both. The same
+effective selector is applied to Server-Side Apply Pod candidates.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
