@@ -2062,7 +2062,7 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
                 Request::builder()
                     .method("PATCH")
                     .uri(format!(
-                        "/apis/networking.k8s.io/v1/namespaces/{}/{apply_ingress_name}?fieldManager=nodeapiserver-apply-ingress",
+                        "/apis/networking.k8s.io/v1/namespaces/{}/ingresses/{apply_ingress_name}?fieldManager=nodeapiserver-apply-ingress",
                         context.namespace
                     ))
                     .header("Content-Type", "application/apply-patch+yaml")
