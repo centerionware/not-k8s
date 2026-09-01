@@ -1914,6 +1914,7 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
     }
 
     let name = format!("nodeapiserver-protection-{}", std::process::id());
+    let apply_name = format!("nodeapiserver-apply-protection-{}", std::process::id());
     let uri = "/api/v1/persistentvolumes";
     let object: Value = context
         .client
@@ -1943,9 +1944,43 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
             .is_some_and(|finalizers| finalizers.iter().any(|finalizer| finalizer == "kubernetes.io/pv-protection")),
         "nodeapiserver did not add the PV protection finalizer: {object}"
     );
+    let applied: Value = context
+        .client
+        .request(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/persistentvolumes/{apply_name}?fieldManager=nodeapiserver-apply-protection"
+                ))
+                .header("Content-Type", "application/apply-patch+yaml")
+                .body(serde_json::to_vec(&json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolume",
+                    "metadata": {"name": &apply_name},
+                    "spec": {
+                        "capacity": {"storage": "1Gi"},
+                        "accessModes": ["ReadWriteOnce"],
+                        "persistentVolumeReclaimPolicy": "Retain",
+                        "hostPath": {"path": "/tmp/nodeapiserver-apply-storage-protection"}
+                    }
+                }))?,
+            )?,
+        )
+        .await
+        .context("applying a PersistentVolume for storage-protection admission")?;
+    anyhow::ensure!(
+        applied["metadata"]["finalizers"]
+            .as_array()
+            .is_some_and(|finalizers| finalizers.iter().any(|finalizer| finalizer == "kubernetes.io/pv-protection")),
+        "nodeapiserver did not add the PV protection finalizer during Apply: {applied}"
+    );
     let _ = context
         .client
         .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{name}")).body(Vec::new())?)
+        .await;
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{apply_name}")).body(Vec::new())?)
         .await;
     Ok(())
 }
