@@ -3498,6 +3498,17 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("node.k8s.io", "runtimeclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("coordination.k8s.io", "leases") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        // `batch/v1` Job and CronJob names use upstream's
+        // `ValidateReplicationControllerName` rule, which is
+        // `NameIsDNSSubdomain`. The group/resource keys are also present in
+        // the vendored discovery spec, so this does not apply the rule to an
+        // unrelated resource with the same plural.
+        ("batch", "jobs") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("batch", "cronjobs") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        // `events.k8s.io/v1` applies `NameIsDNSSubdomain` to Event metadata.
+        // Core `events` and `events.k8s.io/v1beta1` retain legacy validation
+        // behavior and intentionally remain outside this entry.
+        ("events.k8s.io", "events") => crate::scheme::name_format::is_dns1123_subdomain(name),
         _ => Vec::new(),
     }
 }
@@ -4231,6 +4242,17 @@ mod tests {
         assert!(name_format_violations("", "services", "my-svc").is_empty());
         assert!(!name_format_violations("", "services", "1-starts-with-digit").is_empty());
         assert!(!name_format_violations("", "services", "has.a.dot").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_enforces_verified_batch_and_events_rules() {
+        for (group, resource) in [("batch", "jobs"), ("batch", "cronjobs"), ("events.k8s.io", "events")] {
+            assert!(name_format_violations(group, resource, "valid-name.example").is_empty(), "{group}/{resource} should accept a valid DNS subdomain");
+            assert!(!name_format_violations(group, resource, "Invalid_Name").is_empty(), "{group}/{resource} should reject an invalid DNS subdomain");
+        }
+        // The legacy core Event resource intentionally has a different
+        // compatibility rule and must not inherit the v1 events.k8s.io rule.
+        assert!(name_format_violations("", "events", "Invalid_Name").is_empty());
     }
 
     #[test]
