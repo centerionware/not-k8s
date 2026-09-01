@@ -1377,6 +1377,28 @@ pub(super) async fn nodeapiserver_rejects_invalid_workload_names(
             }
         }),
     )
+    .await?;
+
+    reject(
+        format!(
+            "/apis/apps/v1/namespaces/{}/deployments",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "selector-mismatch", "namespace": context.namespace},
+            "spec": {
+                "selector": {"matchLabels": {"app": "api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "worker"}},
+                    "spec": {
+                        "containers": [{"name": "app", "image": "example.invalid/not-k8s-selector-mismatch"}]
+                    }
+                }
+            }
+        }),
+    )
     .await
 }
 
