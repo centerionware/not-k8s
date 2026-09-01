@@ -1726,6 +1726,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_nodeapiserver_delivers_audit_webhook"
             | "test_nodeapiserver_audits_request_and_response_objects"
             | "test_nodeapiserver_honors_always_pull_images"
+            | "test_nodeapiserver_applies_configured_node_selector"
             | "test_client_certificate_authentication_works"
             | "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host"
             | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
