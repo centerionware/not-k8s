@@ -15,6 +15,7 @@ use crate::server::path::RequestInfo;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
@@ -74,17 +75,47 @@ impl WebhookAuthorizer {
     }
 
     pub fn new_with_cache_ttls(url: String, authorized_ttl: Duration, unauthorized_ttl: Duration) -> Result<Self, Error> {
-        let parsed = reqwest::Url::parse(&url)
-            .map_err(|error| Error::InvalidResponse(format!("invalid URL: {error}")))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(Error::InvalidResponse(
-                "URL scheme must be http or https".to_string(),
-            ));
-        }
+        validate_url(&url)?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Self { url, client, cache: Arc::new(Mutex::new(HashMap::new())), authorized_ttl, unauthorized_ttl })
+        Ok(Self::with_client(url, client, authorized_ttl, unauthorized_ttl))
+    }
+
+    /// Creates an authorization webhook client from the standard
+    /// kubeconfig-shaped webhook configuration. The selected cluster supplies
+    /// the endpoint and optional CA, while the selected user supplies an
+    /// optional client certificate and key.
+    pub fn from_kubeconfig(
+        path: &Path,
+        authorized_ttl: Duration,
+        unauthorized_ttl: Duration,
+    ) -> Result<Self, Error> {
+        let config = crate::webhook_config::load_kubeconfig(path)
+            .map_err(Error::InvalidResponse)?;
+        validate_url(&config.url)?;
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        if let Some(ca_pem) = config.ca_pem {
+            let certificate = reqwest::Certificate::from_pem(&ca_pem)
+                .map_err(|error| Error::InvalidResponse(format!("loading authorization webhook certificate authority: {error}")))?;
+            builder = builder.add_root_certificate(certificate);
+        }
+        if let Some(identity_pem) = config.identity_pem {
+            let identity = reqwest::Identity::from_pem(&identity_pem)
+                .map_err(|error| Error::InvalidResponse(format!("loading authorization webhook client identity: {error}")))?;
+            builder = builder.identity(identity);
+        }
+        let client = builder.build()?;
+        Ok(Self::with_client(config.url, client, authorized_ttl, unauthorized_ttl))
+    }
+
+    fn with_client(
+        url: String,
+        client: reqwest::Client,
+        authorized_ttl: Duration,
+        unauthorized_ttl: Duration,
+    ) -> Self {
+        Self { url, client, cache: Arc::new(Mutex::new(HashMap::new())), authorized_ttl, unauthorized_ttl }
     }
 
     /// Ask the configured authorizer about one parsed Kubernetes request.
@@ -166,6 +197,20 @@ impl WebhookAuthorizer {
         }
         cache.insert(key.to_string(), CachedDecision { details: details.clone(), expires_at: std::time::Instant::now() + ttl });
     }
+}
+
+fn validate_url(url: &str) -> Result<(), Error> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| Error::InvalidResponse(format!("invalid URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(Error::InvalidResponse(
+            "URL scheme must be http or https".to_string(),
+        ));
+    }
+    if parsed.host_str().map_or(true, str::is_empty) {
+        return Err(Error::InvalidResponse("URL must include a host".to_string()));
+    }
+    Ok(())
 }
 
 fn cache_key(review: &Value) -> Option<String> {

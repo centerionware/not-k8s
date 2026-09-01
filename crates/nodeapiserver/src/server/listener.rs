@@ -1102,9 +1102,12 @@ pub async fn run(cfg: Config) {
         _ => None,
     };
 
-    let authorization_webhook = match cfg.authorization_webhook_url.clone() {
-        Some(url) => match crate::authz::webhook::WebhookAuthorizer::new_with_cache_ttls(
-            url.clone(),
+    let authorization_webhook = match (
+        cfg.authorization_webhook_url.as_deref(),
+        cfg.authorization_webhook_config_file.as_deref(),
+    ) {
+        (Some(url), None) => match crate::authz::webhook::WebhookAuthorizer::new_with_cache_ttls(
+            url.to_string(),
             cfg.authorization_webhook_authorized_ttl,
             cfg.authorization_webhook_unauthorized_ttl,
         ) {
@@ -1114,7 +1117,25 @@ pub async fn run(cfg: Config) {
                 return;
             }
         },
-        None => None,
+        (None, Some(path)) => match crate::authz::webhook::WebhookAuthorizer::from_kubeconfig(
+            path,
+            cfg.authorization_webhook_authorized_ttl,
+            cfg.authorization_webhook_unauthorized_ttl,
+        ) {
+            Ok(authorizer) => {
+                info!(path = %path.display(), "nodeapiserver: configured authorization webhook from kubeconfig");
+                Some(Arc::new(authorizer))
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error = ?error, "failed to load NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            warn!("authorization webhook URL and config file are mutually exclusive; the REST/watch listener will not run");
+            return;
+        }
     };
 
     // Group L: aggregated API servers may use the request-header authenticator
