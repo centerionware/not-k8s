@@ -2616,6 +2616,34 @@ pub(super) async fn nodeapiserver_authorizes_before_special_handlers(
             },
         )
         .await?;
+
+    let healthz_url = "https://127.0.0.1:6443/healthz";
+    context
+        .wait_until(
+            "nodeapiserver to reject an unauthorized non-resource request",
+            Duration::from_secs(60),
+            || async {
+                let output = Command::new("curl")
+                    .args([
+                        "-k",
+                        "-sS",
+                        "--max-time",
+                        "10",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "-H",
+                        "Authorization: Bearer nodeapiserver-e2e-denied",
+                        healthz_url,
+                    ])
+                    .output()
+                    .context("checking authorization for a non-resource request")?;
+                Ok(output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == "403")
+            },
+        )
+        .await?;
     Ok(())
 }
 
