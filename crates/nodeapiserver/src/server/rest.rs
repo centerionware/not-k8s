@@ -3486,10 +3486,17 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         // (`pkg/apis/node/validation/validation.go`).
         // `coordination.k8s.io/v1`: Lease — same inlined-not-var pattern
         // (`pkg/apis/coordination/validation/validation.go`).
+        // `apps/v1` StatefulSet names use the stricter DNS1123Label rule
+        // because the name becomes part of generated Pod names
+        // (`ValidateStatefulSetName`).
+        // `autoscaling/v1` and `autoscaling/v2` HorizontalPodAutoscaler
+        // names use the DNS-subdomain rule (`ValidateHorizontalPodAutoscalerName`).
         ("apps", "controllerrevisions") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "daemonsets") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "deployments") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "replicasets") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("apps", "statefulsets") => crate::scheme::name_format::is_dns1123_label(name),
+        ("autoscaling", "horizontalpodautoscalers") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("networking.k8s.io", "ingresses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("networking.k8s.io", "ingressclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("networking.k8s.io", "servicecidrs") => crate::scheme::name_format::is_dns1123_subdomain(name),
@@ -4220,6 +4227,8 @@ mod tests {
             ("apps", "daemonsets"),
             ("apps", "deployments"),
             ("apps", "replicasets"),
+            ("apps", "statefulsets"),
+            ("autoscaling", "horizontalpodautoscalers"),
             ("networking.k8s.io", "ingresses"),
             ("networking.k8s.io", "ingressclasses"),
             ("networking.k8s.io", "servicecidrs"),
@@ -4253,6 +4262,13 @@ mod tests {
         // The legacy core Event resource intentionally has a different
         // compatibility rule and must not inherit the v1 events.k8s.io rule.
         assert!(name_format_violations("", "events", "Invalid_Name").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_keeps_statefulset_label_rule_distinct() {
+        assert!(name_format_violations("apps", "statefulsets", "stateful-app").is_empty());
+        assert!(!name_format_violations("apps", "statefulsets", "stateful.app").is_empty());
+        assert!(name_format_violations("autoscaling", "horizontalpodautoscalers", "hpa.app").is_empty());
     }
 
     #[test]
