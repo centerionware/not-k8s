@@ -7,7 +7,7 @@
 | B — Wire formats | done for current scope | 7/7 |
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
-| E — Generic server, handler chain, and REST | done for current scope | 12/12 |
+| E — Generic server, handler chain, and REST | in progress | 11/12 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 8/10 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
@@ -55,7 +55,7 @@ explanation of each boundary.
 | B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
 | C. Storage | **done for current scope** | etcd storage, encryption providers, stale-value key rotation/rewrite, and full read/write/transaction/watch wiring are integrated. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
-| E. Server/REST | **done for current scope** | The generic verbs, watches, status paths, discovery, OpenAPI endpoints, and internal dispatcher are integrated; remaining compatibility edges remain. |
+| E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; the shared handler dispatcher and remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, published OpenAPI-local constraints, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
@@ -427,7 +427,7 @@ as `cache: None` would. `server::listener` uses the same registry for every
 built-in resource and reconciles dynamically served CRD GVRs from the live
 CRD cache; the first-watch fallback remains only for the startup race.
 
-**E. Generic server + handler chain + REST endpoints** — **done for current scope**.
+**E. Generic server + handler chain + REST endpoints** — **in progress**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
 upstream's own `RequestInfoFactory.NewRequestInfo`
 (`staging/src/k8s.io/apiserver/pkg/endpoints/request/requestinfo.go`), not
