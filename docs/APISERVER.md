@@ -8,7 +8,7 @@
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 11/12 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 8/10 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 9/11 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
@@ -996,7 +996,9 @@ DNS-subdomain rule through `ValidateReplicationControllerName`, while
 `events.k8s.io/v1` Events use `NameIsDNSSubdomain`. The legacy core `events`
 and `events.k8s.io/v1beta1` resources retain their older validation behavior
 and are intentionally not included in this mapping. `name_format_violations`
-now covers 31 resources total. Every other resource is left unchecked rather than
+now covers 33 resources total, including the StatefulSet-specific DNS1123
+label rule and HorizontalPodAutoscaler's DNS-subdomain rule. Every other
+resource is left unchecked rather than
 guessing at a rule for it, gating both `create` and `update`. Extending
 this to more resources is real, separate follow-up work, one verified
 entry at a time (the function's own doc comment says so explicitly).
