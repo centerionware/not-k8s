@@ -965,7 +965,11 @@ pub(super) async fn nodeapiserver_enforces_node_restriction(context: &E2eContext
     let cert = client_crt.to_string_lossy().into_owned();
     let key = client_key.to_string_lossy().into_owned();
     let ca = ca_crt.to_string_lossy().into_owned();
-    let curl = |method: &str, url: &str, data: Option<&str>| -> Result<Output> {
+    let curl_with_content_type = |method: &str,
+                                  url: &str,
+                                  data: Option<&str>,
+                                  content_type: &str|
+     -> Result<Output> {
         let mut args = vec![
             "-k".to_string(),
             "-sS".to_string(),
@@ -984,11 +988,6 @@ pub(super) async fn nodeapiserver_enforces_node_restriction(context: &E2eContext
             url.to_string(),
         ];
         if let Some(data) = data {
-            let content_type = if method == "PATCH" {
-                "application/merge-patch+json"
-            } else {
-                "application/json"
-            };
             args.splice(
                 12..12,
                 [
@@ -1001,6 +1000,14 @@ pub(super) async fn nodeapiserver_enforces_node_restriction(context: &E2eContext
         }
         let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
         run_privileged_output("curl", &refs)
+    };
+    let curl = |method: &str, url: &str, data: Option<&str>| -> Result<Output> {
+        let content_type = if method == "PATCH" {
+            "application/merge-patch+json"
+        } else {
+            "application/json"
+        };
+        curl_with_content_type(method, url, data, content_type)
     };
     let response = |output: Output| -> Result<(u16, String)> {
         anyhow::ensure!(
@@ -1060,6 +1067,24 @@ pub(super) async fn nodeapiserver_enforces_node_restriction(context: &E2eContext
     anyhow::ensure!(
         code == 403 && body.contains("node-restriction.kubernetes.io/blocked"),
         "NodeRestriction did not reject a forbidden node label (HTTP {code}): {body}"
+    );
+
+    let (code, body) = response(curl_with_content_type(
+        "PATCH",
+        &format!("{node_url}?fieldManager=nodeapiserver-node-restriction"),
+        Some(&serde_json::to_string(&json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "name": &node_name,
+                "labels": {"node-restriction.kubernetes.io/blocked": "true"}
+            }
+        }))?),
+        "application/apply-patch+yaml",
+    )?)?;
+    anyhow::ensure!(
+        code == 403 && body.contains("node-restriction.kubernetes.io/blocked"),
+        "NodeRestriction did not reject a forbidden Server-Side Apply node label (HTTP {code}): {body}"
     );
 
     let pod_delete_url = format!("{pod_url}/{pod_name}");
@@ -1332,6 +1357,30 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
                     })
                 }),
         "Server-Side Apply did not run ServiceAccount admission: {pod}"
+    );
+
+    let patch_request = Request::builder()
+        .method("PATCH")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods/{name}",
+            context.namespace
+        ))
+        .header("content-type", "application/merge-patch+json")
+        .body(serde_json::to_vec(&json!({"spec": {"tolerations": null}}))?)?;
+    let patched = context
+        .client
+        .request::<Value>(patch_request)
+        .await
+        .context("patching a Pod to verify pure admission runs on PATCH")?;
+    anyhow::ensure!(
+        patched.pointer("/spec/tolerations").and_then(Value::as_array).is_some_and(|values| {
+            values.iter().any(|value| {
+                value.pointer("/key").and_then(Value::as_str) == Some("node.kubernetes.io/not-ready")
+                    && value.pointer("/effect").and_then(Value::as_str) == Some("NoExecute")
+                    && value.pointer("/tolerationSeconds").and_then(Value::as_i64) == Some(300)
+            })
+        }),
+        "PATCH did not run pure admission mutators: {patched}"
     );
 
     let patch_request = Request::builder()
