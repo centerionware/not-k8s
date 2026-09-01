@@ -1246,8 +1246,9 @@ preserves its three decisions: `Allow` short-circuits the local Node/RBAC
 chain, `Deny` returns `403`, and `NoOpinion` falls through to the next local
 authorizer. Transport and malformed-response failures fail closed with
 `503`; transient transport/5xx and rate-limit failures now use a small bounded
-retry, while the remaining upstream diagnostic details are still outside the
-current scope. Decisions are cached with separate bounded TTLs for allowed
+retry, while preserving the webhook's optional `reason` on a denial and
+logging its optional `evaluationError` without discarding an otherwise usable
+decision. Decisions are cached with separate bounded TTLs for allowed
 and non-allowed results; `NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_AUTHORIZED_TTL`
 and `NODEAPISERVER_AUTHORIZATION_WEBHOOK_CACHE_UNAUTHORIZED_TTL` configure
 those lifetimes, and zero disables the respective cache. PKI primitives
@@ -2465,8 +2466,11 @@ event would exceed the limit and retains the configured numbered backups via
 `NODEAPISERVER_AUDIT_WEBHOOK_URL` is set, the sink also delivers bounded
 asynchronous `audit.k8s.io/v1` `EventList` batches to that HTTP(S) endpoint,
 retrying transient transport, 5xx, and 429 failures without blocking API
-responses. It can be used by itself or alongside the file sink; kubeconfig
-credential-file authentication is still outside the current scope.
+responses. It can be used by itself or alongside the file sink.
+`NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE` additionally accepts the standard
+kubeconfig-shaped configuration, including the selected cluster's CA and the
+selected user's client certificate/key, with relative credential paths
+resolved beside the configuration file.
 `/healthz`/`/readyz`/`/livez` now have real per-check output too
 (`server::healthz`, a faithful-but-scoped port of real upstream's own
 `k8s.io/apiserver/pkg/server/healthz`, fetched and read directly):
