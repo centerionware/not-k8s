@@ -1373,9 +1373,9 @@ requests. For every extended resource requested by a regular or init
 container, it adds the matching `Exists`/`NoSchedule` toleration, preserving
 existing matching tolerations and ordering newly-added resources
 deterministically. This matches real upstream behavior. Upstream keeps this
-plugin opt-in; this crate has not yet exposed an admission-plugin
-configuration surface, so it is currently registered with the other built-in
-mutators.
+plugin opt-in; this crate currently registers it with the other built-in
+mutators while its configured opt-in surface is used for additional plugins
+such as `AlwaysPullImages`.
 
 `admission::certificate` covers the three certificate admission stages enabled
 by the upstream default chain. `CertificateSubjectRestriction` rejects a
