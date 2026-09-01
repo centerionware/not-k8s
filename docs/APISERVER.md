@@ -768,8 +768,11 @@ token, aggregation, and node/service/pod proxy routes. Virtual access-review
 resources remain outside that gate because they answer authorization
 questions rather than authorize a resource mutation. The request stages
 already execute in the required order (authn -> authz -> APF -> admission ->
-REST); the remaining cleanup is to hide the listener's explicit admission
-selection behind a reusable dispatcher without changing that ordering.
+REST). Pure mutators share one dispatcher across ordinary writes, PATCH, and
+Server-Side Apply candidates, including create-on-apply; storage-backed
+admission stages remain explicit because they each own request-specific I/O
+and failure policy. The remaining cleanup is to unify those storage-backed
+stages behind the same reusable dispatcher without changing the ordering.
 `/openapi/v2` is now served as a Swagger 2.0
 document derived from the same vendored resource schemas and paths as
 `/openapi/v3`; the nodeapiserver target e2e check verifies it is populated.

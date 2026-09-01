@@ -61,8 +61,9 @@
 //! read. The real handler chain (authentication -> authorization ->
 //! priority-and-fairness -> admission -> REST, `docs/APISERVER.md`'s own
 //! hard requirement) is still not fully unified into one ordered
-//! pipeline — each piece above is wired in ad hoc, in the right relative
-//! order for what exists today, not through one shared dispatcher yet.
+//! pipeline — pure mutators now share one dispatcher across all candidate
+//! write paths, while storage-backed stages retain explicit request-specific
+//! handling for their I/O and failure policies.
 //!
 //! What *is* real now: `/healthz`/`/readyz`/`/livez` (`server::healthz` —
 //! real upstream's own per-check response shape, `?verbose` included; see
@@ -2556,6 +2557,28 @@ fn storage_namespace(info: &path::RequestInfo) -> Option<&str> {
     }
 }
 
+/// Run the immutable pure-mutator registry against the candidate produced by
+/// any write-shaped REST path. Keeping this call at the candidate boundary
+/// prevents ordinary CREATE/UPDATE, PATCH, and Server-Side Apply from
+/// accidentally observing different admission behavior.
+fn run_pure_admission(
+    registry: &crate::admission::chain::MutatingRegistry,
+    operation: admission::attributes::Operation,
+    info: &path::RequestInfo,
+    object: &mut Value,
+) {
+    let mut request = admission::chain::Request {
+        operation,
+        group: &info.api_group,
+        resource: &info.resource,
+        subresource: &info.subresource,
+        namespace: &info.namespace,
+        name: &info.name,
+        object,
+    };
+    registry.run(&mut request);
+}
+
 async fn handle(
     req: Request<Incoming>,
     mut storage: Option<StorageClient>,
@@ -3085,6 +3108,7 @@ async fn handle(
             } else {
                 admission::attributes::Operation::Create
             };
+            run_pure_admission(&pure_admission, operation, &info, &mut candidate);
             match admission::webhook::admit(
                 &mut client,
                 operation,
@@ -3278,6 +3302,12 @@ async fn handle(
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             }
         };
+        run_pure_admission(
+            &pure_admission,
+            admission::attributes::Operation::Update,
+            &info,
+            &mut candidate,
+        );
         if authz::node::node_name(identity.as_ref()).is_some() {
             match admission::node_restriction::validate(
                 &mut client,
@@ -4312,16 +4342,7 @@ async fn handle(
                 } else {
                     admission::attributes::Operation::Update
                 };
-                let mut request = admission::chain::Request {
-                    operation,
-                    group: &info.api_group,
-                    resource: &info.resource,
-                    subresource: &info.subresource,
-                    namespace: &info.namespace,
-                    name: &info.name,
-                    object: body,
-                };
-                pure_admission.run(&mut request);
+                run_pure_admission(&pure_admission, operation, &info, body);
             }
 
             // Group J: `StorageObjectInUseProtection` — mutating,
