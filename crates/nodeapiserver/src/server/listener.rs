@@ -3241,6 +3241,67 @@ async fn handle(
                 );
             }
 
+            // RuntimeClass mutates and validates ordinary Pod creates. Apply
+            // must resolve the same class before policy/webhook admission so
+            // its overhead and scheduling fields are part of the candidate.
+            if operation == admission::attributes::Operation::Create
+                && admission::runtime_class::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                let runtime_class_name = candidate
+                    .pointer("/spec/runtimeClassName")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let runtime_class = if let Some(runtime_class_name) = runtime_class_name {
+                    match rest::get(
+                        &mut client,
+                        None,
+                        "node.k8s.io",
+                        "v1",
+                        "runtimeclasses",
+                        None,
+                        &runtime_class_name,
+                    )
+                    .await
+                    {
+                        Ok(rest::GetOutcome::Found(runtime_class)) => Some(runtime_class),
+                        Ok(rest::GetOutcome::ObjectNotFound)
+                        | Ok(rest::GetOutcome::UnknownResource) => {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(
+                                    &path_str,
+                                    &format!(
+                                        "pod rejected: RuntimeClass {runtime_class_name:?} not found"
+                                    ),
+                                ),
+                            ));
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: RuntimeClass lookup for apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Err(error) =
+                    admission::runtime_class::mutate_and_validate(&mut candidate, runtime_class.as_ref())
+                {
+                    return Ok(json_response(
+                        StatusCode::FORBIDDEN,
+                        &admission_forbidden_status(&path_str, &error),
+                    ));
+                }
+            }
+
             // The pure registry only supplies the default ServiceAccount
             // name. Complete the storage-backed ServiceAccount plugin for
             // create-on-apply as well, so applied Pods receive the same
