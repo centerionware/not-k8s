@@ -227,6 +227,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_applies_storage_admission_to_apply",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_adds_extended_resource_tolerations",
         group: TestGroup::General,
     },
@@ -1784,6 +1788,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_applies_pure_admission_to_apply" => {
             bootstrap::nodeapiserver_applies_pure_admission_to_apply(context).await
+        },
+        "test_nodeapiserver_applies_storage_admission_to_apply" => {
+            bootstrap::nodeapiserver_applies_storage_admission_to_apply(context).await
         },
         "test_nodeapiserver_adds_extended_resource_tolerations" => {
             bootstrap::nodeapiserver_adds_extended_resource_tolerations(context).await
