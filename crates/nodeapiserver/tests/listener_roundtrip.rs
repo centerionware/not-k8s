@@ -191,6 +191,26 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
             .iter()
             .any(|resource| resource["name"] == "namespaces")));
 
+    let dra_discovery = client
+        .get(format!("{endpoint}/apis/resource.k8s.io/v1"))
+        .send()
+        .await
+        .expect("requesting DRA discovery")
+        .error_for_status()
+        .expect("DRA discovery should succeed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("decoding DRA discovery");
+    assert!(dra_discovery["resources"]
+        .as_array()
+        .is_some_and(|resources| {
+            resources.iter().any(|resource| {
+                resource["name"] == "resourceclaimtemplates" && resource["namespaced"] == true
+            }) && resources.iter().any(|resource| {
+                resource["name"] == "resourceslices" && resource["namespaced"] == false
+            })
+        }));
+
     let name = format!("listener-rig-{}", std::process::id());
     let created = client
         .post(format!("{endpoint}/api/v1/namespaces"))
@@ -216,6 +236,42 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         .await
         .expect("decoding Namespace GET");
     assert_eq!(fetched["metadata"]["name"], name);
+
+    let template_name = format!("{name}-template");
+    let template_path =
+        format!("{endpoint}/apis/resource.k8s.io/v1/namespaces/{name}/resourceclaimtemplates");
+    let template = client
+        .post(&template_path)
+        .header("content-type", "application/json")
+        .json(&json!({
+            "apiVersion": "resource.k8s.io/v1",
+            "kind": "ResourceClaimTemplate",
+            "metadata": {"name": template_name},
+            "spec": {"spec": {"devices": {"requests": []}}}
+        }))
+        .send()
+        .await
+        .expect("creating a ResourceClaimTemplate through the listener");
+    assert_eq!(template.status(), reqwest::StatusCode::CREATED);
+
+    let template_fetched = client
+        .get(format!("{template_path}/{template_name}"))
+        .send()
+        .await
+        .expect("getting the ResourceClaimTemplate through the listener")
+        .error_for_status()
+        .expect("ResourceClaimTemplate GET should succeed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("decoding ResourceClaimTemplate GET");
+    assert_eq!(template_fetched["metadata"]["name"], template_name);
+
+    let template_deleted = client
+        .delete(format!("{template_path}/{template_name}"))
+        .send()
+        .await
+        .expect("deleting the ResourceClaimTemplate through the listener");
+    assert_eq!(template_deleted.status(), reqwest::StatusCode::OK);
 
     let deleted = client
         .delete(format!("{endpoint}/api/v1/namespaces/{name}"))
