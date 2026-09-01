@@ -11,7 +11,7 @@ use k8s_openapi::api::authentication::v1::{
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Endpoints, LocalObjectReference, Namespace, Node, ObjectReference, PersistentVolume,
-    PersistentVolumeClaim, Pod, ResourceQuota, Secret, Service, ServiceAccount,
+    PersistentVolumeClaim, Pod, ResourceQuota, Secret, Service, ServiceAccount, LimitRange,
 };
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::node::v1::RuntimeClass;
@@ -1464,6 +1464,144 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
         .await
         .context("deleting the pure-admission apply probe Pod")?;
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_applies_storage_admission_to_apply(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "storage-backed Apply admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let namespace_name = format!("nodeapiserver-apply-admission-{suffix}");
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &namespace_name);
+    let limit_ranges: Api<LimitRange> = Api::namespaced(context.client.clone(), &namespace_name);
+    let quotas: Api<ResourceQuota> = Api::namespaced(context.client.clone(), &namespace_name);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &namespace_name);
+    let namespace: Namespace = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": &namespace_name,
+            "labels": {"pod-security.kubernetes.io/enforce": "baseline"}
+        }
+    }))?;
+    let service_account: ServiceAccount = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": "default", "namespace": &namespace_name}
+    }))?;
+    let limit_range: LimitRange = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "LimitRange",
+        "metadata": {"name": "defaults", "namespace": &namespace_name},
+        "spec": {"limits": [{
+            "type": "Container",
+            "default": {"cpu": "100m"},
+            "defaultRequest": {"cpu": "50m"}
+        }]}
+    }))?;
+    let quota: ResourceQuota = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ResourceQuota",
+        "metadata": {"name": "one-pod", "namespace": &namespace_name},
+        "spec": {"hard": {"pods": "1"}}
+    }))?;
+    let first_name = format!("apply-storage-first-{suffix}");
+    let privileged_name = format!("apply-storage-privileged-{suffix}");
+    let second_name = format!("apply-storage-second-{suffix}");
+
+    let apply_pod = |name: &str, privileged: bool| -> Result<Request<Vec<u8>>> {
+        Ok(Request::builder()
+            .method("PATCH")
+            .uri(format!(
+                "/api/v1/namespaces/{namespace_name}/pods/{name}?fieldManager=nodeapiserver-storage-admission"
+            ))
+            .header("Content-Type", "application/apply-patch+yaml")
+            .body(serde_json::to_vec(&json!({
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name, "namespace": &namespace_name},
+                "spec": {
+                    "containers": [{
+                        "name": "app",
+                        "image": "example.invalid/not-k8s-storage-admission",
+                        "securityContext": if privileged {json!({"privileged": true})} else {json!({})}
+                    }]
+                }
+            }))?)?)
+    };
+
+    let result = async {
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .context("creating the storage-admission Apply namespace")?;
+        service_accounts
+            .create(&PostParams::default(), &service_account)
+            .await
+            .context("creating the storage-admission Apply ServiceAccount")?;
+        limit_ranges
+            .create(&PostParams::default(), &limit_range)
+            .await
+            .context("creating the storage-admission Apply LimitRange")?;
+        quotas
+            .create(&PostParams::default(), &quota)
+            .await
+            .context("creating the storage-admission Apply ResourceQuota")?;
+
+        let first: Value = context
+            .client
+            .request(apply_pod(&first_name, false)?)
+            .await
+            .context("applying a Pod through storage-backed admission")?;
+        anyhow::ensure!(
+            first.pointer("/spec/containers/0/resources/limits/cpu").and_then(Value::as_str)
+                == Some("100m")
+                && first
+                    .pointer("/spec/containers/0/resources/requests/cpu")
+                    .and_then(Value::as_str)
+                    == Some("50m"),
+            "Server-Side Apply did not run LimitRanger defaulting: {first}"
+        );
+
+        match context.client.request::<Value>(apply_pod(&privileged_name, true)?).await {
+            Err(KubeError::Api(error)) if error.code == 403 => {}
+            Err(error) => anyhow::bail!(
+                "PodSecurity returned the wrong API error for Apply: {error}"
+            ),
+            Ok(value) => anyhow::bail!(
+                "PodSecurity unexpectedly accepted a privileged Apply Pod: {value}"
+            ),
+        }
+
+        match context.client.request::<Value>(apply_pod(&second_name, false)?).await {
+            Err(KubeError::Api(error)) if error.code == 403 => {}
+            Err(error) => anyhow::bail!(
+                "ResourceQuota returned the wrong API error for Apply: {error}"
+            ),
+            Ok(value) => anyhow::bail!(
+                "ResourceQuota unexpectedly accepted a second Apply Pod: {value}"
+            ),
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = pods.delete(&first_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&privileged_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&second_name, &DeleteParams::default()).await;
+    let _ = quotas.delete("one-pod", &DeleteParams::default()).await;
+    let _ = limit_ranges.delete("defaults", &DeleteParams::default()).await;
+    let _ = service_accounts.delete("default", &DeleteParams::default()).await;
+    let _ = namespaces.delete(&namespace_name, &DeleteParams::default()).await;
+    result
 }
 
 pub(super) async fn nodeapiserver_adds_extended_resource_tolerations(

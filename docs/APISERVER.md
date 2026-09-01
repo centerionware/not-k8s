@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
-| J — Admission | in progress | 18/19 |
+| J — Admission | in progress | 19/20 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | done for current scope | 9/9 |
@@ -1078,10 +1078,12 @@ on an unresolved ownership conflict). **Create-on-apply is real too**: no
 object at this key creates one through the same create-only-if-absent
 `Txn` idiom `rest::create` uses, `updater::apply` run against an empty
 `live` either way. `rest::apply_prepare`/`apply_persist`'s own split (the
-same shape `patch_prepare`/`patch_persist` already has) lets both
-`namespace_lifecycle` *and* `LimitRanger` admission run against the real
-candidate object, matching the ordinary three-patch-kind `PATCH`
-branch's own coverage exactly. REST and watch conversion webhooks already
+same shape `patch_prepare`/`patch_persist` already has) lets the same
+candidate-based built-in admission stages run against an Apply
+candidate as ordinary REST writes: namespace lifecycle, pure mutators,
+service-account and storage-class/defaulting stages, RuntimeClass, Priority,
+PodNodeSelector, LimitRanger, PVC resize, PodSecurity, ResourceQuota, and
+body-sensitive NodeRestriction checks. REST and watch conversion webhooks already
 convert CRD objects between served and storage versions. **Named, honest
 scope remaining**:
 `updater`'s compiled `FIELD_META` path still applies only to built-in
