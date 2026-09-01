@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
-| J — Admission | in progress | 19/20 |
+| J — Admission | in progress | 20/21 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | done for current scope | 9/9 |
@@ -1750,9 +1750,14 @@ selected object). Dry-run requests are rejected with a
 `Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
 AdmissionReview path.
 
-**Not yet landed**: the remaining built-in plugins (for example
-`AlwaysPullImages`), a complete registry covering
-storage-backed mutators and validators, the remaining typed-CEL /
+The upstream opt-in `AlwaysPullImages` plugin is available through the
+comma-separated `NODEAPISERVER_ENABLE_ADMISSION_PLUGINS` environment setting.
+When enabled, the pure admission registry forces `imagePullPolicy: Always`
+for regular, init, and ephemeral Pod containers on create and update; it is
+not enabled by default, matching kube-apiserver's default plugin set.
+
+**Not yet landed**: a complete registry covering storage-backed mutators and
+validators, the remaining typed-CEL /
 variable surface of MutatingAdmissionPolicy, and interpreter-level fuel
 accounting. The ValidatingAdmissionPolicy path uses the existing
 per-expression deadline and shared request-side CEL budget. Admission
