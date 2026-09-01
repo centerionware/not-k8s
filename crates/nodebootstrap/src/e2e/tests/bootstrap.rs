@@ -90,6 +90,51 @@ struct NodeapiserverAuthenticationOverride {
     token_file: PathBuf,
 }
 
+struct NodeapiserverAdmissionPluginOverride {
+    drop_in: PathBuf,
+}
+
+impl NodeapiserverAdmissionPluginOverride {
+    fn install(plugin: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; admission-plugin checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-admission-plugin-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-admission-plugin-{suffix}.conf"));
+        fs::write(
+            &local_drop_in,
+            format!("[Service]\nEnvironment=NODEAPISERVER_ENABLE_ADMISSION_PLUGINS={plugin}\n"),
+        )
+        .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverAdmissionPluginOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+    }
+}
+
 impl NodeapiserverAuthenticationOverride {
     fn install() -> Result<Self> {
         if !systemd_service_available("nodeapiserver.service") {
@@ -1623,6 +1668,61 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
         .await
         .context("deleting the pure-admission apply probe Pod")?;
     Ok(())
+}
+
+pub(super) async fn nodeapiserver_honors_always_pull_images(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "AlwaysPullImages checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let _override = NodeapiserverAdmissionPluginOverride::install("AlwaysPullImages")?;
+    let name = format!("nodeapiserver-always-pull-{}", std::process::id());
+    let uri = format!(
+        "/api/v1/namespaces/{}/pods?dryRun=All",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "AlwaysPullImages admission to force the dry-run Pod policy",
+            Duration::from_secs(60),
+            || {
+                let client = context.client.clone();
+                let uri = uri.clone();
+                let name = name.clone();
+                let namespace = context.namespace.clone();
+                async move {
+                    let request = Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(serde_json::to_vec(&json!({
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "metadata": {"name": name, "namespace": namespace},
+                            "spec": {
+                                "containers": [{
+                                    "name": "app",
+                                    "image": "example.invalid/not-k8s-always-pull",
+                                    "imagePullPolicy": "Never"
+                                }]
+                            }
+                        }))?)?;
+                    match client.request::<Value>(request).await {
+                        Ok(pod) => Ok(pod.pointer("/spec/containers/0/imagePullPolicy")
+                            == Some(&Value::String("Always".to_string()))),
+                        Err(KubeError::Api(error)) if error.code == 503 => Ok(false),
+                        Err(KubeError::Request(_)) => Ok(false),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            },
+        )
+        .await
 }
 
 pub(super) async fn nodeapiserver_applies_storage_admission_to_apply(
