@@ -555,7 +555,6 @@ fn should_run_local_authorization(
 ) -> bool {
     enforce_rbac
         && !authorization_webhook_allowed
-        && info.is_resource_request
         && !is_authorization_review(info)
 }
 
@@ -2519,6 +2518,29 @@ async fn handle(
         .filter(|value| !value.is_empty());
     let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
 
+    let info = path::parse(&method, &path_str, &query);
+
+    // Keep authorization ahead of every handler, including health, metrics,
+    // and discovery endpoints. These are non-resource requests, but
+    // upstream RBAC evaluates them through `nonResourceURLs` just like a
+    // resource request is evaluated through `resources`.
+    if should_run_local_authorization(&info, enforce_rbac, authorization_webhook_allowed) {
+        let Some(client) = storage.as_mut() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let allowed = match authz::request_allowed(client, identity.as_ref(), &info).await {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        if !allowed {
+            let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+            return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+        }
+    }
+
     if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
         let params = path::parse_query(&query);
         let verbose = params.iter().any(|(key, _)| key == "verbose");
@@ -2620,32 +2642,6 @@ async fn handle(
                 return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
             }
             DiscoveryRoute::NotApplicable => {}
-        }
-    }
-
-    let info = path::parse(&method, &path_str, &query);
-
-    // Keep authorization ahead of every admission and REST handler. The
-    // earlier implementation performed this check only inside the generic
-    // CRUD block, which let PATCH, status writes, deletecollection, and the
-    // proxy/streaming branches reach their handlers without RBAC when
-    // enforcement was enabled. Virtual review resources are intentionally
-    // exempt: they answer questions about authorization rather than mutate
-    // the resource named by the request.
-    if should_run_local_authorization(&info, enforce_rbac, authorization_webhook_allowed) {
-        let Some(client) = storage.as_mut() else {
-            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-        };
-        let allowed = match authz::request_allowed(client, identity.as_ref(), &info).await {
-            Ok(allowed) => allowed,
-            Err(error) => {
-                warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
-                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
-            }
-        };
-        if !allowed {
-            let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
-            return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
         }
     }
 
@@ -5932,6 +5928,7 @@ mod tests {
     #[test]
     fn an_authorization_webhook_allow_short_circuits_local_resource_authorization() {
         let pod = path::parse("GET", "/api/v1/namespaces/default/pods/p1", "");
+        let healthz = path::parse("GET", "/healthz", "");
         let review = path::parse(
             "POST",
             "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
@@ -5940,6 +5937,8 @@ mod tests {
 
         assert!(!should_run_local_authorization(&pod, true, true));
         assert!(should_run_local_authorization(&pod, true, false));
+        assert!(should_run_local_authorization(&healthz, true, false));
+        assert!(!should_run_local_authorization(&healthz, true, true));
         assert!(!should_run_local_authorization(&review, true, false));
         assert!(!should_run_local_authorization(&pod, false, false));
     }
