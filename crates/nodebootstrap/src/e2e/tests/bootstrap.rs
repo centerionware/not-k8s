@@ -1308,7 +1308,7 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
         .client
         .request::<Value>(request)
         .await
-        .context("applying a Pod to verify pure admission runs on Server-Side Apply")?;
+        .context("applying a Pod to verify admission runs on Server-Side Apply")?;
 
     let tolerations = pod.pointer("/spec/tolerations").and_then(Value::as_array);
     anyhow::ensure!(
@@ -1318,6 +1318,20 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
                 && value.pointer("/tolerationSeconds").and_then(Value::as_i64) == Some(300)
         })),
         "Server-Side Apply did not run pure admission mutators: {pod}"
+    );
+    anyhow::ensure!(
+        pod.pointer("/spec/serviceAccountName").and_then(Value::as_str) == Some("default")
+            && pod
+                .pointer("/spec/volumes")
+                .and_then(Value::as_array)
+                .is_some_and(|volumes| {
+                    volumes.iter().any(|volume| {
+                        volume
+                            .pointer("/projected/sources/0/serviceAccountToken")
+                            .is_some()
+                    })
+                }),
+        "Server-Side Apply did not run ServiceAccount admission: {pod}"
     );
 
     let patch_request = Request::builder()

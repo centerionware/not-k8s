@@ -1343,7 +1343,10 @@ decision/real-I/O-step way as `namespace_lifecycle`. The
 strategy; its separate ServiceAccount validation path now checks new
 ephemeral containers' `env[].valueFrom.secretKeyRef` and
 `envFrom[].secretRef` references against the annotated account's allowed
-secrets before the update is persisted.
+secrets before the update is persisted. Server-Side Apply create requests
+now perform the same ServiceAccount lookup and mutation after the apply
+candidate is built, so applied Pods receive the same default account and
+projected token volume as ordinary creates.
 
 `admission::taint_nodes_by_condition` is the default-on, pure
 `TaintNodesByCondition` mutation for core `Node` `CREATE` requests. It adds
