@@ -135,6 +135,71 @@ impl Drop for NodeapiserverAdmissionPluginOverride {
     }
 }
 
+struct NodeapiserverPodNodeSelectorOverride {
+    drop_in: PathBuf,
+    config_file: PathBuf,
+}
+
+impl NodeapiserverPodNodeSelectorOverride {
+    fn install(config: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; PodNodeSelector checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-pod-node-selector-{suffix}.conf"));
+        let config_file = PathBuf::from(format!(
+            "/etc/nodeapiserver/pod-node-selector-{suffix}.yaml"
+        ));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-pod-node-selector-{suffix}.conf"));
+        let local_config = std::env::temp_dir().join(format!("nodeapiserver-pod-node-selector-{suffix}.yaml"));
+        fs::write(&local_config, config)
+            .with_context(|| format!("writing {}", local_config.display()))?;
+        fs::write(
+            &local_drop_in,
+            format!(
+                "[Service]\nEnvironment=NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE={}\n",
+                config_file.display()
+            ),
+        )
+        .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self {
+            drop_in,
+            config_file,
+        };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        let config_file = guard.config_file.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let local_config = local_config.to_string_lossy();
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", "/etc/nodeapiserver"])?;
+        run_privileged("install", &["-m", "0644", local_config.as_ref(), config_file.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_config.as_ref());
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverPodNodeSelectorOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let config_file = self.config_file.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+    }
+}
+
 impl NodeapiserverAuthenticationOverride {
     fn install() -> Result<Self> {
         if !systemd_service_available("nodeapiserver.service") {
@@ -2329,6 +2394,66 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
         .delete(&namespace_name, &DeleteParams::default())
         .await;
     result
+}
+
+pub(super) async fn nodeapiserver_applies_configured_node_selector(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "configured PodNodeSelector checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let config = format!(
+        "clusterDefaultNodeSelector: nodeapiserver.test/cluster=default\n{}: nodeapiserver.test/namespace=selected\n",
+        context.namespace
+    );
+    let _override = NodeapiserverPodNodeSelectorOverride::install(&config)?;
+    let name = format!("nodeapiserver-configured-selector-{}", std::process::id());
+    let uri = format!(
+        "/api/v1/namespaces/{}/pods?dryRun=All",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "configured PodNodeSelector admission to merge the namespace selector",
+            Duration::from_secs(60),
+            || {
+                let client = context.client.clone();
+                let uri = uri.clone();
+                let name = name.clone();
+                let namespace = context.namespace.clone();
+                async move {
+                    let request = Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(serde_json::to_vec(&json!({
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "metadata": {"name": name, "namespace": namespace},
+                            "spec": {
+                                "containers": [{
+                                    "name": "app",
+                                    "image": "example.invalid/not-k8s-configured-selector"
+                                }]
+                            }
+                        }))?)?;
+                    match client.request::<Value>(request).await {
+                        Ok(pod) => Ok(pod
+                            .pointer("/spec/nodeSelector/nodeapiserver.test~1namespace")
+                            .and_then(Value::as_str)
+                            == Some("selected")),
+                        Err(KubeError::Api(error)) if error.code == 503 => Ok(false),
+                        Err(KubeError::Request(_)) => Ok(false),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            },
+        )
+        .await
 }
 
 pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
