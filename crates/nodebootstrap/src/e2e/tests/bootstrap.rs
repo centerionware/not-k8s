@@ -1414,6 +1414,72 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
     Ok(())
 }
 
+pub(super) async fn nodeapiserver_adds_extended_resource_tolerations(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "extended-resource admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-extended-resource-{}", std::process::id());
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods",
+            context.namespace
+        ))
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": &name,
+                "namespace": context.namespace
+            },
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "image": "example.invalid/not-k8s-extended-resource",
+                    "resources": {"requests": {"example.com/gpu": "1"}}
+                }],
+                "initContainers": [{
+                    "name": "init",
+                    "image": "example.invalid/not-k8s-extended-resource-init",
+                    "resources": {"requests": {"vendor.io/fpga": "1"}}
+                }]
+            }
+        }))?)?;
+    let pod: Value = context
+        .client
+        .request(request)
+        .await
+        .context("creating a Pod to verify extended-resource toleration admission")?;
+
+    let tolerations = pod
+        .pointer("/spec/tolerations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for resource in ["example.com/gpu", "vendor.io/fpga"] {
+        anyhow::ensure!(
+            tolerations.iter().any(|toleration| {
+                toleration.pointer("/key").and_then(Value::as_str) == Some(resource)
+                    && toleration.pointer("/operator").and_then(Value::as_str) == Some("Exists")
+                    && toleration.pointer("/effect").and_then(Value::as_str) == Some("NoSchedule")
+            }),
+            "nodeapiserver did not add the {resource} extended-resource toleration: {pod}"
+        );
+    }
+
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    pods.delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the extended-resource admission probe Pod")?;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

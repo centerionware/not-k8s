@@ -48,12 +48,13 @@ impl MutatingRegistry {
         self.plugins.push(Box::new(plugin));
     }
 
-    /// Registers the pure built-ins in the same order the listener used
-    /// before this registry existed: default pod tolerations first, then
+    /// Registers the pure built-ins in their upstream order: default Pod
+    /// tolerations first, then extended-resource tolerations and
     /// ServiceAccount-name defaulting.
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
         registry.register(DefaultTolerationSeconds);
+        registry.register(ExtendedResourceToleration);
         registry.register(ServiceAccountDefaults);
         registry.register(TaintNodesByCondition);
         registry
@@ -100,6 +101,27 @@ impl MutatingPlugin for DefaultTolerationSeconds {
 }
 
 struct ServiceAccountDefaults;
+
+struct ExtendedResourceToleration;
+
+impl MutatingPlugin for ExtendedResourceToleration {
+    fn name(&self) -> &'static str {
+        "ExtendedResourceToleration"
+    }
+
+    fn applies(&self, request: &Request<'_>) -> bool {
+        super::extended_resource_toleration::applies_to(
+            request.operation,
+            request.group,
+            request.resource,
+            request.subresource,
+        )
+    }
+
+    fn mutate(&self, object: &mut Value) {
+        super::extended_resource_toleration::mutate(object);
+    }
+}
 
 impl MutatingPlugin for ServiceAccountDefaults {
     fn name(&self) -> &'static str {
@@ -191,7 +213,12 @@ mod tests {
         let registry = MutatingRegistry::with_builtins();
         assert_eq!(
             registry.names().collect::<Vec<_>>(),
-            ["DefaultTolerationSeconds", "ServiceAccount", "TaintNodesByCondition"]
+            [
+                "DefaultTolerationSeconds",
+                "ExtendedResourceToleration",
+                "ServiceAccount",
+                "TaintNodesByCondition"
+            ]
         );
 
         let mut pod = json!({"spec": {}});
