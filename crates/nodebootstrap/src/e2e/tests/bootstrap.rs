@@ -1935,7 +1935,7 @@ pub(super) async fn nodeapiserver_applies_priority_admission(
                                 "image": "example.invalid/not-k8s-apply-priority"
                             }]
                         }
-                    }))?,
+                    }))?)?,
             )
             .await
             .context("applying a Pod through Priority admission")?;
