@@ -13,6 +13,7 @@ use k8s_openapi::api::core::v1::{
     ConfigMap, Endpoints, LocalObjectReference, Namespace, Node, ObjectReference, PersistentVolume,
     PersistentVolumeClaim, Pod, ResourceQuota, Secret, Service, ServiceAccount,
 };
+use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::node::v1::RuntimeClass;
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
@@ -658,9 +659,9 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
     anyhow::ensure!(
         service.spec.as_ref().is_some_and(|spec| {
             spec.cluster_ip.as_deref() == Some(expected_cluster_ip.as_str())
-                && spec.ports.iter().flatten().any(|port| port.port == 6443)
+                && spec.ports.iter().flatten().any(|port| port.port == 443)
         }),
-        "nodeapiserver default/kubernetes Service is missing the configured ClusterIP or port"
+        "nodeapiserver default/kubernetes Service is missing the configured ClusterIP or upstream-compatible port"
     );
     let endpoints: Api<Endpoints> = Api::namespaced(context.client.clone(), "default");
     anyhow::ensure!(
@@ -676,6 +677,16 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| !ip.is_unspecified())),
         "nodeapiserver default/kubernetes has no endpoint"
+    );
+    let endpoint_slices: Api<EndpointSlice> = Api::namespaced(context.client.clone(), "default");
+    anyhow::ensure!(
+        endpoint_slices
+            .get("kubernetes")
+            .await?
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.addresses.iter().any(|ip| ip.parse::<std::net::IpAddr>().is_ok_and(|ip| !ip.is_unspecified()))),
+        "nodeapiserver default/kubernetes has no reachable EndpointSlice"
     );
 
     let readyz_url = format!(
