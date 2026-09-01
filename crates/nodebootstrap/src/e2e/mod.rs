@@ -1562,6 +1562,9 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                 failures.push(name);
             }
         }
+        if is_environment_reconfiguring_test(name) {
+            wait_for_api_after_environment_reconfiguration(&test_context).await;
+        }
     }
 
     if failures.is_empty() {
@@ -1576,6 +1579,23 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             failures.len(),
             failures.join(", ")
         )
+    }
+}
+
+async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) {
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    if let Err(error) = context
+        .wait_until(
+            "the API server to recover after an environment-reconfiguring test",
+            Duration::from_secs(60),
+            || {
+                let namespaces = namespaces.clone();
+                async move { Ok(namespaces.get_opt("default").await.is_ok()) }
+            },
+        )
+        .await
+    {
+        eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
     }
 }
 
