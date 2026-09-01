@@ -1739,6 +1739,7 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
     let suffix = std::process::id();
     let namespace_name = format!("nodeapiserver-selector-{suffix}");
     let pod_name = format!("nodeapiserver-selector-pod-{suffix}");
+    let apply_pod_name = format!("nodeapiserver-apply-selector-pod-{suffix}");
     let namespaces: Api<Namespace> = Api::all(context.client.clone());
     let service_accounts: Api<ServiceAccount> =
         Api::namespaced(context.client.clone(), &namespace_name);
@@ -1793,11 +1794,51 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
                     == Some("demo"),
             "namespace node selector was not merged into the Pod: {returned}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{namespace_name}/pods/{apply_pod_name}?fieldManager=nodeapiserver-apply-selector"
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": &apply_pod_name,
+                            "namespace": &namespace_name
+                        },
+                        "spec": {
+                            "nodeSelector": {"nodeapiserver.test/workload": "demo"},
+                            "containers": [{
+                                "name": "app",
+                                "image": "example.invalid/not-k8s-apply-selector"
+                            }]
+                        }
+                    }))?,
+            )
+            .await
+            .context("applying a Pod through PodNodeSelector admission")?;
+        anyhow::ensure!(
+            applied
+                .pointer("/spec/nodeSelector/nodeapiserver.test~1zone")
+                .and_then(Value::as_str)
+                == Some("blue")
+                && applied
+                    .pointer("/spec/nodeSelector/nodeapiserver.test~1workload")
+                    .and_then(Value::as_str)
+                    == Some("demo"),
+            "namespace node selector was not merged into an SSA Pod: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&apply_pod_name, &DeleteParams::default()).await;
     let _ = service_accounts
         .delete("default", &DeleteParams::default())
         .await;

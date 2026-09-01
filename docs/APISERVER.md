@@ -1437,7 +1437,8 @@ the upstream `PodNodeSelector` plugin. A Pod created in a Namespace carrying
 merged into `spec.nodeSelector`; conflicting Pod labels and unsupported
 selector syntax are rejected before persistence. The cluster-wide admission
 configuration-file form remains separate work because this crate does not yet
-have an admission plugin configuration-file surface.
+have an admission plugin configuration-file surface. The namespace annotation
+merge is also applied to Server-Side Apply Pod candidates.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
