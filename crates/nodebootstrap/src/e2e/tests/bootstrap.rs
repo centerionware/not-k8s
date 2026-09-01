@@ -1359,6 +1359,24 @@ pub(super) async fn nodeapiserver_rejects_invalid_workload_names(
             }
         }),
     )
+    .await?;
+
+    reject(
+        format!(
+            "/apis/autoscaling/v2/namespaces/{}/horizontalpodautoscalers",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "valid-hpa-name", "namespace": context.namespace},
+            "spec": {
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "missing-target"},
+                "minReplicas": 2,
+                "maxReplicas": 1
+            }
+        }),
+    )
     .await
 }
 
