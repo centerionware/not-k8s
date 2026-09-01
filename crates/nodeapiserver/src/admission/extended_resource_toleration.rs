@@ -23,11 +23,13 @@ pub fn applies_to(operation: Operation, group: &str, resource: &str, subresource
         && subresource.is_empty()
 }
 
-/// Kubernetes reserves unqualified names and the `kubernetes.io/` namespace
-/// for built-in resources. The admission helper's practical distinction is a
-/// qualified name outside that built-in namespace.
+/// Port the upstream `IsExtendedResourceName` predicate, including its
+/// `requests.` guard and validation of the quota-prefixed qualified name.
 fn is_extended_resource(name: &str) -> bool {
-    name.contains('/') && !name.starts_with("kubernetes.io/")
+    name.contains('/')
+        && !name.starts_with("kubernetes.io/")
+        && !name.starts_with("requests.")
+        && crate::scheme::name_format::is_qualified_name(&format!("requests.{name}")).is_empty()
 }
 
 fn requested_resources(container: &Value, resources: &mut BTreeSet<String>) {
@@ -159,5 +161,14 @@ mod tests {
 
         assert!(!mutate(&mut pod));
         assert_eq!(pod["spec"]["tolerations"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn follows_upstream_extended_resource_name_boundaries() {
+        assert!(is_extended_resource("example.com/gpu"));
+        assert!(!is_extended_resource("cpu"));
+        assert!(!is_extended_resource("kubernetes.io/gpu"));
+        assert!(!is_extended_resource("requests.example.com/gpu"));
+        assert!(!is_extended_resource("Example.com/gpu"));
     }
 }
