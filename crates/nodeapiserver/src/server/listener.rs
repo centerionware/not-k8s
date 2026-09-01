@@ -3562,6 +3562,127 @@ async fn handle(
                 }
             }
 
+            // LimitRanger must observe the same materialized candidate for
+            // Apply as it does for ordinary CREATE/UPDATE. In particular,
+            // Pod requests/limits supplied by a namespace LimitRange are
+            // part of the object ResourceQuota evaluates later in the
+            // admission chain.
+            if admission::limit_ranger::applies_to(
+                operation,
+                &info.api_group,
+                &info.resource,
+                &info.subresource,
+            ) {
+                match rest::list(
+                    &mut client,
+                    None,
+                    "",
+                    "v1",
+                    "limitranges",
+                    namespace,
+                    "",
+                    "",
+                    0,
+                    "",
+                )
+                .await
+                {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let limit_ranges = list["items"].as_array().cloned().unwrap_or_default();
+                        if operation == admission::attributes::Operation::Create
+                            && info.resource == "pods"
+                        {
+                            admission::limit_ranger::mutate_pod(&mut candidate, &limit_ranges);
+                        }
+                        for limit_range in &limit_ranges {
+                            let errors = if info.resource == "pods" {
+                                admission::limit_ranger::validate_pod(limit_range, &candidate)
+                            } else {
+                                admission::limit_ranger::validate_pvc(limit_range, &candidate)
+                            };
+                            if !errors.is_empty() {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &errors.join("; ")),
+                                ));
+                            }
+                        }
+                    }
+                    Ok(rest::ListOutcome::UnknownResource)
+                    | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: listing limit ranges for apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
+            // PVC expansion is another update-shaped admission check. Apply
+            // must use the same old object and StorageClass capability check
+            // as PUT and the ordinary patch kinds.
+            if operation == admission::attributes::Operation::Update
+                && admission::pvc_resize::applies_to(
+                    admission::attributes::Operation::Update,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                if let Some(old_pvc) = old_object.as_ref() {
+                    match rest::list(
+                        &mut client,
+                        None,
+                        "storage.k8s.io",
+                        "v1",
+                        "storageclasses",
+                        None,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let classes = list["items"].as_array().cloned().unwrap_or_default();
+                            if let Err(error) = admission::pvc_resize::validate_resize(
+                                &candidate,
+                                old_pvc,
+                                &classes,
+                            ) {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                            if let Err(error) = admission::pvc_resize::validate_resize(
+                                &candidate,
+                                old_pvc,
+                                &[],
+                            ) {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing StorageClasses for PVC resize Apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
             // MutatingAdmissionPolicy is part of the same candidate-based
             // admission chain as ordinary CREATE/UPDATE. Apply must not
             // bypass it merely because its field-management preparation
@@ -3596,6 +3717,194 @@ async fn handle(
                     ));
                 }
             }
+
+            // PodSecurity and ResourceQuota are validating stages after all
+            // mutators, just as on ordinary CREATE. Keeping them here means
+            // an Apply cannot bypass namespace policy or quota accounting
+            // merely because its candidate was produced by SSA.
+            if operation == admission::attributes::Operation::Create
+                && admission::pod_security::applies_to(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    admission::attributes::Operation::Create,
+                )
+            {
+                match rest::get(
+                    &mut client,
+                    None,
+                    "",
+                    "v1",
+                    "namespaces",
+                    None,
+                    &info.namespace,
+                )
+                .await
+                {
+                    Ok(rest::GetOutcome::Found(namespace_object)) => {
+                        let level = admission::pod_security::enforcement_level(&namespace_object);
+                        let violations = admission::pod_security::validate(&candidate, level);
+                        if !violations.is_empty() {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &violations.join("; ")),
+                            ));
+                        }
+                    }
+                    Ok(rest::GetOutcome::ObjectNotFound)
+                    | Ok(rest::GetOutcome::UnknownResource) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodSecurity apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
+            let mut quota_usage_updates: Vec<(
+                String,
+                std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>,
+            )> = Vec::new();
+            if operation == admission::attributes::Operation::Create {
+                let quota_kind = if admission::resource_quota::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    Some("pods")
+                } else if admission::resource_quota::applies_to_pvc(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    Some("persistentvolumeclaims")
+                } else if admission::resource_quota::applies_to_service(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    Some("services")
+                } else if !info.namespace.is_empty() {
+                    Some(info.resource.as_str())
+                } else {
+                    None
+                };
+
+                if let Some(list_resource) = quota_kind {
+                    let existing = match rest::list(
+                        &mut client,
+                        None,
+                        &info.api_group,
+                        &info.api_version,
+                        list_resource,
+                        namespace,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            list["items"].as_array().cloned().unwrap_or_default()
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing existing objects for ResourceQuota Apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    };
+                    match rest::list(
+                        &mut client,
+                        None,
+                        "",
+                        "v1",
+                        "resourcequotas",
+                        namespace,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let quotas = list["items"].as_array().cloned().unwrap_or_default();
+                            let denial = match list_resource {
+                                "pods" => admission::resource_quota::check_pod_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "persistentvolumeclaims" => admission::resource_quota::check_pvc_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "services" => admission::resource_quota::check_service_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                _ => admission::resource_quota::check_object_count_create(
+                                    &info.api_group,
+                                    &info.resource,
+                                    &existing,
+                                    &quotas,
+                                ),
+                            };
+                            if let Some(denial) = denial {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &denial),
+                                ));
+                            }
+                            quota_usage_updates = match list_resource {
+                                "pods" => admission::resource_quota::usage_after_pod_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "persistentvolumeclaims" => admission::resource_quota::usage_after_pvc_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "services" => admission::resource_quota::usage_after_service_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                _ => admission::resource_quota::usage_after_object_count_create(
+                                    &info.api_group,
+                                    &info.resource,
+                                    &existing,
+                                    &quotas,
+                                ),
+                            };
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing ResourceQuotas for apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
             match admission::policy_enforcement::validate(
                 &mut client,
                 operation_name,
@@ -3656,7 +3965,14 @@ async fn handle(
             }
 
             return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate, dry_run).await {
-                Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::ApplyOutcome::Applied(object)) => {
+                    if operation == admission::attributes::Operation::Create {
+                        if let Some(ns) = namespace {
+                            persist_quota_usage_updates(&mut client, ns, quota_usage_updates, &path_str).await;
+                        }
+                    }
+                    Ok(json_response(StatusCode::OK, &object))
+                }
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::ApplyOutcome::UnsupportedForCrd) => {
