@@ -1564,7 +1564,12 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             }
         }
         if is_environment_reconfiguring_test(name) {
-            wait_for_api_after_environment_reconfiguration(&test_context).await;
+            if let Err(error) = wait_for_api_after_environment_reconfiguration(&test_context).await {
+                eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
+                if !failures.contains(&name) {
+                    failures.push(name);
+                }
+            }
         }
     }
 
@@ -1583,7 +1588,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     }
 }
 
-async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) {
+async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) -> Result<()> {
     let namespaces: Api<Namespace> = Api::all(context.client.clone());
     let namespace = format!(
         "nk-e2e-recovery-{}-{:08x}",
@@ -1595,7 +1600,7 @@ async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) {
     );
     let service_accounts: Api<ServiceAccount> =
         Api::namespaced(context.client.clone(), &namespace);
-    if let Err(error) = context
+    let recovery = context
         .wait_until(
             "the API server and namespace controller to recover after an environment-reconfiguring test",
             Duration::from_secs(90),
@@ -1629,13 +1634,11 @@ async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) {
                 }
             },
         )
-        .await
-    {
-        eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
-    }
+        .await;
     let _ = namespaces
         .delete(&namespace, &DeleteParams::default())
         .await;
+    recovery
 }
 
 /// Print the tests selected by the same shard/filter logic as `run`, without
@@ -1772,6 +1775,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_nodeapiserver_rotates_audit_log"
             | "test_nodeapiserver_delivers_audit_webhook"
             | "test_nodeapiserver_audits_request_and_response_objects"
+            | "test_nodeapiserver_honors_authorization_webhook_decisions"
             | "test_nodeapiserver_honors_always_pull_images"
             | "test_nodeapiserver_applies_configured_node_selector"
             | "test_client_certificate_authentication_works"
