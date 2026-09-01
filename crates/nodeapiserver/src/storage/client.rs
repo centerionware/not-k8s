@@ -90,25 +90,19 @@ impl StorageClient {
     /// own mTLS enforcement is what actually rejects it if that is wrong,
     /// not this function guessing on the client's behalf.
     pub async fn connect(cfg: &Config) -> Result<StorageClient> {
-        let endpoint = Endpoint::from_shared(cfg.nodestore_endpoint.clone())
-            .map_err(|e| Error::Connect { endpoint: cfg.nodestore_endpoint.clone(), source: e })?
-            .connect_timeout(std::time::Duration::from_secs(5));
-
-        let endpoint = match (&cfg.nodestore_cert_file, &cfg.nodestore_key_file, &cfg.nodestore_ca_file) {
-            (Some(cert), Some(key), Some(ca)) => {
-                let tls = client_tls_config(cert, key, ca)?;
-                endpoint.tls_config(tls).map_err(Error::Tls)?
-            }
-            _ => endpoint,
-        };
-
+        let endpoint = endpoint(cfg)?.connect_timeout(std::time::Duration::from_secs(5));
         let channel = endpoint.connect().await.map_err(|e| Error::Connect { endpoint: cfg.nodestore_endpoint.clone(), source: e })?;
-        Ok(StorageClient {
-            kv: KvClient::new(channel.clone()),
-            watch: WatchClient::new(channel.clone()),
-            lease: LeaseClient::new(channel),
-            encryption: None,
-        })
+        Ok(from_channel(channel))
+    }
+
+    /// Builds a lazy client without waiting for nodestore to accept a
+    /// connection. Tonic reconnects the channel when the first RPC is made,
+    /// so the API listener can become ready while nodestore is still coming
+    /// back after a restart; individual resource requests fail normally until
+    /// storage is reachable.
+    pub fn connect_lazy(cfg: &Config) -> Result<StorageClient> {
+        let endpoint = endpoint(cfg)?.connect_timeout(std::time::Duration::from_secs(5));
+        Ok(from_channel(endpoint.connect_lazy()))
     }
 
     /// Attaches encryption-at-rest configuration, consuming and returning
@@ -247,6 +241,27 @@ impl StorageClient {
     }
 }
 
+fn endpoint(cfg: &Config) -> Result<Endpoint> {
+    let endpoint = Endpoint::from_shared(cfg.nodestore_endpoint.clone())
+        .map_err(|e| Error::Connect { endpoint: cfg.nodestore_endpoint.clone(), source: e })?;
+    match (&cfg.nodestore_cert_file, &cfg.nodestore_key_file, &cfg.nodestore_ca_file) {
+        (Some(cert), Some(key), Some(ca)) => {
+            let tls = client_tls_config(cert, key, ca)?;
+            endpoint.tls_config(tls).map_err(Error::Tls)
+        }
+        _ => Ok(endpoint),
+    }
+}
+
+fn from_channel(channel: Channel) -> StorageClient {
+    StorageClient {
+        kv: KvClient::new(channel.clone()),
+        watch: WatchClient::new(channel.clone()),
+        lease: LeaseClient::new(channel),
+        encryption: None,
+    }
+}
+
 /// An open keep-alive stream: `requests` must be kept alive for as long as
 /// the lease should keep being renewed, `responses` carries each renewal's
 /// new TTL.
@@ -317,6 +332,13 @@ mod tests {
         cfg.nodestore_ca_file = Some(std::path::PathBuf::from("/nonexistent/ca.pem"));
         let err = StorageClient::connect(&cfg).await.expect_err("a missing cert file must be a clear error");
         assert!(matches!(err, Error::ReadMaterial { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn lazy_connect_does_not_wait_for_nodestore() {
+        let mut cfg = Config::default();
+        cfg.nodestore_endpoint = "https://127.0.0.1:1".to_string();
+        StorageClient::connect_lazy(&cfg).expect("lazy client construction must not dial nodestore");
     }
 
     #[test]

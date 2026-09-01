@@ -1243,22 +1243,22 @@ pub async fn run(cfg: Config) {
         None => None,
     };
 
-    // Best-effort, matching every other failure in this function: a
-    // nodestore that isn't reachable yet at startup shouldn't stop the
-    // listener from serving discovery (which needs no storage at all) —
-    // resource requests return a real 503 when this is `None` (see the
-    // request handler's own call-site guard). Connected once here and cloned
-    // per connection below: `StorageClient` wraps a cheap-to-clone
-    // `tonic::transport::Channel`, the same "clone per use, don't share a
-    // `&mut` behind a lock" posture `cacher`'s own driver takes.
+    // Build the nodestore channel lazily so a nodestore that is still
+    // restarting cannot hold the API listener before it binds. Tonic
+    // reconnects the channel when reflectors and request handlers make their
+    // first RPC; until then, discovery and health endpoints remain available
+    // while storage-backed requests report their normal backend error.
+    // `StorageClient` wraps a cheap-to-clone `tonic::transport::Channel`, the
+    // same "clone per use, don't share a `&mut` behind a lock" posture
+    // `cacher`'s own driver takes.
     // `with_encryption` attaches Group C's config to `storage` right
     // away — before `cache_registry.spawn` below ever clones it — so
     // every clone made from this point on (including every long-running
     // background reflect loop) carries it too.
-    let storage = match StorageClient::connect(&cfg).await {
+    let storage = match StorageClient::connect_lazy(&cfg) {
         Ok(c) => Some(c.with_encryption(encryption_config)),
         Err(e) => {
-            warn!(error = ?e, "failed to connect to nodestore at startup; resource requests will return 503 until this succeeds");
+            warn!(error = ?e, "failed to configure nodestore client; resource requests will return 503 until configuration is fixed");
             None
         }
     };
