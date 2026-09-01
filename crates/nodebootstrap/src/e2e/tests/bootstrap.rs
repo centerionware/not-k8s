@@ -4496,6 +4496,44 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
             "typed ApplyConfiguration mutation was not applied: {:?}",
             created.metadata.labels
         );
+
+        let apply_name = format!("{object_name}-apply");
+        let apply = context
+            .client
+            .request::<Value>(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{}/{apply_name}?fieldManager=nodeapiserver-policy-apply",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "ConfigMap",
+                        "metadata": {
+                            "name": apply_name,
+                            "namespace": context.namespace
+                        }
+                    }))?)?,
+            )
+            .await
+            .context("applying the MutatingAdmissionPolicy probe ConfigMap")?;
+        anyhow::ensure!(
+            apply
+                .pointer("/metadata/finalizers")
+                .and_then(Value::as_array)
+                .is_some_and(|finalizers| {
+                    finalizers.len() == 1 && finalizers[0] == json!("nodeapiserver.test")
+                }),
+            "MutatingAdmissionPolicy did not mutate a Server-Side Apply create: {apply}"
+        );
+        anyhow::ensure!(
+            apply.pointer("/metadata/labels/typed-mutation").and_then(Value::as_str)
+                == Some("true"),
+            "MutatingAdmissionPolicy did not apply its typed mutation on Server-Side Apply: {apply}"
+        );
+        let _ = configmaps.delete(&apply_name, &DeleteParams::default()).await;
         Ok::<(), anyhow::Error>(())
     }
     .await;
