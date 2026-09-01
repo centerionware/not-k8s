@@ -1818,7 +1818,7 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
                                 "image": "example.invalid/not-k8s-apply-selector"
                             }]
                         }
-                    }))?,
+                    }))?)?,
             )
             .await
             .context("applying a Pod through PodNodeSelector admission")?;
