@@ -5,8 +5,9 @@
 //! they exercise so each file remains focused as the shell suite is migrated.
 
 use anyhow::{bail, Context, Result};
-use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
-use kube::api::{Api, ListParams};
+use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node, ServiceAccount};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::{Client, Config as KubeConfig};
 use std::error::Error;
 use std::fmt;
@@ -1596,19 +1597,57 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
 
 async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) {
     let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let namespace = format!(
+        "nk-e2e-recovery-{}-{:08x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u32)
+            .unwrap_or_default()
+    );
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &namespace);
     if let Err(error) = context
         .wait_until(
-            "the API server to recover after an environment-reconfiguring test",
-            Duration::from_secs(60),
+            "the API server and namespace controller to recover after an environment-reconfiguring test",
+            Duration::from_secs(90),
             || {
                 let namespaces = namespaces.clone();
-                async move { Ok(namespaces.get_opt("default").await.is_ok()) }
+                let service_accounts = service_accounts.clone();
+                let namespace = namespace.clone();
+                async move {
+                    match namespaces.get_opt(&namespace).await {
+                        Ok(Some(_)) => Ok(service_accounts
+                            .get_opt("default")
+                            .await
+                            .is_ok_and(|service_account| service_account.is_some())),
+                        Ok(None) => {
+                            let _ = namespaces
+                                .create(
+                                    &PostParams::default(),
+                                    &Namespace {
+                                        metadata: ObjectMeta {
+                                            name: Some(namespace),
+                                            ..Default::default()
+                                        },
+                                        ..Default::default()
+                                    },
+                                )
+                                .await;
+                            Ok(false)
+                        }
+                        Err(_) => Ok(false),
+                    }
+                }
             },
         )
         .await
     {
         eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
     }
+    let _ = namespaces
+        .delete(&namespace, &DeleteParams::default())
+        .await;
 }
 
 /// Print the tests selected by the same shard/filter logic as `run`, without
