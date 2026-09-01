@@ -198,6 +198,7 @@ impl Authenticator {
                 name: username,
                 groups,
                 uid: None,
+                extra: Default::default(),
                 credential_id: (String::new(), Vec::new()),
             }
         })

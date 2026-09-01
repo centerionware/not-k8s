@@ -368,6 +368,15 @@ pub fn selectable_fields(group: &str, resource: &str) -> &'static [&'static str]
             "status.failed",
         ],
         ("coordination.k8s.io", "leases") => &["metadata.name", "metadata.namespace", "spec.holderIdentity"],
+        // ResourceSlice's node-local DRA controller lists only the slices
+        // published for its node.  These are the selectable fields exposed
+        // by the upstream ResourceSlice registry in the vendored API level.
+        ("resource.k8s.io", "resourceslices") => &[
+            "metadata.name",
+            "metadata.namespace",
+            "spec.nodeName",
+            "spec.driver",
+        ],
         _ => METADATA,
     }
 }
@@ -606,6 +615,18 @@ mod tests {
     fn built_in_field_allowlist_accepts_pod_fields() {
         let requirements = parse_field_selector("metadata.name=web-1,spec.nodeName=node-a,status.phase=Running").unwrap();
         assert!(validate_field_selector("", "pods", &requirements).is_ok());
+    }
+
+    #[test]
+    fn resource_slice_field_allowlist_accepts_dra_node_selector() {
+        let requirements = parse_field_selector("spec.nodeName=node-a").unwrap();
+        assert!(validate_field_selector("resource.k8s.io", "resourceslices", &requirements).is_ok());
+
+        let unsupported = parse_field_selector("spec.pool.name=pool").unwrap();
+        assert!(matches!(
+            validate_field_selector("resource.k8s.io", "resourceslices", &unsupported),
+            Err(ParseError::UnsupportedField(field)) if field == "spec.pool.name"
+        ));
     }
 
     #[test]

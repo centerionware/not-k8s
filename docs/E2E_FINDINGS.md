@@ -1364,3 +1364,40 @@ The e2e failure dump now passes the nodebootstrap kubeconfig explicitly,
 falls back to sudo when the bootstrap ran as root, and includes flanneld's
 unit status/logs; the previous dump's `/etc/rancher/k3s` errors obscured this
 diagnosis.
+
+### 26. Fixed: the replacement apiserver could skip a Pod watch event at the
+watch-creation boundary
+
+**Severity: high — found while bringing the reference DRA driver up against
+the replacement apiserver.**
+
+The replacement apiserver's cacher treated every empty watch response with an
+advanced header revision as a bookmark, including the initial `created: true`
+acknowledgement. That header can be ahead of a per-resource LIST because
+unrelated objects were written in the meantime. The cacher then advanced
+past the replacement Pod event that the watch replayed at that revision,
+leaving clients with an incomplete view of the replacement even though the
+API group itself was already discoverable and listable.
+
+Nodeapiserver now distinguishes watch creation acknowledgements from real
+progress bookmarks and relists canceled watches, matching the upstream
+reflector contract.
+
+### 27. Fixed: nodeapiserver rejected the reference DRA driver's admission policy
+
+**Severity: high — found in the focused replacement-apiserver DRA e2e gate.**
+
+The reference DRA driver installs a `ValidatingAdmissionPolicy` whose CEL
+expressions use Kubernetes' optional map/index and field-selection syntax:
+`[?'authentication.kubernetes.io/node-name']` and `.?nodeName`, followed by
+`orValue`. The replacement apiserver rejected the policy with
+`unsupported syntax '[?'`, so `ResourceSlice` creation never reached storage
+even though the `resource.k8s.io/v1` API group was served correctly.
+
+The underlying `cel-rust` parser already implements this Kubernetes CEL
+extension, but its `Program::compile` convenience API leaves it disabled.
+Nodeapiserver now uses one configured parser for every compile/evaluation and
+AST-cost/type-check path, with regression coverage for present and missing
+optional values. This preserves the normal CEL evaluator and enables the same
+policy syntax upstream accepts; it is not a DRA-specific policy exception or
+an API-version workaround.
