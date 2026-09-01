@@ -1873,6 +1873,7 @@ pub(super) async fn nodeapiserver_applies_priority_admission(
     let suffix = std::process::id();
     let class_name = format!("nodeapiserver-priority-class-{suffix}");
     let pod_name = format!("nodeapiserver-priority-pod-{suffix}");
+    let apply_pod_name = format!("nodeapiserver-apply-priority-pod-{suffix}");
     let priority_classes: Api<PriorityClass> = Api::all(context.client.clone());
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let priority_class: PriorityClass = serde_json::from_value(json!({
@@ -1909,11 +1910,46 @@ pub(super) async fn nodeapiserver_applies_priority_admission(
                 && returned.pointer("/spec/preemptionPolicy").and_then(Value::as_str) == Some("Never"),
             "Priority admission did not resolve the PriorityClass: {returned}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{}/pods/{apply_pod_name}?fieldManager=nodeapiserver-apply-priority",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": &apply_pod_name,
+                            "namespace": context.namespace
+                        },
+                        "spec": {
+                            "priorityClassName": &class_name,
+                            "containers": [{
+                                "name": "app",
+                                "image": "example.invalid/not-k8s-apply-priority"
+                            }]
+                        }
+                    }))?,
+            )
+            .await
+            .context("applying a Pod through Priority admission")?;
+        anyhow::ensure!(
+            applied.pointer("/spec/priority").and_then(Value::as_i64) == Some(1234)
+                && applied.pointer("/spec/preemptionPolicy").and_then(Value::as_str) == Some("Never"),
+            "Priority admission did not resolve the PriorityClass for Server-Side Apply: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&apply_pod_name, &DeleteParams::default()).await;
     let _ = priority_classes
         .delete(&class_name, &DeleteParams::default())
         .await;
