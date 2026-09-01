@@ -4222,23 +4222,23 @@ mod tests {
 
     #[test]
     fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_newly_verified_resource() {
-        for (group, resource) in [
-            ("apps", "controllerrevisions"),
-            ("apps", "daemonsets"),
-            ("apps", "deployments"),
-            ("apps", "replicasets"),
-            ("apps", "statefulsets"),
-            ("autoscaling", "horizontalpodautoscalers"),
-            ("networking.k8s.io", "ingresses"),
-            ("networking.k8s.io", "ingressclasses"),
-            ("networking.k8s.io", "servicecidrs"),
-            ("discovery.k8s.io", "endpointslices"),
-            ("flowcontrol.apiserver.k8s.io", "flowschemas"),
-            ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"),
-            ("node.k8s.io", "runtimeclasses"),
-            ("coordination.k8s.io", "leases"),
+        for (group, resource, valid_name) in [
+            ("apps", "controllerrevisions", "my-name.example"),
+            ("apps", "daemonsets", "my-name.example"),
+            ("apps", "deployments", "my-name.example"),
+            ("apps", "replicasets", "my-name.example"),
+            ("apps", "statefulsets", "my-name"),
+            ("autoscaling", "horizontalpodautoscalers", "my-name.example"),
+            ("networking.k8s.io", "ingresses", "my-name.example"),
+            ("networking.k8s.io", "ingressclasses", "my-name.example"),
+            ("networking.k8s.io", "servicecidrs", "my-name.example"),
+            ("discovery.k8s.io", "endpointslices", "my-name.example"),
+            ("flowcontrol.apiserver.k8s.io", "flowschemas", "my-name.example"),
+            ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations", "my-name.example"),
+            ("node.k8s.io", "runtimeclasses", "my-name.example"),
+            ("coordination.k8s.io", "leases", "my-name.example"),
         ] {
-            assert!(name_format_violations(group, resource, "my-name.example").is_empty(), "{group}/{resource} should accept a valid DNS subdomain");
+            assert!(name_format_violations(group, resource, valid_name).is_empty(), "{group}/{resource} should accept its valid name");
             assert!(!name_format_violations(group, resource, "My_Bad_Name").is_empty(), "{group}/{resource} should reject an invalid DNS subdomain");
         }
     }
