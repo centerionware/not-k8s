@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
-| J — Admission | in progress | 14/15 |
+| J — Admission | in progress | 15/16 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | done for current scope | 9/9 |
@@ -1355,6 +1355,16 @@ projected token volume as ordinary creates.
 the upstream `node.kubernetes.io/not-ready`/`NoSchedule` taint when absent,
 preserves submitted taints, and is idempotent so node lifecycle reconciliation
 can remove the taint after the node becomes Ready.
+
+`admission::extended_resource_toleration` is the pure
+`ExtendedResourceToleration` mutation for core `Pod` `CREATE`/`UPDATE`
+requests. For every extended resource requested by a regular or init
+container, it adds the matching `Exists`/`NoSchedule` toleration, preserving
+existing matching tolerations and ordering newly-added resources
+deterministically. This matches real upstream behavior. Upstream keeps this
+plugin opt-in; this crate has not yet exposed an admission-plugin
+configuration surface, so it is currently registered with the other built-in
+mutators.
 
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
