@@ -1420,7 +1420,8 @@ priority/preemption policy are applied; a global-default class is selected by
 the lowest priority value when the Pod names none; plugin-owned fields are
 preserved across updates; and creating or updating a second global-default
 PriorityClass is rejected. The listener performs the storage lookups while
-the object rules remain pure and unit tested.
+the object rules remain pure and unit tested, including for Server-Side Apply
+Pod and PriorityClass candidates.
 
 `admission::pvc_resize` is validating, `UPDATE`-only — a faithful port of
 real upstream's `PersistentVolumeClaimResize` plugin

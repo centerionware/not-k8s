@@ -3241,6 +3241,162 @@ async fn handle(
                 );
             }
 
+            // Keep Priority admission consistent with ordinary Pod and
+            // PriorityClass writes. Apply candidates must resolve named or
+            // default PriorityClasses, preserve controller-owned fields on
+            // update, and reject a second global default.
+            if matches!(
+                operation,
+                admission::attributes::Operation::Create
+                    | admission::attributes::Operation::Update
+            ) {
+                if admission::priority::applies_to_pod(
+                    operation,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    if operation == admission::attributes::Operation::Update {
+                        if let Some(old_pod) = old_object.as_ref() {
+                            if let Err(error) =
+                                admission::priority::preserve_update_fields(&mut candidate, old_pod)
+                            {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                    } else {
+                        let class_name = candidate
+                            .pointer("/spec/priorityClassName")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let named_class = if class_name.is_empty() {
+                            None
+                        } else {
+                            match rest::get(
+                                &mut client,
+                                None,
+                                "scheduling.k8s.io",
+                                "v1",
+                                "priorityclasses",
+                                None,
+                                &class_name,
+                            )
+                            .await
+                            {
+                                Ok(rest::GetOutcome::Found(priority_class)) => Some(priority_class),
+                                Ok(rest::GetOutcome::ObjectNotFound)
+                                | Ok(rest::GetOutcome::UnknownResource) => {
+                                    return Ok(json_response(
+                                        StatusCode::FORBIDDEN,
+                                        &admission_forbidden_status(
+                                            &path_str,
+                                            &format!(
+                                                "no PriorityClass with name {class_name} was found"
+                                            ),
+                                        ),
+                                    ));
+                                }
+                                Err(error) => {
+                                    warn!(path = %path_str, error = ?error, "admission: PriorityClass lookup for apply failed");
+                                    return Ok(json_response(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        &internal_error_status(&path_str),
+                                    ));
+                                }
+                            }
+                        };
+                        let default_class = if named_class.is_none() {
+                            match rest::list(
+                                &mut client,
+                                None,
+                                "scheduling.k8s.io",
+                                "v1",
+                                "priorityclasses",
+                                None,
+                                "",
+                                "",
+                                0,
+                                "",
+                            )
+                            .await
+                            {
+                                Ok(rest::ListOutcome::Found(list)) => {
+                                    let classes = list["items"].as_array().cloned().unwrap_or_default();
+                                    admission::priority::select_default(&classes).cloned()
+                                }
+                                Ok(rest::ListOutcome::UnknownResource)
+                                | Ok(rest::ListOutcome::InvalidContinueToken) => None,
+                                Err(error) => {
+                                    warn!(path = %path_str, error = ?error, "admission: listing PriorityClasses for apply failed");
+                                    return Ok(json_response(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        &internal_error_status(&path_str),
+                                    ));
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        if let Err(error) = admission::priority::mutate_pod(
+                            &mut candidate,
+                            named_class.as_ref(),
+                            default_class.as_ref(),
+                        ) {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &error),
+                            ));
+                        }
+                    }
+                } else if admission::priority::applies_to_priority_class(
+                    operation,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) && candidate.pointer("/globalDefault").and_then(Value::as_bool) == Some(true)
+                {
+                    match rest::list(
+                        &mut client,
+                        None,
+                        "scheduling.k8s.io",
+                        "v1",
+                        "priorityclasses",
+                        None,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let existing = list["items"].as_array().cloned().unwrap_or_default();
+                            if let Some(error) =
+                                admission::priority::validate_priority_class(&candidate, &existing)
+                            {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing PriorityClasses for apply validation failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
             // RuntimeClass mutates and validates ordinary Pod creates. Apply
             // must resolve the same class before policy/webhook admission so
             // its overhead and scheduling fields are part of the candidate.
