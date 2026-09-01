@@ -7,15 +7,15 @@
 | B — Wire formats | done for current scope | 7/7 |
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
-| E — Generic server, handler chain, and REST | in progress | 11/12 |
+| E — Generic server, handler chain, and REST | done for current scope | 12/12 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 8/10 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
-| I — Authorization | in progress | 6/7 |
+| I — Authorization | done for current scope | 7/7 |
 | J — Admission | in progress | 14/15 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
-| M — APF, audit, and observability | in progress | 8/9 |
+| M — APF, audit, and observability | done for current scope | 9/9 |
 | N — Streaming and proxy subresources | done for current scope | 5/5 |
 | O — nodebootstrap integration | done for current scope | 1/1 |
 
@@ -43,7 +43,7 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `3e27b5e5` on
+This snapshot is checked against `origin/nodeapiserver` at `fe5253ac` on
 2026-09-01. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -55,15 +55,15 @@ explanation of each boundary.
 | B. Wire formats | **done for current scope** | Generic protobuf/JSON/YAML, Table, partial-object support, common built-in printers, and CRD additional printer columns are integrated; less-common per-resource printers and wire edge cases remain. |
 | C. Storage | **done for current scope** | etcd storage, encryption providers, stale-value key rotation/rewrite, and full read/write/transaction/watch wiring are integrated. |
 | D. Watch cache | **done for current scope** | Built-in resources are boot-cached and CRD cache creation/removal and lifecycle refresh are integrated; remaining cache work is compatibility hardening. |
-| E. Server/REST | **in progress** | The generic verbs, watches, status paths, discovery, and OpenAPI endpoints are present; remaining compatibility edges and internal dispatcher cleanup remain. |
+| E. Server/REST | **done for current scope** | The generic verbs, watches, status paths, discovery, OpenAPI endpoints, and internal dispatcher are integrated; remaining compatibility edges remain. |
 | F. Scheme | **in progress** | Conversion, structural validation/defaulting, published OpenAPI-local constraints, quantities, and much CEL support are present; the remaining per-kind and CEL compatibility surface is substantial. |
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
-| I. Authorization | **in progress** | RBAC, node authorization, review APIs, and the authorization webhook path are present; remaining upstream authorizer behavior and compatibility coverage remain. |
+| I. Authorization | **done for current scope** | RBAC, node authorization, review APIs, the authorization webhook path, kubeconfig credentials, and public-info bootstrap policy are integrated; broader upstream authorizer behavior and compatibility coverage remain. |
 | J. Admission | **in progress** | The implemented built-ins (including DefaultIngressClass and StorageObjectInUseProtection) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
-| M. APF/audit/observability | **in progress** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, and policy-selected request/response object capture are present; remaining observability refinements remain. |
+| M. APF/audit/observability | **done for current scope** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, policy-selected request/response object capture, and kubeconfig webhook credentials are integrated; remaining observability refinements remain. |
 | N. Streaming/proxy | **done for current scope** | Pod log/exec/attach/port-forward and node and Service proxy subresources are integrated; uncommon proxy transport details remain. |
 | O. nodebootstrap integration | **done for current scope** | The nodebootstrap path defaults to nodeapiserver and can explicitly select upstream for comparison; nodebootstrap's own bootstrap features are tracked separately. |
 
@@ -427,7 +427,7 @@ as `cache: None` would. `server::listener` uses the same registry for every
 built-in resource and reconciles dynamically served CRD GVRs from the live
 CRD cache; the first-watch fallback remains only for the startup race.
 
-**E. Generic server + handler chain + REST endpoints** — **in progress**.
+**E. Generic server + handler chain + REST endpoints** — **done for current scope**.
 `server::path` is the REST path grammar — a faithful, line-by-line port of
 upstream's own `RequestInfoFactory.NewRequestInfo`
 (`staging/src/k8s.io/apiserver/pkg/endpoints/request/requestinfo.go`), not
@@ -1160,7 +1160,7 @@ client-CA bundle now reload for new authentication operations/connections;
 malformed rotations retain the last valid contents. Some upstream OIDC
 diagnostic details remain outside the current scope.
 
-**I. Authorization** — **in progress**. `authz::rbac` is the RBAC
+**I. Authorization** — **done for current scope**. `authz::rbac` is the RBAC
 rule-matching primitive — a faithful port of real upstream's own
 `VerbMatches`/`APIGroupMatches`/`ResourceMatches`/`ResourceNameMatches`/
 `NonResourceURLMatches` (`pkg/apis/rbac/v1/evaluation_helpers.go`) and
@@ -2450,7 +2450,7 @@ current scope of each piece; summarized here:
    HTTP/2 extended CONNECT remain outside the current scope.
 
 
-**M. APF, audit, observability** — **in progress**. `audit::event::build_event`
+**M. APF, audit, observability** — **done for current scope**. `audit::event::build_event`
 is a pure builder for real `audit.k8s.io/v1` `Event` documents
 (`staging/src/k8s.io/apiserver/pkg/apis/audit/v1/types.go`, fetched and
 read directly), at the policy-selected `Metadata`, `Request`, or
