@@ -13,7 +13,8 @@
 //! Real upstream validation (`pkg/apis/*/validation/validation.go`) is
 //! hand-written Go: cross-field consistency ("hostPort requires hostNetwork"
 //! isn't expressible from one field alone) and other semantic rules still
-//! need explicit per-kind code. The published OpenAPI schema's local
+//! need explicit per-kind code. The verified HPA `maxReplicas >= minReplicas`
+//! rule is the first such built-in semantic check here. The published OpenAPI schema's local
 //! constraints (formats, enums, ranges, lengths, patterns, and uniqueness)
 //! are available through [`validate_openapi_constraints`]; this module keeps
 //! required fields and JSON kinds in the compact generated metadata tables
@@ -128,7 +129,33 @@ pub fn validate_openapi_constraints(
     let Some(schema) = codegen::openapi_schema_for_gvk(group, version, kind) else {
         return Vec::new();
     };
-    crate::apiextensions::schema_validation::validate_constraints(&schema, value)
+    let mut violations = crate::apiextensions::schema_validation::validate_constraints(&schema, value);
+    violations.extend(validate_builtin_semantics(group, version, kind, value));
+    violations
+}
+
+/// Cross-field validation that cannot be represented by a single OpenAPI
+/// schema constraint. This intentionally grows only from an upstream-verified
+/// rule at a time; structural validation remains the generic path above.
+fn validate_builtin_semantics(group: &str, _version: &str, kind: &str, value: &Value) -> Vec<String> {
+    if group != "autoscaling" || kind != "HorizontalPodAutoscaler" {
+        return Vec::new();
+    }
+
+    let Some(spec) = value.get("spec").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let Some(max_replicas) = spec.get("maxReplicas").and_then(Value::as_i64) else {
+        return Vec::new();
+    };
+    let Some(min_replicas) = spec.get("minReplicas").and_then(Value::as_i64) else {
+        return Vec::new();
+    };
+    if max_replicas < min_replicas {
+        vec!["spec.maxReplicas: must be greater than or equal to `minReplicas`".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 fn walk_types(schema: &str, value: &Value, path_prefix: &str, out: &mut Vec<TypeMismatch>) {
@@ -328,5 +355,24 @@ mod tests {
             &json!({"data": {"token": "not-base64"}}),
         );
         assert!(violations.iter().any(|violation| violation.contains("data.token")));
+    }
+
+    #[test]
+    fn hpa_max_replicas_cannot_be_less_than_min_replicas() {
+        let violations = validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &json!({"spec": {"minReplicas": 2, "maxReplicas": 1}}),
+        );
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("maxReplicas"));
+        assert!(validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &json!({"spec": {"minReplicas": 1, "maxReplicas": 2}}),
+        )
+        .is_empty());
     }
 }
