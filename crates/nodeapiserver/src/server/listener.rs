@@ -3111,6 +3111,99 @@ async fn handle(
                 admission::attributes::Operation::Create
             };
             run_pure_admission(&pure_admission, operation, &info, &mut candidate);
+
+            // The pure registry only supplies the default ServiceAccount
+            // name. Complete the storage-backed ServiceAccount plugin for
+            // create-on-apply as well, so applied Pods receive the same
+            // token-volume, automount, imagePullSecret, and secret-reference
+            // handling as ordinary Pod CREATE.
+            if operation == admission::attributes::Operation::Create
+                && admission::service_account::applies_to(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                match admission::service_account::quick_decision(
+                    &candidate,
+                    admission::attributes::Operation::Create,
+                ) {
+                    admission::service_account::Decision::Allow => {}
+                    admission::service_account::Decision::Forbidden(message) => {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &message),
+                        ));
+                    }
+                    admission::service_account::Decision::NeedsServiceAccountLookup => {
+                        let service_account_name = candidate
+                            .pointer("/spec/serviceAccountName")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        match rest::get(
+                            &mut client,
+                            None,
+                            "",
+                            "v1",
+                            "serviceaccounts",
+                            namespace,
+                            &service_account_name,
+                        )
+                        .await
+                        {
+                            Ok(rest::GetOutcome::Found(service_account)) => {
+                                admission::service_account::mutate_with_service_account(
+                                    &mut candidate,
+                                    &service_account,
+                                    || {
+                                        let suffix: String = uuid::Uuid::new_v4()
+                                            .to_string()
+                                            .chars()
+                                            .take(5)
+                                            .collect();
+                                        format!(
+                                            "{}{suffix}",
+                                            admission::service_account::SERVICE_ACCOUNT_VOLUME_PREFIX
+                                        )
+                                    },
+                                );
+                                if let Err(error) =
+                                    admission::service_account::validate_secret_references(
+                                        &service_account,
+                                        &candidate,
+                                    )
+                                {
+                                    return Ok(json_response(
+                                        StatusCode::FORBIDDEN,
+                                        &admission_forbidden_status(&path_str, &error),
+                                    ));
+                                }
+                            }
+                            Ok(rest::GetOutcome::ObjectNotFound)
+                            | Ok(rest::GetOutcome::UnknownResource) => {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(
+                                        &path_str,
+                                        &format!(
+                                            "error looking up service account {:?}/{:?}: not found",
+                                            info.namespace, service_account_name
+                                        ),
+                                    ),
+                                ));
+                            }
+                            Err(error) => {
+                                warn!(path = %path_str, error = ?error, "admission: service account lookup for apply failed");
+                                return Ok(json_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    &internal_error_status(&path_str),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             match admission::webhook::admit(
                 &mut client,
                 operation,
