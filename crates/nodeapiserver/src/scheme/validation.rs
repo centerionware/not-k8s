@@ -239,6 +239,30 @@ fn validate_workload_selector(value: &Value) -> Vec<String> {
     }
 }
 
+/// Apps/v1 workload selectors are immutable after creation. The same
+/// invariant applies to ordinary updates, patches, and Server-Side Apply
+/// because they all converge through the REST persistence path.
+pub fn validate_builtin_update_semantics(
+    group: &str,
+    version: &str,
+    kind: &str,
+    existing: &Value,
+    candidate: &Value,
+) -> Vec<String> {
+    if group != "apps"
+        || version != "v1"
+        || !matches!(kind, "DaemonSet" | "Deployment" | "ReplicaSet" | "StatefulSet")
+    {
+        return Vec::new();
+    }
+
+    if existing.pointer("/spec/selector") != candidate.pointer("/spec/selector") {
+        vec!["spec.selector: field is immutable".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 fn walk_types(schema: &str, value: &Value, path_prefix: &str, out: &mut Vec<TypeMismatch>) {
     let Some(obj) = value.as_object() else { return };
 
@@ -477,5 +501,18 @@ mod tests {
             }
         });
         assert!(validate_builtin_semantics("apps", "v1", "ReplicaSet", &object).is_empty());
+    }
+
+    #[test]
+    fn apps_v1_workload_selector_is_immutable() {
+        let existing = json!({"spec": {"selector": {"matchLabels": {"app": "api"}}}});
+        let mut candidate = existing.clone();
+        candidate["spec"]["selector"] = json!({"matchLabels": {"app": "worker"}});
+        assert_eq!(
+            validate_builtin_update_semantics("apps", "v1", "Deployment", &existing, &candidate),
+            vec!["spec.selector: field is immutable"]
+        );
+        assert!(validate_builtin_update_semantics("apps", "v1", "Deployment", &existing, &existing).is_empty());
+        assert!(validate_builtin_update_semantics("apps", "v1beta1", "Deployment", &existing, &candidate).is_empty());
     }
 }
