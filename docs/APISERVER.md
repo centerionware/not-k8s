@@ -1408,7 +1408,8 @@ merged with conflicts rejected, and its tolerations are appended without
 duplicates. A Pod-supplied overhead must match the RuntimeClass's overhead,
 or is rejected when no matching RuntimeClass overhead exists. The listener
 performs the live RuntimeClass lookup and the pure module applies the
-mutation/validation before the remaining Pod admission stages.
+mutation/validation before the remaining Pod admission stages for ordinary
+create and Server-Side Apply.
 
 `admission::priority` is mutating for Pod `CREATE`/`UPDATE` and validating
 for `PriorityClass` `CREATE`/`UPDATE` — a faithful port of real upstream's
