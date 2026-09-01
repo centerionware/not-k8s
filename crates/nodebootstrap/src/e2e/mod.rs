@@ -231,6 +231,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_honors_always_pull_images",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_applies_storage_admission_to_apply",
         group: TestGroup::General,
     },
@@ -1713,6 +1717,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_nodeapiserver_rotates_audit_log"
             | "test_nodeapiserver_delivers_audit_webhook"
             | "test_nodeapiserver_audits_request_and_response_objects"
+            | "test_nodeapiserver_honors_always_pull_images"
             | "test_client_certificate_authentication_works"
             | "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host"
             | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
@@ -1795,6 +1800,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_applies_pure_admission_to_apply" => {
             bootstrap::nodeapiserver_applies_pure_admission_to_apply(context).await
+        },
+        "test_nodeapiserver_honors_always_pull_images" => {
+            bootstrap::nodeapiserver_honors_always_pull_images(context).await
         },
         "test_nodeapiserver_applies_storage_admission_to_apply" => {
             bootstrap::nodeapiserver_applies_storage_admission_to_apply(context).await
