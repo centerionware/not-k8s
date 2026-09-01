@@ -3417,6 +3417,54 @@ async fn handle(
                 }
             }
 
+            // PodNodeSelector reads the target namespace annotation and
+            // merges it into newly-created Pods. Apply must see the same
+            // namespace policy before persistence.
+            if operation == admission::attributes::Operation::Create
+                && admission::pod_node_selector::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                match rest::get(
+                    &mut client,
+                    None,
+                    "",
+                    "v1",
+                    "namespaces",
+                    None,
+                    namespace.unwrap_or(""),
+                )
+                .await
+                {
+                    Ok(rest::GetOutcome::Found(namespace_object)) => {
+                        let selector = namespace_object
+                            .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if let Err(error) =
+                            admission::pod_node_selector::merge_namespace_selector(&mut candidate, selector)
+                        {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &error),
+                            ));
+                        }
+                    }
+                    Ok(rest::GetOutcome::ObjectNotFound)
+                    | Ok(rest::GetOutcome::UnknownResource) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
             // The pure registry only supplies the default ServiceAccount
             // name. Complete the storage-backed ServiceAccount plugin for
             // create-on-apply as well, so applied Pods receive the same
