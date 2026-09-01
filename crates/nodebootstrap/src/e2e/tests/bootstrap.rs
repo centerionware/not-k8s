@@ -4504,7 +4504,7 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
                 Request::builder()
                     .method("PATCH")
                     .uri(format!(
-                        "/api/v1/namespaces/{}/{apply_name}?fieldManager=nodeapiserver-policy-apply",
+                        "/api/v1/namespaces/{}/configmaps/{apply_name}?fieldManager=nodeapiserver-policy-apply",
                         context.namespace
                     ))
                     .header("Content-Type", "application/apply-patch+yaml")
