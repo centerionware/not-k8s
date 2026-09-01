@@ -641,6 +641,30 @@ metadata:
 rules:
 - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/healthz", "/readyz", "/livez"]
   verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:public-info-viewer
+rules:
+- nonResourceURLs: ["/livez", "/readyz", "/healthz", "/version", "/version/"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:public-info-viewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:public-info-viewer
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:authenticated
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:unauthenticated
 {controller_roles}"#
     )
 }
@@ -660,6 +684,7 @@ const SENTINEL_CLUSTER_ROLES: &[&str] = &[
     "cluster-admin",
     "system:node",
     "system:discovery",
+    "system:public-info-viewer",
     "system:kube-scheduler",
     "system:controller:replicaset-controller",
 ];
@@ -782,6 +807,9 @@ mod tests {
             "name: system:kube-scheduler",
             "name: system:kube-controller-manager",
             "name: \"system:controller:replicaset-controller\"",
+            "name: system:public-info-viewer",
+            "name: nodebootstrap:public-info-viewer",
+            "name: system:unauthenticated",
             "name: system:masters",
         ] {
             assert!(manifest.contains(expected), "bootstrap manifest missing {expected:?}");
