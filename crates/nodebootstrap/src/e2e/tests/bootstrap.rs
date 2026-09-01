@@ -1271,6 +1271,86 @@ pub(super) async fn nodeapiserver_rejects_invalid_batch_names(
     }
 }
 
+pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "pure admission apply checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-apply-admission-{}", std::process::id());
+    let uri = format!(
+        "/api/v1/namespaces/{}/pods/{name}?fieldManager=nodeapiserver-admission",
+        context.namespace
+    );
+    let request = Request::builder()
+        .method("PATCH")
+        .uri(uri)
+        .header("content-type", "application/apply-patch+yaml")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": name,
+                "namespace": context.namespace
+            },
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "image": "example.invalid/not-k8s-apply-admission"
+                }]
+            }
+        }))?)?;
+    let pod = context
+        .client
+        .request::<Value>(request)
+        .await
+        .context("applying a Pod to verify pure admission runs on Server-Side Apply")?;
+
+    let tolerations = pod.pointer("/spec/tolerations").and_then(Value::as_array);
+    anyhow::ensure!(
+        tolerations.is_some_and(|values| values.iter().any(|value| {
+            value.pointer("/key").and_then(Value::as_str) == Some("node.kubernetes.io/not-ready")
+                && value.pointer("/effect").and_then(Value::as_str) == Some("NoExecute")
+                && value.pointer("/tolerationSeconds").and_then(Value::as_i64) == Some(300)
+        })),
+        "Server-Side Apply did not run pure admission mutators: {pod}"
+    );
+
+    let patch_request = Request::builder()
+        .method("PATCH")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods/{name}",
+            context.namespace
+        ))
+        .header("content-type", "application/merge-patch+json")
+        .body(serde_json::to_vec(&json!({"spec": {"tolerations": null}}))?)?;
+    let patched = context
+        .client
+        .request::<Value>(patch_request)
+        .await
+        .context("patching a Pod to verify pure admission runs on PATCH")?;
+    anyhow::ensure!(
+        patched.pointer("/spec/tolerations").and_then(Value::as_array).is_some_and(|values| {
+            values.iter().any(|value| {
+                value.pointer("/key").and_then(Value::as_str) == Some("node.kubernetes.io/not-ready")
+                    && value.pointer("/effect").and_then(Value::as_str) == Some("NoExecute")
+                    && value.pointer("/tolerationSeconds").and_then(Value::as_i64) == Some(300)
+            })
+        }),
+        "PATCH did not run pure admission mutators: {patched}"
+    );
+
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    pods.delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the pure-admission apply probe Pod")?;
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
