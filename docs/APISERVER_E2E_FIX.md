@@ -15,7 +15,7 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | Node authorizer mirror-Pod denial response | verified (stale finding) | The current base already allows the node-authorizer mirror-Pod create/delete path and matches upstream NodeRestriction validation. Focused run `33568205267` passed `test_nodeapiserver_enforces_node_restriction` on shard 2 without a source change, so no PR was needed. | — |
 | CSI and DRA workload startup | open | Shard 1 CSI tests and shard 2 DRA/raw-block/fsGroup tests timed out waiting for Pods. Re-run after API recovery is fixed to distinguish nodelet/runtime failures from cascade failures. | — |
 | Namespace-selector ServiceAccount error | open | Shard 1: `test_scheduler_resolves_a_namespace_selector_against_real_labels` received a 403 for a missing default ServiceAccount. | — |
-| Dry-run collection delete semantics | open | Shard 4: `test_nodeapiserver_honors_dry_run_and_delete_preconditions` observed a dry-run collection delete removing a ConfigMap. | — |
+| Dry-run collection delete semantics | verified | The dedicated `deletecollection` listener path now parses `dryRun=All`, forwards it through admission and webhooks, and uses `delete_with_options` so selected objects are not persisted as deleted. Focused e2e `33569985186` passed `test_nodeapiserver_honors_dry_run_and_delete_preconditions` on shard 4; nodeapiserver quick-check `33569976266` also passed. | [#490](https://github.com/centerionware/not-k8s/pull/490) |
 | Termination grace period | open | Shard 4: `test_termination_grace_period_is_honored_not_instant` observed the Pod disappear after about 20ms despite a 20s grace period. | — |
 | Nodeproxy headless/ClusterIP routing | open | Shard 4: `test_headless_service_programs_no_rules_and_does_not_break_others` and `test_losing_every_backend_removes_the_dnat_rule` failed. Re-run independently after API recovery. | — |
 | TLS bootstrap client certificate kubeconfig | open | Shard 1: `test_tls_bootstrap_issues_a_real_client_certificate` timed out waiting for nodelet's issued kubeconfig. | — |
@@ -45,3 +45,5 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | `33566352979` | passed | PR #488 nodeapiserver quick-check for the final standalone recovery fix. |
 | `33566353450` | passed | PR #488 focused e2e: `test_nodeapiserver_honors_authorization_webhook_decisions` passed and the fresh authenticated API recovery barrier completed. |
 | `33568205267` | passed | Current-base focused e2e: `test_nodeapiserver_enforces_node_restriction` passed on shard 2; the previously reported mirror-Pod denial was not reproducible, so no source change or PR was needed. |
+| `33569976266` | passed | PR #490 nodeapiserver quick-check. |
+| `33569985186` | passed | PR #490 focused e2e: `test_nodeapiserver_honors_dry_run_and_delete_preconditions` passed on shard 4. |

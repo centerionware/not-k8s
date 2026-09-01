@@ -4590,6 +4590,10 @@ async fn handle(
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+        };
         let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
         let listed = match rest::list_delete_collection(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
             Ok(outcome) => outcome,
@@ -4622,7 +4626,7 @@ async fn handle(
                 "",
                 None,
                 Some(item),
-                false,
+                dry_run,
                 identity.as_ref(),
             )
             .await
@@ -4651,7 +4655,7 @@ async fn handle(
                 item.clone(),
                 Some(item.clone()),
                 identity.as_ref(),
-                false,
+                dry_run,
             )
             .await
             {
@@ -4665,7 +4669,7 @@ async fn handle(
                 }
             }
 
-            match rest::delete(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, name).await {
+            match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, name, None, dry_run).await {
                 Ok(rest::DeleteOutcome::Deleted(_)) | Ok(rest::DeleteOutcome::ObjectNotFound) => {}
                 Ok(rest::DeleteOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::DeleteOutcome::PreconditionFailed) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
