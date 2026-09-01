@@ -1300,6 +1300,11 @@ pub async fn run(cfg: Config) {
     ));
     let anonymous_auth = cfg.anonymous_auth;
     let max_request_body_bytes = cfg.max_request_body_bytes;
+    // Pure admission plugins are immutable after startup. Keep one ordered
+    // dispatcher for all connections instead of rebuilding its trait-object
+    // chain for every write request; storage-backed plugins remain in the
+    // request path because they require their own I/O and failure policy.
+    let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins());
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -1334,6 +1339,7 @@ pub async fn run(cfg: Config) {
         let client_ca = client_ca.clone();
         let storage = storage.clone();
         let cache_registry = cache_registry.clone();
+        let pure_admission = pure_admission.clone();
         let kubelet_tls = kubelet_tls.clone();
         let service_account_authenticator = service_account_authenticator.clone();
         let oidc_authenticator = oidc_authenticator.clone();
@@ -1370,7 +1376,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), pure_admission.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1801,6 +1807,7 @@ async fn handle_with_audit(
     req: Request<Incoming>,
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
+    pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
     identity: Option<crate::authn::x509::Identity>,
     bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
@@ -2066,7 +2073,7 @@ async fn handle_with_audit(
     // stream lifetime.
     let start = std::time::Instant::now();
     let mut response_object = None;
-    let mut response = match handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
+    let mut response = match handle(req, storage, cache_registry, pure_admission, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
         Ok(response) => {
             if audit_level == crate::audit::policy::Level::RequestResponse && !long_running {
                 let (response, object) = capture_response_object(response, max_request_body_bytes).await;
@@ -2480,6 +2487,7 @@ async fn handle(
     req: Request<Incoming>,
     mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
+    pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     enforce_rbac: bool,
@@ -4234,7 +4242,6 @@ async fn handle(
                 } else {
                     admission::attributes::Operation::Update
                 };
-                let registry = admission::chain::MutatingRegistry::with_builtins();
                 let mut request = admission::chain::Request {
                     operation,
                     group: &info.api_group,
@@ -4244,7 +4251,7 @@ async fn handle(
                     name: &info.name,
                     object: body,
                 };
-                registry.run(&mut request);
+                pure_admission.run(&mut request);
             }
 
             // Group J: `StorageObjectInUseProtection` — mutating,
