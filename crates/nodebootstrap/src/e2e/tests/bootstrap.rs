@@ -5187,6 +5187,108 @@ pub(super) async fn nodeapiserver_enforces_crd_schema_constraints(context: &E2eC
     result
 }
 
+pub(super) async fn nodeapiserver_supports_crd_selectable_fields(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("CRD selectable-field checks are a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let group = format!("nodeapiserver-selectable-{suffix}.test");
+    let crd_name = format!("widgets.{group}");
+    let blue_name = format!("blue-{suffix}");
+    let green_name = format!("green-{suffix}");
+    let crds: Api<CustomResourceDefinition> = Api::all(context.client.clone());
+    let widgets: Api<DynamicObject> = Api::namespaced_with(
+        context.client.clone(),
+        &context.namespace,
+        &ApiResource::from_gvk(&GroupVersionKind::gvk(&group, "v1", "Widget")),
+    );
+    let crd: CustomResourceDefinition = serde_json::from_value(json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": crd_name},
+        "spec": {
+            "group": group.clone(),
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "listKind": "WidgetList"
+            },
+            "scope": "Namespaced",
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "selectableFields": [{"jsonPath": ".spec.color"}],
+                "schema": {"openAPIV3Schema": {
+                    "type": "object",
+                    "required": ["spec"],
+                    "properties": {"spec": {
+                        "type": "object",
+                        "required": ["color"],
+                        "properties": {"color": {"type": "string"}}
+                    }}
+                }}
+            }]
+        }
+    }))?;
+
+    let result = async {
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("creating a CRD with a selectable field")?;
+        context
+            .wait_until("selectable-field CRD to become established", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move { Ok(crds.get_opt(&crd_name).await?.is_some_and(|crd| crd_is_established(&crd))) }
+            })
+            .await?;
+
+        for (name, color) in [(&blue_name, "blue"), (&green_name, "green")] {
+            widgets
+                .create(
+                    &PostParams::default(),
+                    &serde_json::from_value(json!({
+                        "apiVersion": format!("{group}/v1"),
+                        "kind": "Widget",
+                        "metadata": {"name": name, "namespace": &context.namespace},
+                        "spec": {"color": color}
+                    }))?,
+                )
+                .await
+                .with_context(|| format!("creating the {color} selectable-field CRD object"))?;
+        }
+
+        let blue = widgets
+            .list(&ListParams::default().fields("spec.color=blue"))
+            .await
+            .context("listing CRD objects through a selectable field")?;
+        anyhow::ensure!(
+            blue.items.len() == 1 && blue.items[0].metadata.name.as_deref() == Some(blue_name.as_str()),
+            "selectable field returned the wrong objects: {:?}",
+            blue.items.iter().map(|item| item.metadata.name.clone()).collect::<Vec<_>>()
+        );
+
+        match widgets.list(&ListParams::default().fields("spec.missing=value")).await {
+            Err(KubeError::Api(error)) if error.code == 400 => {}
+            Err(error) => anyhow::bail!("unsupported CRD field selector returned the wrong API error: {error}"),
+            Ok(list) => anyhow::bail!("unsupported CRD field selector was accepted: {list:?}"),
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = widgets.delete(&blue_name, &DeleteParams::default()).await;
+    let _ = widgets.delete(&green_name, &DeleteParams::default()).await;
+    let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
+    result
+}
+
 pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
     context: &E2eContext,
 ) -> Result<()> {

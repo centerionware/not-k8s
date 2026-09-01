@@ -232,6 +232,10 @@ struct ResolvedResource {
     /// `Some(proto message name)` for a built-in; `None` for a CRD.
     schema: Option<&'static str>,
     open_api_schema: Option<Value>,
+    /// Additional field-selector paths declared by an established CRD. An
+    /// empty list is the built-in/default CRD behavior: only metadata fields
+    /// are selectable.
+    selectable_fields: Vec<String>,
     /// The CRD storage version's schema, when this is a dynamic resource.
     /// Requests are validated against their served version before conversion;
     /// converted objects must also satisfy this schema before persistence.
@@ -263,11 +267,11 @@ struct ResolvedResource {
 /// of this function ever listing CRDs to resolve a request for CRDs.
 async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<ResolvedResource>, Error> {
     if let Some(kind) = resolve_kind(group, version, resource) {
-        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, storage_open_api_schema: None, has_status_subresource: true, conversion_webhook: None }));
+        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, selectable_fields: Vec::new(), storage_open_api_schema: None, has_status_subresource: true, conversion_webhook: None }));
     }
     Ok(resolve_crd(storage, group, version, resource)
         .await?
-        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, storage_open_api_schema: r.storage_open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
+        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, selectable_fields: r.selectable_fields, storage_open_api_schema: r.storage_open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
 }
 
 /// Resolve the OpenAPI schema used to declare CEL mutation object aliases.
@@ -821,7 +825,7 @@ pub async fn list_at_revision(
     let kind = resolved.kind.as_str();
     let label_reqs = if label_selector.is_empty() { Vec::new() } else { selector::parse_label_selector(label_selector)? };
     let field_reqs = if field_selector.is_empty() { Vec::new() } else { selector::parse_field_selector(field_selector)? };
-    selector::validate_field_selector(group, resource, &field_reqs)?;
+    selector::validate_field_selector_with_additional_fields(group, resource, &field_reqs, &resolved.selectable_fields)?;
 
     let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     // Shared by both the cache path and the direct-nodestore path below —
@@ -4400,6 +4404,7 @@ mod tests {
             kind: "ConfigMap".to_string(),
             schema: Some(schema),
             open_api_schema: None,
+            selectable_fields: Vec::new(),
             storage_open_api_schema: None,
             has_status_subresource: true,
             conversion_webhook: None,
@@ -4417,6 +4422,7 @@ mod tests {
             kind: "ConfigMap".to_string(),
             schema: None,
             open_api_schema: None,
+            selectable_fields: Vec::new(),
             storage_open_api_schema: None,
             has_status_subresource: true,
             conversion_webhook: None,
