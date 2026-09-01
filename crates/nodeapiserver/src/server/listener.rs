@@ -3110,6 +3110,41 @@ async fn handle(
             } else {
                 admission::attributes::Operation::Create
             };
+
+            // Node authorization cannot inspect an apply candidate's body.
+            // Run the same body-sensitive NodeRestriction check as ordinary
+            // writes before any mutating admission changes the candidate.
+            if authz::node::node_name(identity.as_ref()).is_some() {
+                match admission::node_restriction::validate(
+                    &mut client,
+                    identity.as_ref(),
+                    operation,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    &info.namespace,
+                    &info.name,
+                    Some(&candidate),
+                    old_object.as_ref(),
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(admission::node_restriction::Error::Forbidden(message)) => {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &message),
+                        ));
+                    }
+                    Err(admission::node_restriction::Error::Lookup(error)) => {
+                        warn!(path = %path_str, error = %error, "admission: NodeRestriction lookup failed for apply");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
             run_pure_admission(&pure_admission, operation, &info, &mut candidate);
 
             // The pure registry only supplies the default ServiceAccount
