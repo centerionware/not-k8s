@@ -1492,7 +1492,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     // component diagnostics or publishes the real failing test.
     kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
     kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
-    let client = Client::try_from(kube_config).context(
+    let mut client = Client::try_from(kube_config).context(
         "building the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first",
     )?;
     if let Some(shard) = shard {
