@@ -1342,6 +1342,16 @@ pub async fn run(cfg: Config) {
     // chain for every write request; storage-backed plugins remain in the
     // request path because they require their own I/O and failure policy.
     let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins_enabled(&cfg.enabled_admission_plugins));
+    let pod_node_selector_config = match &cfg.pod_node_selector_config_file {
+        Some(path) => match crate::admission::pod_node_selector::PluginConfig::from_file(path) {
+            Ok(config) => Some(Arc::new(config)),
+            Err(error) => {
+                warn!(path = %path.display(), %error, "failed to load PodNodeSelector configuration; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -1377,6 +1387,7 @@ pub async fn run(cfg: Config) {
         let storage = storage.clone();
         let cache_registry = cache_registry.clone();
         let pure_admission = pure_admission.clone();
+        let pod_node_selector_config = pod_node_selector_config.clone();
         let kubelet_tls = kubelet_tls.clone();
         let service_account_authenticator = service_account_authenticator.clone();
         let oidc_authenticator = oidc_authenticator.clone();
@@ -1413,7 +1424,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), pure_admission.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), pure_admission.clone(), pod_node_selector_config.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1854,6 +1865,7 @@ async fn handle_with_audit(
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
+    pod_node_selector_config: Option<Arc<crate::admission::pod_node_selector::PluginConfig>>,
     identity: Option<crate::authn::x509::Identity>,
     bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
@@ -2133,7 +2145,7 @@ async fn handle_with_audit(
     // stream lifetime.
     let start = std::time::Instant::now();
     let mut response_object = None;
-    let mut response = match handle(req, storage, cache_registry, pure_admission, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
+    let mut response = match handle(req, storage, cache_registry, pure_admission, pod_node_selector_config, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
         Ok(response) => {
             if audit_level == crate::audit::policy::Level::RequestResponse && !long_running {
                 let (response, object) = capture_response_object(response, max_request_body_bytes).await;
@@ -2588,6 +2600,7 @@ async fn handle(
     mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
+    pod_node_selector_config: Option<Arc<crate::admission::pod_node_selector::PluginConfig>>,
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     enforce_rbac: bool,
@@ -3434,7 +3447,7 @@ async fn handle(
                     &info.subresource,
                 )
             {
-                match rest::get(
+                let annotation = match rest::get(
                     &mut client,
                     None,
                     "",
@@ -3445,22 +3458,11 @@ async fn handle(
                 )
                 .await
                 {
-                    Ok(rest::GetOutcome::Found(namespace_object)) => {
-                        let selector = namespace_object
+                    Ok(rest::GetOutcome::Found(namespace_object)) => namespace_object
                             .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
                             .and_then(Value::as_str)
-                            .unwrap_or("");
-                        if let Err(error) =
-                            admission::pod_node_selector::merge_namespace_selector(&mut candidate, selector)
-                        {
-                            return Ok(json_response(
-                                StatusCode::FORBIDDEN,
-                                &admission_forbidden_status(&path_str, &error),
-                            ));
-                        }
-                    }
-                    Ok(rest::GetOutcome::ObjectNotFound)
-                    | Ok(rest::GetOutcome::UnknownResource) => {}
+                            .map(str::to_string),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                     Err(error) => {
                         warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector apply failed");
                         return Ok(json_response(
@@ -3468,6 +3470,25 @@ async fn handle(
                             &internal_error_status(&path_str),
                         ));
                     }
+                };
+                let selector = match admission::pod_node_selector::selector_for_namespace(
+                    pod_node_selector_config.as_deref(),
+                    namespace.unwrap_or(""),
+                    annotation.as_deref(),
+                ) {
+                    Ok(selector) => selector,
+                    Err(error) => {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &error),
+                        ));
+                    }
+                };
+                if let Err(error) = admission::pod_node_selector::merge_namespace_selector(&mut candidate, &selector) {
+                    return Ok(json_response(
+                        StatusCode::FORBIDDEN,
+                        &admission_forbidden_status(&path_str, &error),
+                    ));
                 }
             }
 
@@ -5643,7 +5664,7 @@ async fn handle(
                 )
             {
                 if let Some(pod) = body_value.as_mut() {
-                    match rest::get(
+                    let annotation = match rest::get(
                         &mut client,
                         None,
                         "",
@@ -5654,19 +5675,11 @@ async fn handle(
                     )
                     .await
                     {
-                        Ok(rest::GetOutcome::Found(namespace_object)) => {
-                            let selector = namespace_object
+                        Ok(rest::GetOutcome::Found(namespace_object)) => namespace_object
                                 .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
                                 .and_then(Value::as_str)
-                                .unwrap_or("");
-                            if let Err(error) = admission::pod_node_selector::merge_namespace_selector(pod, selector) {
-                                return Ok(json_response(
-                                    StatusCode::FORBIDDEN,
-                                    &admission_forbidden_status(&path_str, &error),
-                                ));
-                            }
-                        }
-                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {}
+                                .map(str::to_string),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                         Err(error) => {
                             warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector failed");
                             return Ok(json_response(
@@ -5674,6 +5687,25 @@ async fn handle(
                                 &internal_error_status(&path_str),
                             ));
                         }
+                    };
+                    let selector = match admission::pod_node_selector::selector_for_namespace(
+                        pod_node_selector_config.as_deref(),
+                        namespace.unwrap_or(""),
+                        annotation.as_deref(),
+                    ) {
+                        Ok(selector) => selector,
+                        Err(error) => {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &error),
+                            ));
+                        }
+                    };
+                    if let Err(error) = admission::pod_node_selector::merge_namespace_selector(pod, &selector) {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &error),
+                        ));
                     }
                 }
             }
