@@ -85,6 +85,14 @@ fn crd_is_established(crd: &CustomResourceDefinition) -> bool {
     })
 }
 
+async fn nodeapiserver_metrics(context: &E2eContext) -> Result<String> {
+    context
+        .client
+        .request_text(Request::builder().method("GET").uri("/metrics").body(Vec::new())?)
+        .await
+        .context("reading nodeapiserver metrics with the admin client certificate")
+}
+
 struct NodeapiserverAuthenticationOverride {
     drop_in: PathBuf,
     token_file: PathBuf,
@@ -3585,23 +3593,13 @@ pub(super) async fn nodeapiserver_apf_labels_requests(context: &E2eContext) -> R
     result
 }
 
-pub(super) async fn nodeapiserver_exposes_inflight_metrics(_context: &E2eContext) -> Result<()> {
+pub(super) async fn nodeapiserver_exposes_inflight_metrics(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
         return Err(skip_test("inflight metrics are a nodeapiserver-only check"));
     }
 
-    let endpoint = format!("{}/metrics", cfg.apiserver_server().trim_end_matches('/'));
-    let output = Command::new("curl")
-        .args(["-k", "-sS", "--max-time", "10", &endpoint])
-        .output()
-        .context("reading nodeapiserver inflight metrics")?;
-    anyhow::ensure!(
-        output.status.success(),
-        "nodeapiserver metrics request failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let metrics = String::from_utf8_lossy(&output.stdout);
+    let metrics = nodeapiserver_metrics(context).await?;
     anyhow::ensure!(
         metrics.contains("# TYPE apiserver_current_inflight_requests gauge")
             && metrics.contains("apiserver_current_inflight_requests{request_kind=\"mutating\"}")
@@ -3623,17 +3621,7 @@ pub(super) async fn nodeapiserver_exposes_full_request_metrics(context: &E2eCont
         .await
         .context("creating a namespaced list request for the nodeapiserver metrics check")?;
 
-    let endpoint = format!("{}/metrics", cfg.apiserver_server().trim_end_matches('/'));
-    let output = Command::new("curl")
-        .args(["-k", "-sS", "--max-time", "10", &endpoint])
-        .output()
-        .context("reading nodeapiserver request metrics")?;
-    anyhow::ensure!(
-        output.status.success(),
-        "nodeapiserver metrics request failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let metrics = String::from_utf8_lossy(&output.stdout);
+    let metrics = nodeapiserver_metrics(context).await?;
     let labels = "verb=\"LIST\",dry_run=\"\",group=\"\",version=\"v1\",resource=\"configmaps\",subresource=\"\",scope=\"namespace\",component=\"apiserver\",code=\"200\"";
     anyhow::ensure!(
         metrics.contains(&format!("apiserver_request_total{{{labels}}}")),
