@@ -90,8 +90,6 @@ fn parse_csr_organizations(object: &Value) -> Result<Vec<String>, Error> {
     }
     let (_, csr) = x509_parser::certification_request::X509CertificationRequest::from_der(pem.contents())
         .map_err(|error| Error::Forbidden(format!("failed to parse CSR: {error:?}")))?;
-    csr.verify_signature()
-        .map_err(|error| Error::Forbidden(format!("failed to verify CSR signature: {error:?}")))?;
     Ok(csr
         .certification_request_info
         .subject
