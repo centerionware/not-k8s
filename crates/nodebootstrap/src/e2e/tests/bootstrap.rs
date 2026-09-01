@@ -2005,6 +2005,7 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
     let suffix = std::process::id();
     let class_name = format!("nodeapiserver-default-{suffix}");
     let ingress_name = format!("nodeapiserver-ingress-{suffix}");
+    let apply_ingress_name = format!("nodeapiserver-apply-ingress-{suffix}");
     let class_uri = "/apis/networking.k8s.io/v1/ingressclasses";
     let ingress_uri = format!(
         "/apis/networking.k8s.io/v1/namespaces/{}/ingresses",
@@ -2054,6 +2055,33 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
             ingress["spec"]["ingressClassName"] == class_name,
             "nodeapiserver did not default the IngressClass: {ingress}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/apis/networking.k8s.io/v1/namespaces/{}/ingresses/{apply_ingress_name}?fieldManager=nodeapiserver-apply-ingress",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "networking.k8s.io/v1",
+                        "kind": "Ingress",
+                        "metadata": {
+                            "name": &apply_ingress_name,
+                            "namespace": context.namespace
+                        },
+                        "spec": {}
+                    }))?)?,
+            )
+            .await
+            .context("applying an Ingress without a class")?;
+        anyhow::ensure!(
+            applied["spec"]["ingressClassName"] == class_name,
+            "nodeapiserver did not default the IngressClass for Server-Side Apply: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -2061,6 +2089,10 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
     let _ = context
         .client
         .request::<Value>(Request::builder().method("DELETE").uri(format!("{ingress_uri}/{ingress_name}")).body(Vec::new())?)
+        .await;
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(format!("{ingress_uri}/{apply_ingress_name}")).body(Vec::new())?)
         .await;
     let _ = context
         .client
