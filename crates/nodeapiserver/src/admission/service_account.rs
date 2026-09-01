@@ -101,10 +101,8 @@ pub enum Decision {
 /// Whether any container (`initContainers`+`containers`) in `pod`
 /// references `secret_name` via an env var or `envFrom`, or any volume is
 /// a `Secret` volume named `secret_name` — real upstream's own
-/// `podutil.VisitPodSecretNames` equivalent, used here only for the
-/// mirror-pod "may not reference secrets" check (the full
-/// `limitSecretReferences` enforcement is not ported — see this module's
-/// own doc comment).
+/// `podutil.VisitPodSecretNames` equivalent, used for the mirror-pod
+/// "may not reference secrets" check.
 fn references_any_secret(pod: &Value) -> bool {
     let spec = pod.get("spec");
     let volumes_reference_secret = spec.and_then(|s| s.get("volumes")).and_then(Value::as_array).is_some_and(|vols| vols.iter().any(|v| v.get("secret").is_some()));
