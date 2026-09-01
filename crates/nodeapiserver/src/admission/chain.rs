@@ -9,6 +9,7 @@
 
 use super::attributes::Operation;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// The request facts a pure mutating plugin may use to decide whether it
 /// applies. The object is borrowed mutably only while the chain runs.
@@ -19,6 +20,7 @@ pub struct Request<'a> {
     pub subresource: &'a str,
     pub namespace: &'a str,
     pub name: &'a str,
+    pub old_object: Option<&'a Value>,
     pub object: &'a mut Value,
 }
 
@@ -48,13 +50,21 @@ impl MutatingRegistry {
         self.plugins.push(Box::new(plugin));
     }
 
-    /// Registers the pure built-ins in the same order the listener used
-    /// before this registry existed: default pod tolerations first, then
-    /// ServiceAccount-name defaulting.
+    /// Registers the default pure built-ins in their upstream order.
     pub fn with_builtins() -> Self {
+        Self::with_builtins_enabled(&[])
+    }
+
+    /// Registers the default pure built-ins plus explicitly enabled
+    /// upstream opt-in plugins.
+    pub fn with_builtins_enabled(enabled: &[String]) -> Self {
         let mut registry = Self::new();
         registry.register(DefaultTolerationSeconds);
+        registry.register(ExtendedResourceToleration);
         registry.register(ServiceAccountDefaults);
+        if enabled.iter().any(|plugin| plugin.eq_ignore_ascii_case("AlwaysPullImages")) {
+            registry.register(AlwaysPullImages);
+        }
         registry.register(TaintNodesByCondition);
         registry
     }
@@ -100,6 +110,92 @@ impl MutatingPlugin for DefaultTolerationSeconds {
 }
 
 struct ServiceAccountDefaults;
+
+struct ExtendedResourceToleration;
+
+struct AlwaysPullImages;
+
+impl MutatingPlugin for AlwaysPullImages {
+    fn name(&self) -> &'static str {
+        "AlwaysPullImages"
+    }
+
+    fn applies(&self, request: &Request<'_>) -> bool {
+        if !request.group.is_empty() || request.resource != "pods" || !request.subresource.is_empty() {
+            return false;
+        }
+        match request.operation {
+            Operation::Create => true,
+            Operation::Update => request.old_object.is_none_or(|old| has_new_image(old, request.object)),
+            _ => false,
+        }
+    }
+
+    fn mutate(&self, object: &mut Value) {
+        let Some(spec) = object.get_mut("spec").and_then(Value::as_object_mut) else {
+            return;
+        };
+        for field in ["initContainers", "containers", "ephemeralContainers"] {
+            if let Some(containers) = spec.get_mut(field).and_then(Value::as_array_mut) {
+                for container in containers {
+                    if let Some(container) = container.as_object_mut() {
+                        container.insert(
+                            "imagePullPolicy".to_string(),
+                            Value::String("Always".to_string()),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(volumes) = spec.get_mut("volumes").and_then(Value::as_array_mut) {
+            for volume in volumes {
+                if let Some(image) = volume.get_mut("image").and_then(Value::as_object_mut) {
+                    image.insert(
+                        "pullPolicy".to_string(),
+                        Value::String("Always".to_string()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn has_new_image(old: &Value, new: &Value) -> bool {
+    let old_images = container_images(old).collect::<BTreeSet<_>>();
+    container_images(new).any(|image| !old_images.contains(image))
+}
+
+fn container_images(value: &Value) -> impl Iterator<Item = &str> {
+    ["initContainers", "containers", "ephemeralContainers"]
+        .into_iter()
+        .flat_map(move |field| {
+            value
+                .pointer(&format!("/spec/{field}"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|container| container.get("image").and_then(Value::as_str))
+        })
+}
+
+impl MutatingPlugin for ExtendedResourceToleration {
+    fn name(&self) -> &'static str {
+        "ExtendedResourceToleration"
+    }
+
+    fn applies(&self, request: &Request<'_>) -> bool {
+        super::extended_resource_toleration::applies_to(
+            request.operation,
+            request.group,
+            request.resource,
+            request.subresource,
+        )
+    }
+
+    fn mutate(&self, object: &mut Value) {
+        super::extended_resource_toleration::mutate(object);
+    }
+}
 
 impl MutatingPlugin for ServiceAccountDefaults {
     fn name(&self) -> &'static str {
@@ -170,6 +266,7 @@ mod tests {
             subresource: "",
             namespace: "default",
             name: "pod",
+            old_object: None,
             object,
         }
     }
@@ -191,7 +288,12 @@ mod tests {
         let registry = MutatingRegistry::with_builtins();
         assert_eq!(
             registry.names().collect::<Vec<_>>(),
-            ["DefaultTolerationSeconds", "ServiceAccount", "TaintNodesByCondition"]
+            [
+                "DefaultTolerationSeconds",
+                "ExtendedResourceToleration",
+                "ServiceAccount",
+                "TaintNodesByCondition"
+            ]
         );
 
         let mut pod = json!({"spec": {}});
@@ -205,5 +307,41 @@ mod tests {
         registry.run(&mut status_request);
         assert!(status["spec"].get("serviceAccountName").is_none());
         assert!(status["spec"].get("tolerations").is_none());
+    }
+
+    #[test]
+    fn always_pull_images_is_opt_in_and_updates_all_pod_container_lists() {
+        let enabled = vec!["alwayspullimages".to_string()];
+        let registry = MutatingRegistry::with_builtins_enabled(&enabled);
+        assert!(registry.names().any(|name| name == "AlwaysPullImages"));
+
+        let mut pod = json!({
+            "spec": {
+                "initContainers": [{"image": "init", "imagePullPolicy": "IfNotPresent"}],
+                "containers": [{"image": "main", "imagePullPolicy": "IfNotPresent"}],
+                "ephemeralContainers": [{"image": "debug", "imagePullPolicy": "IfNotPresent"}]
+            }
+        });
+        registry.run(&mut request(&mut pod, Operation::Create));
+        for field in ["initContainers", "containers", "ephemeralContainers"] {
+            assert_eq!(pod["spec"][field][0]["imagePullPolicy"], "Always");
+        }
+
+        let old = json!({"spec": {"containers": [{"image": "main"}]}});
+        let mut unchanged_image = json!({"spec": {"containers": [{"image": "main", "imagePullPolicy": "Never"}]} });
+        let mut update_request = request(&mut unchanged_image, Operation::Update);
+        update_request.old_object = Some(&old);
+        registry.run(&mut update_request);
+        assert_eq!(unchanged_image["spec"]["containers"][0]["imagePullPolicy"], "Never");
+
+        let mut new_image = json!({"spec": {"containers": [{"image": "new", "imagePullPolicy": "Never"}]} });
+        let mut update_request = request(&mut new_image, Operation::Update);
+        update_request.old_object = Some(&old);
+        registry.run(&mut update_request);
+        assert_eq!(new_image["spec"]["containers"][0]["imagePullPolicy"], "Always");
+
+        let mut default_pod = json!({"spec": {"containers": [{"image": "main"}]} });
+        MutatingRegistry::with_builtins().run(&mut request(&mut default_pod, Operation::Create));
+        assert!(default_pod["spec"]["containers"][0].get("imagePullPolicy").is_none());
     }
 }

@@ -8,11 +8,11 @@
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 11/12 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 8/10 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 12/13 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
-| J — Admission | in progress | 14/15 |
+| J — Admission | in progress | 20/21 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | done for current scope | 9/9 |
@@ -60,7 +60,7 @@ explanation of each boundary.
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **done for current scope** | RBAC, node authorization, review APIs, the authorization webhook path, kubeconfig credentials, and public-info bootstrap policy are integrated; broader upstream authorizer behavior and compatibility coverage remain. |
-| J. Admission | **in progress** | The implemented built-ins (including DefaultIngressClass and StorageObjectInUseProtection) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
+| J. Admission | **in progress** | The implemented built-ins (including certificate admission, DefaultIngressClass, and StorageObjectInUseProtection) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
 | M. APF/audit/observability | **done for current scope** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, policy-selected request/response object capture, and kubeconfig webhook credentials are integrated; remaining observability refinements remain. |
@@ -403,8 +403,10 @@ hit path, never a correctness risk on the miss path). `GET`/`LIST` use
 that cache for every built-in GVR and for dynamically reconciled CRD GVRs.
 **Per-Kind `SelectableFields` is now enforced**:
 built-in registries accept their verified metadata and resource-specific
-fields, while CRDs accept only the universal metadata fields; unsupported
-field paths return `400 BadRequest` instead of silently matching no objects.
+fields, while CRDs accept the universal metadata fields plus the served
+version's declared `spec.selectableFields` paths; unsupported field paths
+return `400 BadRequest` instead of silently matching no objects. The CRD
+selectable-field path is covered by a nodeapiserver-only e2e check.
 CRD GVRs cannot be registered before their definitions exist; Group K's live
 CRD-cache reconciler registers and retires those caches as the definitions
 change, with a first-watch fallback for the startup race.
@@ -651,8 +653,8 @@ real `404`, not a create).
 
 **Authentication, authorization, and admission now all gate the real
 write verbs**: `authn::x509`'s verified peer identity (Group H), opt-in
-RBAC enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`), and five
-unconditional Group J admission plugins — see those groups' own sections
+RBAC enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`), and the
+unconditional Group J admission stages — see those groups' own sections
 for what's real and what's deliberately still opt-in/not-yet-ported.
 
 `server::watch_event::to_watch_event_json` is the first piece of real
@@ -915,7 +917,14 @@ happened to lex it. Named honestly: these two generated-table functions are
 still only structural (presence + kind). The schema-local constraints are
 covered by the supplemental OpenAPI pass described above; cross-field and
 other per-kind semantic validation remains hand-written Go upstream, with no
-generic shortcut.
+generic shortcut. The first verified cross-field rules now cover HPA replica
+bounds and the apps workload invariant that a Deployment, ReplicaSet,
+DaemonSet, or StatefulSet selector must match its PodTemplate labels.
+Label-selector operators are checked against the template's labels, and the
+same rule is applied on create, update, patch, and apply through the shared
+built-in validation path. Apps/v1 also rejects selector changes after
+creation on update, patch, and apply, matching the immutable selector
+strategy used by the upstream apps REST resources.
 
 `cel_ext::type_check` now supplies the schema-aware CEL acceptance step that
 the runtime `cel` crate does not provide: `self`/`oldSelf` are resolved against
@@ -996,7 +1005,9 @@ DNS-subdomain rule through `ValidateReplicationControllerName`, while
 `events.k8s.io/v1` Events use `NameIsDNSSubdomain`. The legacy core `events`
 and `events.k8s.io/v1beta1` resources retain their older validation behavior
 and are intentionally not included in this mapping. `name_format_violations`
-now covers 31 resources total. Every other resource is left unchecked rather than
+now covers 33 resources total, including the StatefulSet-specific DNS1123
+label rule and HorizontalPodAutoscaler's DNS-subdomain rule. Every other
+resource is left unchecked rather than
 guessing at a rule for it, gating both `create` and `update`. Extending
 this to more resources is real, separate follow-up work, one verified
 entry at a time (the function's own doc comment says so explicitly).
@@ -1078,10 +1089,12 @@ on an unresolved ownership conflict). **Create-on-apply is real too**: no
 object at this key creates one through the same create-only-if-absent
 `Txn` idiom `rest::create` uses, `updater::apply` run against an empty
 `live` either way. `rest::apply_prepare`/`apply_persist`'s own split (the
-same shape `patch_prepare`/`patch_persist` already has) lets both
-`namespace_lifecycle` *and* `LimitRanger` admission run against the real
-candidate object, matching the ordinary three-patch-kind `PATCH`
-branch's own coverage exactly. REST and watch conversion webhooks already
+same shape `patch_prepare`/`patch_persist` already has) lets the same
+candidate-based built-in admission stages run against an Apply
+candidate as ordinary REST writes: namespace lifecycle, pure mutators,
+service-account and storage-class/defaulting stages, RuntimeClass, Priority,
+PodNodeSelector, LimitRanger, PVC resize, PodSecurity, ResourceQuota, and
+body-sensitive NodeRestriction checks. REST and watch conversion webhooks already
 convert CRD objects between served and storage versions. **Named, honest
 scope remaining**:
 `updater`'s compiled `FIELD_META` path still applies only to built-in
@@ -1356,6 +1369,28 @@ the upstream `node.kubernetes.io/not-ready`/`NoSchedule` taint when absent,
 preserves submitted taints, and is idempotent so node lifecycle reconciliation
 can remove the taint after the node becomes Ready.
 
+`admission::extended_resource_toleration` is the pure
+`ExtendedResourceToleration` mutation for core `Pod` `CREATE`/`UPDATE`
+requests. For every extended resource requested by a regular or init
+container, it adds the matching `Exists`/`NoSchedule` toleration, preserving
+existing matching tolerations and ordering newly-added resources
+deterministically. This matches real upstream behavior. Upstream keeps this
+plugin opt-in; this crate currently registers it with the other built-in
+mutators while its configured opt-in surface is used for additional plugins
+such as `AlwaysPullImages`.
+
+`admission::certificate` covers the three certificate admission stages enabled
+by the upstream default chain. `CertificateSubjectRestriction` rejects a
+`kubernetes.io/kube-apiserver-client` CSR whose parsed subject includes the
+`system:masters` organization. `CertificateApproval` authorizes writes to the
+CSR `approval` subresource against the synthetic `signers` resource with the
+`approve` verb, and `CertificateSigning` applies the corresponding `sign`
+check when certificate or condition status changes. Both signer checks honor
+the nodeapiserver's opt-in RBAC enforcement setting and support the upstream
+exact-signer plus `{domain}/*` wildcard lookup. CSR approval and status
+`PUT`/`PATCH` requests now use the status-only persistence path instead of
+falling through to an ordinary full-object write.
+
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
 (`plugin/pkg/admission/storage/storageclass/setdefault/admission.go`,
@@ -1395,9 +1430,9 @@ fetched and read directly): PersistentVolumes, PersistentVolumeClaims, and
 VolumeAttributesClasses receive their standard protection finalizer when
 created. The existing nodecontroller protection controllers remove those
 finalizers once the objects are no longer in use. The mutation is applied to
-the request candidate before the remaining admission stages and is covered
-by unit tests for all three resource families, duplicate-finalizer handling,
-and subresource exclusion.
+the request candidate before the remaining admission stages for ordinary
+create and Server-Side Apply, and is covered by unit tests for all three
+resource families, duplicate-finalizer handling, and subresource exclusion.
 
 `admission::runtime_class` is mutating and validating, `CREATE`-only for
 ordinary Pods — a faithful port of real upstream's `RuntimeClass` plugin
@@ -1408,7 +1443,8 @@ merged with conflicts rejected, and its tolerations are appended without
 duplicates. A Pod-supplied overhead must match the RuntimeClass's overhead,
 or is rejected when no matching RuntimeClass overhead exists. The listener
 performs the live RuntimeClass lookup and the pure module applies the
-mutation/validation before the remaining Pod admission stages.
+mutation/validation before the remaining Pod admission stages for ordinary
+create and Server-Side Apply.
 
 `admission::priority` is mutating for Pod `CREATE`/`UPDATE` and validating
 for `PriorityClass` `CREATE`/`UPDATE` — a faithful port of real upstream's
@@ -1418,7 +1454,8 @@ priority/preemption policy are applied; a global-default class is selected by
 the lowest priority value when the Pod names none; plugin-owned fields are
 preserved across updates; and creating or updating a second global-default
 PriorityClass is rejected. The listener performs the storage lookups while
-the object rules remain pure and unit tested.
+the object rules remain pure and unit tested, including for Server-Side Apply
+Pod and PriorityClass candidates.
 
 `admission::pvc_resize` is validating, `UPDATE`-only — a faithful port of
 real upstream's `PersistentVolumeClaimResize` plugin
@@ -1432,9 +1469,12 @@ candidates after the patch has been materialized.
 the upstream `PodNodeSelector` plugin. A Pod created in a Namespace carrying
 `scheduler.alpha.kubernetes.io/node-selector` gets those exact-match labels
 merged into `spec.nodeSelector`; conflicting Pod labels and unsupported
-selector syntax are rejected before persistence. The cluster-wide admission
-configuration-file form remains separate work because this crate does not yet
-have an admission plugin configuration-file surface.
+selector syntax are rejected before persistence. The cluster-wide form is
+available through `NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE`, an
+upstream-shaped YAML object with `clusterDefaultNodeSelector` and
+namespace-name keys. A namespace-specific configured selector overrides the
+cluster default, while the Namespace annotation overrides both. The same
+effective selector is applied to Server-Side Apply Pod candidates.
 
 `admission::limit_ranger` is mutating (pods, `CREATE` only) + validating
 (pods and `PersistentVolumeClaim`s) — a faithful-but-scoped port of real
@@ -1716,8 +1756,14 @@ selected object). Dry-run requests are rejected with a
 `Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
 AdmissionReview path.
 
-**Not yet landed**: the remaining built-in plugins, a complete registry covering
-storage-backed mutators and validators, the remaining typed-CEL /
+The upstream opt-in `AlwaysPullImages` plugin is available through the
+comma-separated `NODEAPISERVER_ENABLE_ADMISSION_PLUGINS` environment setting.
+When enabled, the pure admission registry forces `imagePullPolicy: Always`
+for regular, init, and ephemeral Pod containers on create and update; it is
+not enabled by default, matching kube-apiserver's default plugin set.
+
+**Not yet landed**: a complete registry covering storage-backed mutators and
+validators, the remaining typed-CEL /
 variable surface of MutatingAdmissionPolicy, and interpreter-level fuel
 accounting. The ValidatingAdmissionPolicy path uses the existing
 per-expression deadline and shared request-side CEL budget. Admission

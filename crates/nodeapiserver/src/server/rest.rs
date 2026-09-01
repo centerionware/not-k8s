@@ -232,6 +232,10 @@ struct ResolvedResource {
     /// `Some(proto message name)` for a built-in; `None` for a CRD.
     schema: Option<&'static str>,
     open_api_schema: Option<Value>,
+    /// Additional field-selector paths declared by an established CRD. An
+    /// empty list is the built-in/default CRD behavior: only metadata fields
+    /// are selectable.
+    selectable_fields: Vec<String>,
     /// The CRD storage version's schema, when this is a dynamic resource.
     /// Requests are validated against their served version before conversion;
     /// converted objects must also satisfy this schema before persistence.
@@ -263,11 +267,11 @@ struct ResolvedResource {
 /// of this function ever listing CRDs to resolve a request for CRDs.
 async fn resolve_resource(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<ResolvedResource>, Error> {
     if let Some(kind) = resolve_kind(group, version, resource) {
-        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, storage_open_api_schema: None, has_status_subresource: true, conversion_webhook: None }));
+        return Ok(protobuf::schema_for_gvk(group, version, kind).map(|schema| ResolvedResource { kind: kind.to_string(), schema: Some(schema), open_api_schema: None, selectable_fields: Vec::new(), storage_open_api_schema: None, has_status_subresource: true, conversion_webhook: None }));
     }
     Ok(resolve_crd(storage, group, version, resource)
         .await?
-        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, storage_open_api_schema: r.storage_open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
+        .map(|r| ResolvedResource { kind: r.kind, schema: None, open_api_schema: r.open_api_schema, selectable_fields: r.selectable_fields, storage_open_api_schema: r.storage_open_api_schema, has_status_subresource: r.has_status_subresource, conversion_webhook: r.conversion_webhook }))
 }
 
 /// Resolve the OpenAPI schema used to declare CEL mutation object aliases.
@@ -821,7 +825,7 @@ pub async fn list_at_revision(
     let kind = resolved.kind.as_str();
     let label_reqs = if label_selector.is_empty() { Vec::new() } else { selector::parse_label_selector(label_selector)? };
     let field_reqs = if field_selector.is_empty() { Vec::new() } else { selector::parse_field_selector(field_selector)? };
-    selector::validate_field_selector(group, resource, &field_reqs)?;
+    selector::validate_field_selector_with_additional_fields(group, resource, &field_reqs, &resolved.selectable_fields)?;
 
     let group_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
     // Shared by both the cache path and the direct-nodestore path below —
@@ -2192,6 +2196,17 @@ async fn persist_update(
     has_status_subresource: bool,
     managed_fields_reconciled: bool,
 ) -> Result<UpdateOutcome, Error> {
+    let semantic_violations = validation::validate_builtin_update_semantics(
+        group,
+        version,
+        kind,
+        existing_object,
+        &object,
+    );
+    if !semantic_violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(semantic_violations));
+    }
+
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
             set_metadata_field(&mut object, field, existing_value);
@@ -3486,10 +3501,17 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         // (`pkg/apis/node/validation/validation.go`).
         // `coordination.k8s.io/v1`: Lease — same inlined-not-var pattern
         // (`pkg/apis/coordination/validation/validation.go`).
+        // `apps/v1` StatefulSet names use the stricter DNS1123Label rule
+        // because the name becomes part of generated Pod names
+        // (`ValidateStatefulSetName`).
+        // `autoscaling/v1` and `autoscaling/v2` HorizontalPodAutoscaler
+        // names use the DNS-subdomain rule (`ValidateHorizontalPodAutoscalerName`).
         ("apps", "controllerrevisions") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "daemonsets") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "deployments") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "replicasets") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("apps", "statefulsets") => crate::scheme::name_format::is_dns1123_label(name),
+        ("autoscaling", "horizontalpodautoscalers") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("networking.k8s.io", "ingresses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("networking.k8s.io", "ingressclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("networking.k8s.io", "servicecidrs") => crate::scheme::name_format::is_dns1123_subdomain(name),
@@ -4215,21 +4237,23 @@ mod tests {
 
     #[test]
     fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_newly_verified_resource() {
-        for (group, resource) in [
-            ("apps", "controllerrevisions"),
-            ("apps", "daemonsets"),
-            ("apps", "deployments"),
-            ("apps", "replicasets"),
-            ("networking.k8s.io", "ingresses"),
-            ("networking.k8s.io", "ingressclasses"),
-            ("networking.k8s.io", "servicecidrs"),
-            ("discovery.k8s.io", "endpointslices"),
-            ("flowcontrol.apiserver.k8s.io", "flowschemas"),
-            ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"),
-            ("node.k8s.io", "runtimeclasses"),
-            ("coordination.k8s.io", "leases"),
+        for (group, resource, valid_name) in [
+            ("apps", "controllerrevisions", "my-name.example"),
+            ("apps", "daemonsets", "my-name.example"),
+            ("apps", "deployments", "my-name.example"),
+            ("apps", "replicasets", "my-name.example"),
+            ("apps", "statefulsets", "my-name"),
+            ("autoscaling", "horizontalpodautoscalers", "my-name.example"),
+            ("networking.k8s.io", "ingresses", "my-name.example"),
+            ("networking.k8s.io", "ingressclasses", "my-name.example"),
+            ("networking.k8s.io", "servicecidrs", "my-name.example"),
+            ("discovery.k8s.io", "endpointslices", "my-name.example"),
+            ("flowcontrol.apiserver.k8s.io", "flowschemas", "my-name.example"),
+            ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations", "my-name.example"),
+            ("node.k8s.io", "runtimeclasses", "my-name.example"),
+            ("coordination.k8s.io", "leases", "my-name.example"),
         ] {
-            assert!(name_format_violations(group, resource, "my-name.example").is_empty(), "{group}/{resource} should accept a valid DNS subdomain");
+            assert!(name_format_violations(group, resource, valid_name).is_empty(), "{group}/{resource} should accept its valid name");
             assert!(!name_format_violations(group, resource, "My_Bad_Name").is_empty(), "{group}/{resource} should reject an invalid DNS subdomain");
         }
     }
@@ -4253,6 +4277,13 @@ mod tests {
         // The legacy core Event resource intentionally has a different
         // compatibility rule and must not inherit the v1 events.k8s.io rule.
         assert!(name_format_violations("", "events", "Invalid_Name").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_keeps_statefulset_label_rule_distinct() {
+        assert!(name_format_violations("apps", "statefulsets", "stateful-app").is_empty());
+        assert!(!name_format_violations("apps", "statefulsets", "stateful.app").is_empty());
+        assert!(name_format_violations("autoscaling", "horizontalpodautoscalers", "hpa.app").is_empty());
     }
 
     #[test]
@@ -4373,6 +4404,7 @@ mod tests {
             kind: "ConfigMap".to_string(),
             schema: Some(schema),
             open_api_schema: None,
+            selectable_fields: Vec::new(),
             storage_open_api_schema: None,
             has_status_subresource: true,
             conversion_webhook: None,
@@ -4390,6 +4422,7 @@ mod tests {
             kind: "ConfigMap".to_string(),
             schema: None,
             open_api_schema: None,
+            selectable_fields: Vec::new(),
             storage_open_api_schema: None,
             has_status_subresource: true,
             conversion_webhook: None,

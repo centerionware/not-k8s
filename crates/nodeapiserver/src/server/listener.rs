@@ -1341,7 +1341,17 @@ pub async fn run(cfg: Config) {
     // dispatcher for all connections instead of rebuilding its trait-object
     // chain for every write request; storage-backed plugins remain in the
     // request path because they require their own I/O and failure policy.
-    let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins());
+    let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins_enabled(&cfg.enabled_admission_plugins));
+    let pod_node_selector_config = match &cfg.pod_node_selector_config_file {
+        Some(path) => match crate::admission::pod_node_selector::PluginConfig::from_file(path) {
+            Ok(config) => Some(Arc::new(config)),
+            Err(error) => {
+                warn!(path = %path.display(), %error, "failed to load PodNodeSelector configuration; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
 
     // Group N: built once at startup, not per request — the TLS config
     // itself doesn't depend on which pod/node a given `pods/log` request
@@ -1377,6 +1387,7 @@ pub async fn run(cfg: Config) {
         let storage = storage.clone();
         let cache_registry = cache_registry.clone();
         let pure_admission = pure_admission.clone();
+        let pod_node_selector_config = pod_node_selector_config.clone();
         let kubelet_tls = kubelet_tls.clone();
         let service_account_authenticator = service_account_authenticator.clone();
         let oidc_authenticator = oidc_authenticator.clone();
@@ -1413,7 +1424,7 @@ pub async fn run(cfg: Config) {
             // "unauthenticated by x509" outcome from here.
             let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), pure_admission.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), pure_admission.clone(), pod_node_selector_config.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
             if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
@@ -1854,6 +1865,7 @@ async fn handle_with_audit(
     storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
+    pod_node_selector_config: Option<Arc<crate::admission::pod_node_selector::PluginConfig>>,
     identity: Option<crate::authn::x509::Identity>,
     bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
@@ -2133,7 +2145,7 @@ async fn handle_with_audit(
     // stream lifetime.
     let start = std::time::Instant::now();
     let mut response_object = None;
-    let mut response = match handle(req, storage, cache_registry, pure_admission, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
+    let mut response = match handle(req, storage, cache_registry, pure_admission, pod_node_selector_config, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
         Ok(response) => {
             if audit_level == crate::audit::policy::Level::RequestResponse && !long_running {
                 let (response, object) = capture_response_object(response, max_request_body_bytes).await;
@@ -2567,6 +2579,7 @@ fn run_pure_admission(
     registry: &crate::admission::chain::MutatingRegistry,
     operation: admission::attributes::Operation,
     info: &path::RequestInfo,
+    old_object: Option<&Value>,
     object: &mut Value,
 ) {
     let mut request = admission::chain::Request {
@@ -2576,6 +2589,7 @@ fn run_pure_admission(
         subresource: &info.subresource,
         namespace: &info.namespace,
         name: &info.name,
+        old_object,
         object,
     };
     registry.run(&mut request);
@@ -2586,6 +2600,7 @@ async fn handle(
     mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
+    pod_node_selector_config: Option<Arc<crate::admission::pod_node_selector::PluginConfig>>,
     identity: Option<crate::authn::x509::Identity>,
     service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
     enforce_rbac: bool,
@@ -2772,6 +2787,10 @@ async fn handle(
     let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
     let is_delete = info.is_resource_request && info.verb == "delete" && !info.name.is_empty() && info.subresource.is_empty();
     let is_update = info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource.is_empty();
+    let is_certificate_status_subresource = info.is_resource_request
+        && info.api_group == "certificates.k8s.io"
+        && info.resource == "certificatesigningrequests"
+        && matches!(info.subresource.as_str(), "approval" | "status");
     // `watch` (no name — `path::parse` already tells a namefull `watch`
     // apart, though real upstream's own single-resource watch form isn't
     // handled specially here either way today) is deliberately handled in
@@ -3145,7 +3164,7 @@ async fn handle(
                     }
                 }
             }
-            run_pure_admission(&pure_admission, operation, &info, &mut candidate);
+            run_pure_admission(&pure_admission, operation, &info, old_object.as_ref(), &mut candidate);
 
             // Apply must run the storage-backed DefaultStorageClass plugin
             // against the materialized candidate too. A PVC with no class
@@ -3185,6 +3204,291 @@ async fn handle(
                             &internal_error_status(&path_str),
                         ));
                     }
+                }
+            }
+
+            // StorageObjectInUseProtection is a pure create-time mutator,
+            // but Apply still has to invoke it so PV/PVC/VAC objects do not
+            // lose their protection finalizer merely because they were
+            // submitted with Server-Side Apply.
+            if operation == admission::attributes::Operation::Create {
+                admission::storage_object_in_use_protection::mutate(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    &mut candidate,
+                );
+            }
+            // Keep Priority admission consistent with ordinary Pod and
+            // PriorityClass writes. Apply candidates must resolve named or
+            // default PriorityClasses, preserve controller-owned fields on
+            // update, and reject a second global default.
+            if matches!(
+                operation,
+                admission::attributes::Operation::Create
+                    | admission::attributes::Operation::Update
+            ) {
+                if admission::priority::applies_to_pod(
+                    operation,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    if operation == admission::attributes::Operation::Update {
+                        if let Some(old_pod) = old_object.as_ref() {
+                            if let Err(error) =
+                                admission::priority::preserve_update_fields(&mut candidate, old_pod)
+                            {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                    } else {
+                        let class_name = candidate
+                            .pointer("/spec/priorityClassName")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let named_class = if class_name.is_empty() {
+                            None
+                        } else {
+                            match rest::get(
+                                &mut client,
+                                None,
+                                "scheduling.k8s.io",
+                                "v1",
+                                "priorityclasses",
+                                None,
+                                &class_name,
+                            )
+                            .await
+                            {
+                                Ok(rest::GetOutcome::Found(priority_class)) => Some(priority_class),
+                                Ok(rest::GetOutcome::ObjectNotFound)
+                                | Ok(rest::GetOutcome::UnknownResource) => {
+                                    return Ok(json_response(
+                                        StatusCode::FORBIDDEN,
+                                        &admission_forbidden_status(
+                                            &path_str,
+                                            &format!(
+                                                "no PriorityClass with name {class_name} was found"
+                                            ),
+                                        ),
+                                    ));
+                                }
+                                Err(error) => {
+                                    warn!(path = %path_str, error = ?error, "admission: PriorityClass lookup for apply failed");
+                                    return Ok(json_response(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        &internal_error_status(&path_str),
+                                    ));
+                                }
+                            }
+                        };
+                        let default_class = if named_class.is_none() {
+                            match rest::list(
+                                &mut client,
+                                None,
+                                "scheduling.k8s.io",
+                                "v1",
+                                "priorityclasses",
+                                None,
+                                "",
+                                "",
+                                0,
+                                "",
+                            )
+                            .await
+                            {
+                                Ok(rest::ListOutcome::Found(list)) => {
+                                    let classes = list["items"].as_array().cloned().unwrap_or_default();
+                                    admission::priority::select_default(&classes).cloned()
+                                }
+                                Ok(rest::ListOutcome::UnknownResource)
+                                | Ok(rest::ListOutcome::InvalidContinueToken) => None,
+                                Err(error) => {
+                                    warn!(path = %path_str, error = ?error, "admission: listing PriorityClasses for apply failed");
+                                    return Ok(json_response(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        &internal_error_status(&path_str),
+                                    ));
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        if let Err(error) = admission::priority::mutate_pod(
+                            &mut candidate,
+                            named_class.as_ref(),
+                            default_class.as_ref(),
+                        ) {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &error),
+                            ));
+                        }
+                    }
+                } else if admission::priority::applies_to_priority_class(
+                    operation,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) && candidate.pointer("/globalDefault").and_then(Value::as_bool) == Some(true)
+                {
+                    match rest::list(
+                        &mut client,
+                        None,
+                        "scheduling.k8s.io",
+                        "v1",
+                        "priorityclasses",
+                        None,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let existing = list["items"].as_array().cloned().unwrap_or_default();
+                            if let Some(error) =
+                                admission::priority::validate_priority_class(&candidate, &existing)
+                            {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing PriorityClasses for apply validation failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // RuntimeClass mutates and validates ordinary Pod creates. Apply
+            // must resolve the same class before policy/webhook admission so
+            // its overhead and scheduling fields are part of the candidate.
+            if operation == admission::attributes::Operation::Create
+                && admission::runtime_class::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                let runtime_class_name = candidate
+                    .pointer("/spec/runtimeClassName")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let runtime_class = if let Some(runtime_class_name) = runtime_class_name {
+                    match rest::get(
+                        &mut client,
+                        None,
+                        "node.k8s.io",
+                        "v1",
+                        "runtimeclasses",
+                        None,
+                        &runtime_class_name,
+                    )
+                    .await
+                    {
+                        Ok(rest::GetOutcome::Found(runtime_class)) => Some(runtime_class),
+                        Ok(rest::GetOutcome::ObjectNotFound)
+                        | Ok(rest::GetOutcome::UnknownResource) => {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(
+                                    &path_str,
+                                    &format!(
+                                        "pod rejected: RuntimeClass {runtime_class_name:?} not found"
+                                    ),
+                                ),
+                            ));
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: RuntimeClass lookup for apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Err(error) =
+                    admission::runtime_class::mutate_and_validate(&mut candidate, runtime_class.as_ref())
+                {
+                    return Ok(json_response(
+                        StatusCode::FORBIDDEN,
+                        &admission_forbidden_status(&path_str, &error),
+                    ));
+                }
+            }
+
+            // PodNodeSelector reads the target namespace annotation and
+            // merges it into newly-created Pods. Apply must see the same
+            // namespace policy before persistence.
+            if operation == admission::attributes::Operation::Create
+                && admission::pod_node_selector::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                let annotation = match rest::get(
+                    &mut client,
+                    None,
+                    "",
+                    "v1",
+                    "namespaces",
+                    None,
+                    namespace.unwrap_or(""),
+                )
+                .await
+                {
+                    Ok(rest::GetOutcome::Found(namespace_object)) => namespace_object
+                            .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                };
+                let selector = match admission::pod_node_selector::selector_for_namespace(
+                    pod_node_selector_config.as_deref(),
+                    namespace.unwrap_or(""),
+                    annotation.as_deref(),
+                ) {
+                    Ok(selector) => selector,
+                    Err(error) => {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &error),
+                        ));
+                    }
+                };
+                if let Err(error) = admission::pod_node_selector::merge_namespace_selector(&mut candidate, &selector) {
+                    return Ok(json_response(
+                        StatusCode::FORBIDDEN,
+                        &admission_forbidden_status(&path_str, &error),
+                    ));
                 }
             }
 
@@ -3281,6 +3585,127 @@ async fn handle(
                 }
             }
 
+            // LimitRanger must observe the same materialized candidate for
+            // Apply as it does for ordinary CREATE/UPDATE. In particular,
+            // Pod requests/limits supplied by a namespace LimitRange are
+            // part of the object ResourceQuota evaluates later in the
+            // admission chain.
+            if admission::limit_ranger::applies_to(
+                operation,
+                &info.api_group,
+                &info.resource,
+                &info.subresource,
+            ) {
+                match rest::list(
+                    &mut client,
+                    None,
+                    "",
+                    "v1",
+                    "limitranges",
+                    namespace,
+                    "",
+                    "",
+                    0,
+                    "",
+                )
+                .await
+                {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let limit_ranges = list["items"].as_array().cloned().unwrap_or_default();
+                        if operation == admission::attributes::Operation::Create
+                            && info.resource == "pods"
+                        {
+                            admission::limit_ranger::mutate_pod(&mut candidate, &limit_ranges);
+                        }
+                        for limit_range in &limit_ranges {
+                            let errors = if info.resource == "pods" {
+                                admission::limit_ranger::validate_pod(limit_range, &candidate)
+                            } else {
+                                admission::limit_ranger::validate_pvc(limit_range, &candidate)
+                            };
+                            if !errors.is_empty() {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &errors.join("; ")),
+                                ));
+                            }
+                        }
+                    }
+                    Ok(rest::ListOutcome::UnknownResource)
+                    | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: listing limit ranges for apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
+            // PVC expansion is another update-shaped admission check. Apply
+            // must use the same old object and StorageClass capability check
+            // as PUT and the ordinary patch kinds.
+            if operation == admission::attributes::Operation::Update
+                && admission::pvc_resize::applies_to(
+                    admission::attributes::Operation::Update,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                )
+            {
+                if let Some(old_pvc) = old_object.as_ref() {
+                    match rest::list(
+                        &mut client,
+                        None,
+                        "storage.k8s.io",
+                        "v1",
+                        "storageclasses",
+                        None,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let classes = list["items"].as_array().cloned().unwrap_or_default();
+                            if let Err(error) = admission::pvc_resize::validate_resize(
+                                &candidate,
+                                old_pvc,
+                                &classes,
+                            ) {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                            if let Err(error) = admission::pvc_resize::validate_resize(
+                                &candidate,
+                                old_pvc,
+                                &[],
+                            ) {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &error),
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing StorageClasses for PVC resize Apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
             // MutatingAdmissionPolicy is part of the same candidate-based
             // admission chain as ordinary CREATE/UPDATE. Apply must not
             // bypass it merely because its field-management preparation
@@ -3315,6 +3740,194 @@ async fn handle(
                     ));
                 }
             }
+
+            // PodSecurity and ResourceQuota are validating stages after all
+            // mutators, just as on ordinary CREATE. Keeping them here means
+            // an Apply cannot bypass namespace policy or quota accounting
+            // merely because its candidate was produced by SSA.
+            if operation == admission::attributes::Operation::Create
+                && admission::pod_security::applies_to(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    admission::attributes::Operation::Create,
+                )
+            {
+                match rest::get(
+                    &mut client,
+                    None,
+                    "",
+                    "v1",
+                    "namespaces",
+                    None,
+                    &info.namespace,
+                )
+                .await
+                {
+                    Ok(rest::GetOutcome::Found(namespace_object)) => {
+                        let level = admission::pod_security::enforcement_level(&namespace_object);
+                        let violations = admission::pod_security::validate(&candidate, level);
+                        if !violations.is_empty() {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &violations.join("; ")),
+                            ));
+                        }
+                    }
+                    Ok(rest::GetOutcome::ObjectNotFound)
+                    | Ok(rest::GetOutcome::UnknownResource) => {}
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodSecurity apply failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
+            let mut quota_usage_updates: Vec<(
+                String,
+                std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>,
+            )> = Vec::new();
+            if operation == admission::attributes::Operation::Create {
+                let quota_kind = if admission::resource_quota::applies_to(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    Some("pods")
+                } else if admission::resource_quota::applies_to_pvc(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    Some("persistentvolumeclaims")
+                } else if admission::resource_quota::applies_to_service(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                ) {
+                    Some("services")
+                } else if !info.namespace.is_empty() {
+                    Some(info.resource.as_str())
+                } else {
+                    None
+                };
+
+                if let Some(list_resource) = quota_kind {
+                    let existing = match rest::list(
+                        &mut client,
+                        None,
+                        &info.api_group,
+                        &info.api_version,
+                        list_resource,
+                        namespace,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            list["items"].as_array().cloned().unwrap_or_default()
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing existing objects for ResourceQuota Apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    };
+                    match rest::list(
+                        &mut client,
+                        None,
+                        "",
+                        "v1",
+                        "resourcequotas",
+                        namespace,
+                        "",
+                        "",
+                        0,
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let quotas = list["items"].as_array().cloned().unwrap_or_default();
+                            let denial = match list_resource {
+                                "pods" => admission::resource_quota::check_pod_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "persistentvolumeclaims" => admission::resource_quota::check_pvc_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "services" => admission::resource_quota::check_service_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                _ => admission::resource_quota::check_object_count_create(
+                                    &info.api_group,
+                                    &info.resource,
+                                    &existing,
+                                    &quotas,
+                                ),
+                            };
+                            if let Some(denial) = denial {
+                                return Ok(json_response(
+                                    StatusCode::FORBIDDEN,
+                                    &admission_forbidden_status(&path_str, &denial),
+                                ));
+                            }
+                            quota_usage_updates = match list_resource {
+                                "pods" => admission::resource_quota::usage_after_pod_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "persistentvolumeclaims" => admission::resource_quota::usage_after_pvc_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                "services" => admission::resource_quota::usage_after_service_create(
+                                    &candidate,
+                                    &existing,
+                                    &quotas,
+                                ),
+                                _ => admission::resource_quota::usage_after_object_count_create(
+                                    &info.api_group,
+                                    &info.resource,
+                                    &existing,
+                                    &quotas,
+                                ),
+                            };
+                        }
+                        Ok(rest::ListOutcome::UnknownResource)
+                        | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: listing ResourceQuotas for apply failed");
+                            return Ok(json_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &internal_error_status(&path_str),
+                            ));
+                        }
+                    }
+                }
+            }
+
             match admission::policy_enforcement::validate(
                 &mut client,
                 operation_name,
@@ -3375,7 +3988,14 @@ async fn handle(
             }
 
             return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate, dry_run).await {
-                Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::ApplyOutcome::Applied(object)) => {
+                    if operation == admission::attributes::Operation::Create {
+                        if let Some(ns) = namespace {
+                            persist_quota_usage_updates(&mut client, ns, quota_usage_updates, &path_str).await;
+                        }
+                    }
+                    Ok(json_response(StatusCode::OK, &object))
+                }
                 Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
                 Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::ApplyOutcome::UnsupportedForCrd) => {
@@ -3545,6 +4165,7 @@ async fn handle(
             &pure_admission,
             admission::attributes::Operation::Update,
             &info,
+            old_object.as_ref(),
             &mut candidate,
         );
         match admission::mutating_admission_policy::mutate(
@@ -3676,13 +4297,14 @@ async fn handle(
             }
         };
     }
-    // The generic `<resource>/status` subresource — its own branch for
+    // The generic `<resource>/status` subresource — and CSR `approval` —
+    // have their own branch for
     // the same reason `PATCH` is: the request body here is the caller's
     // view of the *whole* object (typically a GET's own response,
     // status field modified), not a patch document, and only
     // `rest::update_status`'s narrower "replace `.status` only" write
     // applies, not the general five-verb block's `rest::update`. **No
-    // Group J admission runs here, named honestly**: every admission
+    // Group J admission runs here, named honestly: every admission
     // plugin that ever applies to an `Update`-shaped write in this crate
     // (`namespace_lifecycle`'s Terminating-namespace check,
     // `LimitRanger`'s PVC-minimum check) is specific to a create/full
@@ -3690,7 +4312,28 @@ async fn handle(
     // replace, so there's nothing to wire here yet either — same
     // reasoning `deletecollection`'s own doc comment below already gives
     // for skipping the same two plugins.
-    if info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource == "status" {
+    if is_certificate_status_subresource
+        && info.verb == "get"
+        && !info.name.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        return match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, None, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::get CSR subresource failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+
+    if info.is_resource_request
+        && info.verb == "update"
+        && !info.name.is_empty()
+        && (info.subresource == "status" || is_certificate_status_subresource)
+    {
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
@@ -3710,6 +4353,37 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = storage_namespace(&info);
+        if is_certificate_status_subresource {
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the CSR for certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let action = if info.subresource == "approval" { "approve" } else { "sign" };
+            match admission::certificate::validate_signer_update(
+                &mut client,
+                enforce_rbac,
+                identity.as_ref(),
+                action,
+                old_object.as_ref(),
+                Some(&body_value),
+                &info.subresource,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(admission::certificate::Error::Forbidden(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(admission::certificate::Error::Lookup(error)) => {
+                    warn!(path = %path_str, error = %error, "admission: certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         if authz::node::node_name(identity.as_ref()).is_some() {
             let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                 Ok(rest::GetOutcome::Found(object)) => Some(object),
@@ -3770,7 +4444,11 @@ async fn handle(
     // applicable exists for a status-only write); the only new outcome
     // to handle is `Invalid` (a malformed patch document), which
     // `update_status` never itself returns but `rest::patch_status` can.
-    if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource == "status" {
+    if info.is_resource_request
+        && info.verb == "patch"
+        && !info.name.is_empty()
+        && (info.subresource == "status" || is_certificate_status_subresource)
+    {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -3810,6 +4488,37 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = storage_namespace(&info);
+        if is_certificate_status_subresource {
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the CSR for certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let action = if info.subresource == "approval" { "approve" } else { "sign" };
+            match admission::certificate::validate_signer_update(
+                &mut client,
+                enforce_rbac,
+                identity.as_ref(),
+                action,
+                old_object.as_ref(),
+                None,
+                &info.subresource,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(admission::certificate::Error::Forbidden(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(admission::certificate::Error::Lookup(error)) => {
+                    warn!(path = %path_str, error = %error, "admission: certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         return match rest::patch_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -4578,6 +5287,34 @@ async fn handle(
                 (None, None)
             };
 
+            // Group J: CertificateSubjectRestriction protects the built-in
+            // apiserver-client signer from a CSR requesting the
+            // `system:masters` organization.
+            if is_create {
+                match admission::certificate::validate_subject_restriction(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    body_value.as_ref(),
+                ) {
+                    Ok(()) => {}
+                    Err(admission::certificate::Error::Forbidden(message)) => {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &message),
+                        ));
+                    }
+                    Err(admission::certificate::Error::Lookup(error)) => {
+                        warn!(path = %path_str, error = %error, "admission: certificate subject restriction failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
+
             // Group I: the Node authorizer cannot inspect request bodies, so
             // NodeRestriction supplies the body-sensitive half of the same
             // upstream authorization chain. Fetch the old object only for a
@@ -4633,13 +5370,25 @@ async fn handle(
             // DefaultTolerationSeconds -> ServiceAccount defaulting order,
             // while making pure plugins extensible without another direct
             // listener call for each one.
+            let old_object_for_admission = if is_update {
+                match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                    Ok(rest::GetOutcome::Found(object)) => Some(object),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "admission: reading the existing object for pure plugins failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else {
+                None
+            };
             if let Some(body) = body_value.as_mut() {
                 let operation = if is_create {
                     admission::attributes::Operation::Create
                 } else {
                     admission::attributes::Operation::Update
                 };
-                run_pure_admission(&pure_admission, operation, &info, body);
+                run_pure_admission(&pure_admission, operation, &info, old_object_for_admission.as_ref(), body);
             }
 
             // Group J: `StorageObjectInUseProtection` — mutating,
@@ -4915,7 +5664,7 @@ async fn handle(
                 )
             {
                 if let Some(pod) = body_value.as_mut() {
-                    match rest::get(
+                    let annotation = match rest::get(
                         &mut client,
                         None,
                         "",
@@ -4926,19 +5675,11 @@ async fn handle(
                     )
                     .await
                     {
-                        Ok(rest::GetOutcome::Found(namespace_object)) => {
-                            let selector = namespace_object
+                        Ok(rest::GetOutcome::Found(namespace_object)) => namespace_object
                                 .pointer("/metadata/annotations/scheduler.alpha.kubernetes.io~1node-selector")
                                 .and_then(Value::as_str)
-                                .unwrap_or("");
-                            if let Err(error) = admission::pod_node_selector::merge_namespace_selector(pod, selector) {
-                                return Ok(json_response(
-                                    StatusCode::FORBIDDEN,
-                                    &admission_forbidden_status(&path_str, &error),
-                                ));
-                            }
-                        }
-                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {}
+                                .map(str::to_string),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                         Err(error) => {
                             warn!(path = %path_str, error = ?error, "admission: namespace lookup for PodNodeSelector failed");
                             return Ok(json_response(
@@ -4946,6 +5687,25 @@ async fn handle(
                                 &internal_error_status(&path_str),
                             ));
                         }
+                    };
+                    let selector = match admission::pod_node_selector::selector_for_namespace(
+                        pod_node_selector_config.as_deref(),
+                        namespace.unwrap_or(""),
+                        annotation.as_deref(),
+                    ) {
+                        Ok(selector) => selector,
+                        Err(error) => {
+                            return Ok(json_response(
+                                StatusCode::FORBIDDEN,
+                                &admission_forbidden_status(&path_str, &error),
+                            ));
+                        }
+                    };
+                    if let Err(error) = admission::pod_node_selector::merge_namespace_selector(pod, &selector) {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &error),
+                        ));
                     }
                 }
             }
@@ -5396,16 +6156,6 @@ async fn handle(
                     }
                 }
             } else if is_list {
-                if !info.field_selector.is_empty() {
-                    match crate::cacher::selector::parse_field_selector(&info.field_selector) {
-                        Ok(requirements) => {
-                            if let Err(error) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &requirements) {
-                                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string())));
-                            }
-                        }
-                        Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
-                    }
-                }
                 match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table {
@@ -5551,12 +6301,13 @@ async fn handle(
             crate::cacher::store::SharedCache,
             String,
             Option<crate::apiextensions::registry::ConversionWebhook>,
+            Vec<String>,
         )> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
             if let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) {
-                Some((cache, kind.to_string(), None))
+                Some((cache, kind.to_string(), None, Vec::new()))
             } else if let Some(mut client) = storage.clone() {
                 match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
-                    Ok(Some(resource)) => Some((cache, resource.kind, resource.conversion_webhook)),
+                    Ok(Some(resource)) => Some((cache, resource.kind, resource.conversion_webhook, resource.selectable_fields)),
                     Ok(None) => None,
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "watch: resolving the registered CRD-defined resource failed");
@@ -5572,7 +6323,7 @@ async fn handle(
             match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
                 Ok(Some(resource)) => {
                     let cache = cache_registry.spawn(client, &info.api_group, &info.api_version, &info.resource);
-                    Some((cache, resource.kind, resource.conversion_webhook))
+                    Some((cache, resource.kind, resource.conversion_webhook, resource.selectable_fields))
                 }
                 Ok(None) => None,
                 Err(e) => {
@@ -5584,7 +6335,7 @@ async fn handle(
             None
         };
 
-        if let Some((cache, kind, conversion_webhook)) = cache_and_kind {
+        if let Some((cache, kind, conversion_webhook, selectable_fields)) = cache_and_kind {
             if !cache.has_synced() {
                 if tokio::time::timeout(std::time::Duration::from_secs(30), cache.wait_until_synced()).await.is_err() {
                     warn!(path = %path_str, "watch: cache did not complete its initial LIST before the startup wait expired");
@@ -5611,7 +6362,7 @@ async fn handle(
                     Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
                 }
             };
-            if let Err(e) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &field_reqs) {
+            if let Err(e) = crate::cacher::selector::validate_field_selector_with_additional_fields(&info.api_group, &info.resource, &field_reqs, &selectable_fields) {
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string())));
             }
             let start_revision = resource_version_query(&query);

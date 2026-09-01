@@ -22,7 +22,8 @@
 //! labels always live at `metadata.labels` (genuinely generic across every
 //! Kind), and field selectors are checked against the built-in per-Kind
 //! `SelectableFields` allowlist before the generic dotted-JSON-path lookup
-//! runs. CRDs accept only the universal metadata fields.
+//! runs. CRDs accept universal metadata fields plus their served version's
+//! declared `spec.selectableFields`.
 //! `registry` — starts or stops a `driver::reflect()` background loop for
 //! one resource and hands back the `SharedCache` it keeps live
 //! (`CacheRegistry::spawn`/`remove`). The listener invokes it for every

@@ -2,8 +2,8 @@
 //! (`NamespaceLifecycle`, `LimitRanger`, `ServiceAccount`, `ResourceQuota`,
 //! `PodSecurity`, ...) plus mutating/validating webhooks and
 //! ValidatingAdmissionPolicy/MutatingAdmissionPolicy ahead of every
-//! write. **Eight built-in plugins are now landed and wired** (listed
-//! below). Pure mutators run through [`chain::MutatingRegistry`]; the
+//! write. **The currently implemented built-in plugins are landed and wired**
+//! (listed below). Pure mutators run through [`chain::MutatingRegistry`]; the
 //! storage-backed mutators and validators still need a broader async
 //! registry because their I/O and failure-policy behavior is request-specific.
 //!
@@ -11,6 +11,10 @@
 //! name)` tuple a plugin decides against, a real-upstream-`Attributes`
 //! subset (see that module's own doc comment for why the rest isn't
 //! modeled yet).
+//! `certificate` — the upstream certificate admission stages:
+//! `CertificateSubjectRestriction` for privileged client CSR subjects and
+//! `CertificateApproval`/`CertificateSigning` authorization against the
+//! synthetic `signers` resource.
 //! `namespace_lifecycle` — `NamespaceLifecycle`, a faithful port of real
 //! upstream's own plugin (see that module's own doc comment for the exact
 //! rules and what's honestly simplified: no informer-cache staleness
@@ -42,6 +46,10 @@
 //! `node.kubernetes.io/not-ready`/`NoSchedule` taint when it is absent. The
 //! mutation is pure and idempotent; node lifecycle reconciliation removes it
 //! after the node reports Ready.
+//!
+//! `extended_resource_toleration` — `ExtendedResourceToleration`, mutating,
+//! `CREATE`/`UPDATE` for core Pods: adds an `Exists`/`NoSchedule` toleration
+//! for every requested extended resource in regular or init containers.
 //!
 //! `default_storage_class` — `DefaultStorageClass`, mutating, `CREATE`-only:
 //! a `PersistentVolumeClaim` with no class of its own gets
@@ -138,7 +146,7 @@
 //! `pod_requests`/`pod_limits` for the aggregation, since real upstream's
 //! quota usage function calls the exact same underlying helper.
 //!
-//! All eight plugins are **wired into `server::listener`, unconditionally**
+//! All currently implemented built-ins are **wired into `server::listener`, unconditionally**
 //! — pure mutators are invoked through `chain::MutatingRegistry`, while
 //! storage-backed stages remain in the listener until their async registry
 //! adapter lands. None needs operator-provisioned bootstrap data (unlike
@@ -225,9 +233,11 @@
 
 pub mod attributes;
 pub mod chain;
+pub mod certificate;
 pub mod default_ingress_class;
 pub mod default_storage_class;
 pub mod default_toleration_seconds;
+pub mod extended_resource_toleration;
 pub mod limit_ranger;
 pub mod match_conditions;
 pub mod mutating_admission_policy;

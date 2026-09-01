@@ -13,7 +13,9 @@
 //! Real upstream validation (`pkg/apis/*/validation/validation.go`) is
 //! hand-written Go: cross-field consistency ("hostPort requires hostNetwork"
 //! isn't expressible from one field alone) and other semantic rules still
-//! need explicit per-kind code. The published OpenAPI schema's local
+//! need explicit per-kind code. The verified HPA
+//! `maxReplicas >= minReplicas` and apps workload selector/template rules are
+//! the first such built-in semantic checks here. The published OpenAPI schema's local
 //! constraints (formats, enums, ranges, lengths, patterns, and uniqueness)
 //! are available through [`validate_openapi_constraints`]; this module keeps
 //! required fields and JSON kinds in the compact generated metadata tables
@@ -128,7 +130,137 @@ pub fn validate_openapi_constraints(
     let Some(schema) = codegen::openapi_schema_for_gvk(group, version, kind) else {
         return Vec::new();
     };
-    crate::apiextensions::schema_validation::validate_constraints(&schema, value)
+    let mut violations = crate::apiextensions::schema_validation::validate_constraints(&schema, value);
+    violations.extend(validate_builtin_semantics(group, version, kind, value));
+    violations
+}
+
+/// Cross-field validation that cannot be represented by a single OpenAPI
+/// schema constraint. This intentionally grows only from an upstream-verified
+/// rule at a time; structural validation remains the generic path above.
+fn validate_builtin_semantics(group: &str, _version: &str, kind: &str, value: &Value) -> Vec<String> {
+    if group == "autoscaling" && kind == "HorizontalPodAutoscaler" {
+        let Some(spec) = value.get("spec").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+        let Some(max_replicas) = spec.get("maxReplicas").and_then(Value::as_i64) else {
+            return Vec::new();
+        };
+        let Some(min_replicas) = spec.get("minReplicas").and_then(Value::as_i64) else {
+            return Vec::new();
+        };
+        if max_replicas < min_replicas {
+            return vec!["spec.maxReplicas: must be greater than or equal to `minReplicas`".to_string()];
+        }
+    }
+
+    if group == "apps"
+        && matches!(kind, "DaemonSet" | "Deployment" | "ReplicaSet" | "StatefulSet")
+    {
+        return validate_workload_selector(value);
+    }
+
+    Vec::new()
+}
+
+/// These workload kinds require their selector to match the labels on the
+/// pod template. This is a cross-field invariant enforced by each upstream
+/// apps validator, not by the published OpenAPI schema.
+fn validate_workload_selector(value: &Value) -> Vec<String> {
+    let Some(spec) = value.get("spec").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let Some(selector) = spec.get("selector").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let Some(template_labels) = spec
+        .get("template")
+        .and_then(|template| template.get("metadata"))
+        .and_then(|metadata| metadata.get("labels"))
+        .and_then(Value::as_object)
+    else {
+        return vec!["spec.selector: selector does not match template labels".to_string()];
+    };
+
+    let match_labels = selector
+        .get("matchLabels")
+        .and_then(Value::as_object)
+        .is_none_or(|labels| {
+            labels.iter().all(|(key, expected)| {
+                expected.as_str().is_some_and(|expected| {
+                    template_labels.get(key).and_then(Value::as_str) == Some(expected)
+                })
+            })
+        });
+    let match_expressions = selector
+        .get("matchExpressions")
+        .and_then(Value::as_array)
+        .is_none_or(|expressions| {
+            expressions.iter().all(|expression| {
+                let Some(key) = expression.get("key").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(operator) = expression.get("operator").and_then(Value::as_str) else {
+                    return false;
+                };
+                let values = expression
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let actual = template_labels.get(key).and_then(Value::as_str);
+                match operator {
+                    "In" => actual.is_some_and(|actual| values.contains(&actual)),
+                    "NotIn" => actual.is_none_or(|actual| !values.contains(&actual)),
+                    "Exists" => actual.is_some(),
+                    "DoesNotExist" => actual.is_none(),
+                    "Gt" | "Lt" => {
+                        let Some(actual) = actual.and_then(|actual| actual.parse::<i64>().ok()) else {
+                            return false;
+                        };
+                        let Some(expected) = values.first().and_then(|value| value.parse::<i64>().ok()) else {
+                            return false;
+                        };
+                        if operator == "Gt" {
+                            actual > expected
+                        } else {
+                            actual < expected
+                        }
+                    }
+                    _ => false,
+                }
+            })
+        });
+
+    if match_labels && match_expressions {
+        Vec::new()
+    } else {
+        vec!["spec.selector: selector does not match template labels".to_string()]
+    }
+}
+
+/// Apps/v1 workload selectors are immutable after creation. The same
+/// invariant applies to ordinary updates, patches, and Server-Side Apply
+/// because they all converge through the REST persistence path.
+pub fn validate_builtin_update_semantics(
+    group: &str,
+    version: &str,
+    kind: &str,
+    existing: &Value,
+    candidate: &Value,
+) -> Vec<String> {
+    if group != "apps"
+        || version != "v1"
+        || !matches!(kind, "DaemonSet" | "Deployment" | "ReplicaSet" | "StatefulSet")
+    {
+        return Vec::new();
+    }
+
+    if existing.pointer("/spec/selector") != candidate.pointer("/spec/selector") {
+        vec!["spec.selector: field is immutable".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 fn walk_types(schema: &str, value: &Value, path_prefix: &str, out: &mut Vec<TypeMismatch>) {
@@ -328,5 +460,59 @@ mod tests {
             &json!({"data": {"token": "not-base64"}}),
         );
         assert!(violations.iter().any(|violation| violation.contains("data.token")));
+    }
+
+    #[test]
+    fn hpa_max_replicas_cannot_be_less_than_min_replicas() {
+        let violations = validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &json!({"spec": {"minReplicas": 2, "maxReplicas": 1}}),
+        );
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("maxReplicas"));
+        assert!(validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &json!({"spec": {"minReplicas": 1, "maxReplicas": 2}}),
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn workload_selector_must_match_template_labels() {
+        let object = json!({
+            "spec": {
+                "selector": {"matchLabels": {"app": "api"}},
+                "template": {"metadata": {"labels": {"app": "worker"}}}
+            }
+        });
+        let violations = validate_builtin_semantics("apps", "v1", "Deployment", &object);
+        assert_eq!(violations, vec!["spec.selector: selector does not match template labels"]);
+
+        let object = json!({
+            "spec": {
+                "selector": {
+                    "matchExpressions": [{"key": "tier", "operator": "In", "values": ["backend"]}]
+                },
+                "template": {"metadata": {"labels": {"tier": "backend"}}}
+            }
+        });
+        assert!(validate_builtin_semantics("apps", "v1", "ReplicaSet", &object).is_empty());
+    }
+
+    #[test]
+    fn apps_v1_workload_selector_is_immutable() {
+        let existing = json!({"spec": {"selector": {"matchLabels": {"app": "api"}}}});
+        let mut candidate = existing.clone();
+        candidate["spec"]["selector"] = json!({"matchLabels": {"app": "worker"}});
+        assert_eq!(
+            validate_builtin_update_semantics("apps", "v1", "Deployment", &existing, &candidate),
+            vec!["spec.selector: field is immutable"]
+        );
+        assert!(validate_builtin_update_semantics("apps", "v1", "Deployment", &existing, &existing).is_empty());
+        assert!(validate_builtin_update_semantics("apps", "v1beta1", "Deployment", &existing, &candidate).is_empty());
     }
 }

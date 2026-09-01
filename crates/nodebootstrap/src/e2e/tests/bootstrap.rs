@@ -11,7 +11,7 @@ use k8s_openapi::api::authentication::v1::{
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Endpoints, LocalObjectReference, Namespace, Node, ObjectReference, PersistentVolume,
-    PersistentVolumeClaim, Pod, ResourceQuota, Secret, Service, ServiceAccount,
+    PersistentVolumeClaim, Pod, ResourceQuota, Secret, Service, ServiceAccount, LimitRange,
 };
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::node::v1::RuntimeClass;
@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use futures::AsyncBufReadExt;
+use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
     let uid = Command::new("id")
@@ -87,6 +88,116 @@ fn crd_is_established(crd: &CustomResourceDefinition) -> bool {
 struct NodeapiserverAuthenticationOverride {
     drop_in: PathBuf,
     token_file: PathBuf,
+}
+
+struct NodeapiserverAdmissionPluginOverride {
+    drop_in: PathBuf,
+}
+
+impl NodeapiserverAdmissionPluginOverride {
+    fn install(plugin: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; admission-plugin checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-admission-plugin-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-admission-plugin-{suffix}.conf"));
+        fs::write(
+            &local_drop_in,
+            format!("[Service]\nEnvironment=NODEAPISERVER_ENABLE_ADMISSION_PLUGINS={plugin}\n"),
+        )
+        .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self { drop_in };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverAdmissionPluginOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+    }
+}
+
+struct NodeapiserverPodNodeSelectorOverride {
+    drop_in: PathBuf,
+    config_file: PathBuf,
+}
+
+impl NodeapiserverPodNodeSelectorOverride {
+    fn install(config: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; PodNodeSelector checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-pod-node-selector-{suffix}.conf"));
+        let config_file = PathBuf::from(format!(
+            "/etc/nodeapiserver/pod-node-selector-{suffix}.yaml"
+        ));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-pod-node-selector-{suffix}.conf"));
+        let local_config = std::env::temp_dir().join(format!("nodeapiserver-pod-node-selector-{suffix}.yaml"));
+        fs::write(&local_config, config)
+            .with_context(|| format!("writing {}", local_config.display()))?;
+        fs::write(
+            &local_drop_in,
+            format!(
+                "[Service]\nEnvironment=NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE={}\n",
+                config_file.display()
+            ),
+        )
+        .with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self {
+            drop_in,
+            config_file,
+        };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        let config_file = guard.config_file.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let local_config = local_config.to_string_lossy();
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("mkdir", &["-p", "/etc/nodeapiserver"])?;
+        run_privileged("install", &["-m", "0644", local_config.as_ref(), config_file.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_config.as_ref());
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+}
+
+impl Drop for NodeapiserverPodNodeSelectorOverride {
+    fn drop(&mut self) {
+        let drop_in = self.drop_in.to_string_lossy();
+        let config_file = self.config_file.to_string_lossy();
+        let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
+        let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
+        let _ = run_privileged("systemctl", &["daemon-reload"]);
+        let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+    }
 }
 
 impl NodeapiserverAuthenticationOverride {
@@ -1296,6 +1407,216 @@ pub(super) async fn nodeapiserver_rejects_invalid_batch_names(
     }
 }
 
+pub(super) async fn nodeapiserver_rejects_invalid_workload_names(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "additional workload name validation is only exercised against nodeapiserver",
+        ));
+    }
+
+    let reject = |uri: String, body: Value| async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&body)?)?;
+        match context.client.request::<Value>(request).await {
+            Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+            Err(error) => anyhow::bail!("invalid workload name returned the wrong API error: {error}"),
+            Ok(value) => anyhow::bail!("invalid workload name was accepted: {value}"),
+        }
+    };
+
+    reject(
+        format!(
+            "/apis/apps/v1/namespaces/{}/statefulsets",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": "Invalid_StatefulSet_Name", "namespace": context.namespace},
+            "spec": {
+                "serviceName": "valid-service",
+                "selector": {"matchLabels": {"app": "invalid-name-e2e"}},
+                "template": {
+                    "metadata": {"labels": {"app": "invalid-name-e2e"}},
+                    "spec": {
+                        "containers": [{"name": "app", "image": "example.invalid/not-k8s-invalid-statefulset-name"}]
+                    }
+                }
+            }
+        }),
+    )
+    .await?;
+
+    reject(
+        format!(
+            "/apis/autoscaling/v2/namespaces/{}/horizontalpodautoscalers",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "Invalid_HPA_Name", "namespace": context.namespace},
+            "spec": {
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "missing-target"},
+                "minReplicas": 1,
+                "maxReplicas": 1
+            }
+        }),
+    )
+    .await?;
+
+    reject(
+        format!(
+            "/apis/autoscaling/v2/namespaces/{}/horizontalpodautoscalers",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "valid-hpa-name", "namespace": context.namespace},
+            "spec": {
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "missing-target"},
+                "minReplicas": 2,
+                "maxReplicas": 1
+            }
+        }),
+    )
+    .await?;
+
+    reject(
+        format!(
+            "/apis/apps/v1/namespaces/{}/deployments",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "selector-mismatch", "namespace": context.namespace},
+            "spec": {
+                "selector": {"matchLabels": {"app": "api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "worker"}},
+                    "spec": {
+                        "containers": [{"name": "app", "image": "example.invalid/not-k8s-selector-mismatch"}]
+                    }
+                }
+            }
+        }),
+    )
+    .await?;
+
+    let immutable_name = format!("selector-immutable-{}", std::process::id());
+    let create_request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/apis/apps/v1/namespaces/{}/deployments",
+            context.namespace
+        ))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": &immutable_name, "namespace": context.namespace},
+            "spec": {
+                "replicas": 0,
+                "selector": {"matchLabels": {"app": "api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "api"}},
+                    "spec": {
+                        "containers": [{"name": "app", "image": "example.invalid/not-k8s-selector-immutable"}]
+                    }
+                }
+            }
+        }))?)?;
+    context
+        .client
+        .request::<Value>(create_request)
+        .await
+        .context("creating a Deployment for selector immutability")?;
+
+    let patch_request = Request::builder()
+        .method("PATCH")
+        .uri(format!(
+            "/apis/apps/v1/namespaces/{}/deployments/{}",
+            context.namespace, immutable_name
+        ))
+        .header("content-type", "application/merge-patch+json")
+        .body(serde_json::to_vec(&json!({
+            "spec": {"selector": {"matchLabels": {"app": "worker"}}}
+        }))?)?;
+    let patch_result = context.client.request::<Value>(patch_request).await;
+    let delete_request = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/apis/apps/v1/namespaces/{}/deployments/{}",
+            context.namespace, immutable_name
+        ))
+        .body(Vec::new())?;
+    let _ = context.client.request::<Value>(delete_request).await;
+    match patch_result {
+        Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+        Err(error) => anyhow::bail!("mutable workload selector returned the wrong API error: {error}"),
+        Ok(value) => anyhow::bail!("mutable workload selector was accepted: {value}"),
+    }
+}
+
+pub(super) async fn nodeapiserver_rejects_privileged_csr_subject(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "certificate subject admission is only exercised against nodeapiserver",
+        ));
+    }
+
+    let mut params = CertificateParams::default();
+    let mut subject = DistinguishedName::new();
+    subject.push(DnType::CommonName, "nodeapiserver-csr-subject");
+    subject.push(DnType::OrganizationName, "system:masters");
+    params.distinguished_name = subject;
+    let key = KeyPair::generate().context("generating the CSR key")?;
+    let request = params
+        .serialize_request(&key)
+        .context("serializing the privileged CSR")?;
+    let request_pem = request.pem().context("encoding the privileged CSR as PEM")?;
+    use base64::Engine;
+    let csrs: Api<CertificateSigningRequest> = Api::all(context.client.clone());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/apis/certificates.k8s.io/v1/certificatesigningrequests")
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "certificates.k8s.io/v1",
+            "kind": "CertificateSigningRequest",
+            "metadata": {"generateName": "nodeapiserver-subject-"},
+            "spec": {
+                "request": base64::engine::general_purpose::STANDARD.encode(request_pem),
+                "signerName": "kubernetes.io/kube-apiserver-client",
+                "usages": ["client auth"]
+            }
+        }))?)?;
+
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 403 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "privileged CSR subject returned the wrong API error: {error}"
+        ),
+        Ok(value) => {
+            if let Some(name) = value.pointer("/metadata/name").and_then(Value::as_str) {
+                let _ = csrs.delete(name, &DeleteParams::default()).await;
+            }
+            anyhow::bail!("privileged CSR subject was unexpectedly accepted: {value}")
+        }
+    }
+}
+
 pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
     context: &E2eContext,
 ) -> Result<()> {
@@ -1411,6 +1732,265 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
     pods.delete(&name, &DeleteParams::default())
         .await
         .context("deleting the pure-admission apply probe Pod")?;
+    Ok(())
+}
+
+pub(super) async fn nodeapiserver_honors_always_pull_images(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "AlwaysPullImages checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let _override = NodeapiserverAdmissionPluginOverride::install("AlwaysPullImages")?;
+    let name = format!("nodeapiserver-always-pull-{}", std::process::id());
+    let uri = format!(
+        "/api/v1/namespaces/{}/pods?dryRun=All",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "AlwaysPullImages admission to force the dry-run Pod policy",
+            Duration::from_secs(60),
+            || {
+                let client = context.client.clone();
+                let uri = uri.clone();
+                let name = name.clone();
+                let namespace = context.namespace.clone();
+                async move {
+                    let request = Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(serde_json::to_vec(&json!({
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "metadata": {"name": name, "namespace": namespace},
+                            "spec": {
+                                "containers": [{
+                                    "name": "app",
+                                    "image": "example.invalid/not-k8s-always-pull",
+                                    "imagePullPolicy": "Never"
+                                }]
+                            }
+                        }))?)?;
+                    match client.request::<Value>(request).await {
+                        Ok(pod) => Ok(pod.pointer("/spec/containers/0/imagePullPolicy")
+                            == Some(&Value::String("Always".to_string()))),
+                        Err(KubeError::Api(error)) if error.code == 503 => Ok(false),
+                        Err(KubeError::Service(_)) | Err(KubeError::HyperError(_)) => Ok(false),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            },
+        )
+        .await
+}
+
+pub(super) async fn nodeapiserver_applies_storage_admission_to_apply(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "storage-backed Apply admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let namespace_name = format!("nodeapiserver-apply-admission-{suffix}");
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &namespace_name);
+    let limit_ranges: Api<LimitRange> = Api::namespaced(context.client.clone(), &namespace_name);
+    let quotas: Api<ResourceQuota> = Api::namespaced(context.client.clone(), &namespace_name);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &namespace_name);
+    let namespace: Namespace = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": &namespace_name,
+            "labels": {"pod-security.kubernetes.io/enforce": "baseline"}
+        }
+    }))?;
+    let service_account: ServiceAccount = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": "default", "namespace": &namespace_name}
+    }))?;
+    let limit_range: LimitRange = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "LimitRange",
+        "metadata": {"name": "defaults", "namespace": &namespace_name},
+        "spec": {"limits": [{
+            "type": "Container",
+            "default": {"cpu": "100m"},
+            "defaultRequest": {"cpu": "50m"}
+        }]}
+    }))?;
+    let quota: ResourceQuota = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ResourceQuota",
+        "metadata": {"name": "one-pod", "namespace": &namespace_name},
+        "spec": {"hard": {"pods": "1"}}
+    }))?;
+    let first_name = format!("apply-storage-first-{suffix}");
+    let privileged_name = format!("apply-storage-privileged-{suffix}");
+    let second_name = format!("apply-storage-second-{suffix}");
+
+    let apply_pod = |name: &str, privileged: bool| -> Result<Request<Vec<u8>>> {
+        Ok(Request::builder()
+            .method("PATCH")
+            .uri(format!(
+                "/api/v1/namespaces/{namespace_name}/pods/{name}?fieldManager=nodeapiserver-storage-admission"
+            ))
+            .header("Content-Type", "application/apply-patch+yaml")
+            .body(serde_json::to_vec(&json!({
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name, "namespace": &namespace_name},
+                "spec": {
+                    "containers": [{
+                        "name": "app",
+                        "image": "example.invalid/not-k8s-storage-admission",
+                        "securityContext": if privileged {json!({"privileged": true})} else {json!({})}
+                    }]
+                }
+            }))?)?)
+    };
+
+    let result = async {
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .context("creating the storage-admission Apply namespace")?;
+        service_accounts
+            .create(&PostParams::default(), &service_account)
+            .await
+            .context("creating the storage-admission Apply ServiceAccount")?;
+        limit_ranges
+            .create(&PostParams::default(), &limit_range)
+            .await
+            .context("creating the storage-admission Apply LimitRange")?;
+        quotas
+            .create(&PostParams::default(), &quota)
+            .await
+            .context("creating the storage-admission Apply ResourceQuota")?;
+
+        let first: Value = context
+            .client
+            .request(apply_pod(&first_name, false)?)
+            .await
+            .context("applying a Pod through storage-backed admission")?;
+        anyhow::ensure!(
+            first.pointer("/spec/containers/0/resources/limits/cpu").and_then(Value::as_str)
+                == Some("100m")
+                && first
+                    .pointer("/spec/containers/0/resources/requests/cpu")
+                    .and_then(Value::as_str)
+                    == Some("50m"),
+            "Server-Side Apply did not run LimitRanger defaulting: {first}"
+        );
+
+        match context.client.request::<Value>(apply_pod(&privileged_name, true)?).await {
+            Err(KubeError::Api(error)) if error.code == 403 => {}
+            Err(error) => anyhow::bail!(
+                "PodSecurity returned the wrong API error for Apply: {error}"
+            ),
+            Ok(value) => anyhow::bail!(
+                "PodSecurity unexpectedly accepted a privileged Apply Pod: {value}"
+            ),
+        }
+
+        match context.client.request::<Value>(apply_pod(&second_name, false)?).await {
+            Err(KubeError::Api(error)) if error.code == 403 => {}
+            Err(error) => anyhow::bail!(
+                "ResourceQuota returned the wrong API error for Apply: {error}"
+            ),
+            Ok(value) => anyhow::bail!(
+                "ResourceQuota unexpectedly accepted a second Apply Pod: {value}"
+            ),
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = pods.delete(&first_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&privileged_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&second_name, &DeleteParams::default()).await;
+    let _ = quotas.delete("one-pod", &DeleteParams::default()).await;
+    let _ = limit_ranges.delete("defaults", &DeleteParams::default()).await;
+    let _ = service_accounts.delete("default", &DeleteParams::default()).await;
+    let _ = namespaces.delete(&namespace_name, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn nodeapiserver_adds_extended_resource_tolerations(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "extended-resource admission checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = format!("nodeapiserver-extended-resource-{}", std::process::id());
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods",
+            context.namespace
+        ))
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": &name,
+                "namespace": context.namespace
+            },
+            "spec": {
+                "containers": [{
+                    "name": "app",
+                    "image": "example.invalid/not-k8s-extended-resource",
+                    "resources": {"requests": {"example.com/gpu": "1"}}
+                }],
+                "initContainers": [{
+                    "name": "init",
+                    "image": "example.invalid/not-k8s-extended-resource-init",
+                    "resources": {"requests": {"vendor.io/fpga": "1"}}
+                }]
+            }
+        }))?)?;
+    let pod: Value = context
+        .client
+        .request(request)
+        .await
+        .context("creating a Pod to verify extended-resource toleration admission")?;
+
+    let tolerations = pod
+        .pointer("/spec/tolerations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for resource in ["example.com/gpu", "vendor.io/fpga"] {
+        anyhow::ensure!(
+            tolerations.iter().any(|toleration| {
+                toleration.pointer("/key").and_then(Value::as_str) == Some(resource)
+                    && toleration.pointer("/operator").and_then(Value::as_str) == Some("Exists")
+                    && toleration.pointer("/effect").and_then(Value::as_str) == Some("NoSchedule")
+            }),
+            "nodeapiserver did not add the {resource} extended-resource toleration: {pod}"
+        );
+    }
+
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    pods.delete(&name, &DeleteParams::default())
+        .await
+        .context("deleting the extended-resource admission probe Pod")?;
     Ok(())
 }
 
@@ -1572,6 +2152,7 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
     let suffix = std::process::id();
     let class_name = format!("nodeapiserver-runtime-class-{suffix}");
     let pod_name = format!("nodeapiserver-runtime-pod-{suffix}");
+    let apply_pod_name = format!("nodeapiserver-apply-runtime-pod-{suffix}");
     let runtime_classes: Api<RuntimeClass> = Api::all(context.client.clone());
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let runtime_class: RuntimeClass = serde_json::from_value(json!({
@@ -1636,11 +2217,57 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
                 }),
             "RuntimeClass toleration was not merged into the Pod: {returned}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{}/pods/{apply_pod_name}?fieldManager=nodeapiserver-apply-runtime",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": &apply_pod_name,
+                            "namespace": context.namespace
+                        },
+                        "spec": {
+                            "runtimeClassName": &class_name,
+                            "nodeSelector": {"nodeapiserver.test/existing": "true"},
+                            "containers": [{
+                                "name": "app",
+                                "image": "example.invalid/not-k8s-apply-runtime-class"
+                            }]
+                        }
+                    }))?)?,
+            )
+            .await
+            .context("applying a Pod through RuntimeClass admission")?;
+        anyhow::ensure!(
+            applied.pointer("/spec/overhead/cpu").and_then(Value::as_str) == Some("10m")
+                && applied.pointer("/spec/overhead/memory").and_then(Value::as_str) == Some("16Mi"),
+            "RuntimeClass overhead was not applied to an SSA Pod: {applied}"
+        );
+        anyhow::ensure!(
+            applied.pointer("/spec/nodeSelector/nodeapiserver.test~1runtime").and_then(Value::as_str)
+                == Some("sandbox")
+                && applied.pointer("/spec/tolerations").and_then(Value::as_array).is_some_and(|tolerations| {
+                    tolerations.iter().any(|toleration| {
+                        toleration.get("key").and_then(Value::as_str) == Some("nodeapiserver.test/runtime")
+                    })
+                }),
+            "RuntimeClass scheduling was not applied to an SSA Pod: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&apply_pod_name, &DeleteParams::default()).await;
     let _ = runtime_classes
         .delete(&class_name, &DeleteParams::default())
         .await;
@@ -1660,6 +2287,7 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
     let suffix = std::process::id();
     let namespace_name = format!("nodeapiserver-selector-{suffix}");
     let pod_name = format!("nodeapiserver-selector-pod-{suffix}");
+    let apply_pod_name = format!("nodeapiserver-apply-selector-pod-{suffix}");
     let namespaces: Api<Namespace> = Api::all(context.client.clone());
     let service_accounts: Api<ServiceAccount> =
         Api::namespaced(context.client.clone(), &namespace_name);
@@ -1714,11 +2342,51 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
                     == Some("demo"),
             "namespace node selector was not merged into the Pod: {returned}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{namespace_name}/pods/{apply_pod_name}?fieldManager=nodeapiserver-apply-selector"
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": &apply_pod_name,
+                            "namespace": &namespace_name
+                        },
+                        "spec": {
+                            "nodeSelector": {"nodeapiserver.test/workload": "demo"},
+                            "containers": [{
+                                "name": "app",
+                                "image": "example.invalid/not-k8s-apply-selector"
+                            }]
+                        }
+                    }))?)?,
+            )
+            .await
+            .context("applying a Pod through PodNodeSelector admission")?;
+        anyhow::ensure!(
+            applied
+                .pointer("/spec/nodeSelector/nodeapiserver.test~1zone")
+                .and_then(Value::as_str)
+                == Some("blue")
+                && applied
+                    .pointer("/spec/nodeSelector/nodeapiserver.test~1workload")
+                    .and_then(Value::as_str)
+                    == Some("demo"),
+            "namespace node selector was not merged into an SSA Pod: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&apply_pod_name, &DeleteParams::default()).await;
     let _ = service_accounts
         .delete("default", &DeleteParams::default())
         .await;
@@ -1726,6 +2394,66 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
         .delete(&namespace_name, &DeleteParams::default())
         .await;
     result
+}
+
+pub(super) async fn nodeapiserver_applies_configured_node_selector(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "configured PodNodeSelector checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let config = format!(
+        "clusterDefaultNodeSelector: nodeapiserver.test/cluster=default\n{}: nodeapiserver.test/namespace=selected\n",
+        context.namespace
+    );
+    let _override = NodeapiserverPodNodeSelectorOverride::install(&config)?;
+    let name = format!("nodeapiserver-configured-selector-{}", std::process::id());
+    let uri = format!(
+        "/api/v1/namespaces/{}/pods?dryRun=All",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "configured PodNodeSelector admission to merge the namespace selector",
+            Duration::from_secs(60),
+            || {
+                let client = context.client.clone();
+                let uri = uri.clone();
+                let name = name.clone();
+                let namespace = context.namespace.clone();
+                async move {
+                    let request = Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(serde_json::to_vec(&json!({
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "metadata": {"name": name, "namespace": namespace},
+                            "spec": {
+                                "containers": [{
+                                    "name": "app",
+                                    "image": "example.invalid/not-k8s-configured-selector"
+                                }]
+                            }
+                        }))?)?;
+                    match client.request::<Value>(request).await {
+                        Ok(pod) => Ok(pod
+                            .pointer("/spec/nodeSelector/nodeapiserver.test~1namespace")
+                            .and_then(Value::as_str)
+                            == Some("selected")),
+                        Err(KubeError::Api(error)) if error.code == 503 => Ok(false),
+                        Err(KubeError::Service(_)) | Err(KubeError::HyperError(_)) => Ok(false),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            },
+        )
+        .await
 }
 
 pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
@@ -1826,6 +2554,7 @@ pub(super) async fn nodeapiserver_applies_priority_admission(
     let suffix = std::process::id();
     let class_name = format!("nodeapiserver-priority-class-{suffix}");
     let pod_name = format!("nodeapiserver-priority-pod-{suffix}");
+    let apply_pod_name = format!("nodeapiserver-apply-priority-pod-{suffix}");
     let priority_classes: Api<PriorityClass> = Api::all(context.client.clone());
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let priority_class: PriorityClass = serde_json::from_value(json!({
@@ -1862,11 +2591,46 @@ pub(super) async fn nodeapiserver_applies_priority_admission(
                 && returned.pointer("/spec/preemptionPolicy").and_then(Value::as_str) == Some("Never"),
             "Priority admission did not resolve the PriorityClass: {returned}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{}/pods/{apply_pod_name}?fieldManager=nodeapiserver-apply-priority",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": &apply_pod_name,
+                            "namespace": context.namespace
+                        },
+                        "spec": {
+                            "priorityClassName": &class_name,
+                            "containers": [{
+                                "name": "app",
+                                "image": "example.invalid/not-k8s-apply-priority"
+                            }]
+                        }
+                    }))?)?,
+            )
+            .await
+            .context("applying a Pod through Priority admission")?;
+        anyhow::ensure!(
+            applied.pointer("/spec/priority").and_then(Value::as_i64) == Some(1234)
+                && applied.pointer("/spec/preemptionPolicy").and_then(Value::as_str) == Some("Never"),
+            "Priority admission did not resolve the PriorityClass for Server-Side Apply: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&apply_pod_name, &DeleteParams::default()).await;
     let _ = priority_classes
         .delete(&class_name, &DeleteParams::default())
         .await;
@@ -1882,6 +2646,7 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
     }
 
     let name = format!("nodeapiserver-protection-{}", std::process::id());
+    let apply_name = format!("nodeapiserver-apply-protection-{}", std::process::id());
     let uri = "/api/v1/persistentvolumes";
     let object: Value = context
         .client
@@ -1899,9 +2664,8 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
                         "persistentVolumeReclaimPolicy": "Retain",
                         "hostPath": {"path": "/tmp/nodeapiserver-storage-protection"}
                     }
-                }))?,
-            )?
-        )
+                }))?)?,
+            )
         .await
         .context("creating a PersistentVolume for storage-protection admission")?;
 
@@ -1911,9 +2675,42 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
             .is_some_and(|finalizers| finalizers.iter().any(|finalizer| finalizer == "kubernetes.io/pv-protection")),
         "nodeapiserver did not add the PV protection finalizer: {object}"
     );
+    let applied: Value = context
+        .client
+        .request(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/persistentvolumes/{apply_name}?fieldManager=nodeapiserver-apply-protection"
+                ))
+                .header("Content-Type", "application/apply-patch+yaml")
+                .body(serde_json::to_vec(&json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolume",
+                    "metadata": {"name": &apply_name},
+                    "spec": {
+                        "capacity": {"storage": "1Gi"},
+                        "accessModes": ["ReadWriteOnce"],
+                        "persistentVolumeReclaimPolicy": "Retain",
+                        "hostPath": {"path": "/tmp/nodeapiserver-apply-storage-protection"}
+                    }
+                }))?)?,
+            )
+        .await
+        .context("applying a PersistentVolume for storage-protection admission")?;
+    anyhow::ensure!(
+        applied["metadata"]["finalizers"]
+            .as_array()
+            .is_some_and(|finalizers| finalizers.iter().any(|finalizer| finalizer == "kubernetes.io/pv-protection")),
+        "nodeapiserver did not add the PV protection finalizer during Apply: {applied}"
+    );
     let _ = context
         .client
         .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{name}")).body(Vec::new())?)
+        .await;
+    let _ = context
+        .client
+        .request::<Value>(Request::builder().method("DELETE").uri(format!("{uri}/{apply_name}")).body(Vec::new())?)
         .await;
     Ok(())
 }
@@ -4511,6 +5308,108 @@ pub(super) async fn nodeapiserver_enforces_crd_schema_constraints(context: &E2eC
     .await;
 
     let _ = widgets.delete(&widget_name, &DeleteParams::default()).await;
+    let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
+    result
+}
+
+pub(super) async fn nodeapiserver_supports_crd_selectable_fields(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test("CRD selectable-field checks are a nodeapiserver-only check"));
+    }
+
+    let suffix = std::process::id();
+    let group = format!("nodeapiserver-selectable-{suffix}.test");
+    let crd_name = format!("widgets.{group}");
+    let blue_name = format!("blue-{suffix}");
+    let green_name = format!("green-{suffix}");
+    let crds: Api<CustomResourceDefinition> = Api::all(context.client.clone());
+    let widgets: Api<DynamicObject> = Api::namespaced_with(
+        context.client.clone(),
+        &context.namespace,
+        &ApiResource::from_gvk(&GroupVersionKind::gvk(&group, "v1", "Widget")),
+    );
+    let crd: CustomResourceDefinition = serde_json::from_value(json!({
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": crd_name},
+        "spec": {
+            "group": group.clone(),
+            "names": {
+                "plural": "widgets",
+                "singular": "widget",
+                "kind": "Widget",
+                "listKind": "WidgetList"
+            },
+            "scope": "Namespaced",
+            "versions": [{
+                "name": "v1",
+                "served": true,
+                "storage": true,
+                "selectableFields": [{"jsonPath": ".spec.color"}],
+                "schema": {"openAPIV3Schema": {
+                    "type": "object",
+                    "required": ["spec"],
+                    "properties": {"spec": {
+                        "type": "object",
+                        "required": ["color"],
+                        "properties": {"color": {"type": "string"}}
+                    }}
+                }}
+            }]
+        }
+    }))?;
+
+    let result = async {
+        crds.create(&PostParams::default(), &crd)
+            .await
+            .context("creating a CRD with a selectable field")?;
+        context
+            .wait_until("selectable-field CRD to become established", Duration::from_secs(60), || {
+                let crds = crds.clone();
+                let crd_name = crd_name.clone();
+                async move { Ok(crds.get_opt(&crd_name).await?.is_some_and(|crd| crd_is_established(&crd))) }
+            })
+            .await?;
+
+        for (name, color) in [(&blue_name, "blue"), (&green_name, "green")] {
+            widgets
+                .create(
+                    &PostParams::default(),
+                    &serde_json::from_value(json!({
+                        "apiVersion": format!("{group}/v1"),
+                        "kind": "Widget",
+                        "metadata": {"name": name, "namespace": &context.namespace},
+                        "spec": {"color": color}
+                    }))?,
+                )
+                .await
+                .with_context(|| format!("creating the {color} selectable-field CRD object"))?;
+        }
+
+        let blue = widgets
+            .list(&ListParams::default().fields("spec.color=blue"))
+            .await
+            .context("listing CRD objects through a selectable field")?;
+        anyhow::ensure!(
+            blue.items.len() == 1 && blue.items[0].metadata.name.as_deref() == Some(blue_name.as_str()),
+            "selectable field returned the wrong objects: {:?}",
+            blue.items.iter().map(|item| item.metadata.name.clone()).collect::<Vec<_>>()
+        );
+
+        match widgets.list(&ListParams::default().fields("spec.missing=value")).await {
+            Err(KubeError::Api(error)) if error.code == 400 => {}
+            Err(error) => anyhow::bail!("unsupported CRD field selector returned the wrong API error: {error}"),
+            Ok(list) => anyhow::bail!("unsupported CRD field selector was accepted: {list:?}"),
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = widgets.delete(&blue_name, &DeleteParams::default()).await;
+    let _ = widgets.delete(&green_name, &DeleteParams::default()).await;
     let _ = crds.delete(&crd_name, &DeleteParams::default()).await;
     result
 }
