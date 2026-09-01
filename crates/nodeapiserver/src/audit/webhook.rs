@@ -294,7 +294,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "apiVersion: v1\nkind: Config\ncurrent-context: audit\nclusters:\n- name: backend\n  cluster:\n    server: https://audit.example/events\n    certificate-authority-data: {inline_ca}\n    certificate-authority: ca.pem\nusers:\n- name: sender\n  user: {}\ncontexts:\n- name: audit\n  context:\n    cluster: backend\n    user: sender\n"
+                "apiVersion: v1\nkind: Config\ncurrent-context: audit\nclusters:\n- name: backend\n  cluster:\n    server: https://audit.example/events\n    certificate-authority-data: {inline_ca}\n    certificate-authority: ca.pem\nusers:\n- name: sender\n  user: {{}}\ncontexts:\n- name: audit\n  context:\n    cluster: backend\n    user: sender\n"
             ),
         )
         .unwrap();
