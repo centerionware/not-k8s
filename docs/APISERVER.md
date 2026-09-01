@@ -1245,8 +1245,10 @@ completes the upstream Node authorizer chain for body-sensitive operations
 that authorization cannot inspect: node identity/name and restricted-label
 checks, mirror-Pod ownership and API-reference checks, Pod status/eviction
 relationships, ServiceAccount token bindings, node leases, CSINodes, and
-ResourceSlices. The remaining authorization gap is webhook compatibility
-hardening. Either `NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL` or
+ResourceSlices. The listener applies the same body-sensitive checks to
+ordinary writes, regular PATCH, and Server-Side Apply candidates. The
+remaining authorization gap is webhook compatibility hardening. Either
+`NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL` or
 `NODEAPISERVER_AUTHORIZATION_WEBHOOK_CONFIG_FILE` delegates each parsed
 request to an external `authorization.k8s.io/v1` `SubjectAccessReview`
 authorizer. The URL form uses a direct HTTP(S) endpoint; the config-file form
