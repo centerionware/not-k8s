@@ -1489,6 +1489,76 @@ pub(super) async fn nodeapiserver_defaults_ingress_class(context: &E2eContext) -
     result
 }
 
+pub(super) async fn nodeapiserver_defaults_storage_class_on_apply(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "DefaultStorageClass Apply checks are only exercised against nodeapiserver",
+        ));
+    }
+
+    let suffix = std::process::id();
+    let class_name = format!("nodeapiserver-apply-storage-{suffix}");
+    let claim_name = format!("nodeapiserver-apply-pvc-{suffix}");
+    let classes: Api<StorageClass> = Api::all(context.client.clone());
+    let claims: Api<PersistentVolumeClaim> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let class: StorageClass = serde_json::from_value(json!({
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "StorageClass",
+        "metadata": {
+            "name": &class_name,
+            "annotations": {"storageclass.kubernetes.io/is-default-class": "true"}
+        },
+        "provisioner": "kubernetes.io/no-provisioner"
+    }))?;
+
+    let result = async {
+        classes
+            .create(&PostParams::default(), &class)
+            .await
+            .context("creating the default StorageClass for Apply")?;
+        let apply = context
+            .client
+            .request::<Value>(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{}/persistentvolumeclaims/{claim_name}?fieldManager=nodeapiserver-apply-storage",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "PersistentVolumeClaim",
+                        "metadata": {
+                            "name": &claim_name,
+                            "namespace": context.namespace
+                        },
+                        "spec": {
+                            "accessModes": ["ReadWriteOnce"],
+                            "resources": {"requests": {"storage": "1Gi"}}
+                        }
+                    }))?)?,
+            )
+            .await
+            .context("applying a PVC without a storage class")?;
+        anyhow::ensure!(
+            apply.pointer("/spec/storageClassName").and_then(Value::as_str)
+                == Some(class_name.as_str()),
+            "DefaultStorageClass did not mutate a Server-Side Apply PVC: {apply}"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    let _ = claims.delete(&claim_name, &DeleteParams::default()).await;
+    let _ = classes.delete(&class_name, &DeleteParams::default()).await;
+    result
+}
+
 pub(super) async fn nodeapiserver_applies_runtime_class_admission(
     context: &E2eContext,
 ) -> Result<()> {
