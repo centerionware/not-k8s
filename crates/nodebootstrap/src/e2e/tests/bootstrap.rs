@@ -1932,9 +1932,8 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
                         "persistentVolumeReclaimPolicy": "Retain",
                         "hostPath": {"path": "/tmp/nodeapiserver-storage-protection"}
                     }
-                }))?,
-            )?
-        )
+                }))?)?,
+            )
         .await
         .context("creating a PersistentVolume for storage-protection admission")?;
 
@@ -1964,8 +1963,7 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
                         "hostPath": {"path": "/tmp/nodeapiserver-apply-storage-protection"}
                     }
                 }))?)?,
-            )?,
-        )
+            )
         .await
         .context("applying a PersistentVolume for storage-protection admission")?;
     anyhow::ensure!(
