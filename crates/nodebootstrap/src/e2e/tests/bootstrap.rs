@@ -4513,7 +4513,8 @@ pub(super) async fn nodeapiserver_mutating_admission_policy_mutates_create(
                         "kind": "ConfigMap",
                         "metadata": {
                             "name": apply_name,
-                            "namespace": context.namespace
+                            "namespace": context.namespace,
+                            "finalizers": []
                         }
                     }))?)?,
             )
