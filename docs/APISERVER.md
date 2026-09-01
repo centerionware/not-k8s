@@ -8,7 +8,7 @@
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 11/12 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 9/11 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 10/12 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
