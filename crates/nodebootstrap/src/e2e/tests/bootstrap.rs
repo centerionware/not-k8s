@@ -1963,7 +1963,7 @@ pub(super) async fn nodeapiserver_adds_storage_protection_finalizer(context: &E2
                         "persistentVolumeReclaimPolicy": "Retain",
                         "hostPath": {"path": "/tmp/nodeapiserver-apply-storage-protection"}
                     }
-                }))?,
+                }))?)?,
             )?,
         )
         .await
