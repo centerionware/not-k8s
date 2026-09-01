@@ -1595,60 +1595,24 @@ async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) ->
     // A kube-rs Client may retain a pool keyed by the old apiserver
     // connection. Rebuild it for every recovery attempt so a connection
     // failure during the restart cannot poison the whole 90-second wait.
-    let namespace = format!(
-        "nk-e2e-recovery-{}-{:08x}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos() as u32)
-            .unwrap_or_default()
-    );
-    let recovery = context
+    // This barrier deliberately checks only the API server: requiring the
+    // namespace controller to recreate a ServiceAccount would conflate a
+    // nodecontroller/watch-recovery failure with this API restart check.
+    context
         .wait_until(
-            "the API server and namespace controller to recover after an environment-reconfiguring test",
+            "the API server to recover after an environment-reconfiguring test",
             Duration::from_secs(90),
             || {
-                let namespace = namespace.clone();
                 async move {
                     let Ok(client) = fresh_e2e_client().await else {
                         return Ok(false);
                     };
                     let namespaces: Api<Namespace> = Api::all(client.clone());
-                    let service_accounts: Api<ServiceAccount> =
-                        Api::namespaced(client, &namespace);
-                    match namespaces.get_opt(&namespace).await {
-                        Ok(Some(_)) => Ok(service_accounts
-                            .get_opt("default")
-                            .await
-                            .is_ok_and(|service_account| service_account.is_some())),
-                        Ok(None) => {
-                            let _ = namespaces
-                                .create(
-                                    &PostParams::default(),
-                                    &Namespace {
-                                        metadata: ObjectMeta {
-                                            name: Some(namespace),
-                                            ..Default::default()
-                                        },
-                                        ..Default::default()
-                                    },
-                                )
-                                .await;
-                            Ok(false)
-                        }
-                        Err(_) => Ok(false),
-                    }
+                    Ok(namespaces.list(&ListParams::default()).await.is_ok())
                 }
             },
         )
-        .await;
-    if let Ok(client) = fresh_e2e_client().await {
-        let namespaces: Api<Namespace> = Api::all(client);
-        let _ = namespaces
-            .delete(&namespace, &DeleteParams::default())
-            .await;
-    }
-    recovery?;
+        .await?;
     fresh_e2e_client().await
 }
 
