@@ -1572,6 +1572,7 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
     let suffix = std::process::id();
     let class_name = format!("nodeapiserver-runtime-class-{suffix}");
     let pod_name = format!("nodeapiserver-runtime-pod-{suffix}");
+    let apply_pod_name = format!("nodeapiserver-apply-runtime-pod-{suffix}");
     let runtime_classes: Api<RuntimeClass> = Api::all(context.client.clone());
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let runtime_class: RuntimeClass = serde_json::from_value(json!({
@@ -1636,11 +1637,57 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
                 }),
             "RuntimeClass toleration was not merged into the Pod: {returned}"
         );
+
+        let applied: Value = context
+            .client
+            .request(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/v1/namespaces/{}/pods/{apply_pod_name}?fieldManager=nodeapiserver-apply-runtime",
+                        context.namespace
+                    ))
+                    .header("Content-Type", "application/apply-patch+yaml")
+                    .body(serde_json::to_vec(&json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": &apply_pod_name,
+                            "namespace": context.namespace
+                        },
+                        "spec": {
+                            "runtimeClassName": &class_name,
+                            "nodeSelector": {"nodeapiserver.test/existing": "true"},
+                            "containers": [{
+                                "name": "app",
+                                "image": "example.invalid/not-k8s-apply-runtime-class"
+                            }]
+                        }
+                    }))?,
+            )
+            .await
+            .context("applying a Pod through RuntimeClass admission")?;
+        anyhow::ensure!(
+            applied.pointer("/spec/overhead/cpu").and_then(Value::as_str) == Some("10m")
+                && applied.pointer("/spec/overhead/memory").and_then(Value::as_str) == Some("16Mi"),
+            "RuntimeClass overhead was not applied to an SSA Pod: {applied}"
+        );
+        anyhow::ensure!(
+            applied.pointer("/spec/nodeSelector/nodeapiserver.test~1runtime").and_then(Value::as_str)
+                == Some("sandbox")
+                && applied.pointer("/spec/tolerations").and_then(Value::as_array).is_some_and(|tolerations| {
+                    tolerations.iter().any(|toleration| {
+                        toleration.get("key").and_then(Value::as_str) == Some("nodeapiserver.test/runtime")
+                    })
+                }),
+            "RuntimeClass scheduling was not applied to an SSA Pod: {applied}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pods.delete(&apply_pod_name, &DeleteParams::default()).await;
     let _ = runtime_classes
         .delete(&class_name, &DeleteParams::default())
         .await;
