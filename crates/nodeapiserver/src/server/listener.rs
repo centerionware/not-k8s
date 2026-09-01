@@ -1586,12 +1586,21 @@ fn request_entity_too_large_status(path_str: &str, limit: usize) -> serde_json::
 /// only — see this module's own doc comment) — real upstream's
 /// `reason: "Forbidden"`, `code: 403`.
 fn forbidden_status(path_str: &str, user_name: &str) -> serde_json::Value {
+    forbidden_status_with_reason(path_str, user_name, "")
+}
+
+fn forbidden_status_with_reason(path_str: &str, user_name: &str, reason: &str) -> serde_json::Value {
+    let message = if reason.is_empty() {
+        format!("{path_str}: User {user_name:?} does not have permission for this request (RBAC)")
+    } else {
+        format!("{path_str}: {reason}")
+    };
     serde_json::json!({
         "kind": "Status",
         "apiVersion": "v1",
         "metadata": {},
         "status": "Failure",
-        "message": format!("{path_str}: User {user_name:?} does not have permission for this request (RBAC)"),
+        "message": message,
         "reason": "Forbidden",
         "details": {},
         "code": 403,
@@ -1947,34 +1956,48 @@ async fn handle_with_audit(
     }
     let mut authorization_webhook_allowed = false;
     if let Some(authorizer) = authorization_webhook {
-        match authorizer.authorize(&request_info, identity.as_ref()).await {
-            Ok(crate::authz::webhook::Decision::Allow) => {
-                authorization_webhook_allowed = true;
-            }
-            Ok(crate::authz::webhook::Decision::NoOpinion) => {}
-            Ok(crate::authz::webhook::Decision::Deny) => {
-                let user_name = identity
-                    .as_ref()
-                    .map(|identity| identity.name.as_str())
-                    .unwrap_or(ANONYMOUS_USERNAME);
-                let response = json_response(
-                    StatusCode::FORBIDDEN,
-                    &forbidden_status(&path_str, user_name),
-                );
-                log_audit_rejected_request(
-                    &audit_id,
-                    &request_info,
-                    &method,
-                    &path_str,
-                    &query,
-                    user_agent.as_deref(),
-                    identity.as_ref(),
-                    &peer,
-                    response.status().as_u16(),
-                    audit_sink.as_deref(),
-                    audit_policy.as_deref(),
-                );
-                return Ok(response);
+        match authorizer
+            .authorize_with_details(&request_info, identity.as_ref())
+            .await
+        {
+            Ok(details) => {
+                if let Some(error) = details.evaluation_error.as_deref() {
+                    warn!(path = %path_str, evaluation_error = %error, "authorization webhook returned an evaluation error");
+                }
+                match details.decision {
+                    crate::authz::webhook::Decision::Allow => {
+                        authorization_webhook_allowed = true;
+                    }
+                    crate::authz::webhook::Decision::NoOpinion => {}
+                    crate::authz::webhook::Decision::Deny => {
+                        let user_name = identity
+                            .as_ref()
+                            .map(|identity| identity.name.as_str())
+                            .unwrap_or(ANONYMOUS_USERNAME);
+                        let response = json_response(
+                            StatusCode::FORBIDDEN,
+                            &forbidden_status_with_reason(
+                                &path_str,
+                                user_name,
+                                &details.reason,
+                            ),
+                        );
+                        log_audit_rejected_request(
+                            &audit_id,
+                            &request_info,
+                            &method,
+                            &path_str,
+                            &query,
+                            user_agent.as_deref(),
+                            identity.as_ref(),
+                            &peer,
+                            response.status().as_u16(),
+                            audit_sink.as_deref(),
+                            audit_policy.as_deref(),
+                        );
+                        return Ok(response);
+                    }
+                }
             }
             Err(error) => {
                 warn!(path = %path_str, error = ?error, "authorization webhook failed");

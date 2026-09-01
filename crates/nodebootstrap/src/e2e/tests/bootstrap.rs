@@ -4628,7 +4628,7 @@ fn serve_authorization_webhook_connection(
     let decision = if review.pointer("/spec/nonResourceAttributes/path").and_then(Value::as_str) == Some("/healthz") {
         json!({"allowed": false, "denied": false})
     } else if review.pointer("/spec/resourceAttributes/name").and_then(Value::as_str) == Some(denied_name) {
-        json!({"allowed": false, "denied": true})
+        json!({"allowed": false, "denied": true, "reason": "test policy denied this object"})
     } else {
         json!({"allowed": true, "denied": false})
     };
@@ -5240,21 +5240,13 @@ pub(super) async fn nodeapiserver_honors_authorization_webhook_decisions(
             context.namespace
         );
         let denied = Command::new("curl")
-            .args([
-                "-k",
-                "-sS",
-                "--max-time",
-                "10",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_code}",
-                &denied_url,
-            ])
+            .args(["-k", "-sS", "--max-time", "10", "-w", "\n%{http_code}", &denied_url])
             .output()
             .context("checking an authorization webhook denial")?;
         anyhow::ensure!(
-            denied.status.success() && String::from_utf8_lossy(&denied.stdout).trim() == "403",
+            denied.status.success()
+                && String::from_utf8_lossy(&denied.stdout).trim_end().ends_with("403")
+                && String::from_utf8_lossy(&denied.stdout).contains("test policy denied this object"),
             "authorization webhook Deny did not produce HTTP 403: stdout={} stderr={}",
             String::from_utf8_lossy(&denied.stdout),
             String::from_utf8_lossy(&denied.stderr)

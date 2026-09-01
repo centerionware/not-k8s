@@ -42,6 +42,17 @@ pub enum Decision {
     Deny,
 }
 
+/// The decision and diagnostics returned by an authorization webhook.
+/// `evaluationError` does not erase a usable allow/deny/no-opinion result;
+/// upstream carries both values so callers can make the decision while still
+/// exposing that the evaluation was incomplete.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionDetails {
+    pub decision: Decision,
+    pub reason: String,
+    pub evaluation_error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct WebhookAuthorizer {
     url: String,
@@ -51,9 +62,9 @@ pub struct WebhookAuthorizer {
     unauthorized_ttl: Duration,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CachedDecision {
-    decision: Decision,
+    details: DecisionDetails,
     expires_at: std::time::Instant,
 }
 
@@ -82,11 +93,21 @@ impl WebhookAuthorizer {
         info: &RequestInfo,
         identity: Option<&Identity>,
     ) -> Result<Decision, Error> {
+        Ok(self.authorize_with_details(info, identity).await?.decision)
+    }
+
+    /// Ask the webhook for a decision while preserving its optional reason
+    /// and evaluation error for the listener's response and diagnostics.
+    pub async fn authorize_with_details(
+        &self,
+        info: &RequestInfo,
+        identity: Option<&Identity>,
+    ) -> Result<DecisionDetails, Error> {
         let review = build_review(info, identity);
         let cache_key = cache_key(&review);
         if let Some(key) = cache_key.as_deref() {
-            if let Some(decision) = self.cached_decision(key) {
-                return Ok(decision);
+            if let Some(details) = self.cached_decision(key) {
+                return Ok(details);
             }
         }
         for attempt in 0..MAX_ATTEMPTS {
@@ -105,28 +126,28 @@ impl WebhookAuthorizer {
             if !response.status().is_success() {
                 return Err(Error::InvalidResponse(format!("webhook returned HTTP {}", response.status())));
             }
-            let decision = parse_decision(&response.json::<Value>().await?)?;
+            let details = parse_details(&response.json::<Value>().await?)?;
             if let Some(key) = cache_key.as_deref() {
-                self.cache_decision(key, decision);
+                self.cache_decision(key, &details);
             }
-            return Ok(decision);
+            return Ok(details);
         }
         unreachable!("authorization webhook attempts are bounded above")
     }
 
-    fn cached_decision(&self, key: &str) -> Option<Decision> {
+    fn cached_decision(&self, key: &str) -> Option<DecisionDetails> {
         let mut cache = self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let entry = cache.get(key).copied()?;
+        let entry = cache.get(key)?.clone();
         if entry.expires_at > std::time::Instant::now() {
-            Some(entry.decision)
+            Some(entry.details)
         } else {
             cache.remove(key);
             None
         }
     }
 
-    fn cache_decision(&self, key: &str, decision: Decision) {
-        let ttl = match decision {
+    fn cache_decision(&self, key: &str, details: &DecisionDetails) {
+        let ttl = match details.decision {
             Decision::Allow => self.authorized_ttl,
             Decision::Deny | Decision::NoOpinion => self.unauthorized_ttl,
         };
@@ -143,7 +164,7 @@ impl WebhookAuthorizer {
                 cache.remove(&oldest_key);
             }
         }
-        cache.insert(key.to_string(), CachedDecision { decision, expires_at: std::time::Instant::now() + ttl });
+        cache.insert(key.to_string(), CachedDecision { details: details.clone(), expires_at: std::time::Instant::now() + ttl });
     }
 }
 
@@ -157,6 +178,10 @@ fn retryable_status(status: reqwest::StatusCode) -> bool {
 }
 
 fn parse_decision(response: &Value) -> Result<Decision, Error> {
+    Ok(parse_details(response)?.decision)
+}
+
+fn parse_details(response: &Value) -> Result<DecisionDetails, Error> {
     let status = response
         .get("status")
         .and_then(Value::as_object)
@@ -179,14 +204,32 @@ fn parse_decision(response: &Value) -> Result<Decision, Error> {
         })
         .transpose()?
         .unwrap_or(false);
-    match (allowed, denied) {
-        (true, true) => Err(Error::InvalidResponse(
-            "status.allowed and status.denied were both true".to_string(),
-        )),
-        (true, false) => Ok(Decision::Allow),
-        (false, true) => Ok(Decision::Deny),
-        (false, false) => Ok(Decision::NoOpinion),
-    }
+    let reason = optional_string(status, "reason")?.unwrap_or_default();
+    let evaluation_error = optional_string(status, "evaluationError")?
+        .filter(|error| !error.is_empty());
+    let decision = match (allowed, denied) {
+        (true, true) => {
+            return Err(Error::InvalidResponse(
+                "status.allowed and status.denied were both true".to_string(),
+            ));
+        }
+        (true, false) => Decision::Allow,
+        (false, true) => Decision::Deny,
+        (false, false) => Decision::NoOpinion,
+    };
+    Ok(DecisionDetails { decision, reason, evaluation_error })
+}
+
+fn optional_string(status: &serde_json::Map<String, Value>, field: &str) -> Result<Option<String>, Error> {
+    status
+        .get(field)
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| Error::InvalidResponse(format!("status.{field} was not a string")))
+        })
+        .transpose()
 }
 
 fn build_review(info: &RequestInfo, identity: Option<&Identity>) -> Value {
@@ -318,6 +361,27 @@ mod tests {
         assert!(parse_decision(&json!({"status": {"allowed": "yes"}})).is_err());
         assert!(parse_decision(&json!({"status": {"denied": "yes"}})).is_err());
         assert!(parse_decision(&json!({})).is_err());
+    }
+
+    #[test]
+    fn preserves_webhook_reason_and_evaluation_error_with_the_decision() {
+        let details = parse_details(&json!({
+            "status": {
+                "allowed": true,
+                "reason": "matched the platform policy",
+                "evaluationError": "one policy backend was unavailable"
+            }
+        }))
+        .unwrap();
+        assert_eq!(details.decision, Decision::Allow);
+        assert_eq!(details.reason, "matched the platform policy");
+        assert_eq!(details.evaluation_error.as_deref(), Some("one policy backend was unavailable"));
+    }
+
+    #[test]
+    fn rejects_non_string_webhook_diagnostics() {
+        assert!(parse_details(&json!({"status": {"reason": false}})).is_err());
+        assert!(parse_details(&json!({"status": {"evaluationError": 42}})).is_err());
     }
 
     #[tokio::test]
