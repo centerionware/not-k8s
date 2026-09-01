@@ -1399,7 +1399,61 @@ pub(super) async fn nodeapiserver_rejects_invalid_workload_names(
             }
         }),
     )
-    .await
+    .await?;
+
+    let immutable_name = format!("selector-immutable-{}", std::process::id());
+    let create_request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/apis/apps/v1/namespaces/{}/deployments",
+            context.namespace
+        ))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": &immutable_name, "namespace": context.namespace},
+            "spec": {
+                "replicas": 0,
+                "selector": {"matchLabels": {"app": "api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "api"}},
+                    "spec": {
+                        "containers": [{"name": "app", "image": "example.invalid/not-k8s-selector-immutable"}]
+                    }
+                }
+            }
+        }))?)?;
+    context
+        .client
+        .request::<Value>(create_request)
+        .await
+        .context("creating a Deployment for selector immutability")?;
+
+    let patch_request = Request::builder()
+        .method("PATCH")
+        .uri(format!(
+            "/apis/apps/v1/namespaces/{}/deployments/{}",
+            context.namespace, immutable_name
+        ))
+        .header("content-type", "application/merge-patch+json")
+        .body(serde_json::to_vec(&json!({
+            "spec": {"selector": {"matchLabels": {"app": "worker"}}}
+        }))?)?;
+    let patch_result = context.client.request::<Value>(patch_request).await;
+    let delete_request = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/apis/apps/v1/namespaces/{}/deployments/{}",
+            context.namespace, immutable_name
+        ))
+        .body(Vec::new())?;
+    let _ = context.client.request::<Value>(delete_request).await;
+    match patch_result {
+        Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+        Err(error) => anyhow::bail!("mutable workload selector returned the wrong API error: {error}"),
+        Ok(value) => anyhow::bail!("mutable workload selector was accepted: {value}"),
+    }
 }
 
 pub(super) async fn nodeapiserver_rejects_privileged_csr_subject(

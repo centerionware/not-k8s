@@ -2192,6 +2192,17 @@ async fn persist_update(
     has_status_subresource: bool,
     managed_fields_reconciled: bool,
 ) -> Result<UpdateOutcome, Error> {
+    let semantic_violations = validation::validate_builtin_update_semantics(
+        group,
+        version,
+        kind,
+        existing_object,
+        &object,
+    );
+    if !semantic_violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(semantic_violations));
+    }
+
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object.pointer(&format!("/metadata/{field}")).cloned() {
             set_metadata_field(&mut object, field, existing_value);
