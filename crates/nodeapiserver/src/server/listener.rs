@@ -2934,7 +2934,18 @@ async fn handle(
                 Ok(v) => v,
                 Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
             };
-            let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+            // RequestInfo follows upstream's positional path grammar and
+            // carries the name segment in `namespace` for
+            // `/api/v1/namespaces/{name}` (and its `status`/`finalize`
+            // subresources) even though Namespace is cluster-scoped. The
+            // REST key must use no namespace segment for that resource.
+            let namespace = if info.namespace.is_empty()
+                || (info.api_group.is_empty() && info.api_version == "v1" && info.resource == "namespaces")
+            {
+                None
+            } else {
+                Some(info.namespace.as_str())
+            };
 
             // Group J: `namespace_lifecycle`, same `Update`-shaped check
             // every other write-shaped verb gets.
