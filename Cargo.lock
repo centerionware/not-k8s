@@ -376,6 +376,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cel"
+version = "0.14.4"
+source = "git+https://github.com/cel-rust/cel-rust?rev=119a55dec433c1104ea5eac40faa2dde9ce97770#119a55dec433c1104ea5eac40faa2dde9ce97770"
+dependencies = [
+ "antlr4rust",
+ "base64",
+ "chrono",
+ "lazy_static",
+ "nom",
+ "pastey",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1744,7 +1761,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
- "cel",
+ "cel 0.14.4 (git+https://github.com/cel-rust/cel-rust?rev=119a55dec433c1104ea5eac40faa2dde9ce97770)",
  "chrono",
  "http",
  "http-body",

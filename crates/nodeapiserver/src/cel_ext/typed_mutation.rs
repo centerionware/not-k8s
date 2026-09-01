@@ -10,7 +10,7 @@
 use super::Error;
 use cel::common::types::{self, Type};
 use cel::objects::Key;
-use cel::{Context, Env, Program, StructDef, Value as CelValue};
+use cel::{Context, Env, StructDef, Value as CelValue};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -51,7 +51,8 @@ pub fn eval_json_with_schema_and_cel_vars(
     // maps; the resulting map is the same JSON shape and typed Object values
     // still pass through the recursive serializer below.
     let expression = rewrite_json_patch_literals(expression);
-    let result = Program::compile(&expression)?.execute(&context)?;
+    let expression = super::compile(&expression)?;
+    let result = context.resolve(&expression)?;
     cel_value_to_json(&result)
 }
 

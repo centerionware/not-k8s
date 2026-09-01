@@ -39,7 +39,7 @@
 //!   (unimplemented, see `patch/mod.rs`) will.
 
 use crate::codegen;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Applies a strategic merge patch to `original`, which is understood to
 /// be shaped like `schema` (an openapi-style qualified schema name, e.g.
@@ -90,6 +90,16 @@ fn merge(schema: &str, original: &Value, patch: &Value) -> Value {
                 let m = meta.expect("checked by is_some_and above");
                 Value::Array(merge_list(m.ref_schema, m.patch_merge_key, &orig_list, patch_list))
             }
+            // A freshly-created object may not have the nested field yet.
+            // Strategic-merge directives still have to be interpreted in
+            // that case; cloning the patch verbatim would persist the
+            // `$patch` sentinel as if it were an ordinary list element.
+            (None, Value::Array(patch_list))
+                if meta.is_some_and(|m| m.patch_strategy == Some("merge")) =>
+            {
+                let m = meta.expect("checked by is_some_and above");
+                Value::Array(merge_list(m.ref_schema, m.patch_merge_key, &[], patch_list))
+            }
             (Some(orig_value @ Value::Object(_)), Value::Object(_)) => {
                 // Recurse using *this field's own* ref_schema when known;
                 // falling back to the parent's schema would be wrong the
@@ -104,6 +114,13 @@ fn merge(schema: &str, original: &Value, patch: &Value) -> Value {
                 // know will replace wholesale rather than merge-by-key —
                 // named here rather than silently wrong.
                 merge(meta.and_then(|m| m.ref_schema).unwrap_or(""), &orig_value, patch_value)
+            }
+            (None, Value::Object(_)) => {
+                // The same recursive treatment is required when a nested
+                // object is introduced by the patch itself. In particular,
+                // a Pod status patch commonly creates `status` and carries
+                // a directive-bearing `podIPs` list inside it.
+                merge(meta.and_then(|m| m.ref_schema).unwrap_or(""), &Value::Object(Map::new()), patch_value)
             }
             _ => patch_value.clone(),
         };
@@ -302,6 +319,23 @@ mod tests {
         assert_eq!(deleted["containers"], json!([{"name": "app", "image": "v1"}]));
         let replaced = apply("io.k8s.api.core.v1.PodSpec", &original, &json!({"containers": [{"$patch": "replace"}, {"name": "fresh", "image": "v2"}]}));
         assert_eq!(replaced["containers"], json!([{"name": "fresh", "image": "v2"}]));
+    }
+
+    #[test]
+    fn directives_are_applied_when_a_nested_object_and_list_are_new() {
+        // A Pod status is often the first status-bearing write after the Pod
+        // itself is created. The list directive must be consumed even though
+        // neither `status` nor `podIPs` exists in the original object.
+        let original = json!({});
+        let patch = json!({
+            "status": {
+                "phase": "Running",
+                "podIPs": [{"$patch": "replace"}, {"ip": "10.42.0.2"}],
+            }
+        });
+        let merged = apply("io.k8s.api.core.v1.Pod", &original, &patch);
+        assert_eq!(merged["status"]["phase"], json!("Running"));
+        assert_eq!(merged["status"]["podIPs"], json!([{"ip": "10.42.0.2"}]));
     }
 
     #[test]

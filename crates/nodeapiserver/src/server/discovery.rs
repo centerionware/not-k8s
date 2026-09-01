@@ -13,13 +13,12 @@
 //! table (`build/discovery_parse.rs`) that parses the OpenAPI spec's own
 //! `paths` section (each verb block's `x-kubernetes-action` +
 //! `x-kubernetes-group-version-kind`), closing the gap this module's doc
-//! comment used to name here. Deliberately still missing from each
-//! `APIResource` entry: `singularName` (not present anywhere in the
-//! vendored spec — real kube-apiserver derives it from Go type reflection,
-//! which this crate has no equivalent of), `shortNames`, `categories` (same
-//! reason). Subresources (`pods/status`, `pods/log`, ...) are emitted as
-//! their own `APIResource` entries from the generated table, including
-//! connect verbs where the OpenAPI paths advertise them.
+//! comment used to name here. `singularName` is derived from the kind and
+//! the standard built-in `shortNames` are supplied by the explicit
+//! compatibility table below; neither is present in the vendored spec.
+//! Subresources (`pods/status`, `pods/log`, ...) are emitted as their own
+//! `APIResource` entries from the generated table, including connect verbs
+//! where the OpenAPI paths advertise them.
 //!
 //! `serverAddressByClientCIDRs` is left empty in every document here —
 //! real kube-apiserver populates it from the request's own observed
@@ -48,6 +47,57 @@ use std::collections::BTreeMap;
 /// build's own uniform verb list for every CRD-backed resource matches
 /// that same "no per-Kind customization" posture, not an approximation.
 const CRD_VERBS: &[&str] = &["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"];
+
+/// Kubernetes discovery short names are API conventions rather than OpenAPI
+/// metadata. Keep the compatibility aliases here so clients such as kubectl
+/// can resolve familiar names (`pvc`, `deploy`, `svc`, ...) against the
+/// built-in resources just as they do against kube-apiserver.
+fn short_names_for(group: &str, resource: &str) -> &'static [&'static str] {
+    match (group, resource) {
+        ("", "componentstatuses") => &["cs"],
+        ("", "configmaps") => &["cm"],
+        ("", "endpoints") => &["ep"],
+        ("", "events") => &["ev"],
+        ("", "limitranges") => &["limits"],
+        ("", "namespaces") => &["ns"],
+        ("", "nodes") => &["no"],
+        ("", "persistentvolumeclaims") => &["pvc"],
+        ("", "persistentvolumes") => &["pv"],
+        ("", "pods") => &["po"],
+        ("", "replicationcontrollers") => &["rc"],
+        ("", "resourcequotas") => &["quota"],
+        ("", "secrets") => &["secret"],
+        ("", "serviceaccounts") => &["sa"],
+        ("", "services") => &["svc"],
+        ("apps", "daemonsets") => &["ds"],
+        ("apps", "deployments") => &["deploy"],
+        ("apps", "replicasets") => &["rs"],
+        ("apps", "statefulsets") => &["sts"],
+        ("batch", "cronjobs") => &["cj"],
+        ("batch", "jobs") => &["job"],
+        ("certificates.k8s.io", "certificatesigningrequests") => &["csr"],
+        ("networking.k8s.io", "ingresses") => &["ing"],
+        ("networking.k8s.io", "networkpolicies") => &["netpol"],
+        ("node.k8s.io", "runtimeclasses") => &["rc"],
+        ("policy", "poddisruptionbudgets") => &["pdb"],
+        ("scheduling.k8s.io", "priorityclasses") => &["pc"],
+        ("storage.k8s.io", "storageclasses") => &["sc"],
+        _ => &[],
+    }
+}
+
+/// Kubernetes discovery categories are API conventions rather than OpenAPI
+/// metadata. The `all` category lets clients such as kubectl expand
+/// `kubectl get/describe all` into the standard workload resources.
+fn categories_for(group: &str, resource: &str) -> &'static [&'static str] {
+    match (group, resource) {
+        ("", "pods" | "replicationcontrollers" | "services")
+        | ("apps", "daemonsets" | "deployments" | "replicasets" | "statefulsets")
+        | ("autoscaling", "horizontalpodautoscalers")
+        | ("batch", "cronjobs" | "jobs") => &["all"],
+        _ => &[],
+    }
+}
 
 /// `/api` — the legacy, groupless core group's own version list. This
 /// build always serves exactly `v1` for the core group (verified: every
@@ -247,6 +297,14 @@ pub fn api_resource_list(group: &str, version: &str) -> Option<Value> {
                 value["group"] = json!(r.response_group);
                 value["version"] = json!(r.response_version);
             }
+            let short_names = short_names_for(group, r.resource);
+            if !short_names.is_empty() {
+                value["shortNames"] = json!(short_names);
+            }
+            let categories = categories_for(group, r.resource);
+            if !categories.is_empty() {
+                value["categories"] = json!(categories);
+            }
             value
         })
         .collect();
@@ -285,6 +343,14 @@ pub fn api_resource_list_with_crds(group: &str, version: &str, crds: &[Discovera
                         value["group"] = json!(r.response_group);
                         value["version"] = json!(r.response_version);
                     }
+                    let short_names = short_names_for(group, r.resource);
+                    if !short_names.is_empty() {
+                        value["shortNames"] = json!(short_names);
+                    }
+                    let categories = categories_for(group, r.resource);
+                    if !categories.is_empty() {
+                        value["categories"] = json!(categories);
+                    }
                     value
                 })
                 .collect()
@@ -306,7 +372,14 @@ pub fn api_resource_list_with_crds(group: &str, version: &str, crds: &[Discovera
 /// supports the same generic set (this module's own doc comment on
 /// `CRD_VERBS`).
 fn crd_api_resource_value(r: &DiscoverableResource) -> Value {
-    json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": CRD_VERBS})
+    let mut value = json!({"name": r.resource, "singularName": r.kind.to_lowercase(), "namespaced": r.namespaced, "kind": r.kind, "verbs": CRD_VERBS});
+    if !r.short_names.is_empty() {
+        value["shortNames"] = json!(r.short_names);
+    }
+    if !r.categories.is_empty() {
+        value["categories"] = json!(r.categories);
+    }
+    value
 }
 
 /// Aggregated discovery v2 (`apidiscovery.k8s.io/v2`'s `APIGroupDiscoveryList`
@@ -442,27 +515,41 @@ fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], a
 /// CRD-provided resource — `CRD_VERBS` in place of a compiled per-type
 /// verb list, same reasoning [`crd_api_resource_value`] already states.
 fn crd_resource_discovery_value(r: &DiscoverableResource) -> Value {
-    json!({
+    let mut value = json!({
         "resource": r.resource,
         "responseKind": {"group": r.group, "version": r.version, "kind": r.kind},
         "scope": if r.namespaced { "Namespaced" } else { "Cluster" },
         "singularResource": r.kind.to_lowercase(),
         "verbs": CRD_VERBS,
-    })
+    });
+    if !r.short_names.is_empty() {
+        value["shortNames"] = json!(r.short_names);
+    }
+    if !r.categories.is_empty() {
+        value["categories"] = json!(r.categories);
+    }
+    value
 }
 
 fn api_resource_discovery_value(r: &codegen::api_resources::ApiResource) -> Value {
     let mut verbs: Vec<&str> = r.verbs.to_vec();
     verbs.sort_unstable();
-    json!({
+    let mut value = json!({
         "resource": r.resource,
         "responseKind": {"group": r.response_group, "version": r.response_version, "kind": r.kind},
         "scope": if r.namespaced { "Namespaced" } else { "Cluster" },
         "singularResource": r.kind.to_lowercase(),
         "verbs": verbs,
-        // shortNames/categories are not present in the vendored spec and
-        // therefore remain absent from this generated discovery shape.
-    })
+    });
+    let short_names = short_names_for(r.response_group, r.resource);
+    if !short_names.is_empty() {
+        value["shortNames"] = json!(short_names);
+    }
+    let categories = categories_for(r.response_group, r.resource);
+    if !categories.is_empty() {
+        value["categories"] = json!(categories);
+    }
+    value
 }
 
 /// Sorts `versions` most-preferred-first, per
@@ -529,6 +616,18 @@ mod tests {
         assert_eq!(pods["singularName"], "pod");
         let verbs: Vec<&str> = pods["verbs"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert!(verbs.contains(&"watch"));
+        assert_eq!(pods["categories"], json!(["all"]));
+    }
+
+    #[test]
+    fn api_resource_list_includes_standard_short_names() {
+        let list = api_resource_list("", "v1").expect("core/v1 should be served");
+        let resources = list["resources"].as_array().unwrap();
+        let pvc = resources
+            .iter()
+            .find(|resource| resource["name"] == "persistentvolumeclaims")
+            .expect("persistentvolumeclaims should be listed");
+        assert_eq!(pvc["shortNames"], json!(["pvc"]));
     }
 
     #[test]
@@ -595,7 +694,15 @@ mod tests {
     }
 
     fn a_widget_crd_resource() -> DiscoverableResource {
-        DiscoverableResource { group: "example.com".to_string(), version: "v1".to_string(), resource: "widgets".to_string(), kind: "Widget".to_string(), namespaced: true }
+        DiscoverableResource {
+            group: "example.com".to_string(),
+            version: "v1".to_string(),
+            resource: "widgets".to_string(),
+            kind: "Widget".to_string(),
+            namespaced: true,
+            short_names: vec![],
+            categories: vec!["widgets".to_string()],
+        }
     }
 
     #[test]
@@ -662,6 +769,7 @@ mod tests {
         assert_eq!(widgets["kind"], "Widget");
         assert_eq!(widgets["namespaced"], true);
         assert_eq!(widgets["singularName"], "widget");
+        assert_eq!(widgets["categories"], json!(["widgets"]));
         let verbs: Vec<&str> = widgets["verbs"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         for expected in ["create", "get", "list", "update", "patch", "delete", "deletecollection", "watch"] {
             assert!(verbs.contains(&expected), "expected {expected:?} among {verbs:?}");
@@ -674,7 +782,15 @@ mod tests {
         // group+version with a static resource this build already knows
         // about (unlikely for a real cluster's own core/apps groups, but
         // the merge logic itself must not silently drop either side).
-        let crds = [DiscoverableResource { group: "apps".to_string(), version: "v1".to_string(), resource: "widgets".to_string(), kind: "Widget".to_string(), namespaced: true }];
+        let crds = [DiscoverableResource {
+            group: "apps".to_string(),
+            version: "v1".to_string(),
+            resource: "widgets".to_string(),
+            kind: "Widget".to_string(),
+            namespaced: true,
+            short_names: vec![],
+            categories: vec![],
+        }];
         let list = api_resource_list_with_crds("apps", "v1", &crds).expect("apps/v1 must still resolve");
         let names: Vec<&str> = list["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"deployments"), "the static apps/v1 resources must still be present");

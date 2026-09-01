@@ -124,10 +124,8 @@ pub fn comprehension_iter_path(comp: &ComprehensionExpr, scope: &Scope) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cel::Program;
-
     fn compile(expr: &str) -> IdedExpr {
-        Program::compile(expr).unwrap().expression().clone()
+        super::super::compile(expr).unwrap()
     }
 
     #[test]

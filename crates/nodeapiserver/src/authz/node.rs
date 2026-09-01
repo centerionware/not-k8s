@@ -590,6 +590,7 @@ mod tests {
             name: name.to_string(),
             groups: groups.iter().map(|group| (*group).to_string()).collect(),
             uid: None,
+            extra: Default::default(),
             credential_id: (String::new(), Vec::new()),
         }
     }

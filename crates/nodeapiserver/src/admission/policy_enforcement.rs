@@ -104,6 +104,7 @@ pub async fn validate(
         username: &identity.name,
         uid: identity.uid.as_deref(),
         groups: &identity.groups,
+        extra: &identity.extra,
     });
     let request = policy_matching::build_request_object(&RequestVariable {
         uid: "",

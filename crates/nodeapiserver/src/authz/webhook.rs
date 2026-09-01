@@ -13,6 +13,7 @@
 use crate::authn::x509::Identity;
 use crate::server::path::RequestInfo;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -190,6 +191,7 @@ fn parse_decision(response: &Value) -> Result<Decision, Error> {
 
 fn build_review(info: &RequestInfo, identity: Option<&Identity>) -> Value {
     let anonymous_groups = ["system:unauthenticated".to_string()];
+    let empty_extra = BTreeMap::new();
     let (user, groups) = match identity {
         Some(identity) => (identity.name.as_str(), identity.groups.as_slice()),
         None => ("system:anonymous", anonymous_groups.as_slice()),
@@ -215,6 +217,7 @@ fn build_review(info: &RequestInfo, identity: Option<&Identity>) -> Value {
             "user": user,
             "uid": identity.and_then(|identity| identity.uid.as_deref()),
             "groups": groups,
+            "extra": identity.map(|identity| &identity.extra).unwrap_or(&empty_extra),
             "resourceAttributes": attributes,
         })
     } else {
@@ -222,6 +225,7 @@ fn build_review(info: &RequestInfo, identity: Option<&Identity>) -> Value {
             "user": user,
             "uid": identity.and_then(|identity| identity.uid.as_deref()),
             "groups": groups,
+            "extra": identity.map(|identity| &identity.extra).unwrap_or(&empty_extra),
             "nonResourceAttributes": attributes,
         })
     };

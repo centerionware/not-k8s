@@ -217,6 +217,7 @@ pub struct RequestUserInfo<'a> {
     pub username: &'a str,
     pub uid: Option<&'a str>,
     pub groups: &'a [String],
+    pub extra: &'a BTreeMap<String, Vec<String>>,
 }
 
 /// The fields of real upstream's own `admission.Attributes` used to build a
@@ -257,7 +258,7 @@ pub fn build_request_object(r: &RequestVariable) -> Value {
     let gvk = json!({"group": r.group, "version": r.version, "kind": r.kind});
     let gvr = json!({"group": r.group, "version": r.version, "resource": r.resource});
     let user_info = match r.user_info {
-        Some(user) => json!({"username": user.username, "uid": user.uid, "groups": user.groups, "extra": {}}),
+        Some(user) => json!({"username": user.username, "uid": user.uid, "groups": user.groups, "extra": user.extra}),
         None => json!({"username": "system:anonymous", "groups": ["system:unauthenticated"], "extra": {}}),
     };
     json!({
@@ -501,6 +502,7 @@ mod tests {
     #[test]
     fn build_request_object_carries_kind_and_authenticated_user_info() {
         let groups = vec!["developers".to_string()];
+        let extra = BTreeMap::new();
         let r = RequestVariable {
             uid: "request-id",
             group: "apps",
@@ -512,7 +514,7 @@ mod tests {
             operation: "CREATE",
             dry_run: false,
             kind: "Deployment",
-            user_info: Some(RequestUserInfo { username: "alice", uid: Some("user-id"), groups: &groups }),
+            user_info: Some(RequestUserInfo { username: "alice", uid: Some("user-id"), groups: &groups, extra: &extra }),
         };
         let obj = build_request_object(&r);
         assert_eq!(obj["kind"]["kind"], json!("Deployment"));

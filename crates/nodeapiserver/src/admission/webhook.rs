@@ -821,7 +821,7 @@ pub(crate) fn build_client(
 fn user_info(identity: Option<&Identity>) -> Value {
     match identity {
         Some(identity) => {
-            json!({"username": identity.name, "uid": identity.uid, "groups": identity.groups, "extra": {}})
+            json!({"username": identity.name, "uid": identity.uid, "groups": identity.groups, "extra": identity.extra})
         }
         None => {
             json!({"username": "system:anonymous", "groups": ["system:unauthenticated"], "extra": {}})

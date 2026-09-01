@@ -10,7 +10,7 @@
 //! treatment of data whose type cannot be declared structurally.
 
 use cel::common::ast::{operators, EntryExpr, Expr, LiteralValue};
-use cel::{IdedExpr, Program};
+use cel::IdedExpr;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
@@ -178,7 +178,7 @@ pub fn check_root_rule_with_optional_old_self(
 /// rules that Kubernetes skips when no prior value exists unless they opt
 /// into optional-old-self behavior.
 pub fn rule_references_old_self(rule: &str) -> bool {
-    let Ok(program) = Program::compile(rule) else {
+    let Ok(expression) = super::compile(rule) else {
         return false;
     };
     let mut checker = Checker {
@@ -186,7 +186,7 @@ pub fn rule_references_old_self(rule: &str) -> bool {
         errors: Vec::new(),
         references_old_self: false,
     };
-    checker.expression(program.expression());
+    checker.expression(&expression);
     checker.references_old_self
 }
 
@@ -205,8 +205,8 @@ fn check_rule_with_old_self(
     let Some(root) = root else {
         return Vec::new();
     };
-    let program = match Program::compile(rule) {
-        Ok(program) => program,
+    let expression = match super::compile(rule) {
+        Ok(expression) => expression,
         Err(error) => return vec![TypeError::Compile(error.to_string())],
     };
     let mut checker = Checker {
@@ -217,7 +217,7 @@ fn check_rule_with_old_self(
         errors: Vec::new(),
         references_old_self: false,
     };
-    let result = checker.expression(program.expression());
+    let result = checker.expression(&expression);
     if !result.is_bool_or_dynamic() {
         checker.errors.push(TypeError::NonBoolean(result));
     }

@@ -118,8 +118,8 @@
 //! `DeviceSelector.cel.expression` evaluation, DRA device matching) —
 //! that code, not any external documentation, is this module's own
 //! primary source of truth for the crate's real API shape
-//! (`cel::Program::compile`/`cel::Context::default`/
-//! `Context::add_variable`/`Program::execute`/`cel::Value::Bool`, all
+//! (`cel::parser::Parser`/`cel::Context::default`/
+//! `Context::add_variable`/`Context::resolve`/`cel::Value::Bool`, all
 //! confirmed directly against `dynamic_resources.rs`'s own working
 //! code rather than assumed from docs.rs, whose auto-generated summaries
 //! disagreed with each other on `Context`'s own basic shape when this
@@ -148,8 +148,17 @@ pub mod typed_mutation;
 
 use cel::extractors::This;
 use cel::objects::OptionalValue;
-use cel::{Context, FunctionContext, Program, Value as CelValue};
+use cel::parser::Parser;
+use cel::{Context, FunctionContext, Value as CelValue};
 use serde_json::Value;
+
+/// Parse a Kubernetes CEL expression with the language extensions enabled by
+/// the Kubernetes API, including optional field and index selection (`.?`
+/// and `[?... ]`).  `cel::Program::compile` deliberately leaves that syntax
+/// disabled, so every nodeapiserver evaluation path must use this helper.
+pub fn compile(expr: &str) -> Result<cel::IdedExpr, cel::ParseErrors> {
+    Parser::new().enable_optional_syntax(true).parse(expr)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -330,13 +339,13 @@ fn string_binding(ftx: &FunctionContext, This(value): This<CelValue>) -> Result<
 }
 
 pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<bool, Error> {
-    let program = Program::compile(expr)?;
+    let expression = compile(expr)?;
     let mut ctx = Context::default();
     register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
-    match program.execute(&ctx)? {
+    match ctx.resolve(&expression)? {
         CelValue::Bool(b) => Ok(b),
         other => Err(Error::NotBool(other)),
     }
@@ -345,7 +354,7 @@ pub fn eval_bool_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Resul
 /// Evaluate a boolean expression with ordinary JSON variables plus one or
 /// more native CEL values, such as the opaque Kubernetes `authorizer`.
 pub fn eval_bool_with_vars_and_cel_vars(expr: &str, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, CelValue)]) -> Result<bool, Error> {
-    let program = Program::compile(expr)?;
+    let expression = compile(expr)?;
     let mut ctx = Context::default();
     register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
@@ -354,7 +363,7 @@ pub fn eval_bool_with_vars_and_cel_vars(expr: &str, vars: &[(&'static str, &Valu
     for (name, value) in cel_vars.iter().cloned() {
         ctx.add_variable(name, value).map_err(|_| Error::Bind { name })?;
     }
-    match program.execute(&ctx)? {
+    match ctx.resolve(&expression)? {
         CelValue::Bool(b) => Ok(b),
         other => Err(Error::NotBool(other)),
     }
@@ -457,13 +466,13 @@ pub fn eval_bool_with_vars_and_cel_vars_and_deadline(expr: &str, vars: &[(&'stat
 /// `admission::policy_validations` module borrows the real message-
 /// resolution order from).
 pub fn eval_string_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<String, Error> {
-    let program = Program::compile(expr)?;
+    let expression = compile(expr)?;
     let mut ctx = Context::default();
     register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
-    match program.execute(&ctx)? {
+    match ctx.resolve(&expression)? {
         CelValue::String(s) => Ok((*s).clone()),
         other => Err(Error::NotString(other)),
     }
@@ -488,14 +497,13 @@ pub fn eval_string_with_vars_and_deadline(expr: &str, vars: &[(&'static str, &Va
 /// evaluates the policy's typed value and the admission layer then applies
 /// the resulting JSON Patch or apply configuration to the request object.
 pub fn eval_json_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Result<Value, Error> {
-    let program = Program::compile(expr)?;
+    let expression = compile(expr)?;
     let mut ctx = Context::default();
     register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
         ctx.add_variable(name, value.clone()).map_err(|_| Error::Bind { name })?;
     }
-    program
-        .execute(&ctx)?
+    ctx.resolve(&expression)?
         .json()
         .map_err(|error| Error::Serialize(error.to_string()))
 }
@@ -503,7 +511,7 @@ pub fn eval_json_with_vars(expr: &str, vars: &[(&'static str, &Value)]) -> Resul
 /// Evaluate a JSON-shaped expression with ordinary JSON variables plus
 /// native CEL values such as the opaque Kubernetes `authorizer`.
 pub fn eval_json_with_vars_and_cel_vars(expr: &str, vars: &[(&'static str, &Value)], cel_vars: &[(&'static str, CelValue)]) -> Result<Value, Error> {
-    let program = Program::compile(expr)?;
+    let expression = compile(expr)?;
     let mut ctx = Context::default();
     register_kubernetes_extensions(&mut ctx);
     for (name, value) in vars.iter().copied() {
@@ -512,8 +520,7 @@ pub fn eval_json_with_vars_and_cel_vars(expr: &str, vars: &[(&'static str, &Valu
     for (name, value) in cel_vars.iter().cloned() {
         ctx.add_variable(name, value).map_err(|_| Error::Bind { name })?;
     }
-    program
-        .execute(&ctx)?
+    ctx.resolve(&expression)?
         .json()
         .map_err(|error| Error::Serialize(error.to_string()))
 }
@@ -654,6 +661,71 @@ mod tests {
         let request = json!({"operation": "CREATE"});
         let result = eval_bool_with_vars("request.operation == 'CREATE'", &[("request", &request)]);
         assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn kubernetes_optional_field_and_index_selection_works() {
+        let request = json!({
+            "userInfo": {
+                "extra": {
+                    "authentication.kubernetes.io/node-name": ["node-a"]
+                }
+            },
+            "operation": "CREATE"
+        });
+        let object = json!({"spec": {"nodeName": "node-a"}});
+        let old_object = json!({});
+        let vars = [
+            ("request", &request),
+            ("object", &object),
+            ("oldObject", &old_object),
+        ];
+
+        assert_eq!(
+            eval_string_with_vars(
+                "request.userInfo.extra[?'authentication.kubernetes.io/node-name'][0].orValue('')",
+                &vars,
+            )
+            .unwrap(),
+            "node-a"
+        );
+        assert_eq!(
+            eval_string_with_vars(
+                "(request.operation == 'DELETE' ? oldObject : object).spec.?nodeName.orValue('')",
+                &vars,
+            )
+            .unwrap(),
+            "node-a"
+        );
+    }
+
+    #[test]
+    fn kubernetes_optional_selection_returns_the_default_when_missing() {
+        let request = json!({"userInfo": {"extra": {}}, "operation": "CREATE"});
+        let object = json!({"spec": {}});
+        let old_object = json!({});
+        let vars = [
+            ("request", &request),
+            ("object", &object),
+            ("oldObject", &old_object),
+        ];
+
+        assert_eq!(
+            eval_string_with_vars(
+                "request.userInfo.extra[?'authentication.kubernetes.io/node-name'][0].orValue('')",
+                &vars,
+            )
+            .unwrap(),
+            ""
+        );
+        assert_eq!(
+            eval_string_with_vars(
+                "(request.operation == 'DELETE' ? oldObject : object).spec.?nodeName.orValue('')",
+                &vars,
+            )
+            .unwrap(),
+            ""
+        );
     }
 
     #[test]
