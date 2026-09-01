@@ -403,8 +403,10 @@ hit path, never a correctness risk on the miss path). `GET`/`LIST` use
 that cache for every built-in GVR and for dynamically reconciled CRD GVRs.
 **Per-Kind `SelectableFields` is now enforced**:
 built-in registries accept their verified metadata and resource-specific
-fields, while CRDs accept only the universal metadata fields; unsupported
-field paths return `400 BadRequest` instead of silently matching no objects.
+fields, while CRDs accept the universal metadata fields plus the served
+version's declared `spec.selectableFields` paths; unsupported field paths
+return `400 BadRequest` instead of silently matching no objects. The CRD
+selectable-field path is covered by a nodeapiserver-only e2e check.
 CRD GVRs cannot be registered before their definitions exist; Group K's live
 CRD-cache reconciler registers and retires those caches as the definitions
 change, with a first-watch fallback for the startup race.

@@ -269,8 +269,9 @@ fn parse_field_term(term: &str) -> Result<FieldRequirement, ParseError> {
 // `status.phase`/... on top of the universal `metadata.name`/
 // `metadata.namespace`). `field_value` below remains a generic
 // dotted-JSON-path reader, but `validate_field_selector` rejects paths
-// outside the same allowlist before a request reaches storage. CRDs use
-// only the universal metadata fields, matching the generic CRD strategy.
+// outside the same allowlist before a request reaches storage. CRDs add
+// their served version's `spec.selectableFields` at the request boundary;
+// the static fallback here contains only universal metadata fields.
 
 /// Every Kind's labels live at `metadata.labels` — the one part of "get a
 /// label map out of a decoded object" that's the same for every type.
@@ -386,8 +387,25 @@ pub fn selectable_fields(group: &str, resource: &str) -> &'static [&'static str]
 /// unsupported path as a missing field would silently turn a typo into an
 /// empty result and diverge from that contract.
 pub fn validate_field_selector(group: &str, resource: &str, requirements: &[FieldRequirement]) -> Result<(), ParseError> {
+    validate_field_selector_with_additional_fields(group, resource, requirements, &[])
+}
+
+/// Rejects a field selector against the built-in allowlist plus the
+/// `spec.versions[].selectableFields` paths declared by an established CRD.
+/// CRD paths have already been normalized from Kubernetes JSONPath (for
+/// example `.spec.color`) to this module's dotted form by the dynamic
+/// registry.
+pub fn validate_field_selector_with_additional_fields(
+    group: &str,
+    resource: &str,
+    requirements: &[FieldRequirement],
+    additional_fields: &[String],
+) -> Result<(), ParseError> {
     let allowed = selectable_fields(group, resource);
-    if let Some(requirement) = requirements.iter().find(|requirement| !allowed.contains(&requirement.field.as_str())) {
+    if let Some(requirement) = requirements.iter().find(|requirement| {
+        !allowed.contains(&requirement.field.as_str())
+            && !additional_fields.iter().any(|field| field == &requirement.field)
+    }) {
         return Err(ParseError::UnsupportedField(requirement.field.clone()));
     }
     Ok(())
@@ -636,6 +654,27 @@ mod tests {
             validate_field_selector("", "pods", &requirements),
             Err(ParseError::UnsupportedField("spec.containers[0].name".into()))
         );
+    }
+
+    #[test]
+    fn crd_selectable_fields_extend_the_universal_allowlist() {
+        let requirements = parse_field_selector("spec.color=blue").unwrap();
+        assert!(validate_field_selector_with_additional_fields(
+            "example.com",
+            "widgets",
+            &requirements,
+            &["spec.color".to_string()],
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_field_selector_with_additional_fields(
+                "example.com",
+                "widgets",
+                &requirements,
+                &["spec.phase".to_string()],
+            ),
+            Err(ParseError::UnsupportedField(field)) if field == "spec.color"
+        ));
     }
 
     #[test]

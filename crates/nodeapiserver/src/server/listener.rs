@@ -6124,16 +6124,6 @@ async fn handle(
                     }
                 }
             } else if is_list {
-                if !info.field_selector.is_empty() {
-                    match crate::cacher::selector::parse_field_selector(&info.field_selector) {
-                        Ok(requirements) => {
-                            if let Err(error) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &requirements) {
-                                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string())));
-                            }
-                        }
-                        Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
-                    }
-                }
                 match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
                     Ok(rest::ListOutcome::Found(list)) => {
                         let body = if wants_table {
@@ -6279,12 +6269,13 @@ async fn handle(
             crate::cacher::store::SharedCache,
             String,
             Option<crate::apiextensions::registry::ConversionWebhook>,
+            Vec<String>,
         )> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
             if let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) {
-                Some((cache, kind.to_string(), None))
+                Some((cache, kind.to_string(), None, Vec::new()))
             } else if let Some(mut client) = storage.clone() {
                 match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
-                    Ok(Some(resource)) => Some((cache, resource.kind, resource.conversion_webhook)),
+                    Ok(Some(resource)) => Some((cache, resource.kind, resource.conversion_webhook, resource.selectable_fields)),
                     Ok(None) => None,
                     Err(e) => {
                         warn!(path = %path_str, error = ?e, "watch: resolving the registered CRD-defined resource failed");
@@ -6300,7 +6291,7 @@ async fn handle(
             match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
                 Ok(Some(resource)) => {
                     let cache = cache_registry.spawn(client, &info.api_group, &info.api_version, &info.resource);
-                    Some((cache, resource.kind, resource.conversion_webhook))
+                    Some((cache, resource.kind, resource.conversion_webhook, resource.selectable_fields))
                 }
                 Ok(None) => None,
                 Err(e) => {
@@ -6312,7 +6303,7 @@ async fn handle(
             None
         };
 
-        if let Some((cache, kind, conversion_webhook)) = cache_and_kind {
+        if let Some((cache, kind, conversion_webhook, selectable_fields)) = cache_and_kind {
             if !cache.has_synced() {
                 if tokio::time::timeout(std::time::Duration::from_secs(30), cache.wait_until_synced()).await.is_err() {
                     warn!(path = %path_str, "watch: cache did not complete its initial LIST before the startup wait expired");
@@ -6339,7 +6330,7 @@ async fn handle(
                     Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
                 }
             };
-            if let Err(e) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &field_reqs) {
+            if let Err(e) = crate::cacher::selector::validate_field_selector_with_additional_fields(&info.api_group, &info.resource, &field_reqs, &selectable_fields) {
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string())));
             }
             let start_revision = resource_version_query(&query);
