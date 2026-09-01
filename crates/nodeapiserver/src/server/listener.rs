@@ -2483,6 +2483,22 @@ async fn authenticate_request(
     Err("bearer token is invalid or expired")
 }
 
+/// Return the namespace segment used by the REST storage key.
+///
+/// The upstream-compatible path parser keeps the second segment of
+/// `/api/v1/namespaces/{name}` in `RequestInfo::namespace`, even though a
+/// Namespace object is cluster-scoped. Do not turn that object name into a
+/// storage namespace.
+fn storage_namespace(info: &path::RequestInfo) -> Option<&str> {
+    if info.namespace.is_empty()
+        || (info.api_group.is_empty() && info.api_version == "v1" && info.resource == "namespaces")
+    {
+        None
+    } else {
+        Some(info.namespace.as_str())
+    }
+}
+
 async fn handle(
     req: Request<Incoming>,
     mut storage: Option<StorageClient>,
@@ -2934,18 +2950,7 @@ async fn handle(
                 Ok(v) => v,
                 Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
             };
-            // RequestInfo follows upstream's positional path grammar and
-            // carries the name segment in `namespace` for
-            // `/api/v1/namespaces/{name}` (and its `status`/`finalize`
-            // subresources) even though Namespace is cluster-scoped. The
-            // REST key must use no namespace segment for that resource.
-            let namespace = if info.namespace.is_empty()
-                || (info.api_group.is_empty() && info.api_version == "v1" && info.resource == "namespaces")
-            {
-                None
-            } else {
-                Some(info.namespace.as_str())
-            };
+            let namespace = storage_namespace(&info);
 
             // Group J: `namespace_lifecycle`, same `Update`-shaped check
             // every other write-shaped verb gets.
@@ -3105,7 +3110,7 @@ async fn handle(
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
-        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        let namespace = storage_namespace(&info);
 
         // Group J: `namespace_lifecycle`, same `Update`-shaped check
         // `CREATE`/`UPDATE` already get (an "operation" of `Update` is
@@ -3323,7 +3328,7 @@ async fn handle(
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
-        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        let namespace = storage_namespace(&info);
         if authz::node::node_name(identity.as_ref()).is_some() {
             let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                 Ok(rest::GetOutcome::Found(object)) => Some(object),
@@ -3423,7 +3428,7 @@ async fn handle(
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
-        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        let namespace = storage_namespace(&info);
         return match rest::patch_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -4113,7 +4118,7 @@ async fn handle(
         let wants_table = accepted.as_ref().is_some_and(|a| a.wants_table());
 
         if let Some(mut client) = storage {
-            let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+            let namespace = storage_namespace(&info);
             // ResourceQuota admission derives usage from a live object list
             // and persists the object later in this same request. Hold the
             // process-local reservation lock across that whole sequence so
