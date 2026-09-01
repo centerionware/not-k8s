@@ -301,6 +301,7 @@ impl Drop for NodeapiserverAuditLogOverride {
 struct NodeapiserverAuditWebhookOverride {
     drop_in: PathBuf,
     policy_file: Option<PathBuf>,
+    config_file: Option<PathBuf>,
 }
 
 impl NodeapiserverAuditWebhookOverride {
@@ -336,6 +337,44 @@ impl NodeapiserverAuditWebhookOverride {
         let guard = Self {
             drop_in,
             policy_file: policy_file.map(|(path, _)| path),
+            config_file: None,
+        };
+        let drop_in_dir = drop_in_dir.to_string_lossy();
+        let local_drop_in = local_drop_in.to_string_lossy();
+        let drop_in = guard.drop_in.to_string_lossy();
+        run_privileged("mkdir", &["-p", drop_in_dir.as_ref()])?;
+        run_privileged("install", &["-m", "0644", local_drop_in.as_ref(), drop_in.as_ref()])?;
+        let _ = fs::remove_file(local_drop_in.as_ref());
+        run_privileged("systemctl", &["daemon-reload"])?;
+        run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
+        run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        Ok(guard)
+    }
+
+    fn install_with_config(url: &str) -> Result<Self> {
+        if !systemd_service_available("nodeapiserver.service") {
+            return Err(skip_test(
+                "nodeapiserver.service is unavailable; audit-webhook checks need systemd",
+            ));
+        }
+
+        let suffix = std::process::id();
+        let config_file = std::env::temp_dir().join(format!("nodeapiserver-e2e-audit-webhook-{suffix}.yaml"));
+        let config = format!(
+            "apiVersion: v1\nkind: Config\ncurrent-context: audit\nclusters:\n- name: backend\n  cluster:\n    server: {url}\ncontexts:\n- name: audit\n  context:\n    cluster: backend\n"
+        );
+        fs::write(&config_file, config).with_context(|| format!("writing {}", config_file.display()))?;
+
+        let drop_in_dir = Path::new("/etc/systemd/system/nodeapiserver.service.d");
+        let drop_in = drop_in_dir.join(format!("nodebootstrap-audit-webhook-config-{suffix}.conf"));
+        let local_drop_in = std::env::temp_dir().join(format!("nodeapiserver-audit-webhook-config-{suffix}.conf"));
+        let contents = format!("[Service]\nEnvironment=NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE={}\n", config_file.display());
+        fs::write(&local_drop_in, contents).with_context(|| format!("writing {}", local_drop_in.display()))?;
+
+        let guard = Self {
+            drop_in,
+            policy_file: None,
+            config_file: Some(config_file),
         };
         let drop_in_dir = drop_in_dir.to_string_lossy();
         let local_drop_in = local_drop_in.to_string_lossy();
@@ -358,6 +397,9 @@ impl Drop for NodeapiserverAuditWebhookOverride {
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
         if let Some(policy_file) = &self.policy_file {
             let _ = fs::remove_file(policy_file);
+        }
+        if let Some(config_file) = &self.config_file {
+            let _ = fs::remove_file(config_file);
         }
     }
 }
@@ -2853,7 +2895,7 @@ pub(super) async fn nodeapiserver_delivers_audit_webhook(context: &E2eContext) -
         }
     });
 
-    let webhook = match NodeapiserverAuditWebhookOverride::install(&format!("http://{address}/audit")) {
+    let webhook = match NodeapiserverAuditWebhookOverride::install_with_config(&format!("http://{address}/audit")) {
         Ok(webhook) => webhook,
         Err(error) => {
             stopping.store(true, Ordering::Relaxed);

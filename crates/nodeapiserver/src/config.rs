@@ -114,6 +114,10 @@ pub struct Config {
     /// audit webhook backend. Events are sent as bounded `EventList` batches;
     /// delivery failures never block an API request.
     pub audit_webhook_url: Option<String>,
+    /// `NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE` selects the standard
+    /// kubeconfig-shaped audit webhook configuration. It supplies the
+    /// endpoint and optional CA/client credentials.
+    pub audit_webhook_config_file: Option<PathBuf>,
     /// `NODEAPISERVER_AUDIT_POLICY_FILE` selects an upstream-shaped
     /// `audit.k8s.io/v1` policy. When unset, every request keeps the existing
     /// metadata audit behavior.
@@ -190,6 +194,7 @@ impl Default for Config {
             audit_log_max_size_bytes: None,
             audit_log_max_backups: 5,
             audit_webhook_url: None,
+            audit_webhook_config_file: None,
             audit_policy_file: None,
             enforce_rbac: false,
             encryption_config_file: None,
@@ -329,6 +334,11 @@ impl Config {
             cfg.audit_log_max_backups,
         )?;
         cfg.audit_webhook_url = string_env("NODEAPISERVER_AUDIT_WEBHOOK_URL");
+        cfg.audit_webhook_config_file = path_env("NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE");
+        anyhow::ensure!(
+            cfg.audit_webhook_url.is_none() || cfg.audit_webhook_config_file.is_none(),
+            "NODEAPISERVER_AUDIT_WEBHOOK_URL and NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE are mutually exclusive"
+        );
         cfg.audit_policy_file = path_env("NODEAPISERVER_AUDIT_POLICY_FILE");
         cfg.enforce_rbac = matches!(std::env::var("NODEAPISERVER_ENFORCE_RBAC").as_deref(), Ok("1") | Ok("true"));
         cfg.encryption_config_file = path_env("NODEAPISERVER_ENCRYPTION_CONFIG_FILE");
@@ -464,6 +474,7 @@ mod tests {
         assert_eq!(cfg.audit_log_max_size_bytes, None);
         assert_eq!(cfg.audit_log_max_backups, 5);
         assert!(cfg.audit_webhook_url.is_none());
+        assert!(cfg.audit_webhook_config_file.is_none());
         assert!(cfg.audit_policy_file.is_none());
     }
 
@@ -488,6 +499,7 @@ mod tests {
             "NODEAPISERVER_AUDIT_LOG_MAX_SIZE_BYTES",
             "NODEAPISERVER_AUDIT_LOG_MAX_BACKUPS",
             "NODEAPISERVER_AUDIT_WEBHOOK_URL",
+            "NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE",
             "NODEAPISERVER_AUDIT_POLICY_FILE",
         ]);
         let cfg = Config::from_env().unwrap();
@@ -782,5 +794,20 @@ mod tests {
     fn authorization_webhook_cache_ttl_rejects_missing_units() {
         assert!(parse_duration("CACHE_TTL", "30").is_err());
         assert!(parse_duration("CACHE_TTL", "-1s").is_err());
+    }
+
+    #[test]
+    fn audit_webhook_config_file_is_read_and_cannot_be_combined_with_a_url() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE", "/etc/nodeapiserver/audit.yaml");
+        let _cleanup = EnvGuard(&[
+            "NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE",
+            "NODEAPISERVER_AUDIT_WEBHOOK_URL",
+        ]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.audit_webhook_config_file, Some(PathBuf::from("/etc/nodeapiserver/audit.yaml")));
+
+        std::env::set_var("NODEAPISERVER_AUDIT_WEBHOOK_URL", "https://audit.example/events");
+        assert!(Config::from_env().is_err());
     }
 }
