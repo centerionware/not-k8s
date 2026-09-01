@@ -1492,7 +1492,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     // component diagnostics or publishes the real failing test.
     kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
     kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
-    let client = Client::try_from(kube_config).context(
+    let mut client = Client::try_from(kube_config).context(
         "building the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first",
     )?;
     if let Some(shard) = shard {
@@ -1564,7 +1564,15 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             }
         }
         if is_environment_reconfiguring_test(name) {
-            wait_for_api_after_environment_reconfiguration(&test_context).await;
+            match wait_for_api_after_environment_reconfiguration(&test_context).await {
+                Ok(recovered_client) => client = recovered_client,
+                Err(error) => {
+                    eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
+                    if !failures.contains(&name) {
+                        failures.push(name);
+                    }
+                }
+            }
         }
     }
 
@@ -1583,59 +1591,39 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     }
 }
 
-async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) {
-    let namespaces: Api<Namespace> = Api::all(context.client.clone());
-    let namespace = format!(
-        "nk-e2e-recovery-{}-{:08x}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos() as u32)
-            .unwrap_or_default()
-    );
-    let service_accounts: Api<ServiceAccount> =
-        Api::namespaced(context.client.clone(), &namespace);
-    if let Err(error) = context
+async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) -> Result<Client> {
+    // A kube-rs Client may retain a pool keyed by the old apiserver
+    // connection. Rebuild it for every recovery attempt so a connection
+    // failure during the restart cannot poison the whole 90-second wait.
+    // This barrier deliberately checks only the API server: requiring the
+    // namespace controller to recreate a ServiceAccount would conflate a
+    // nodecontroller/watch-recovery failure with this API restart check.
+    context
         .wait_until(
-            "the API server and namespace controller to recover after an environment-reconfiguring test",
+            "the API server to recover after an environment-reconfiguring test",
             Duration::from_secs(90),
             || {
-                let namespaces = namespaces.clone();
-                let service_accounts = service_accounts.clone();
-                let namespace = namespace.clone();
                 async move {
-                    match namespaces.get_opt(&namespace).await {
-                        Ok(Some(_)) => Ok(service_accounts
-                            .get_opt("default")
-                            .await
-                            .is_ok_and(|service_account| service_account.is_some())),
-                        Ok(None) => {
-                            let _ = namespaces
-                                .create(
-                                    &PostParams::default(),
-                                    &Namespace {
-                                        metadata: ObjectMeta {
-                                            name: Some(namespace),
-                                            ..Default::default()
-                                        },
-                                        ..Default::default()
-                                    },
-                                )
-                                .await;
-                            Ok(false)
-                        }
-                        Err(_) => Ok(false),
-                    }
+                    let Ok(client) = fresh_e2e_client().await else {
+                        return Ok(false);
+                    };
+                    let namespaces: Api<Namespace> = Api::all(client.clone());
+                    Ok(namespaces.list(&ListParams::default()).await.is_ok())
                 }
             },
         )
+        .await?;
+    fresh_e2e_client().await
+}
+
+async fn fresh_e2e_client() -> Result<Client> {
+    let mut kube_config = KubeConfig::infer()
         .await
-    {
-        eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
-    }
-    let _ = namespaces
-        .delete(&namespace, &DeleteParams::default())
-        .await;
+        .context("reloading the Kubernetes client after an environment-reconfiguring test")?;
+    kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
+    kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
+    Client::try_from(kube_config)
+        .context("building a fresh Kubernetes client after an environment-reconfiguring test")
 }
 
 /// Print the tests selected by the same shard/filter logic as `run`, without
@@ -1772,6 +1760,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_nodeapiserver_rotates_audit_log"
             | "test_nodeapiserver_delivers_audit_webhook"
             | "test_nodeapiserver_audits_request_and_response_objects"
+            | "test_nodeapiserver_honors_authorization_webhook_decisions"
             | "test_nodeapiserver_honors_always_pull_images"
             | "test_nodeapiserver_applies_configured_node_selector"
             | "test_client_certificate_authentication_works"
