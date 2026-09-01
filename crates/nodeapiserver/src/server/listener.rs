@@ -3204,6 +3204,74 @@ async fn handle(
                     }
                 }
             }
+
+            // MutatingAdmissionPolicy is part of the same candidate-based
+            // admission chain as ordinary CREATE/UPDATE. Apply must not
+            // bypass it merely because its field-management preparation
+            // happens in a separate REST helper.
+            let operation_name = match operation {
+                admission::attributes::Operation::Create => "CREATE",
+                admission::attributes::Operation::Update => "UPDATE",
+                _ => unreachable!("Server-Side Apply is create- or update-shaped"),
+            };
+            match admission::mutating_admission_policy::mutate(
+                &mut client,
+                operation_name,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                &info.name,
+                candidate,
+                old_object.as_ref(),
+                dry_run,
+                identity.as_ref(),
+            )
+            .await
+            {
+                Ok(admitted) => candidate = admitted,
+                Err(error) => {
+                    warn!(path = %path_str, error, "admission: MutatingAdmissionPolicy failed for apply");
+                    return Ok(json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &internal_error_status(&path_str),
+                    ));
+                }
+            }
+            match admission::policy_enforcement::validate(
+                &mut client,
+                operation_name,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                &info.name,
+                Some(&candidate),
+                old_object.as_ref(),
+                dry_run,
+                identity.as_ref(),
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    record_admission_outcome(admission_metadata.as_ref(), &outcome);
+                    if let Some(message) = outcome.denial {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &message),
+                        ));
+                    }
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error, "admission: ValidatingAdmissionPolicy failed for apply");
+                    return Ok(json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &internal_error_status(&path_str),
+                    ));
+                }
+            }
             match admission::webhook::admit(
                 &mut client,
                 operation,
@@ -3403,6 +3471,64 @@ async fn handle(
             &info,
             &mut candidate,
         );
+        match admission::mutating_admission_policy::mutate(
+            &mut client,
+            "UPDATE",
+            &info.api_group,
+            &info.api_version,
+            &info.resource,
+            &info.subresource,
+            &info.namespace,
+            &info.name,
+            candidate,
+            old_object.as_ref(),
+            dry_run,
+            identity.as_ref(),
+        )
+        .await
+        {
+            Ok(admitted) => candidate = admitted,
+            Err(error) => {
+                warn!(path = %path_str, error, "admission: MutatingAdmissionPolicy failed for patch");
+                return Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &internal_error_status(&path_str),
+                ));
+            }
+        }
+        match admission::policy_enforcement::validate(
+            &mut client,
+            "UPDATE",
+            &info.api_group,
+            &info.api_version,
+            &info.resource,
+            &info.subresource,
+            &info.namespace,
+            &info.name,
+            Some(&candidate),
+            old_object.as_ref(),
+            dry_run,
+            identity.as_ref(),
+        )
+        .await
+        {
+            Ok(outcome) => {
+                record_admission_outcome(admission_metadata.as_ref(), &outcome);
+                if let Some(message) = outcome.denial {
+                    return Ok(json_response(
+                        StatusCode::FORBIDDEN,
+                        &admission_forbidden_status(&path_str, &message),
+                    ));
+                }
+            }
+            Err(error) => {
+                warn!(path = %path_str, error, "admission: ValidatingAdmissionPolicy failed for patch");
+                return Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &internal_error_status(&path_str),
+                ));
+            }
+        }
         if authz::node::node_name(identity.as_ref()).is_some() {
             match admission::node_restriction::validate(
                 &mut client,

@@ -1701,6 +1701,10 @@ The policy request object also carries the submitted kind and authenticated
 `userInfo` for mutation expressions, with the anonymous identity used when
 the request has no authenticated certificate.
 
+Both policy paths run for ordinary writes, JSON/merge/strategic PATCH, and
+Server-Side Apply after their candidate objects are materialized, so those
+write paths cannot bypass configured admission policies.
+
 Configured mutating and validating webhooks are also invoked for matching
 create, update, delete, and deletecollection requests (the latter once per
 selected object). Dry-run requests are rejected with a
