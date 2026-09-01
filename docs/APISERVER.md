@@ -7,7 +7,7 @@
 | B — Wire formats | done for current scope | 7/7 |
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
-| E — Generic server, handler chain, and REST | in progress | 10/12 |
+| E — Generic server, handler chain, and REST | in progress | 11/12 |
 | F — Scheme, conversion, defaulting, and validation | in progress | 8/10 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
@@ -43,8 +43,8 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `17b5b30f` on
-2026-08-31. It describes what is integrated on that branch; open child PRs
+This snapshot is checked against `origin/nodeapiserver` at `3e27b5e5` on
+2026-09-01. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
 
@@ -136,13 +136,12 @@ this project's own five other components.
 
 ## Getting signal before the cutover
 
-Per `APISERVER_PLAN.md`: a throwaway-rig e2e case, in the shape of
-`deploy/lib/test/cases/datastore.sh` (which drives real `grpcurl` against a
-throwaway `nodestore`), boots a scratch `nodeapiserver` + `nodestore` pair and
-drives it with real `kubectl`/`curl`. This starts returning verdicts as soon
-as Groups B, C and E produce one working resource, well before k3s is
-actually removed from the deploy path. Track its file name here once it
-exists.
+Per `APISERVER_PLAN.md`: `tests/listener_roundtrip.rs` is the throwaway-rig
+e2e case. It boots a scratch `nodeapiserver` + `nodestore` pair and drives the
+real TLS listener with an HTTP client through readiness, discovery, and
+generic Namespace CRUD. This starts returning verdicts as soon as Groups B,
+C and E produce one working resource, well before k3s is actually removed
+from the deploy path. The full cluster e2e remains the final acceptance gate.
 
 ## Delivery groups
 
