@@ -271,6 +271,16 @@ pub(super) async fn termination_grace_period_is_honored_not_instant(
         .await?;
     let started = Instant::now();
     pods.delete(name, &DeleteParams::default()).await?;
+    let deleting = pods
+        .get(name)
+        .await
+        .context("reading the Pod after its graceful delete request")?;
+    anyhow::ensure!(
+        deleting.metadata.deletion_timestamp.is_some()
+            && deleting.metadata.deletion_grace_period_seconds == Some(8),
+        "graceful Pod delete did not persist deletion metadata: {:?}",
+        deleting.metadata
+    );
     context
         .wait_until("grace-period Pod deletion", Duration::from_secs(60), || {
             let pods = pods.clone();

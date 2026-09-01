@@ -3749,8 +3749,16 @@ fn set_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
 /// Second-precision RFC3339 with a `Z` suffix (`"2026-08-20T09:30:00Z"`)
 /// — matches real upstream's own `metav1.Time` marshaling, which never
 /// carries sub-second precision.
+fn rfc3339(timestamp: chrono::DateTime<chrono::Utc>) -> String {
+    timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    rfc3339(chrono::Utc::now())
+}
+
+fn future_rfc3339(seconds: i64) -> String {
+    rfc3339(chrono::Utc::now() + chrono::Duration::seconds(seconds))
 }
 
 #[derive(Debug, PartialEq)]
@@ -3836,9 +3844,17 @@ pub async fn delete_with_options(
             let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
             return Ok(DeleteOutcome::Deleted(object));
         }
-        set_metadata_field(&mut object, "deletionTimestamp", Value::String(now_rfc3339()));
+        let deletion_timestamp = pod_grace_period
+            .filter(|period| *period > 0)
+            .map_or_else(now_rfc3339, future_rfc3339);
+        set_metadata_field(&mut object, "deletionTimestamp", Value::String(deletion_timestamp));
         if let Some(period) = pod_grace_period {
             set_metadata_field(&mut object, "deletionGracePeriodSeconds", Value::Number(period.into()));
+        }
+        if graceful_pod {
+            if let Some(generation) = object.pointer("/metadata/generation").and_then(Value::as_i64).filter(|generation| *generation > 0) {
+                set_metadata_field(&mut object, "generation", Value::Number((generation + 1).into()));
+            }
         }
         if dry_run {
             let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
