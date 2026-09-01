@@ -10,7 +10,7 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 
 | ISSUE | STATUS | EVIDENCE / NEXT TEST | PR |
 | --- | --- | --- | --- |
-| `/metrics` metrics access and e2e authentication | in progress | The original anonymous curl was not upstream-compatible: release-1.34 protects `/metrics` with the `system:monitoring` RBAC group. The bootstrap manifest was also missing that upstream role and binding. This PR restores the policy and makes both focused checks use the admin client certificate. | pending |
+| `/metrics` metrics access and e2e authentication | verified | The original anonymous curl was not upstream-compatible: release-1.34 protects `/metrics` with the `system:monitoring` RBAC group. The bootstrap manifest was also missing that upstream role and binding. PR #487 restores the policy and makes both focused checks use the authenticated admin kube client. Runs `33554455305` (quick-check) and `33554455419` (focused e2e, shards 1 and 5) passed. | [#487](https://github.com/centerionware/not-k8s/pull/487) |
 | API listener does not recover after environment reconfiguration | open | Shards 1–5 lose API availability during or after authorization/audit reconfiguration tests; later requests fail with connection refused or recovery timeout. Reproduce with the smallest reconfiguration test before investigating dependent failures. | — |
 | Node authorizer mirror-Pod denial response | open | Shard 2: `test_nodeapiserver_enforces_node_restriction` received 403 while deleting the node's mirror Pod. | — |
 | CSI and DRA workload startup | open | Shard 1 CSI tests and shard 2 DRA/raw-block/fsGroup tests timed out waiting for Pods. Re-run after API recovery is fixed to distinguish nodelet/runtime failures from cascade failures. | — |
@@ -28,3 +28,6 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | RUN | RESULT | NOTES |
 | --- | --- | --- |
 | `33541038722` | failed | Build passed. All five shards failed; the metrics authorization defect was independently visible, while the API listener recovery failure caused broad cascades. |
+| `33552707582` | failed | First PR #487 attempt: both selected metrics tests reached the endpoint but the runner's curl could not load the generated admin private-key PEM; no application request was made. |
+| `33554455305` | passed | PR #487 focused nodebootstrap quick-check. |
+| `33554455419` | passed | PR #487 focused e2e: `test_nodeapiserver_exposes_full_request_metrics` (shard 1) and `test_nodeapiserver_exposes_inflight_metrics` (shard 5) passed. |
