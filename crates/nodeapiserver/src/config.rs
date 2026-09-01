@@ -151,6 +151,10 @@ pub struct Config {
     /// remains enabled unconditionally; this list currently provides the
     /// upstream opt-in `AlwaysPullImages` plugin.
     pub enabled_admission_plugins: Vec<String>,
+    /// Optional upstream-shaped `PodNodeSelector` plugin configuration.
+    /// The namespace annotation remains supported independently; this file
+    /// supplies the cluster default and namespace-specific selectors.
+    pub pod_node_selector_config_file: Option<PathBuf>,
     /// `NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE` — the
     /// client identity `proxy::client_tls` presents when dialing
     /// nodelet's own kubelet-style server for `pods/log` (Group N). The
@@ -209,6 +213,7 @@ impl Default for Config {
             enforce_rbac: false,
             encryption_config_file: None,
             enabled_admission_plugins: Vec::new(),
+            pod_node_selector_config_file: None,
             kubelet_client_cert_file: None,
             kubelet_client_key_file: None,
         }
@@ -368,6 +373,7 @@ impl Config {
                     .collect()
             })
             .unwrap_or_default();
+        cfg.pod_node_selector_config_file = path_env("NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE");
         cfg.kubelet_client_cert_file = path_env("NODEAPISERVER_KUBELET_CLIENT_CERT_FILE");
         cfg.kubelet_client_key_file = path_env("NODEAPISERVER_KUBELET_CLIENT_KEY_FILE");
         let kubelet_set = [cfg.kubelet_client_cert_file.is_some(), cfg.kubelet_client_key_file.is_some()];
@@ -504,6 +510,7 @@ mod tests {
         assert!(cfg.authorization_webhook_url.is_none());
         assert!(cfg.authorization_webhook_config_file.is_none());
         assert!(cfg.audit_policy_file.is_none());
+        assert!(cfg.pod_node_selector_config_file.is_none());
     }
 
     #[test]
@@ -642,6 +649,21 @@ mod tests {
         assert_eq!(
             cfg.enabled_admission_plugins,
             vec!["AlwaysPullImages".to_string(), "ExamplePlugin".to_string()]
+        );
+    }
+
+    #[test]
+    fn pod_node_selector_config_file_is_read_from_its_own_environment() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(
+            "NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE",
+            "/etc/nodeapiserver/pod-node-selector.yaml",
+        );
+        let _cleanup = EnvGuard(&["NODEAPISERVER_POD_NODE_SELECTOR_CONFIG_FILE"]);
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.pod_node_selector_config_file.as_deref(),
+            Some(std::path::Path::new("/etc/nodeapiserver/pod-node-selector.yaml"))
         );
     }
 

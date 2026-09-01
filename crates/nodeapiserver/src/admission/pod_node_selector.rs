@@ -1,17 +1,77 @@
 //! `PodNodeSelector` admission for namespace node-selector annotations.
 //!
 //! Real upstream also accepts a cluster-wide selector configuration file.
-//! This crate has no admission configuration-file surface yet, so this
-//! module implements the independently useful and wire-visible part: the
-//! legacy `scheduler.alpha.kubernetes.io/node-selector` annotation on a
-//! Namespace. It is safe to run unconditionally because a Namespace must
-//! explicitly opt into the behavior with that annotation.
+//! Both that configuration and the legacy
+//! `scheduler.alpha.kubernetes.io/node-selector` Namespace annotation are
+//! supported here. The annotation takes precedence over the configured
+//! namespace or cluster default, matching the upstream plugin's layering.
 
 use crate::admission::attributes::Operation;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 pub const NODE_SELECTOR_ANNOTATION: &str = "scheduler.alpha.kubernetes.io/node-selector";
+
+/// The file-shaped part of upstream's `PodNodeSelector` configuration.
+/// Unknown top-level keys are namespace names and map to exact-match label
+/// selectors; `clusterDefaultNodeSelector` applies when a namespace has no
+/// explicit entry.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct PluginConfig {
+    #[serde(default, rename = "clusterDefaultNodeSelector")]
+    pub cluster_default_node_selector: String,
+    #[serde(flatten)]
+    pub namespace_selectors: BTreeMap<String, String>,
+}
+
+impl PluginConfig {
+    /// Read and validate one plugin configuration file at startup. Parsing
+    /// selectors here makes a malformed operator configuration fail before it
+    /// can affect only some later Pod requests.
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let contents = fs::read_to_string(path)
+            .map_err(|error| format!("reading PodNodeSelector config {}: {error}", path.display()))?;
+        let config: Self = serde_yaml::from_str(&contents)
+            .map_err(|error| format!("decoding PodNodeSelector config {}: {error}", path.display()))?;
+        validate_selector(&config.cluster_default_node_selector, "clusterDefaultNodeSelector")?;
+        for (namespace, selector) in &config.namespace_selectors {
+            validate_selector(selector, namespace)?;
+        }
+        Ok(config)
+    }
+
+    fn selector_for_namespace(&self, namespace: &str) -> &str {
+        self.namespace_selectors
+            .get(namespace)
+            .map(String::as_str)
+            .unwrap_or(&self.cluster_default_node_selector)
+    }
+}
+
+/// Select the effective selector for one Pod. A non-empty Namespace
+/// annotation overrides the file; absent file and annotation produce the
+/// empty selector and therefore preserve the existing no-op behavior.
+pub fn selector_for_namespace(
+    config: Option<&PluginConfig>,
+    namespace: &str,
+    annotation: Option<&str>,
+) -> Result<String, String> {
+    let selector = annotation
+        .filter(|selector| !selector.trim().is_empty())
+        .or_else(|| config.map(|config| config.selector_for_namespace(namespace)))
+        .unwrap_or("");
+    validate_selector(selector, "PodNodeSelector")?;
+    Ok(selector.to_string())
+}
+
+fn validate_selector(selector: &str, source: &str) -> Result<(), String> {
+    parse_selector(selector)
+        .map(|_| ())
+        .map_err(|error| format!("{source}: {error}"))
+}
 
 pub fn applies_to(operation: Operation, group: &str, resource: &str, subresource: &str) -> bool {
     operation == Operation::Create
@@ -122,5 +182,60 @@ mod tests {
         let mut pod = json!({"spec": {}});
         merge_namespace_selector(&mut pod, "").unwrap();
         assert_eq!(pod, json!({"spec": {}}));
+    }
+
+    #[test]
+    fn namespace_config_overrides_the_cluster_default() {
+        let config = PluginConfig {
+            cluster_default_node_selector: "environment=production".to_string(),
+            namespace_selectors: BTreeMap::from([("development".to_string(), "environment=test".to_string())]),
+        };
+        assert_eq!(selector_for_namespace(Some(&config), "development", None).unwrap(), "environment=test");
+        assert_eq!(selector_for_namespace(Some(&config), "other", None).unwrap(), "environment=production");
+    }
+
+    #[test]
+    fn an_explicit_empty_namespace_selector_disables_the_cluster_default() {
+        let config = PluginConfig {
+            cluster_default_node_selector: "environment=production".to_string(),
+            namespace_selectors: BTreeMap::from([("development".to_string(), String::new())]),
+        };
+        assert_eq!(selector_for_namespace(Some(&config), "development", None).unwrap(), "");
+    }
+
+    #[test]
+    fn namespace_annotation_overrides_file_configuration() {
+        let config = PluginConfig {
+            cluster_default_node_selector: "environment=production".to_string(),
+            namespace_selectors: BTreeMap::new(),
+        };
+        assert_eq!(
+            selector_for_namespace(Some(&config), "default", Some("environment=development")).unwrap(),
+            "environment=development"
+        );
+    }
+
+    #[test]
+    fn malformed_file_selector_is_rejected() {
+        let config = PluginConfig {
+            cluster_default_node_selector: "environment in (production,test)".to_string(),
+            namespace_selectors: BTreeMap::new(),
+        };
+        let error = selector_for_namespace(Some(&config), "default", None).unwrap_err();
+        assert!(error.contains("not an exact key=value selector"));
+    }
+
+    #[test]
+    fn yaml_file_is_decoded_with_namespace_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pod-node-selector.yaml");
+        std::fs::write(
+            &path,
+            "clusterDefaultNodeSelector: environment=production\ndevelopment: environment=test\n",
+        )
+        .unwrap();
+        let config = PluginConfig::from_file(&path).unwrap();
+        assert_eq!(config.selector_for_namespace("development"), "environment=test");
+        assert_eq!(config.selector_for_namespace("other"), "environment=production");
     }
 }
