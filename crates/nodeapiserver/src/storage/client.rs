@@ -334,8 +334,8 @@ mod tests {
         assert!(matches!(err, Error::ReadMaterial { .. }), "got {err:?}");
     }
 
-    #[test]
-    fn lazy_connect_does_not_wait_for_nodestore() {
+    #[tokio::test]
+    async fn lazy_connect_does_not_wait_for_nodestore() {
         let mut cfg = Config::default();
         cfg.nodestore_endpoint = "https://127.0.0.1:1".to_string();
         StorageClient::connect_lazy(&cfg).expect("lazy client construction must not dial nodestore");
