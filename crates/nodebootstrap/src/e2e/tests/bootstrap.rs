@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use futures::AsyncBufReadExt;
+use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 
 fn run_privileged_output(program: &str, args: &[&str]) -> Result<Output> {
     let uid = Command::new("id")
@@ -1293,6 +1294,57 @@ pub(super) async fn nodeapiserver_rejects_invalid_batch_names(
             "invalid batch object name returned the wrong API error: {error}"
         ),
         Ok(value) => anyhow::bail!("invalid batch object name was accepted: {value}"),
+    }
+}
+
+pub(super) async fn nodeapiserver_rejects_privileged_csr_subject(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "certificate subject admission is only exercised against nodeapiserver",
+        ));
+    }
+
+    let mut params = CertificateParams::default();
+    let mut subject = DistinguishedName::new();
+    subject.push(DnType::CommonName, "nodeapiserver-csr-subject");
+    subject.push(DnType::OrganizationName, "system:masters");
+    params.distinguished_name = subject;
+    let key = KeyPair::generate().context("generating the CSR key")?;
+    let request = params
+        .serialize_request(&key)
+        .context("serializing the privileged CSR")?;
+    let request_pem = request.pem().context("encoding the privileged CSR as PEM")?;
+    use base64::Engine;
+    let csrs: Api<CertificateSigningRequest> = Api::all(context.client.clone());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/apis/certificates.k8s.io/v1/certificatesigningrequests")
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "certificates.k8s.io/v1",
+            "kind": "CertificateSigningRequest",
+            "metadata": {"generateName": "nodeapiserver-subject-"},
+            "spec": {
+                "request": base64::engine::general_purpose::STANDARD.encode(request_pem),
+                "signerName": "kubernetes.io/kube-apiserver-client",
+                "usages": ["client auth"]
+            }
+        }))?)?;
+
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 403 => Ok(()),
+        Err(error) => anyhow::bail!(
+            "privileged CSR subject returned the wrong API error: {error}"
+        ),
+        Ok(value) => {
+            if let Some(name) = value.pointer("/metadata/name").and_then(Value::as_str) {
+                let _ = csrs.delete(name, &DeleteParams::default()).await;
+            }
+            anyhow::bail!("privileged CSR subject was unexpectedly accepted: {value}")
+        }
     }
 }
 

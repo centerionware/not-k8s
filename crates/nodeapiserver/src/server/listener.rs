@@ -2772,6 +2772,10 @@ async fn handle(
     let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
     let is_delete = info.is_resource_request && info.verb == "delete" && !info.name.is_empty() && info.subresource.is_empty();
     let is_update = info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource.is_empty();
+    let is_certificate_status_subresource = info.is_resource_request
+        && info.api_group == "certificates.k8s.io"
+        && info.resource == "certificatesigningrequests"
+        && matches!(info.subresource.as_str(), "approval" | "status");
     // `watch` (no name — `path::parse` already tells a namefull `watch`
     // apart, though real upstream's own single-resource watch form isn't
     // handled specially here either way today) is deliberately handled in
@@ -3953,13 +3957,14 @@ async fn handle(
             }
         };
     }
-    // The generic `<resource>/status` subresource — its own branch for
+    // The generic `<resource>/status` subresource — and CSR `approval` —
+    // have their own branch for
     // the same reason `PATCH` is: the request body here is the caller's
     // view of the *whole* object (typically a GET's own response,
     // status field modified), not a patch document, and only
     // `rest::update_status`'s narrower "replace `.status` only" write
     // applies, not the general five-verb block's `rest::update`. **No
-    // Group J admission runs here, named honestly**: every admission
+    // Group J admission runs here, named honestly: every admission
     // plugin that ever applies to an `Update`-shaped write in this crate
     // (`namespace_lifecycle`'s Terminating-namespace check,
     // `LimitRanger`'s PVC-minimum check) is specific to a create/full
@@ -3967,7 +3972,28 @@ async fn handle(
     // replace, so there's nothing to wire here yet either — same
     // reasoning `deletecollection`'s own doc comment below already gives
     // for skipping the same two plugins.
-    if info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource == "status" {
+    if is_certificate_status_subresource
+        && info.verb == "get"
+        && !info.name.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        return match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, None, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::get CSR subresource failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+
+    if info.is_resource_request
+        && info.verb == "update"
+        && !info.name.is_empty()
+        && (info.subresource == "status" || is_certificate_status_subresource)
+    {
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
         };
@@ -3987,6 +4013,37 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = storage_namespace(&info);
+        if is_certificate_status_subresource {
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the CSR for certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let action = if info.subresource == "approval" { "approve" } else { "sign" };
+            match admission::certificate::validate_signer_update(
+                &mut client,
+                enforce_rbac,
+                identity.as_ref(),
+                action,
+                old_object.as_ref(),
+                Some(&body_value),
+                &info.subresource,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(admission::certificate::Error::Forbidden(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(admission::certificate::Error::Lookup(error)) => {
+                    warn!(path = %path_str, error = %error, "admission: certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         if authz::node::node_name(identity.as_ref()).is_some() {
             let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
                 Ok(rest::GetOutcome::Found(object)) => Some(object),
@@ -4047,7 +4104,11 @@ async fn handle(
     // applicable exists for a status-only write); the only new outcome
     // to handle is `Invalid` (a malformed patch document), which
     // `update_status` never itself returns but `rest::patch_status` can.
-    if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource == "status" {
+    if info.is_resource_request
+        && info.verb == "patch"
+        && !info.name.is_empty()
+        && (info.subresource == "status" || is_certificate_status_subresource)
+    {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
         let Some(mut client) = storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
@@ -4087,6 +4148,37 @@ async fn handle(
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
         };
         let namespace = storage_namespace(&info);
+        if is_certificate_status_subresource {
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission: reading the CSR for certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let action = if info.subresource == "approval" { "approve" } else { "sign" };
+            match admission::certificate::validate_signer_update(
+                &mut client,
+                enforce_rbac,
+                identity.as_ref(),
+                action,
+                old_object.as_ref(),
+                None,
+                &info.subresource,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(admission::certificate::Error::Forbidden(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(admission::certificate::Error::Lookup(error)) => {
+                    warn!(path = %path_str, error = %error, "admission: certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
         return match rest::patch_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run, request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
@@ -4854,6 +4946,34 @@ async fn handle(
             } else {
                 (None, None)
             };
+
+            // Group J: CertificateSubjectRestriction protects the built-in
+            // apiserver-client signer from a CSR requesting the
+            // `system:masters` organization.
+            if is_create {
+                match admission::certificate::validate_subject_restriction(
+                    admission::attributes::Operation::Create,
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    body_value.as_ref(),
+                ) {
+                    Ok(()) => {}
+                    Err(admission::certificate::Error::Forbidden(message)) => {
+                        return Ok(json_response(
+                            StatusCode::FORBIDDEN,
+                            &admission_forbidden_status(&path_str, &message),
+                        ));
+                    }
+                    Err(admission::certificate::Error::Lookup(error)) => {
+                        warn!(path = %path_str, error = %error, "admission: certificate subject restriction failed");
+                        return Ok(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &internal_error_status(&path_str),
+                        ));
+                    }
+                }
+            }
 
             // Group I: the Node authorizer cannot inspect request bodies, so
             // NodeRestriction supplies the body-sensitive half of the same
