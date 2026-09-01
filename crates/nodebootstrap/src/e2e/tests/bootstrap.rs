@@ -1358,6 +1358,30 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
         "PATCH did not run pure admission mutators: {patched}"
     );
 
+    let patch_request = Request::builder()
+        .method("PATCH")
+        .uri(format!(
+            "/api/v1/namespaces/{}/pods/{name}",
+            context.namespace
+        ))
+        .header("content-type", "application/merge-patch+json")
+        .body(serde_json::to_vec(&json!({"spec": {"tolerations": null}}))?)?;
+    let patched = context
+        .client
+        .request::<Value>(patch_request)
+        .await
+        .context("patching a Pod to verify pure admission runs on PATCH")?;
+    anyhow::ensure!(
+        patched.pointer("/spec/tolerations").and_then(Value::as_array).is_some_and(|values| {
+            values.iter().any(|value| {
+                value.pointer("/key").and_then(Value::as_str) == Some("node.kubernetes.io/not-ready")
+                    && value.pointer("/effect").and_then(Value::as_str) == Some("NoExecute")
+                    && value.pointer("/tolerationSeconds").and_then(Value::as_i64) == Some(300)
+            })
+        }),
+        "PATCH did not run pure admission mutators: {patched}"
+    );
+
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     pods.delete(&name, &DeleteParams::default())
         .await
