@@ -8,7 +8,7 @@
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 11/12 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 10/12 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 11/12 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
@@ -915,7 +915,12 @@ happened to lex it. Named honestly: these two generated-table functions are
 still only structural (presence + kind). The schema-local constraints are
 covered by the supplemental OpenAPI pass described above; cross-field and
 other per-kind semantic validation remains hand-written Go upstream, with no
-generic shortcut.
+generic shortcut. The first verified cross-field rules now cover HPA replica
+bounds and the apps workload invariant that a Deployment, ReplicaSet,
+DaemonSet, or StatefulSet selector must match its PodTemplate labels.
+Label-selector operators are checked against the template's labels, and the
+same rule is applied on create, update, patch, and apply through the shared
+built-in validation path.
 
 `cel_ext::type_check` now supplies the schema-aware CEL acceptance step that
 the runtime `cel` crate does not provide: `self`/`oldSelf` are resolved against
