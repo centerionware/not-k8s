@@ -1564,10 +1564,13 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             }
         }
         if is_environment_reconfiguring_test(name) {
-            if let Err(error) = wait_for_api_after_environment_reconfiguration(&test_context).await {
-                eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
-                if !failures.contains(&name) {
-                    failures.push(name);
+            match wait_for_api_after_environment_reconfiguration(&test_context).await {
+                Ok(recovered_client) => client = recovered_client,
+                Err(error) => {
+                    eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
+                    if !failures.contains(&name) {
+                        failures.push(name);
+                    }
                 }
             }
         }
@@ -1588,8 +1591,19 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     }
 }
 
-async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) -> Result<()> {
-    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) -> Result<Client> {
+    // A kube-rs Client may retain a pool keyed by the old apiserver
+    // connection. Rebuild it after a systemd restart so the recovery check
+    // and the next test use a fresh transport rather than replaying the
+    // failed connection forever.
+    let mut kube_config = KubeConfig::infer()
+        .await
+        .context("reloading the Kubernetes client after an environment-reconfiguring test")?;
+    kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
+    kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
+    let client = Client::try_from(kube_config)
+        .context("building a fresh Kubernetes client after an environment-reconfiguring test")?;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
     let namespace = format!(
         "nk-e2e-recovery-{}-{:08x}",
         std::process::id(),
@@ -1598,8 +1612,7 @@ async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) ->
             .map(|duration| duration.as_nanos() as u32)
             .unwrap_or_default()
     );
-    let service_accounts: Api<ServiceAccount> =
-        Api::namespaced(context.client.clone(), &namespace);
+    let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), &namespace);
     let recovery = context
         .wait_until(
             "the API server and namespace controller to recover after an environment-reconfiguring test",
@@ -1638,7 +1651,7 @@ async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) ->
     let _ = namespaces
         .delete(&namespace, &DeleteParams::default())
         .await;
-    recovery
+    recovery.map(|()| client)
 }
 
 /// Print the tests selected by the same shard/filter logic as `run`, without
