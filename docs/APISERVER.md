@@ -651,8 +651,8 @@ real `404`, not a create).
 
 **Authentication, authorization, and admission now all gate the real
 write verbs**: `authn::x509`'s verified peer identity (Group H), opt-in
-RBAC enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`), and five
-unconditional Group J admission plugins — see those groups' own sections
+RBAC enforcement (Group I, `NODEAPISERVER_ENFORCE_RBAC`), and the
+unconditional Group J admission stages — see those groups' own sections
 for what's real and what's deliberately still opt-in/not-yet-ported.
 
 `server::watch_event::to_watch_event_json` is the first piece of real
