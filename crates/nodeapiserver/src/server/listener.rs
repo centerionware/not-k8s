@@ -1132,8 +1132,8 @@ pub async fn run(cfg: Config) {
         _ => None,
     };
 
-    let audit_webhook = match cfg.audit_webhook_url.as_deref() {
-        Some(url) => match crate::audit::webhook::AuditWebhook::new(url) {
+    let audit_webhook = match (cfg.audit_webhook_url.as_deref(), cfg.audit_webhook_config_file.as_deref()) {
+        (Some(url), None) => match crate::audit::webhook::AuditWebhook::new(url) {
             Ok(webhook) => {
                 info!(%url, "nodeapiserver: configured audit webhook");
                 Some(webhook)
@@ -1143,7 +1143,21 @@ pub async fn run(cfg: Config) {
                 return;
             }
         },
-        None => None,
+        (None, Some(path)) => match crate::audit::webhook::AuditWebhook::from_kubeconfig(path) {
+            Ok(webhook) => {
+                info!(path = %path.display(), "nodeapiserver: configured audit webhook from kubeconfig");
+                Some(webhook)
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error, "failed to load NODEAPISERVER_AUDIT_WEBHOOK_CONFIG_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            warn!("audit webhook URL and config file are mutually exclusive; the REST/watch listener will not run");
+            return;
+        }
     };
     let audit_sink = match cfg.audit_log_path.as_deref() {
         Some(path) => match crate::audit::sink::AuditSink::open_with_rotation(
