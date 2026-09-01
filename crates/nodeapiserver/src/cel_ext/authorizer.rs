@@ -385,7 +385,8 @@ mod tests {
         let mut cel_context = Context::default();
         cel_context.add_variable("authorizer", value(context)).unwrap();
         cel_ext::register_kubernetes_extensions(&mut cel_context);
-        cel::Program::compile(expression).unwrap().execute(&cel_context).unwrap()
+        let expression = cel_ext::compile(expression).unwrap();
+        cel_context.resolve(&expression).unwrap()
     }
 
     #[test]

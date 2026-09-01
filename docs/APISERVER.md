@@ -43,7 +43,7 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `efa2b3a1` on
+This snapshot is checked against `origin/nodeapiserver` at `44b00164` on
 2026-08-31. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
@@ -338,10 +338,11 @@ revision, `watch_from_revision()` opens a `Watch` from `revision + 1` (not
 reflects), `apply_watch_response`/`apply_watch_response_shared` decode
 `mvccpb::Event`s into `WatchCache::apply`/`SharedCache::apply` calls
 (`Added` vs `Modified` distinguished by `kv.version == 1`, matching
-`mvccpb::Event`'s own doc comment; an empty-events response with a newer
-header revision becomes a `Bookmark`), and `reflect()` is the reconnect
-loop — LIST, WATCH, and on any failure or stream end, relist and try
-again forever, the same "never give up" posture a real `client-go`
+`mvccpb::Event`'s own doc comment; only an explicit progress response with a
+newer header revision becomes a `Bookmark`; the initial `created: true`
+acknowledgement does not advance the resource cache), and `reflect()` is
+the reconnect loop — LIST, WATCH, and on any failure or stream end,
+relist and try again forever, the same "never give up" posture a real `client-go`
 Reflector takes. Decode logic is pure and unit-tested against constructed
 `mvccpb`/`etcdserverpb` values; the async orchestration around real
 `StorageClient` calls needs live infrastructure to test further.
@@ -483,9 +484,10 @@ Subresources are emitted as their own discoverable entries (`pods/status`,
 `pods/log`, `pods/exec`, and the other single-item subresource paths), with
 the advertised `connect` verb retained for streaming subresources.
 `singularName` uses real kube-apiserver's own RESTMapper default (lowercased
-kind) since no per-type override table is vendored;
-`shortNames`/`categories` aren't emitted at all (not present anywhere in
-the vendored spec). **Now wired into the listener's actual routing**:
+kind) since no per-type override table is vendored; standard built-in
+`shortNames` and CRD-declared `spec.names.shortNames` are emitted, while
+standard built-in categories and CRD-declared `spec.names.categories` are
+emitted too. **Now wired into the listener's actual routing**:
 `server::listener`'s `route_discovery` (pure, unit-tested apart from the
 async handler) dispatches all five non-resource discovery routes (`/api`,
 `/api/{version}`, `/apis`, `/apis/{group}`, `/apis/{group}/{version}`) to
@@ -1658,6 +1660,11 @@ annotation to the request's audit event. Multiple failures are accumulated so
 warnings and audit details survive even when another binding denies the
 request.
 
+The shared CEL evaluator enables Kubernetes' optional field and index selection
+syntax (`.?` and `[?...]`) while compiling policy expressions. This is required
+for current Kubernetes admission policies, including the reference DRA
+driver's `userInfo.extra` and optional `spec.nodeName` expressions.
+
 `MutatingAdmissionPolicy` and `MutatingAdmissionPolicyBinding` are now
 loaded from storage before validating admission. Matching bindings can apply
 multiple JSON Patch operations or an apply configuration in order, including
@@ -1883,7 +1890,8 @@ scoped here rather than under either group since it's shared
 infrastructure neither owns.
 
 *Crate choice*: `cel` (the `cel-rust` project, MIT-licensed, actively
-maintained — `0.14.3` as of 2026-08-21). **Correction to this section's
+maintained — `0.14.4` plus the narrowly scoped upstream optional-selection fix
+at `119a55d` as of 2026-08-31). **Correction to this section's
 own first draft**: initially written as `cel-interpreter` from external
 web research alone, before noticing `crates/nodescheduler` already
 depends on `cel` for a real, live, already-merged use
@@ -1893,9 +1901,13 @@ former crates.io name (confirmed both still resolve, but only `cel` has
 had a release in the last year). Real API shape confirmed directly
 against that already-working code, not docs.rs (whose auto-generated
 summaries disagreed with each other on `Context`'s own basic shape):
-`cel::Program::compile(expr)` -> `cel::Context::default()` +
+`cel::parser::Parser::new().enable_optional_syntax(true).parse(expr)` ->
+`cel::Context::default()` +
 `ctx.add_variable(name, value)`/`ctx.add_function(name, f)` ->
-`program.execute(&ctx)` -> `cel::Value::Bool(bool)` on success.
+`ctx.resolve(&expression)` -> `cel::Value::Bool(bool)` on success. The
+nodeapiserver path uses `cel::parser::Parser::enable_optional_syntax(true)`
+instead of the convenience compile function because Kubernetes policy
+expressions rely on optional field/index selection (`.?` and `[?...]`).
 `Context::add_variable`'s own bound (`TryIntoValue`, confirmed via a
 blanket `impl<T: Serialize> TryIntoValue for T`) means a bare
 `serde_json::Value` binds directly, no manual conversion needed. **No

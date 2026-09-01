@@ -294,11 +294,10 @@ fn compute_expr_size(expr: &Expr) -> Option<SizeEstimate> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cel::Program;
     use serde_json::json;
 
     fn compile(expr: &str) -> IdedExpr {
-        Program::compile(expr).unwrap().expression().clone()
+        super::super::compile(expr).unwrap()
     }
 
     #[test]

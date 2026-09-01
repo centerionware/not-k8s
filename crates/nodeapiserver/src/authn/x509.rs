@@ -22,6 +22,7 @@
 //! certificate's Subject into an identity.
 
 use ring::digest::{digest, SHA256};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -31,10 +32,13 @@ pub struct Identity {
     /// identities normally do not, while static-token and ServiceAccount
     /// authenticators do.
     pub uid: Option<String>,
+    /// Additional authenticated-user attributes in Kubernetes' standard
+    /// `user.Info.Extra` shape.
+    pub extra: BTreeMap<String, Vec<String>>,
     /// `user.CredentialIDKey` (`"authentication.kubernetes.io/credential-id"`)
     /// -> `["X509SHA256=<hex>"]`, real upstream's own key/value shape —
-    /// kept as a `(key, values)` pair rather than a full extra map since
-    /// this is the only extra entry this module ever produces.
+    /// kept for compatibility with the aggregation proxy's existing header
+    /// plumbing; the same entry is also present in `extra`.
     pub credential_id: (String, Vec<String>),
 }
 
@@ -53,7 +57,9 @@ pub fn identity_from_der(der: &[u8]) -> Option<Identity> {
     let groups = subject.iter_organization().filter_map(|o| o.as_str().ok().map(str::to_string)).collect();
     let fingerprint = digest(&SHA256, der);
     let credential_id = (CREDENTIAL_ID_KEY.to_string(), vec![format!("X509SHA256={}", hex_encode(fingerprint.as_ref()))]);
-    Some(Identity { name, groups, uid: None, credential_id })
+    let mut extra = BTreeMap::new();
+    extra.insert(CREDENTIAL_ID_KEY.to_string(), credential_id.1.clone());
+    Some(Identity { name, groups, uid: None, extra, credential_id })
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
