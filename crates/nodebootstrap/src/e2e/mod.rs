@@ -227,6 +227,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_defaults_storage_class_on_apply",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_adds_storage_protection_finalizer",
         group: TestGroup::General,
     },
@@ -1771,6 +1775,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             bootstrap::nodeapiserver_applies_pure_admission_to_apply(context).await
         },
         "test_nodeapiserver_defaults_ingress_class" => bootstrap::nodeapiserver_defaults_ingress_class(context).await,
+        "test_nodeapiserver_defaults_storage_class_on_apply" => {
+            bootstrap::nodeapiserver_defaults_storage_class_on_apply(context).await
+        },
         "test_nodeapiserver_adds_storage_protection_finalizer" => {
             bootstrap::nodeapiserver_adds_storage_protection_finalizer(context).await
         },
