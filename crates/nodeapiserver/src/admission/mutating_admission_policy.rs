@@ -293,6 +293,7 @@ fn request_user_info(identity: Option<&Identity>) -> Option<policy_matching::Req
         username: &identity.name,
         uid: identity.uid.as_deref(),
         groups: &identity.groups,
+        extra: &identity.extra,
     })
 }
 
@@ -644,6 +645,7 @@ mod tests {
             name: "alice".to_string(),
             groups: vec!["developers".to_string()],
             uid: Some("user-id".to_string()),
+            extra: Default::default(),
             credential_id: (String::new(), Vec::new()),
         };
         let request = policy_matching::build_request_object(&policy_matching::RequestVariable {

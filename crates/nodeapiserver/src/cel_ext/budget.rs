@@ -77,8 +77,8 @@ pub fn check_rule_cost(root: &DeclType, rule: &str) -> Result<CostEstimate, Rule
 /// below an explicitly empty collection cannot be evaluated. Saturating
 /// arithmetic preserves the conservative result for very large products.
 pub fn check_rule_cost_with_cardinality(root: &DeclType, rule: &str, cardinality: u64) -> Result<CostEstimate, RuleCostError> {
-    let program = cel::Program::compile(rule).map_err(|e| RuleCostError::Compile(e.to_string()))?;
-    let raw_cost = Coster::new(Some(root)).cost(program.expression());
+    let expression = super::compile(rule).map_err(|e| RuleCostError::Compile(e.to_string()))?;
+    let raw_cost = Coster::new(Some(root)).cost(&expression);
     let cost = CostEstimate { min: raw_cost.min.saturating_mul(cardinality), max: raw_cost.max.saturating_mul(cardinality) };
     if cost.max > STATIC_ESTIMATED_COST_LIMIT {
         return Err(RuleCostError::TooExpensive { estimated_cost: cost.max, limit: STATIC_ESTIMATED_COST_LIMIT });

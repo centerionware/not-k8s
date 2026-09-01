@@ -587,6 +587,7 @@ mod tests {
             name: "system:node:worker-1".to_string(),
             groups: vec!["system:nodes".to_string()],
             uid: None,
+            extra: Default::default(),
             credential_id: (String::new(), Vec::new()),
         }
     }
@@ -661,6 +662,7 @@ mod tests {
             name: "alice".to_string(),
             groups: Vec::new(),
             uid: None,
+            extra: Default::default(),
             credential_id: (String::new(), Vec::new()),
         };
         assert!(node_name(Some(&node_identity())).is_some());
