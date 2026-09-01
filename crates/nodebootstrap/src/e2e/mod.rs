@@ -219,6 +219,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_rejects_privileged_csr_subject",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_applies_pure_admission_to_apply",
         group: TestGroup::General,
     },
@@ -1762,6 +1766,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_rejects_invalid_batch_names" => {
             bootstrap::nodeapiserver_rejects_invalid_batch_names(context).await
+        },
+        "test_nodeapiserver_rejects_privileged_csr_subject" => {
+            bootstrap::nodeapiserver_rejects_privileged_csr_subject(context).await
         },
         "test_nodeapiserver_applies_pure_admission_to_apply" => {
             bootstrap::nodeapiserver_applies_pure_admission_to_apply(context).await
