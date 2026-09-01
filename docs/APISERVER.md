@@ -8,7 +8,7 @@
 | C — Storage over nodestore | done for current scope | 7/7 |
 | D — Watch cache | done for current scope | 7/7 |
 | E — Generic server, handler chain, and REST | in progress | 11/12 |
-| F — Scheme, conversion, defaulting, and validation | in progress | 11/12 |
+| F — Scheme, conversion, defaulting, and validation | in progress | 12/13 |
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
@@ -920,7 +920,9 @@ bounds and the apps workload invariant that a Deployment, ReplicaSet,
 DaemonSet, or StatefulSet selector must match its PodTemplate labels.
 Label-selector operators are checked against the template's labels, and the
 same rule is applied on create, update, patch, and apply through the shared
-built-in validation path.
+built-in validation path. Apps/v1 also rejects selector changes after
+creation on update, patch, and apply, matching the immutable selector
+strategy used by the upstream apps REST resources.
 
 `cel_ext::type_check` now supplies the schema-aware CEL acceptance step that
 the runtime `cel` crate does not provide: `self`/`oldSelf` are resolved against
