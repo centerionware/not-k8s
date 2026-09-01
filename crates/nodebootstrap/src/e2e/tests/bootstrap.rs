@@ -1695,7 +1695,7 @@ pub(super) async fn nodeapiserver_applies_runtime_class_admission(
                                 "image": "example.invalid/not-k8s-apply-runtime-class"
                             }]
                         }
-                    }))?,
+                    }))?)?,
             )
             .await
             .context("applying a Pod through RuntimeClass admission")?;
