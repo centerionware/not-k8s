@@ -12,7 +12,7 @@
 | G — Patch and Server-Side Apply | in progress | 6/7 |
 | H — Authentication | done for current scope | 7/7 |
 | I — Authorization | done for current scope | 7/7 |
-| J — Admission | in progress | 15/16 |
+| J — Admission | in progress | 18/19 |
 | K — CustomResourceDefinitions | done for current scope | 7/7 |
 | L — Aggregation | done for current scope | 4/4 |
 | M — APF, audit, and observability | done for current scope | 9/9 |
@@ -60,7 +60,7 @@ explanation of each boundary.
 | G. Patch/SSA | **in progress** | JSON/merge/strategic patch, CRD-aware Server-Side Apply, ordinary-write managed-fields tracking, and status-subresource field exclusion are integrated; less-common managed-fields edge cases remain. |
 | H. Authentication | **done for current scope** | Static tokens, service-account tokens, x509, OIDC, anonymous-auth configuration, TokenReview, and authentication-file reload are integrated; structured anonymous diagnostics and some upstream OIDC diagnostics remain. |
 | I. Authorization | **done for current scope** | RBAC, node authorization, review APIs, the authorization webhook path, kubeconfig credentials, and public-info bootstrap policy are integrated; broader upstream authorizer behavior and compatibility coverage remain. |
-| J. Admission | **in progress** | The implemented built-ins (including DefaultIngressClass and StorageObjectInUseProtection) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
+| J. Admission | **in progress** | The implemented built-ins (including certificate admission, DefaultIngressClass, and StorageObjectInUseProtection) and validating/mutating policies are wired; the generic plugin registry/order, remaining built-ins, and remaining typed CEL compatibility edges remain. |
 | K. CRDs | **done for current scope** | CRD CRUD, schema behavior, status subresources, discovery, conversion projection, proactive lifecycle cache refresh, REST/watch conversion webhooks, and storage-version schema revalidation are integrated; multi-version storage migration and remaining conversion edge cases remain. |
 | L. Aggregation | **done for current scope** | The standard front-proxy identity and HTTP/1.1 upgrade path are integrated; uncommon transport details remain. |
 | M. APF/audit/observability | **done for current scope** | Audit stages, health, live-storage readiness, full request metric labels, bounded APF plumbing, flow distinguishers, shuffle-sharded queues, seat borrowing, one-second sampled inflight gauges, size-based audit-log rotation, bounded webhook delivery, policy-selected request/response object capture, and kubeconfig webhook credentials are integrated; remaining observability refinements remain. |
@@ -1366,6 +1366,18 @@ plugin opt-in; this crate has not yet exposed an admission-plugin
 configuration surface, so it is currently registered with the other built-in
 mutators.
 
+`admission::certificate` covers the three certificate admission stages enabled
+by the upstream default chain. `CertificateSubjectRestriction` rejects a
+`kubernetes.io/kube-apiserver-client` CSR whose parsed subject includes the
+`system:masters` organization. `CertificateApproval` authorizes writes to the
+CSR `approval` subresource against the synthetic `signers` resource with the
+`approve` verb, and `CertificateSigning` applies the corresponding `sign`
+check when certificate or condition status changes. Both signer checks honor
+the nodeapiserver's opt-in RBAC enforcement setting and support the upstream
+exact-signer plus `{domain}/*` wildcard lookup. CSR approval and status
+`PUT`/`PATCH` requests now use the status-only persistence path instead of
+falling through to an ordinary full-object write.
+
 `admission::default_storage_class` is mutating, `CREATE`-only — a faithful
 port of real upstream's own `DefaultStorageClass` plugin
 (`plugin/pkg/admission/storage/storageclass/setdefault/admission.go`,
@@ -1730,7 +1742,8 @@ selected object). Dry-run requests are rejected with a
 `Some`; `None` and `NoneOnDryRun` webhooks continue through the normal
 AdmissionReview path.
 
-**Not yet landed**: the remaining built-in plugins, a complete registry covering
+**Not yet landed**: the remaining built-in plugins (for example
+`AlwaysPullImages`), a complete registry covering
 storage-backed mutators and validators, the remaining typed-CEL /
 variable surface of MutatingAdmissionPolicy, and interpreter-level fuel
 accounting. The ValidatingAdmissionPolicy path uses the existing

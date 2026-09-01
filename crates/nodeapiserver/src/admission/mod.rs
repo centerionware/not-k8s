@@ -11,6 +11,10 @@
 //! name)` tuple a plugin decides against, a real-upstream-`Attributes`
 //! subset (see that module's own doc comment for why the rest isn't
 //! modeled yet).
+//! `certificate` — the upstream certificate admission stages:
+//! `CertificateSubjectRestriction` for privileged client CSR subjects and
+//! `CertificateApproval`/`CertificateSigning` authorization against the
+//! synthetic `signers` resource.
 //! `namespace_lifecycle` — `NamespaceLifecycle`, a faithful port of real
 //! upstream's own plugin (see that module's own doc comment for the exact
 //! rules and what's honestly simplified: no informer-cache staleness
@@ -229,6 +233,7 @@
 
 pub mod attributes;
 pub mod chain;
+pub mod certificate;
 pub mod default_ingress_class;
 pub mod default_storage_class;
 pub mod default_toleration_seconds;
