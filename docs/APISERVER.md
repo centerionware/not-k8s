@@ -1395,9 +1395,9 @@ fetched and read directly): PersistentVolumes, PersistentVolumeClaims, and
 VolumeAttributesClasses receive their standard protection finalizer when
 created. The existing nodecontroller protection controllers remove those
 finalizers once the objects are no longer in use. The mutation is applied to
-the request candidate before the remaining admission stages and is covered
-by unit tests for all three resource families, duplicate-finalizer handling,
-and subresource exclusion.
+the request candidate before the remaining admission stages for ordinary
+create and Server-Side Apply, and is covered by unit tests for all three
+resource families, duplicate-finalizer handling, and subresource exclusion.
 
 `admission::runtime_class` is mutating and validating, `CREATE`-only for
 ordinary Pods — a faithful port of real upstream's `RuntimeClass` plugin

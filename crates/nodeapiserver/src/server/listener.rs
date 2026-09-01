@@ -3188,6 +3188,18 @@ async fn handle(
                 }
             }
 
+            // StorageObjectInUseProtection is a pure create-time mutator,
+            // but Apply still has to invoke it so PV/PVC/VAC objects do not
+            // lose their protection finalizer merely because they were
+            // submitted with Server-Side Apply.
+            if operation == admission::attributes::Operation::Create {
+                admission::storage_object_in_use_protection::mutate(
+                    &info.api_group,
+                    &info.resource,
+                    &info.subresource,
+                    &mut candidate,
+                );
+            }
             // The pure registry only supplies the default ServiceAccount
             // name. Complete the storage-backed ServiceAccount plugin for
             // create-on-apply as well, so applied Pods receive the same
