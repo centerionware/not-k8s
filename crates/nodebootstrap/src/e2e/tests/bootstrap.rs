@@ -1297,6 +1297,71 @@ pub(super) async fn nodeapiserver_rejects_invalid_batch_names(
     }
 }
 
+pub(super) async fn nodeapiserver_rejects_invalid_workload_names(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "additional workload name validation is only exercised against nodeapiserver",
+        ));
+    }
+
+    let reject = |uri: String, body: Value| async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&body)?)?;
+        match context.client.request::<Value>(request).await {
+            Err(KubeError::Api(error)) if error.code == 422 => Ok(()),
+            Err(error) => anyhow::bail!("invalid workload name returned the wrong API error: {error}"),
+            Ok(value) => anyhow::bail!("invalid workload name was accepted: {value}"),
+        }
+    };
+
+    reject(
+        format!(
+            "/apis/apps/v1/namespaces/{}/statefulsets",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": "Invalid_StatefulSet_Name", "namespace": context.namespace},
+            "spec": {
+                "serviceName": "valid-service",
+                "selector": {"matchLabels": {"app": "invalid-name-e2e"}},
+                "template": {
+                    "metadata": {"labels": {"app": "invalid-name-e2e"}},
+                    "spec": {
+                        "containers": [{"name": "app", "image": "example.invalid/not-k8s-invalid-statefulset-name"}]
+                    }
+                }
+            }
+        }),
+    )
+    .await?;
+
+    reject(
+        format!(
+            "/apis/autoscaling/v2/namespaces/{}/horizontalpodautoscalers",
+            context.namespace
+        ),
+        json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "Invalid_HPA_Name", "namespace": context.namespace},
+            "spec": {
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "missing-target"},
+                "minReplicas": 1,
+                "maxReplicas": 1
+            }
+        }),
+    )
+    .await
+}
+
 pub(super) async fn nodeapiserver_rejects_privileged_csr_subject(
     context: &E2eContext,
 ) -> Result<()> {

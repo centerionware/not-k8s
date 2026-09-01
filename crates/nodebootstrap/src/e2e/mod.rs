@@ -219,6 +219,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_rejects_invalid_workload_names",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rejects_privileged_csr_subject",
         group: TestGroup::General,
     },
@@ -1770,6 +1774,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_rejects_invalid_batch_names" => {
             bootstrap::nodeapiserver_rejects_invalid_batch_names(context).await
+        },
+        "test_nodeapiserver_rejects_invalid_workload_names" => {
+            bootstrap::nodeapiserver_rejects_invalid_workload_names(context).await
         },
         "test_nodeapiserver_rejects_privileged_csr_subject" => {
             bootstrap::nodeapiserver_rejects_privileged_csr_subject(context).await
