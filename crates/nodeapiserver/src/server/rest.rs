@@ -110,9 +110,12 @@
 //! preconditions (`metav1.DeleteOptions.Preconditions`), and uses an MVCC
 //! compare with `DeleteRange` so a concurrent update cannot invalidate the
 //! check. It returns the deleted object, matching real upstream's own
-//! synchronous delete response. Finalizers are honored: a delete marks an
-//! object with `deletionTimestamp` and the object is removed when its last
-//! finalizer is cleared. `propagationPolicy` remains out of scope.
+//! synchronous delete response. Scheduled Pods honor the Pod registry's
+//! graceful-delete strategy: a delete marks `deletionTimestamp` and leaves
+//! the object for the node agent to remove after its containers stop.
+//! Finalizers are honored too: a delete marks an object with
+//! `deletionTimestamp` and the object is removed when its last finalizer is
+//! cleared. `propagationPolicy` remains out of scope.
 //!
 //! `update` is real optimistic concurrency, not a blind overwrite: reads
 //! the current object first, requires the submitted body's own
@@ -3707,6 +3710,30 @@ fn has_deletion_timestamp(object: &Value) -> bool {
         .is_some_and(|timestamp| !timestamp.is_null())
 }
 
+/// Returns the grace period selected by the Pod registry's
+/// `CheckGracefulDelete` strategy. An explicit DeleteOptions value wins;
+/// otherwise a scheduled, non-terminal Pod uses its own
+/// `terminationGracePeriodSeconds` (defaulting to the API default of 30).
+fn pod_grace_period(group: &str, resource: &str, object: &Value, requested: Option<i64>) -> Option<i64> {
+    if !group.is_empty() || resource != "pods" {
+        return None;
+    }
+    let mut period = requested
+        .or_else(|| object.pointer("/spec/terminationGracePeriodSeconds").and_then(Value::as_i64))
+        .unwrap_or(30);
+    let scheduled = object.pointer("/spec/nodeName").and_then(Value::as_str).is_some_and(|name| !name.is_empty());
+    let terminal = matches!(
+        object.pointer("/status/phase").and_then(Value::as_str),
+        Some("Succeeded") | Some("Failed")
+    );
+    if !scheduled || terminal {
+        period = 0;
+    } else if period < 0 {
+        period = 1;
+    }
+    Some(period)
+}
+
 /// Allocates the short suffix used by the API server for generateName.
 fn generate_name(prefix: &str) -> String {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
@@ -3743,7 +3770,7 @@ pub enum DeleteOutcome {
 /// Deletes a single object. `namespace: None` for a cluster-scoped
 /// resource, same convention as [`get`]/[`list`]/[`create`].
 pub async fn delete(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, name: &str) -> Result<DeleteOutcome, Error> {
-    delete_with_options(storage, group, version, resource, namespace, name, None, false).await
+    delete_with_options(storage, group, version, resource, namespace, name, None, None, false).await
 }
 
 /// The subset of Kubernetes `DeleteOptions.preconditions` that can be
@@ -3766,6 +3793,7 @@ pub async fn delete_with_options(
     namespace: Option<&str>,
     name: &str,
     preconditions: Option<&DeletePreconditions>,
+    requested_grace_period_seconds: Option<i64>,
     dry_run: bool,
 ) -> Result<DeleteOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
@@ -3792,18 +3820,26 @@ pub async fn delete_with_options(
         }
     }
     let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
+    let pod_grace_period = pod_grace_period(group, resource, &object, requested_grace_period_seconds);
+    let graceful_pod = pod_grace_period.is_some_and(|period| period > 0);
 
     // A delete request against an object with finalizers is a graceful
     // deletion request, not an immediate storage delete. This is the
     // generic registry behavior that lets controllers observe the
     // deletionTimestamp and remove their own finalizer before the object is
     // physically removed.
-    if has_finalizers(&object) {
+    // Pod deletion is also graceful when it has no finalizers: the
+    // apiserver records the deletion timestamp and lets the node agent stop
+    // the containers before issuing the final zero-grace delete.
+    if has_finalizers(&object) || graceful_pod {
         if has_deletion_timestamp(&object) {
             let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
             return Ok(DeleteOutcome::Deleted(object));
         }
         set_metadata_field(&mut object, "deletionTimestamp", Value::String(now_rfc3339()));
+        if let Some(period) = pod_grace_period {
+            set_metadata_field(&mut object, "deletionGracePeriodSeconds", Value::Number(period.into()));
+        }
         if dry_run {
             let object = convert_to_requested_version(storage, group, version, &kind, resolved.conversion_webhook.as_ref(), object).await?;
             return Ok(DeleteOutcome::Deleted(object));
@@ -4390,6 +4426,29 @@ mod tests {
         assert!(first.starts_with("job-"));
         assert_eq!(first.len(), "job-".len() + 5);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn scheduled_pod_delete_uses_the_pod_grace_period() {
+        let pod = json!({
+            "spec": {"nodeName": "node-a", "terminationGracePeriodSeconds": 8},
+            "status": {"phase": "Running"}
+        });
+        assert_eq!(pod_grace_period("", "pods", &pod, None), Some(8));
+        assert_eq!(pod_grace_period("", "pods", &pod, Some(3)), Some(3));
+        assert_eq!(pod_grace_period("", "pods", &pod, Some(-1)), Some(1));
+    }
+
+    #[test]
+    fn unscheduled_or_terminal_pod_delete_is_immediate() {
+        let unscheduled = json!({"spec": {"terminationGracePeriodSeconds": 8}});
+        let terminal = json!({
+            "spec": {"nodeName": "node-a", "terminationGracePeriodSeconds": 8},
+            "status": {"phase": "Succeeded"}
+        });
+        assert_eq!(pod_grace_period("", "pods", &unscheduled, None), Some(0));
+        assert_eq!(pod_grace_period("", "pods", &terminal, None), Some(0));
+        assert_eq!(pod_grace_period("apps", "pods", &terminal, None), None);
     }
 
     #[test]

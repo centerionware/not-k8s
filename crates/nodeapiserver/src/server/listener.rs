@@ -580,6 +580,16 @@ fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest
     }))
 }
 
+fn delete_grace_period(value: Option<&serde_json::Value>) -> Result<Option<i64>, &'static str> {
+    let Some(value) = value.and_then(|value| value.get("gracePeriodSeconds")) else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Null => Ok(None),
+        value => value.as_i64().map(Some).ok_or("delete gracePeriodSeconds must be an integer"),
+    }
+}
+
 /// Real upstream's own `Conflict` shape for a Server-Side Apply
 /// ownership conflict — `reason: "Conflict"`, `code: 409`. Same "real
 /// subset, not the full type" posture every other `Status` builder in
@@ -4669,7 +4679,7 @@ async fn handle(
                 }
             }
 
-            match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, name, None, dry_run).await {
+            match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, name, None, None, dry_run).await {
                 Ok(rest::DeleteOutcome::Deleted(_)) | Ok(rest::DeleteOutcome::ObjectNotFound) => {}
                 Ok(rest::DeleteOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::DeleteOutcome::PreconditionFailed) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
@@ -6290,7 +6300,11 @@ async fn handle(
                     Ok(value) => value,
                     Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
                 };
-                match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, preconditions.as_ref(), dry_run).await {
+                let grace_period_seconds = match delete_grace_period(delete_options.as_ref()) {
+                    Ok(value) => value,
+                    Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+                };
+                match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, preconditions.as_ref(), grace_period_seconds, dry_run).await {
                     Ok(rest::DeleteOutcome::Deleted(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::DeleteOutcome::ObjectNotFound) | Ok(rest::DeleteOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
@@ -7183,6 +7197,13 @@ mod tests {
             delete_preconditions(Some(&value)).unwrap(),
             Some(rest::DeletePreconditions { resource_version: Some("7".to_string()), uid: Some("abc".to_string()) })
         );
+    }
+
+    #[test]
+    fn delete_grace_period_decodes_an_explicit_integer() {
+        assert_eq!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": 8}))).unwrap(), Some(8));
+        assert_eq!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": null}))).unwrap(), None);
+        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": "8"}))).is_err());
     }
 
     #[test]
