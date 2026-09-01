@@ -17,6 +17,7 @@
 
 use anyhow::{bail, Context, Result};
 use k8s_openapi::api::core::v1::{Endpoints, Service};
+use k8s_openapi::api::discovery::v1::EndpointSlice;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 
@@ -56,7 +57,8 @@ pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<(
     let endpoint = address.to_string();
     crate::kube_api::block_on(&kubeconfig, move |client| async move {
         let services: Api<Service> = Api::namespaced(client.clone(), "default");
-        let endpoints: Api<Endpoints> = Api::namespaced(client, "default");
+        let endpoints: Api<Endpoints> = Api::namespaced(client.clone(), "default");
+        let endpoint_slices: Api<EndpointSlice> = Api::namespaced(client, "default");
         if services.get_opt("kubernetes").await?.is_none() {
             let service: Service = serde_json::from_value(json!({
                 "apiVersion": "v1",
@@ -66,13 +68,30 @@ pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<(
                     "type": "ClusterIP",
                     "clusterIP": service_ip,
                     "clusterIPs": service_ips,
-                    "ports": [{"name": "https", "port": 6443, "protocol": "TCP", "targetPort": 6443}]
+                    "ports": [{"name": "https", "port": 443, "protocol": "TCP", "targetPort": 6443}]
                 }
             }))?;
             services
                 .create(&PostParams::default(), &service)
                 .await
                 .context("creating default/kubernetes Service for nodeapiserver")?;
+        } else {
+            // Match upstream's in-cluster Service contract even when an older
+            // nodeapiserver install left the service port at 6443. The
+            // ClusterIP is immutable and is deliberately not included in
+            // this merge patch.
+            services
+                .patch(
+                    "kubernetes",
+                    &PatchParams::default(),
+                    &Patch::Merge(&json!({
+                        "spec": {
+                            "ports": [{"name": "https", "port": 443, "protocol": "TCP", "targetPort": 6443}]
+                        }
+                    })),
+                )
+                .await
+                .context("aligning default/kubernetes Service ports for nodeapiserver")?;
         }
 
         let endpoint: Endpoints = serde_json::from_value(json!({
@@ -92,6 +111,37 @@ pub fn reconcile_nodeapiserver_endpoint(cfg: &Config, address: &str) -> Result<(
             )
             .await
             .context("publishing the nodeapiserver default/kubernetes endpoint")?;
+
+        // Upstream's endpoint reconciler also exposes the control-plane
+        // backend as an EndpointSlice. nodeproxy watches EndpointSlices, so
+        // publishing only the legacy Endpoints object leaves the Service
+        // unroutable and keeps CoreDNS readiness false on a fresh install.
+        let endpoint_slice: EndpointSlice = serde_json::from_value(json!({
+            "apiVersion": "discovery.k8s.io/v1",
+            "kind": "EndpointSlice",
+            "metadata": {
+                "name": "kubernetes",
+                "namespace": "default",
+                "labels": {
+                    "kubernetes.io/service-name": "kubernetes",
+                    "endpointslice.kubernetes.io/managed-by": "nodebootstrap"
+                }
+            },
+            "addressType": if endpoint.contains(':') { "IPv6" } else { "IPv4" },
+            "ports": [{"name": "https", "port": 6443, "protocol": "TCP"}],
+            "endpoints": [{
+                "addresses": [endpoint],
+                "conditions": {"ready": true, "serving": true, "terminating": false}
+            }]
+        }))?;
+        endpoint_slices
+            .patch(
+                "kubernetes",
+                &PatchParams::apply("nodebootstrap").force(),
+                &Patch::Apply(&endpoint_slice),
+            )
+            .await
+            .context("publishing the nodeapiserver default/kubernetes EndpointSlice")?;
         tracing::info!(address = %endpoint.subsets.as_ref().and_then(|subsets| subsets.first()).and_then(|subset| subset.addresses.as_ref()).and_then(|addresses| addresses.first()).map(|address| address.ip.as_str()).unwrap_or("unknown"), "reconciled nodeapiserver kubernetes Service endpoint");
         Ok(())
     })
