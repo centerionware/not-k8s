@@ -1261,6 +1261,12 @@ lifetimes, and zero disables the respective cache. PKI primitives
 already in-tree from `nodecontroller`'s CSR
 group.
 
+The nodebootstrap target manifest also includes the upstream-compatible
+`system:public-info-viewer` ClusterRole and binds it to both
+`system:authenticated` and `system:unauthenticated`, so a `NoOpinion`
+webhook result still permits the public health/version endpoints through the
+local RBAC chain.
+
 **J. Admission** — **in progress**. `admission::namespace_lifecycle` is a
 faithful port of real upstream's own `NamespaceLifecycle` plugin
 (`staging/src/k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle/admission.go`,
