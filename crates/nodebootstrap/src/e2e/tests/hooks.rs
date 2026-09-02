@@ -1,5 +1,5 @@
 use super::context::E2eContext;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
