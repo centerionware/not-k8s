@@ -105,6 +105,8 @@ mod scheduler;
 mod security;
 #[path = "tests/service_proxy.rs"]
 mod service_proxy;
+#[path = "tests/service_account.rs"]
+mod service_account;
 #[path = "tests/statefulset.rs"]
 mod statefulset;
 #[path = "tests/static_pods.rs"]
@@ -376,6 +378,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_cert_manager_crds_are_usable_without_nodecontroller_restart",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_projected_service_account_token_retries_after_service_account_appears",
         group: TestGroup::General,
     },
     TestCase {
@@ -1632,6 +1638,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_cert_manager_crds_are_usable_without_nodecontroller_restart" => {
             cert_manager::cert_manager_crds_are_usable_without_nodecontroller_restart(context).await
+        }
+        "test_projected_service_account_token_retries_after_service_account_appears" => {
+            service_account::projected_service_account_token_retries_after_service_account_appears(context).await
         }
         "test_resourcequota_used_pods_tracks_actual_pod_count" => {
             resource_quota::resourcequota_used_pods_tracks_actual_pod_count(context).await
