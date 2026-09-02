@@ -511,16 +511,14 @@ fn is_apply_patch_content_type(content_type: &str) -> bool {
     content_type.split(';').next().unwrap_or("").trim() == "application/apply-patch+yaml"
 }
 
-/// Recognizes Server-Side Apply even when an intermediary drops the
-/// `Content-Type` header but preserves the apply-only `force` query parameter
-/// and the required `fieldManager`. A request with `force=true` cannot be an
-/// ordinary PATCH: upstream only accepts that parameter for Server-Side
-/// Apply, so retaining it is enough to recover the intended operation.
+/// Recognizes Server-Side Apply even when an intermediary drops or mangles
+/// the `Content-Type` header but preserves the apply-only `force` query
+/// parameter and the required `fieldManager`. A request with `force=true`
+/// cannot be an ordinary PATCH: upstream only accepts that parameter for
+/// Server-Side Apply, so retaining it is enough to recover the intended
+/// operation.
 fn is_server_side_apply_request(content_type: Option<&str>, query: &str) -> bool {
-    match content_type {
-        Some(content_type) => is_apply_patch_content_type(content_type),
-        None => field_manager_query(query).is_some() && force_query(query),
-    }
+    content_type.is_some_and(is_apply_patch_content_type) || (field_manager_query(query).is_some() && force_query(query))
 }
 
 /// Real upstream's own required `?fieldManager=` query parameter for
@@ -7268,6 +7266,7 @@ mod tests {
     fn server_side_apply_request_recovers_an_apply_query_without_content_type() {
         assert!(is_server_side_apply_request(Some("application/apply-patch+yaml"), ""));
         assert!(is_server_side_apply_request(None, "fieldManager=nodecontroller&force=true"));
+        assert!(is_server_side_apply_request(Some("application/octet-stream"), "fieldManager=nodecontroller&force=true"));
         assert!(!is_server_side_apply_request(None, "fieldManager=nodecontroller"));
         assert!(!is_server_side_apply_request(Some("application/merge-patch+json"), "force=true&fieldManager=nodecontroller"));
     }
