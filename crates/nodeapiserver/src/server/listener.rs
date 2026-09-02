@@ -518,7 +518,11 @@ fn is_apply_patch_content_type(content_type: &str) -> bool {
 /// Server-Side Apply, so retaining it is enough to recover the intended
 /// operation.
 fn is_server_side_apply_request(content_type: Option<&str>, query: &str) -> bool {
-    content_type.is_some_and(is_apply_patch_content_type) || (field_manager_query(query).is_some() && force_query(query))
+    match content_type {
+        Some(content_type) if is_apply_patch_content_type(content_type) => true,
+        Some(content_type) if rest::patch_kind_for_content_type(content_type).is_some() => false,
+        Some(_) | None => field_manager_query(query).is_some() && force_query(query),
+    }
 }
 
 /// Real upstream's own required `?fieldManager=` query parameter for
