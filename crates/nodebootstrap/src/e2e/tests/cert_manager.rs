@@ -2,7 +2,7 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Secret, ServiceAccount};
 use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, PostParams};
 use kube::core::{GroupVersionKind, ObjectMeta};
 use kube::discovery::ApiResource;
@@ -155,12 +155,28 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
     );
     let deployments: Api<Deployment> =
         Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
     let secrets: Api<Secret> = Api::namespaced(context.client.clone(), &context.namespace);
     let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
 
     let result = async {
         run_kubectl(["apply", "-f", manifest_url.as_str()].as_slice())
             .context("installing cert-manager and its CRDs")?;
+
+        for name in ["cert-manager", "cert-manager-cainjector", "cert-manager-webhook"] {
+            context
+                .wait_until(
+                    &format!("cert-manager ServiceAccount {name} to be created"),
+                    Duration::from_secs(30),
+                    || {
+                        let service_accounts = service_accounts.clone();
+                        let name = name.to_string();
+                        async move { Ok(service_accounts.get_opt(&name).await?.is_some()) }
+                    },
+                )
+                .await?;
+        }
 
         context
             .wait_until(
