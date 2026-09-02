@@ -31,8 +31,8 @@
 //! option found none (`build/proto_parse.rs`'s parser has a defensive path
 //! for stripping them, but it's never exercised by real input).
 
-use crate::codegen::{self, proto_fields::ProtoField};
 use crate::codec::wire::{self, RawField, WireError, WireType};
+use crate::codegen::{self, proto_fields::ProtoField};
 use serde_json::{Map, Value};
 
 #[derive(Debug, thiserror::Error)]
@@ -41,8 +41,16 @@ pub enum Error {
     UnknownMessage(String),
     #[error("wire error: {0}")]
     Wire(#[from] WireError),
-    #[error("field {message}.{field} (proto type {proto_type:?}) got a JSON value that isn't a {expected}: {value}")]
-    TypeMismatch { message: String, field: String, proto_type: String, expected: &'static str, value: Value },
+    #[error(
+        "field {message}.{field} (proto type {proto_type:?}) got a JSON value that isn't a {expected}: {value}"
+    )]
+    TypeMismatch {
+        message: String,
+        field: String,
+        proto_type: String,
+        expected: &'static str,
+        value: Value,
+    },
     #[error("invalid base64 in bytes field {0}: {1}")]
     InvalidBase64(String, base64::DecodeError),
     #[error("malformed map<...> type {0:?}")]

@@ -71,6 +71,62 @@ mod tests {
     }
 
     #[test]
+    fn scale_representation_uses_parent_spec_status_and_selector() {
+        let parent = json!({
+            "metadata": {
+                "name": "web",
+                "namespace": "default",
+                "uid": "uid-1",
+                "resourceVersion": "42"
+            },
+            "spec": {
+                "replicas": 3,
+                "selector": {"matchLabels": {"app": "web", "tier": "frontend"}}
+            },
+            "status": {"replicas": 2}
+        });
+        let scale = scale_from_parent(&parent).expect("a well-formed workload should have a Scale");
+        assert_eq!(scale["apiVersion"], "autoscaling/v1");
+        assert_eq!(scale["kind"], "Scale");
+        assert_eq!(
+            scale["metadata"],
+            json!({"name": "web", "namespace": "default", "uid": "uid-1", "resourceVersion": "42"})
+        );
+        assert_eq!(scale["spec"]["replicas"], 3);
+        assert_eq!(
+            scale["status"],
+            json!({"replicas": 2, "selector": "app=web,tier=frontend"})
+        );
+    }
+
+    #[test]
+    fn scale_replicas_rejects_negative_and_non_integer_values() {
+        assert!(scale_replicas(&json!({"spec": {"replicas": -1}})).is_err());
+        assert!(scale_replicas(&json!({"spec": {"replicas": 1.5}})).is_err());
+        assert_eq!(scale_replicas(&json!({"spec": {"replicas": 0}})), Ok(0));
+    }
+
+    #[test]
+    fn scale_parent_update_changes_generation_only_when_replicas_change() {
+        let parent = json!({"metadata": {"generation": 4}, "spec": {"replicas": 1}});
+        assert_eq!(parent_with_replicas(&parent, 1).unwrap(), parent);
+        assert_eq!(
+            parent_with_replicas(&parent, 2).unwrap()["metadata"]["generation"],
+            5
+        );
+    }
+
+    #[test]
+    fn scale_support_matches_the_vendored_builtin_scale_paths() {
+        assert!(supports_scale("", "v1", "replicationcontrollers"));
+        assert!(supports_scale("apps", "v1", "deployments"));
+        assert!(supports_scale("apps", "v1", "replicasets"));
+        assert!(supports_scale("apps", "v1", "statefulsets"));
+        assert!(!supports_scale("apps", "v1", "daemonsets"));
+        assert!(!supports_scale("apps", "v1beta1", "deployments"));
+    }
+
+    #[test]
     fn split_api_version_handles_core_and_grouped_forms() {
         assert_eq!(split_api_version("v1"), ("", "v1"));
         assert_eq!(split_api_version("apps/v1"), ("apps", "v1"));
@@ -109,6 +165,37 @@ mod tests {
     }
 
     #[test]
+    fn metadata_format_violations_reject_invalid_keys_and_values() {
+        let violations = metadata_format_violations(&json!({
+            "metadata": {
+                "labels": {
+                    "example.com/owner": "valid",
+                    "invalid/key/with/two/slashes": "valid",
+                    "other": "has/slash"
+                },
+                "annotations": {"invalid/key/with/two/slashes": "value"},
+                "finalizers": ["example.com/cleanup", "bad/finalizer/name"]
+            }
+        }));
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("invalid/key/with/two/slashes"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("metadata.labels[\"other\"]")
+                    && violation.contains("alphanumeric"))
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("finalizers"))
+        );
+    }
+
+    #[test]
     fn name_format_violations_enforces_the_real_serviceaccount_rule() {
         assert!(name_format_violations("", "serviceaccounts", "my.sa-name").is_empty());
         assert!(!name_format_violations("", "serviceaccounts", "My_SA").is_empty());
@@ -141,8 +228,9 @@ mod tests {
     #[test]
     fn patch_kind_for_content_type_rejects_unknown_or_ssa_media_types() {
         assert_eq!(patch_kind_for_content_type("application/json"), None);
-        // Server-Side Apply's own media type isn't recognized -- Group G's
-        // own doc comment already names SSA/managedFields as not landed.
+        // Server-Side Apply has a separate listener path because its
+        // media type carries field-manager semantics rather than being one
+        // of the three ordinary patch kinds.
         assert_eq!(
             patch_kind_for_content_type("application/apply-patch+yaml"),
             None
@@ -154,6 +242,69 @@ mod tests {
     fn omitted_content_type_uses_strategic_merge_for_builtins_and_merge_for_crds() {
         assert_eq!(default_patch_kind(false), PatchKind::StrategicMerge);
         assert_eq!(default_patch_kind(true), PatchKind::Merge);
+    }
+
+    #[test]
+    fn server_side_apply_prunes_unknown_crd_fields_before_ownership() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "spec": {"type": "object", "properties": {"color": {"type": "string"}}}
+            }
+        });
+        let result = prune_runtime_schema(
+            Some(&schema),
+            json!({
+                "apiVersion": "example.test/v1",
+                "kind": "Widget",
+                "metadata": {"name": "widget", "labels": {"kept": "yes"}},
+                "spec": {"color": "blue", "unknown": true},
+                "unknown": "dropped"
+            }),
+        );
+        assert_eq!(result["spec"], json!({"color": "blue"}));
+        assert!(result.get("unknown").is_none());
+        assert_eq!(result["metadata"]["labels"]["kept"], "yes");
+    }
+
+    #[test]
+    fn converted_crd_objects_are_revalidated_against_the_storage_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "required": ["storageOnly"],
+                    "properties": {"storageOnly": {"type": "string"}}
+                }
+            }
+        });
+        let invalid = revalidate_storage_object(
+            Some(&schema),
+            json!({
+                "apiVersion": "example.com/v1",
+                "kind": "Widget",
+                "spec": {}
+            }),
+        )
+        .expect_err("a conversion result missing a storage-required field must be rejected");
+        assert!(
+            invalid
+                .iter()
+                .any(|violation| violation == "spec.storageOnly: Required value"),
+            "unexpected violations: {invalid:?}"
+        );
+
+        let valid = revalidate_storage_object(
+            Some(&schema),
+            json!({
+                "apiVersion": "example.com/v1",
+                "kind": "Widget",
+                "spec": {"storageOnly": "present", "unknown": true}
+            }),
+        )
+        .expect("a valid storage representation must pass");
+        assert_eq!(valid["spec"], json!({"storageOnly": "present"}));
     }
 
     #[test]
@@ -190,8 +341,8 @@ mod tests {
     }
 
     #[test]
-    fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_verified_non_core_resource(
-    ) {
+    fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_verified_non_core_resource()
+     {
         for (group, resource) in [
             ("scheduling.k8s.io", "priorityclasses"),
             ("resource.k8s.io", "resourceclaims"),
@@ -215,26 +366,33 @@ mod tests {
     #[test]
     fn name_format_violations_enforces_the_real_dns_subdomain_rule_on_each_newly_verified_resource()
     {
-        for (group, resource) in [
-            ("apps", "controllerrevisions"),
-            ("apps", "daemonsets"),
-            ("apps", "deployments"),
-            ("apps", "replicasets"),
-            ("networking.k8s.io", "ingresses"),
-            ("networking.k8s.io", "ingressclasses"),
-            ("networking.k8s.io", "servicecidrs"),
-            ("discovery.k8s.io", "endpointslices"),
-            ("flowcontrol.apiserver.k8s.io", "flowschemas"),
+        for (group, resource, valid_name) in [
+            ("apps", "controllerrevisions", "my-name.example"),
+            ("apps", "daemonsets", "my-name.example"),
+            ("apps", "deployments", "my-name.example"),
+            ("apps", "replicasets", "my-name.example"),
+            ("apps", "statefulsets", "my-name"),
+            ("autoscaling", "horizontalpodautoscalers", "my-name.example"),
+            ("networking.k8s.io", "ingresses", "my-name.example"),
+            ("networking.k8s.io", "ingressclasses", "my-name.example"),
+            ("networking.k8s.io", "servicecidrs", "my-name.example"),
+            ("discovery.k8s.io", "endpointslices", "my-name.example"),
+            (
+                "flowcontrol.apiserver.k8s.io",
+                "flowschemas",
+                "my-name.example",
+            ),
             (
                 "flowcontrol.apiserver.k8s.io",
                 "prioritylevelconfigurations",
+                "my-name.example",
             ),
-            ("node.k8s.io", "runtimeclasses"),
-            ("coordination.k8s.io", "leases"),
+            ("node.k8s.io", "runtimeclasses", "my-name.example"),
+            ("coordination.k8s.io", "leases", "my-name.example"),
         ] {
             assert!(
-                name_format_violations(group, resource, "my-name.example").is_empty(),
-                "{group}/{resource} should accept a valid DNS subdomain"
+                name_format_violations(group, resource, valid_name).is_empty(),
+                "{group}/{resource} should accept its valid name"
             );
             assert!(
                 !name_format_violations(group, resource, "My_Bad_Name").is_empty(),
@@ -251,6 +409,36 @@ mod tests {
         assert!(name_format_violations("", "services", "my-svc").is_empty());
         assert!(!name_format_violations("", "services", "1-starts-with-digit").is_empty());
         assert!(!name_format_violations("", "services", "has.a.dot").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_enforces_verified_batch_and_events_rules() {
+        for (group, resource) in [
+            ("batch", "jobs"),
+            ("batch", "cronjobs"),
+            ("events.k8s.io", "events"),
+        ] {
+            assert!(
+                name_format_violations(group, resource, "valid-name.example").is_empty(),
+                "{group}/{resource} should accept a valid DNS subdomain"
+            );
+            assert!(
+                !name_format_violations(group, resource, "Invalid_Name").is_empty(),
+                "{group}/{resource} should reject an invalid DNS subdomain"
+            );
+        }
+        // The legacy core Event resource intentionally has a different
+        // compatibility rule and must not inherit the v1 events.k8s.io rule.
+        assert!(name_format_violations("", "events", "Invalid_Name").is_empty());
+    }
+
+    #[test]
+    fn name_format_violations_keeps_statefulset_label_rule_distinct() {
+        assert!(name_format_violations("apps", "statefulsets", "stateful-app").is_empty());
+        assert!(!name_format_violations("apps", "statefulsets", "stateful.app").is_empty());
+        assert!(
+            name_format_violations("autoscaling", "horizontalpodautoscalers", "hpa.app").is_empty()
+        );
     }
 
     #[test]
@@ -284,6 +472,99 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_container_update_keeps_the_pod_and_only_appends() {
+        let existing = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "debuggable", "generation": 4, "uid": "uid-1"},
+            "spec": {
+                "nodeName": "node-a",
+                "containers": [{"name": "app", "image": "busybox"}],
+                "ephemeralContainers": [{"name": "old-debugger", "image": "busybox", "command": ["sleep", "3600"]}]
+            },
+            "status": {"phase": "Running"}
+        });
+        let candidate = json!({
+            "metadata": {"name": "different", "uid": "different"},
+            "spec": {
+                "nodeName": "different-node",
+                "containers": [{"name": "different", "image": "different"}],
+                "ephemeralContainers": [
+                    {"name": "old-debugger", "image": "busybox", "command": ["sleep", "3600"]},
+                    {"name": "new-debugger", "image": "busybox", "targetContainerName": "app"}
+                ]
+            },
+            "status": {"phase": "Failed"}
+        });
+
+        let result =
+            restrict_ephemeral_container_update(&existing, &candidate).expect("valid append");
+        assert_eq!(result["metadata"]["name"], "debuggable");
+        assert_eq!(result["metadata"]["uid"], "uid-1");
+        assert_eq!(result["metadata"]["generation"], 5);
+        assert_eq!(result["spec"]["nodeName"], "node-a");
+        assert_eq!(result["spec"]["containers"], existing["spec"]["containers"]);
+        assert_eq!(result["status"], existing["status"]);
+        assert_eq!(
+            result["spec"]["ephemeralContainers"],
+            candidate["spec"]["ephemeralContainers"]
+        );
+    }
+
+    #[test]
+    fn ephemeral_container_update_rejects_removing_or_changing_existing_entries() {
+        let existing = json!({
+            "metadata": {"generation": 1},
+            "spec": {
+                "containers": [{"name": "app"}],
+                "ephemeralContainers": [{"name": "debugger", "image": "busybox"}]
+            }
+        });
+        let removed = json!({"spec": {"ephemeralContainers": []}});
+        let changed =
+            json!({"spec": {"ephemeralContainers": [{"name": "debugger", "image": "other"}]}});
+
+        let removed_errors = restrict_ephemeral_container_update(&existing, &removed)
+            .expect_err("removal must be rejected");
+        assert!(
+            removed_errors
+                .iter()
+                .any(|error| error.contains("may not be removed"))
+        );
+        let changed_errors = restrict_ephemeral_container_update(&existing, &changed)
+            .expect_err("mutation must be rejected");
+        assert!(
+            changed_errors
+                .iter()
+                .any(|error| error.contains("may not be modified"))
+        );
+    }
+
+    #[test]
+    fn ephemeral_container_update_rejects_invalid_new_entries() {
+        let existing = json!({"spec": {"containers": [{"name": "app"}]}});
+        let candidate = json!({
+            "spec": {
+                "ephemeralContainers": [
+                    {"name": "app", "image": "busybox"},
+                    {"name": "debugger", "image": "busybox", "ports": [{"containerPort": 80}]},
+                    {"name": "debugger", "image": "busybox"}
+                ]
+            }
+        });
+
+        let errors = restrict_ephemeral_container_update(&existing, &candidate)
+            .expect_err("invalid entries must be rejected");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("duplicate a regular or init container"))
+        );
+        assert!(errors.iter().any(|error| error.contains("ports")));
+        assert!(errors.iter().any(|error| error.contains("must be unique")));
+    }
+
+    #[test]
     fn generated_name_appends_a_unique_five_character_suffix() {
         let first = generate_name("job-");
         let second = generate_name("job-");
@@ -309,7 +590,10 @@ mod tests {
             kind: "ConfigMap".to_string(),
             schema: Some(schema),
             open_api_schema: None,
+            selectable_fields: Vec::new(),
+            storage_open_api_schema: None,
             has_status_subresource: true,
+            conversion_webhook: None,
         };
         let decoded = decode_protobuf_object(&resolved, "configmaps", &envelope).unwrap();
         assert_eq!(decoded["apiVersion"], "v1");
@@ -324,7 +608,10 @@ mod tests {
             kind: "ConfigMap".to_string(),
             schema: None,
             open_api_schema: None,
+            selectable_fields: Vec::new(),
+            storage_open_api_schema: None,
             has_status_subresource: true,
+            conversion_webhook: None,
         };
         let envelope = protobuf::wrap_unknown("v1", "Secret", br#"{}"#);
         assert!(matches!(

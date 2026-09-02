@@ -155,7 +155,14 @@ mod tests {
         let pod_spec = json!({"containers": [{"name": "nginx", "image": "nginx:latest"}]});
         let set = set_from_object("io.k8s.api.core.v1.PodSpec", &pod_spec);
         let key = PathElement::Key(vec![("name".to_string(), json!("nginx"))]);
-        assert!(set.has(&[PathElement::Field("containers".to_string()), key.clone(), PathElement::Field("name".to_string())]), "the key field itself must also be tracked as a child, matching real fieldsV1 documents");
+        assert!(
+            set.has(&[
+                PathElement::Field("containers".to_string()),
+                key.clone(),
+                PathElement::Field("name".to_string())
+            ]),
+            "the key field itself must also be tracked as a child, matching real fieldsV1 documents"
+        );
         assert!(set.has(&[
             PathElement::Field("containers".to_string()),
             key,
@@ -246,8 +253,14 @@ mod tests {
         let container = json!({"name": "nginx", "resources": {"limits": {"cpu": "500m"}}});
         let set = set_from_object("io.k8s.api.core.v1.Container", &container);
         assert!(
-            set.has(&[PathElement::Field("resources".to_string()), PathElement::Field("limits".to_string()), PathElement::Field("cpu".to_string())])
-                || set.has(&[PathElement::Field("resources".to_string()), PathElement::Field("limits".to_string())]),
+            set.has(&[
+                PathElement::Field("resources".to_string()),
+                PathElement::Field("limits".to_string()),
+                PathElement::Field("cpu".to_string())
+            ]) || set.has(&[
+                PathElement::Field("resources".to_string()),
+                PathElement::Field("limits".to_string())
+            ]),
             "resources.limits.cpu must be tracked one way or the other depending on whether ResourceRequirements.limits itself carries ref_schema metadata"
         );
     }
@@ -429,7 +442,11 @@ mod tests {
             &value,
             &to_remove,
         );
-        assert_eq!(result, json!({"labels": {}}), "the field itself wasn't exactly matched, only a child of it -- must survive as {{}}, not vanish or become null");
+        assert_eq!(
+            result,
+            json!({"labels": {}}),
+            "the field itself wasn't exactly matched, only a child of it -- must survive as {{}}, not vanish or become null"
+        );
     }
 
     #[test]

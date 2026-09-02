@@ -37,8 +37,9 @@ pub struct DeletePreconditions {
 }
 
 /// Deletes a single object with optional `DeleteOptions` preconditions and
-/// `dryRun=All`. The read and delete are joined by an MVCC compare so a
-/// concurrent update cannot make a validated delete remove a newer object.
+/// `dryRun=All`. The read and delete/termination marker are joined by an
+/// MVCC compare so a concurrent update cannot make a validated delete remove
+/// or mark a newer object.
 pub async fn delete_with_options(
     storage: &mut StorageClient,
     group: &str,
@@ -49,12 +50,9 @@ pub async fn delete_with_options(
     preconditions: Option<&DeletePreconditions>,
     dry_run: bool,
 ) -> Result<DeleteOutcome, Error> {
-    if resolve_resource(storage, group, version, resource)
-        .await?
-        .is_none()
-    {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(DeleteOutcome::UnknownResource);
-    }
+    };
     let key = keys::object_key(group, resource, namespace, name);
     let current = storage
         .range(RangeRequest {
@@ -65,7 +63,15 @@ pub async fn delete_with_options(
     let Some(prev) = current.kvs.into_iter().next() else {
         return Ok(DeleteOutcome::ObjectNotFound);
     };
-    let mut object = decrypt_and_decode(storage, group, resource, &prev.key, &prev.value)?;
+    let mut object = decrypt_and_decode_with_rotation(
+        storage,
+        group,
+        resource,
+        &prev.key,
+        &prev.value,
+        prev.mod_revision,
+    )
+    .await?;
     set_metadata_field(
         &mut object,
         "resourceVersion",
@@ -85,8 +91,112 @@ pub async fn delete_with_options(
         }
     }
     let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
-    let object = crate::scheme::conversion::to_version(group, version, &kind, object);
+
+    // A delete request against an object with finalizers is a graceful
+    // deletion request, not an immediate storage delete. This is the
+    // generic registry behavior that lets controllers observe the
+    // deletionTimestamp and remove their own finalizer before the object is
+    // physically removed.
+    if has_finalizers(&object) {
+        if has_deletion_timestamp(&object) {
+            let object = convert_to_requested_version(
+                storage,
+                group,
+                version,
+                &kind,
+                resolved.conversion_webhook.as_ref(),
+                object,
+            )
+            .await?;
+            return Ok(DeleteOutcome::Deleted(object));
+        }
+        set_metadata_field(
+            &mut object,
+            "deletionTimestamp",
+            Value::String(now_rfc3339()),
+        );
+        if dry_run {
+            let object = convert_to_requested_version(
+                storage,
+                group,
+                version,
+                &kind,
+                resolved.conversion_webhook.as_ref(),
+                object,
+            )
+            .await?;
+            return Ok(DeleteOutcome::Deleted(object));
+        }
+        let object_bytes = match resolved.schema {
+            Some(schema) => protobuf::encode_message(schema, &object)?,
+            None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
+        };
+        let stored_version = resolved
+            .conversion_webhook
+            .as_ref()
+            .map_or(version, |conversion| conversion.storage_version.as_str());
+        let api_version = if group.is_empty() {
+            stored_version.to_string()
+        } else {
+            format!("{group}/{stored_version}")
+        };
+        let envelope = encrypt_for_storage(
+            storage,
+            group,
+            resource,
+            key.as_bytes(),
+            &protobuf::wrap_unknown(&api_version, &kind, &object_bytes),
+        )?;
+        let compare = pb::Compare {
+            key: key.clone().into_bytes(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(prev.mod_revision)),
+            range_end: Vec::new(),
+        };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestPut(pb::PutRequest {
+                    key: key.clone().into_bytes(),
+                    value: envelope,
+                    ..Default::default()
+                })),
+            }],
+            failure: vec![],
+        };
+        let response = storage.txn(txn).await?;
+        if !response.succeeded {
+            return Ok(DeleteOutcome::PreconditionFailed);
+        }
+        let revision = response.header.map(|header| header.revision).unwrap_or(0);
+        set_metadata_field(
+            &mut object,
+            "resourceVersion",
+            Value::String(revision.to_string()),
+        );
+        let object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            &kind,
+            resolved.conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
+        return Ok(DeleteOutcome::Deleted(object));
+    }
+
     if dry_run {
+        let object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            &kind,
+            resolved.conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
         return Ok(DeleteOutcome::Deleted(object));
     }
 
@@ -114,6 +224,15 @@ pub async fn delete_with_options(
     if !response.succeeded {
         return Ok(DeleteOutcome::PreconditionFailed);
     }
+    let object = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        &kind,
+        resolved.conversion_webhook.as_ref(),
+        object,
+    )
+    .await?;
     Ok(DeleteOutcome::Deleted(object))
 }
 
@@ -126,6 +245,37 @@ pub enum DeleteCollectionOutcome {
     /// after the fact).
     Deleted(Value),
     UnknownResource,
+}
+
+/// Lists the objects selected by a collection delete without changing them.
+/// The listener uses this first so it can run admission against each matched
+/// object before calling [`delete`].
+pub async fn list_delete_collection(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    label_selector: &str,
+    field_selector: &str,
+) -> Result<DeleteCollectionOutcome, Error> {
+    let listed = list(
+        storage,
+        None,
+        group,
+        version,
+        resource,
+        namespace,
+        label_selector,
+        field_selector,
+        0,
+        "",
+    )
+    .await?;
+    let ListOutcome::Found(list_value) = listed else {
+        return Ok(DeleteCollectionOutcome::UnknownResource);
+    };
+    Ok(DeleteCollectionOutcome::Deleted(list_value))
 }
 
 /// Real upstream's own `Store.DeleteCollection`
@@ -158,20 +308,17 @@ pub async fn delete_collection(
     label_selector: &str,
     field_selector: &str,
 ) -> Result<DeleteCollectionOutcome, Error> {
-    let listed = list(
+    let listed = list_delete_collection(
         storage,
-        None,
         group,
         version,
         resource,
         namespace,
         label_selector,
         field_selector,
-        0,
-        "",
     )
     .await?;
-    let ListOutcome::Found(list_value) = listed else {
+    let DeleteCollectionOutcome::Deleted(list_value) = listed else {
         return Ok(DeleteCollectionOutcome::UnknownResource);
     };
     let items = list_value["items"].as_array().cloned().unwrap_or_default();
@@ -179,7 +326,12 @@ pub async fn delete_collection(
         let Some(name) = item.pointer("/metadata/name").and_then(Value::as_str) else {
             continue;
         };
-        delete(storage, group, version, resource, namespace, name).await?;
+        match delete(storage, group, version, resource, namespace, name).await? {
+            DeleteOutcome::ObjectNotFound => {}
+            DeleteOutcome::Deleted(_)
+            | DeleteOutcome::UnknownResource
+            | DeleteOutcome::PreconditionFailed => {}
+        }
     }
     Ok(DeleteCollectionOutcome::Deleted(list_value))
 }

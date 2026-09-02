@@ -46,7 +46,10 @@ pub async fn run(cfg: Config) {
     // projected pod tokens and nodelet's TokenReview fallback work before
     // RBAC enforcement is enabled.
     let service_account_authenticator = match &cfg.service_account_signing_key_file {
-        Some(path) => match crate::authn::service_account::ReloadableAuthenticator::from_pem(path, cfg.service_account_issuer.clone()) {
+        Some(path) => match crate::authn::service_account::ReloadableAuthenticator::from_pem(
+            path,
+            cfg.service_account_issuer.clone(),
+        ) {
             Ok(authenticator) => Some(Arc::new(authenticator)),
             Err(e) => {
                 warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE; the REST/watch listener will not run");
@@ -61,7 +64,8 @@ pub async fn run(cfg: Config) {
     // partially loaded token table in place; later malformed rotations are
     // handled by ReloadableAuthenticator, which retains the last valid table.
     let bootstrap_token_authenticator = match &cfg.bootstrap_token_file {
-        Some(path) => match crate::authn::bootstrap_token::ReloadableAuthenticator::from_file(path) {
+        Some(path) => match crate::authn::bootstrap_token::ReloadableAuthenticator::from_file(path)
+        {
             Ok(authenticator) => Some(Arc::new(authenticator)),
             Err(error) => {
                 warn!(path = %path.display(), error, "failed to load NODEAPISERVER_TOKEN_AUTH_FILE; the REST/watch listener will not run");
@@ -144,7 +148,9 @@ pub async fn run(cfg: Config) {
         },
         (None, None) => None,
         (Some(_), Some(_)) => {
-            warn!("authorization webhook URL and config file are mutually exclusive; the REST/watch listener will not run");
+            warn!(
+                "authorization webhook URL and config file are mutually exclusive; the REST/watch listener will not run"
+            );
             return;
         }
     };
@@ -153,18 +159,24 @@ pub async fn run(cfg: Config) {
     // and therefore require the apiserver's trusted front-proxy client
     // certificate. Load it once here; the per-APIService CA bundle still
     // controls the backend serving certificate independently.
-    let aggregation_proxy_identity = match (&cfg.proxy_client_cert_file, &cfg.proxy_client_key_file) {
-        (Some(cert), Some(key)) => match crate::aggregator::client_tls::ClientIdentity::from_files(cert, key) {
-            Ok(identity) => Some(Arc::new(identity)),
-            Err(error) => {
-                warn!(cert = %cert.display(), key = %key.display(), error = ?error, "failed to load the aggregation proxy client identity; the REST/watch listener will not run");
-                return;
+    let aggregation_proxy_identity = match (&cfg.proxy_client_cert_file, &cfg.proxy_client_key_file)
+    {
+        (Some(cert), Some(key)) => {
+            match crate::aggregator::client_tls::ClientIdentity::from_files(cert, key) {
+                Ok(identity) => Some(Arc::new(identity)),
+                Err(error) => {
+                    warn!(cert = %cert.display(), key = %key.display(), error = ?error, "failed to load the aggregation proxy client identity; the REST/watch listener will not run");
+                    return;
+                }
             }
-        },
+        }
         _ => None,
     };
 
-    let audit_webhook = match (cfg.audit_webhook_url.as_deref(), cfg.audit_webhook_config_file.as_deref()) {
+    let audit_webhook = match (
+        cfg.audit_webhook_url.as_deref(),
+        cfg.audit_webhook_config_file.as_deref(),
+    ) {
         (Some(url), None) => match crate::audit::webhook::AuditWebhook::new(url) {
             Ok(webhook) => {
                 info!(%url, "nodeapiserver: configured audit webhook");
@@ -187,7 +199,9 @@ pub async fn run(cfg: Config) {
         },
         (None, None) => None,
         (Some(_), Some(_)) => {
-            warn!("audit webhook URL and config file are mutually exclusive; the REST/watch listener will not run");
+            warn!(
+                "audit webhook URL and config file are mutually exclusive; the REST/watch listener will not run"
+            );
             return;
         }
     };
@@ -209,7 +223,8 @@ pub async fn run(cfg: Config) {
                 return;
             }
         },
-        None => audit_webhook.map(|webhook| Arc::new(crate::audit::sink::AuditSink::webhook_only(webhook))),
+        None => audit_webhook
+            .map(|webhook| Arc::new(crate::audit::sink::AuditSink::webhook_only(webhook))),
     };
     let audit_policy = match cfg.audit_policy_file.as_deref() {
         Some(path) => match crate::audit::policy::AuditPolicy::from_file(path) {
@@ -279,7 +294,12 @@ pub async fn run(cfg: Config) {
     let cache_registry = crate::cacher::CacheRegistry::new();
     if let Some(s) = storage.as_ref() {
         for resource in crate::codegen::api_resources::API_RESOURCES {
-            cache_registry.spawn(s.clone(), resource.group, resource.version, resource.resource);
+            cache_registry.spawn(
+                s.clone(),
+                resource.group,
+                resource.version,
+                resource.resource,
+            );
         }
 
         // Group K: CRD-backed caches follow the CRD watch rather than
@@ -287,7 +307,9 @@ pub async fn run(cfg: Config) {
         // resource. This also retires reflectors when a CRD is removed or
         // stops serving a version, so a deleted definition cannot leave a
         // stale resource cache alive in this process.
-        if let Some(crd_cache) = cache_registry.get("apiextensions.k8s.io", "v1", "customresourcedefinitions") {
+        if let Some(crd_cache) =
+            cache_registry.get("apiextensions.k8s.io", "v1", "customresourcedefinitions")
+        {
             let crd_storage = s.clone();
             let crd_registry = cache_registry.clone();
             tokio::spawn(async move {
@@ -313,9 +335,14 @@ pub async fn run(cfg: Config) {
         tokio::spawn(async move {
             loop {
                 match crate::aggregator::reconcile::reconcile_once(&mut reconcile_storage).await {
-                    Ok(n) if n > 0 => info!(reconciled = n, "aggregator: reconciled APIService availability"),
+                    Ok(n) if n > 0 => info!(
+                        reconciled = n,
+                        "aggregator: reconciled APIService availability"
+                    ),
                     Ok(_) => {}
-                    Err(e) => warn!(error = ?e, "aggregator: APIService availability reconciliation pass failed"),
+                    Err(e) => {
+                        warn!(error = ?e, "aggregator: APIService availability reconciliation pass failed")
+                    }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             }
@@ -349,7 +376,11 @@ pub async fn run(cfg: Config) {
     // dispatcher for all connections instead of rebuilding its trait-object
     // chain for every write request; storage-backed plugins remain in the
     // request path because they require their own I/O and failure policy.
-    let pure_admission = Arc::new(crate::admission::chain::MutatingRegistry::with_builtins_enabled(&cfg.enabled_admission_plugins));
+    let pure_admission = Arc::new(
+        crate::admission::chain::MutatingRegistry::with_builtins_enabled(
+            &cfg.enabled_admission_plugins,
+        ),
+    );
     let pod_node_selector_config = match &cfg.pod_node_selector_config_file {
         Some(path) => match crate::admission::pod_node_selector::PluginConfig::from_file(path) {
             Ok(config) => Some(Arc::new(config)),
@@ -370,17 +401,21 @@ pub async fn run(cfg: Config) {
     // TokenReview fallback path has nothing to accept" situation an
     // unset config already produces), logged rather than stopping the
     // listener.
-    let kubelet_client_cert_key = match (&cfg.kubelet_client_cert_file, &cfg.kubelet_client_key_file) {
-        (Some(cert), Some(key)) => Some((cert.as_path(), key.as_path())),
-        _ => None,
-    };
-    let kubelet_tls = std::sync::Arc::new(match crate::proxy::client_tls::build_client_config(kubelet_client_cert_key) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = ?e, "failed to build the kubelet-proxy TLS client config with the configured client cert; falling back to no client identity");
-            crate::proxy::client_tls::build_client_config(None).expect("a client config with no client cert must always succeed")
-        }
-    });
+    let kubelet_client_cert_key =
+        match (&cfg.kubelet_client_cert_file, &cfg.kubelet_client_key_file) {
+            (Some(cert), Some(key)) => Some((cert.as_path(), key.as_path())),
+            _ => None,
+        };
+    let kubelet_tls = std::sync::Arc::new(
+        match crate::proxy::client_tls::build_client_config(kubelet_client_cert_key) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = ?e, "failed to build the kubelet-proxy TLS client config with the configured client cert; falling back to no client identity");
+                crate::proxy::client_tls::build_client_config(None)
+                    .expect("a client config with no client cert must always succeed")
+            }
+        },
+    );
 
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -407,7 +442,9 @@ pub async fn run(cfg: Config) {
         let audit_policy = audit_policy.clone();
         let max_request_body_bytes = max_request_body_bytes;
         tokio::spawn(async move {
-            let client_ca_store = client_ca.as_ref().map(super::tls::ReloadableClientCa::current);
+            let client_ca_store = client_ca
+                .as_ref()
+                .map(super::tls::ReloadableClientCa::current);
             let server_config = match cert.server_config(client_ca_store.as_ref()) {
                 Ok(config) => config,
                 Err(error) => {
@@ -430,10 +467,40 @@ pub async fn run(cfg: Config) {
             // client-cert auth is configured at all, or because this
             // particular client didn't present one — both are the same
             // "unauthenticated by x509" outcome from here.
-            let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
+            let identity = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|certs| certs.first())
+                .and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), pure_admission.clone(), pod_node_selector_config.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), aggregation_proxy_identity.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, max_request_body_bytes, peer, kubelet_tls.clone()));
-            if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
+            let service = hyper::service::service_fn(move |req| {
+                handle_with_audit(
+                    req,
+                    storage.clone(),
+                    cache_registry.clone(),
+                    pure_admission.clone(),
+                    pod_node_selector_config.clone(),
+                    identity.clone(),
+                    bootstrap_token_authenticator.clone(),
+                    service_account_authenticator.clone(),
+                    oidc_authenticator.clone(),
+                    authorization_webhook.clone(),
+                    aggregation_proxy_identity.clone(),
+                    concurrency_limiter.clone(),
+                    audit_sink.clone(),
+                    audit_policy.clone(),
+                    anonymous_auth,
+                    enforce_rbac,
+                    max_request_body_bytes,
+                    peer,
+                    kubelet_tls.clone(),
+                )
+            });
+            if let Err(e) = ConnBuilder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, service)
+                .await
+            {
                 tracing::debug!(%peer, error = ?e, "listener: connection ended");
             }
         });

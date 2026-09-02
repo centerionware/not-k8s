@@ -27,15 +27,28 @@ enum DiscoveryRoute {
 /// under that group, so a client asking for a shape this build doesn't
 /// actually build never silently gets served a possibly-wrong one.
 fn wants_aggregated_discovery(accept_header: Option<&str>) -> bool {
-    let Some(header) = accept_header else { return false };
-    let Some(accepted) = negotiation::negotiate(header) else { return false };
-    accepted.as_kind.as_deref() == Some("APIGroupDiscoveryList") && accepted.as_group.as_deref() == Some("apidiscovery.k8s.io") && accepted.as_version.as_deref() == Some("v2")
+    let Some(header) = accept_header else {
+        return false;
+    };
+    let Some(accepted) = negotiation::negotiate(header) else {
+        return false;
+    };
+    accepted.as_kind.as_deref() == Some("APIGroupDiscoveryList")
+        && accepted.as_group.as_deref() == Some("apidiscovery.k8s.io")
+        && accepted.as_version.as_deref() == Some("v2")
 }
 
-const AGGREGATED_DISCOVERY_CONTENT_TYPE: &str = "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList";
+const AGGREGATED_DISCOVERY_CONTENT_TYPE: &str =
+    "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList";
 
 fn discovery_content_type(parts: &[String], accept_header: Option<&str>) -> &'static str {
-    if parts.len() == 1 && matches!(parts.first().map(String::as_str), Some("api") | Some("apis")) && wants_aggregated_discovery(accept_header) {
+    if parts.len() == 1
+        && matches!(
+            parts.first().map(String::as_str),
+            Some("api") | Some("apis")
+        )
+        && wants_aggregated_discovery(accept_header)
+    {
         AGGREGATED_DISCOVERY_CONTENT_TYPE
     } else {
         "application/json"
@@ -66,32 +79,51 @@ fn discovery_content_type(parts: &[String], accept_header: Option<&str>) -> &'st
 /// back borrowed references into `parts`/`aggregated` themselves — no
 /// cloning needed, the caller only ever uses them for one more `resolve`
 /// call before either succeeding or falling through to a real `404`.
-fn aggregated_discovery_group_version<'a>(parts: &'a [String], aggregated: &'a [(String, String)]) -> Option<(&'a str, &'a str)> {
+fn aggregated_discovery_group_version<'a>(
+    parts: &'a [String],
+    aggregated: &'a [(String, String)],
+) -> Option<(&'a str, &'a str)> {
     if parts.len() != 3 || parts[0] != "apis" {
         return None;
     }
-    aggregated.iter().find(|(g, v)| g == &parts[1] && v == &parts[2]).map(|(g, v)| (g.as_str(), v.as_str()))
+    aggregated
+        .iter()
+        .find(|(g, v)| g == &parts[1] && v == &parts[2])
+        .map(|(g, v)| (g.as_str(), v.as_str()))
 }
 
-fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate::apiextensions::registry::DiscoverableResource], aggregated: &[(String, String)]) -> DiscoveryRoute {
+fn route_discovery(
+    parts: &[String],
+    accept_header: Option<&str>,
+    crds: &[crate::apiextensions::registry::DiscoverableResource],
+    aggregated: &[(String, String)],
+) -> DiscoveryRoute {
     let seg = |i: usize| parts.get(i).map(String::as_str);
     match (seg(0), seg(1), parts.len()) {
-        (Some("api"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_v1_group_discovery_list_with_crds()),
+        (Some("api"), _, 1) if wants_aggregated_discovery(accept_header) => {
+            DiscoveryRoute::Found(discovery::api_v1_group_discovery_list_with_crds())
+        }
         (Some("api"), _, 1) => DiscoveryRoute::Found(discovery::api_versions()),
         (Some("api"), _, 2) => match discovery::api_resource_list("", &parts[1]) {
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
-        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_group_discovery_list_with_crds(crds, aggregated)),
-        (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated)),
+        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(
+            discovery::api_group_discovery_list_with_crds(crds, aggregated),
+        ),
+        (Some("apis"), _, 1) => {
+            DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated))
+        }
         (Some("apis"), _, 2) => match discovery::api_group_with_crds(&parts[1], crds, aggregated) {
             Some(doc) => DiscoveryRoute::Found(doc),
             None => DiscoveryRoute::NotFound,
         },
-        (Some("apis"), _, 3) => match discovery::api_resource_list_with_crds(&parts[1], &parts[2], crds) {
-            Some(doc) => DiscoveryRoute::Found(doc),
-            None => DiscoveryRoute::NotFound,
-        },
+        (Some("apis"), _, 3) => {
+            match discovery::api_resource_list_with_crds(&parts[1], &parts[2], crds) {
+                Some(doc) => DiscoveryRoute::Found(doc),
+                None => DiscoveryRoute::NotFound,
+            }
+        }
         (Some("openapi"), Some("v2"), 2) => DiscoveryRoute::Found(openapi::v2()),
         (Some("openapi"), Some("v3"), 2) => DiscoveryRoute::Found(openapi::root()),
         (Some("openapi"), Some("v3"), n) if n > 2 => match openapi::doc(&parts[2..].join("/")) {
@@ -189,7 +221,11 @@ fn forbidden_status(path_str: &str, user_name: &str) -> serde_json::Value {
     forbidden_status_with_reason(path_str, user_name, "")
 }
 
-fn forbidden_status_with_reason(path_str: &str, user_name: &str, reason: &str) -> serde_json::Value {
+fn forbidden_status_with_reason(
+    path_str: &str,
+    user_name: &str,
+    reason: &str,
+) -> serde_json::Value {
     let message = if reason.is_empty() {
         format!("{path_str}: User {user_name:?} does not have permission for this request (RBAC)")
     } else {
@@ -230,10 +266,14 @@ fn admission_webhook_error_response(
     error: &admission::webhook::Error,
 ) -> Response<BoxedBody> {
     match error {
-        admission::webhook::Error::DryRunUnsupported { detail, .. } => {
-            json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, detail))
-        }
-        _ => json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str)),
+        admission::webhook::Error::DryRunUnsupported { detail, .. } => json_response(
+            StatusCode::BAD_REQUEST,
+            &bad_request_status(path_str, detail),
+        ),
+        _ => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &internal_error_status(path_str),
+        ),
     }
 }
 
@@ -327,7 +367,9 @@ fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
         .map(|violation| {
             let (field, message) = violation
                 .split_once(": ")
-                .map_or(("", violation.as_str()), |(field, message)| (field, message));
+                .map_or(("", violation.as_str()), |(field, message)| {
+                    (field, message)
+                });
             let reason = if message == "Required value" {
                 "FieldValueRequired"
             } else {
@@ -379,29 +421,74 @@ const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
 /// exhausted) is logged and dropped — a status write is bookkeeping, not the
 /// admission decision itself, which has already succeeded by the time
 /// this runs.
-async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str, updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)>, path_str: &str) {
+async fn persist_quota_usage_updates(
+    client: &mut StorageClient,
+    namespace: &str,
+    updates: Vec<(
+        String,
+        std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>,
+    )>,
+    path_str: &str,
+) {
     for (quota_name, new_usage) in updates {
         for _attempt in 0..3 {
-            let current = match rest::get(client, None, "", "v1", "resourcequotas", Some(namespace), &quota_name).await {
+            let current = match rest::get(
+                client,
+                None,
+                "",
+                "v1",
+                "resourcequotas",
+                Some(namespace),
+                &quota_name,
+            )
+            .await
+            {
                 Ok(rest::GetOutcome::Found(q)) => q,
-                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => break,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                    break;
+                }
                 Err(e) => {
                     warn!(path = %path_str, %quota_name, error = ?e, "admission: reading ResourceQuota to persist status.used failed");
                     break;
                 }
             };
-            let mut merged: std::collections::BTreeMap<String, crate::scheme::quantity::Quantity> = current
-                .pointer("/status/used")
-                .and_then(serde_json::Value::as_object)
-                .map(|m| m.iter().filter_map(|(k, v)| v.as_str().and_then(|s| crate::scheme::quantity::Quantity::parse(s).ok()).map(|q| (k.clone(), q))).collect())
-                .unwrap_or_default();
+            let mut merged: std::collections::BTreeMap<String, crate::scheme::quantity::Quantity> =
+                current
+                    .pointer("/status/used")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|(k, v)| {
+                                v.as_str()
+                                    .and_then(|s| crate::scheme::quantity::Quantity::parse(s).ok())
+                                    .map(|q| (k.clone(), q))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
             for (k, v) in &new_usage {
                 merged.insert(k.clone(), *v);
             }
             let mut status_body = current.clone();
-            status_body["status"]["used"] = serde_json::Value::Object(merged.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string()))).collect());
+            status_body["status"]["used"] = serde_json::Value::Object(
+                merged
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string())))
+                    .collect(),
+            );
 
-            match rest::update_status(client, "", "v1", "resourcequotas", Some(namespace), &quota_name, &status_body, false).await {
+            match rest::update_status(
+                client,
+                "",
+                "v1",
+                "resourcequotas",
+                Some(namespace),
+                &quota_name,
+                &status_body,
+                false,
+            )
+            .await
+            {
                 Ok(rest::UpdateOutcome::Updated(_)) => break,
                 Ok(rest::UpdateOutcome::Conflict) => continue,
                 Ok(_) => break,

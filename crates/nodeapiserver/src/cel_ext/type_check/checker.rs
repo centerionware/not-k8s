@@ -284,11 +284,7 @@ impl Checker {
             "semver" => {
                 let valid = self.require_argument(name, arguments, 0, "string", is_string_type);
                 self.require_argument(name, arguments, 1, "bool", is_bool_type);
-                if valid {
-                    CelType::Semver
-                } else {
-                    CelType::Dyn
-                }
+                if valid { CelType::Semver } else { CelType::Dyn }
             }
             "isInteger" => {
                 self.require_receiver(name, target.as_ref(), "a Quantity", is_quantity_type);
@@ -339,7 +335,10 @@ impl Checker {
                     CelType::Dyn
                 }
             }
-            "isUnspecified" | "isLoopback" | "isLinkLocalMulticast" | "isLinkLocalUnicast"
+            "isUnspecified"
+            | "isLoopback"
+            | "isLinkLocalMulticast"
+            | "isLinkLocalUnicast"
             | "isGlobalUnicast" => {
                 self.require_receiver(name, target.as_ref(), "an IP", is_ip_type);
                 CelType::Bool
@@ -451,7 +450,19 @@ impl Checker {
             "string" => {
                 let value = target.as_ref().or_else(|| arguments.first());
                 if let Some(value) = value {
-                    if !matches!(value, CelType::Dyn | CelType::String | CelType::Int | CelType::Uint | CelType::Double | CelType::Bytes | CelType::Ip | CelType::Cidr | CelType::Url | CelType::Semver) {
+                    if !matches!(
+                        value,
+                        CelType::Dyn
+                            | CelType::String
+                            | CelType::Int
+                            | CelType::Uint
+                            | CelType::Double
+                            | CelType::Bytes
+                            | CelType::Ip
+                            | CelType::Cidr
+                            | CelType::Url
+                            | CelType::Semver
+                    ) {
                         self.errors.push(TypeError::InvalidOperand {
                             operation: name.to_string(),
                             expected: "a string-convertible value".to_string(),
@@ -525,20 +536,12 @@ impl Checker {
         };
         let valid = match target {
             CelType::Dyn => true,
-            CelType::Quantity => self.require_argument(
-                name,
-                arguments,
-                0,
-                "a Quantity",
-                is_quantity_type,
-            ),
-            CelType::Semver => self.require_argument(
-                name,
-                arguments,
-                0,
-                "a Semver",
-                is_semver_type,
-            ),
+            CelType::Quantity => {
+                self.require_argument(name, arguments, 0, "a Quantity", is_quantity_type)
+            }
+            CelType::Semver => {
+                self.require_argument(name, arguments, 0, "a Semver", is_semver_type)
+            }
             actual => {
                 self.errors.push(TypeError::InvalidOperand {
                     operation: name.to_string(),

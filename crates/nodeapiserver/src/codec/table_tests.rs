@@ -3,7 +3,8 @@ mod tests {
 
     #[test]
     fn a_single_object_becomes_a_one_row_table() {
-        let pod = json!({"metadata": {"name": "web-1", "creationTimestamp": "2026-01-01T00:00:00Z"}});
+        let pod =
+            json!({"metadata": {"name": "web-1", "creationTimestamp": "2026-01-01T00:00:00Z"}});
         let table = convert_to_table(&pod);
         assert_eq!(table["kind"], "Table");
         assert_eq!(table["apiVersion"], "meta.k8s.io/v1");
@@ -95,12 +96,36 @@ mod tests {
         });
         let table = convert_to_table_for_resource("", "v1", "pods", &pod);
         let columns = table["columnDefinitions"].as_array().unwrap();
-        assert_eq!(columns.iter().map(|column| column["name"].as_str().unwrap()).collect::<Vec<_>>(), vec![
-            "Name", "Ready", "Status", "Restarts", "Age", "IP", "Node", "Nominated Node", "Readiness Gates"
-        ]);
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "Name",
+                "Ready",
+                "Status",
+                "Restarts",
+                "Age",
+                "IP",
+                "Node",
+                "Nominated Node",
+                "Readiness Gates"
+            ]
+        );
         let cells = table["rows"][0]["cells"].as_array().unwrap();
-        assert_eq!(&cells[..5], &json!(["web-1", "1/1", "Running", "2", "<unknown>"]).as_array().unwrap()[..]);
-        assert_eq!(&cells[5..], &json!(["10.42.0.8", "<none>", "<none>", "<none>"]).as_array().unwrap()[..]);
+        assert_eq!(
+            &cells[..5],
+            &json!(["web-1", "1/1", "Running", "2", "<unknown>"])
+                .as_array()
+                .unwrap()[..]
+        );
+        assert_eq!(
+            &cells[5..],
+            &json!(["10.42.0.8", "<none>", "<none>", "<none>"])
+                .as_array()
+                .unwrap()[..]
+        );
         assert_eq!(table["rows"][0]["object"], pod);
     }
 
@@ -159,11 +184,22 @@ mod tests {
             &object,
         );
         assert_eq!(
-            table["columnDefinitions"].as_array().unwrap().iter().map(|column| column["name"].as_str().unwrap()).collect::<Vec<_>>(),
+            table["columnDefinitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|column| column["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
             vec!["Name", "Spec", "Replicas", "Ready", "Missing"]
         );
-        assert_eq!(table["columnDefinitions"][1]["description"], "The schedule.");
-        assert_eq!(table["rows"][0]["cells"], json!(["nightly", "0 0 * * *", 3, true, null]));
+        assert_eq!(
+            table["columnDefinitions"][1]["description"],
+            "The schedule."
+        );
+        assert_eq!(
+            table["rows"][0]["cells"],
+            json!(["nightly", "0 0 * * *", 3, true, null])
+        );
         assert_eq!(table["rows"][0]["object"], object);
     }
 
@@ -173,9 +209,26 @@ mod tests {
             "metadata": {"name": "widget", "creationTimestamp": "2026-08-29T00:00:00Z"}
         });
         let columns: Vec<Value> = Vec::new();
-        let table = convert_to_table_for_resource_with_crd_columns("example.com", "v1", "widgets", Some(&columns), &object);
-        assert_eq!(table["columnDefinitions"].as_array().unwrap().iter().map(|column| column["name"].as_str().unwrap()).collect::<Vec<_>>(), vec!["Name", "Age"]);
-        assert_eq!(table["rows"][0]["cells"], json!(["widget", "2026-08-29T00:00:00Z"]));
+        let table = convert_to_table_for_resource_with_crd_columns(
+            "example.com",
+            "v1",
+            "widgets",
+            Some(&columns),
+            &object,
+        );
+        assert_eq!(
+            table["columnDefinitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|column| column["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["Name", "Age"]
+        );
+        assert_eq!(
+            table["rows"][0]["cells"],
+            json!(["widget", "2026-08-29T00:00:00Z"])
+        );
     }
 
     #[test]
@@ -198,7 +251,19 @@ mod tests {
             "status": {"readyReplicas": 2, "updatedReplicas": 2, "availableReplicas": 2}
         });
         let table = convert_to_table_for_resource("apps", "v1", "deployments", &deployment);
-        assert_eq!(table["rows"][0]["cells"], json!(["web", "2/3", 2, 2, "<unknown>", "web,sidecar", "nginx:1.27,busybox:1.36", "app=web"]));
+        assert_eq!(
+            table["rows"][0]["cells"],
+            json!([
+                "web",
+                "2/3",
+                2,
+                2,
+                "<unknown>",
+                "web,sidecar",
+                "nginx:1.27,busybox:1.36",
+                "app=web"
+            ])
+        );
 
         let replica_set = json!({
             "metadata": {"name": "web-abc"},
@@ -206,7 +271,10 @@ mod tests {
             "status": {"replicas": 2, "readyReplicas": 1}
         });
         let table = convert_to_table_for_resource("apps", "v1", "replicasets", &replica_set);
-        assert_eq!(&table["rows"][0]["cells"].as_array().unwrap()[1..4], json!([3, 2, 1]).as_array().unwrap());
+        assert_eq!(
+            &table["rows"][0]["cells"].as_array().unwrap()[1..4],
+            json!([3, 2, 1]).as_array().unwrap()
+        );
 
         let stateful_set = json!({
             "metadata": {"name": "web"},
@@ -214,7 +282,10 @@ mod tests {
             "status": {"readyReplicas": 1}
         });
         let table = convert_to_table_for_resource("apps", "v1", "statefulsets", &stateful_set);
-        assert_eq!(&table["rows"][0]["cells"].as_array().unwrap()[..2], json!(["web", "1/2"]).as_array().unwrap());
+        assert_eq!(
+            &table["rows"][0]["cells"].as_array().unwrap()[..2],
+            json!(["web", "1/2"]).as_array().unwrap()
+        );
 
         let daemon_set = json!({
             "metadata": {"name": "agent"},
@@ -230,7 +301,12 @@ mod tests {
             }
         });
         let table = convert_to_table_for_resource("apps", "v1", "daemonsets", &daemon_set);
-        assert_eq!(&table["rows"][0]["cells"].as_array().unwrap()[1..8], json!([3, 3, 2, 3, 2, "kubernetes.io/os=linux", "<unknown>"]).as_array().unwrap());
+        assert_eq!(
+            &table["rows"][0]["cells"].as_array().unwrap()[1..8],
+            json!([3, 3, 2, 3, 2, "kubernetes.io/os=linux", "<unknown>"])
+                .as_array()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -248,7 +324,17 @@ mod tests {
             }
         });
         let table = convert_to_table_for_resource("", "v1", "services", &service);
-        assert_eq!(table["rows"][0]["cells"], json!(["api", "LoadBalancer", "10.43.0.10", "192.0.2.10", "80:30080/TCP,443/TCP", "<unknown>"]));
+        assert_eq!(
+            table["rows"][0]["cells"],
+            json!([
+                "api",
+                "LoadBalancer",
+                "10.43.0.10",
+                "192.0.2.10",
+                "80:30080/TCP,443/TCP",
+                "<unknown>"
+            ])
+        );
 
         let node = json!({
             "metadata": {
@@ -271,10 +357,27 @@ mod tests {
             }
         });
         let table = convert_to_table_for_resource("", "v1", "nodes", &node);
-        assert_eq!(table["rows"][0]["cells"], json!(["worker-1", "Ready,SchedulingDisabled", "worker", "<unknown>", "v1.33.0", "192.0.2.20", "198.51.100.20", "Debian GNU/Linux", "6.1.0", "containerd://2.0.0"]));
+        assert_eq!(
+            table["rows"][0]["cells"],
+            json!([
+                "worker-1",
+                "Ready,SchedulingDisabled",
+                "worker",
+                "<unknown>",
+                "v1.33.0",
+                "192.0.2.20",
+                "198.51.100.20",
+                "Debian GNU/Linux",
+                "6.1.0",
+                "containerd://2.0.0"
+            ])
+        );
 
         let namespace = json!({"metadata": {"name": "apps"}, "status": {"phase": "Active"}});
         let table = convert_to_table_for_resource("", "v1", "namespaces", &namespace);
-        assert_eq!(table["rows"][0]["cells"], json!(["apps", "Active", "<unknown>"]));
+        assert_eq!(
+            table["rows"][0]["cells"],
+            json!(["apps", "Active", "<unknown>"])
+        );
     }
 }

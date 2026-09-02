@@ -109,5 +109,6 @@ macro_rules! handle_crud {
             handle_crud_late_admission!(client, body_value, namespace, $info, $path_str, $is_create, $is_update, $is_delete, $identity, dry_run, $admission_metadata, quota_usage_updates);
             handle_crud_persist!(client, body_value, delete_options, namespace, $info, $path_str, $cache_registry, wants_table, $wants_partial_metadata, crd_printer_columns, dry_run, $request_field_manager, $is_get, $is_list, $is_create, $is_update, $query, quota_usage_updates);
         }
+        }
     }};
 }

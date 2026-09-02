@@ -45,22 +45,36 @@ pub async fn get_at_revision(
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(GetOutcome::UnknownResource);
     };
-    let kind = resolved.kind;
+    let kind = resolved.kind.clone();
     let key = keys::object_key(group, resource, namespace, name);
 
     if resource_version <= 0 {
         if let Some(cache) = cache {
             if let Some(entry) = cache.get(key.as_bytes()) {
-                let mut object =
-                    decrypt_and_decode(storage, group, resource, key.as_bytes(), &entry.value)?;
+                let mut object = decrypt_and_decode_with_rotation(
+                    storage,
+                    group,
+                    resource,
+                    key.as_bytes(),
+                    &entry.value,
+                    entry.mod_revision,
+                )
+                .await?;
                 set_metadata_field(
                     &mut object,
                     "resourceVersion",
                     Value::String(entry.mod_revision.to_string()),
                 );
-                return Ok(GetOutcome::Found(crate::scheme::conversion::to_version(
-                    group, version, &kind, object,
-                )));
+                let object = convert_to_requested_version(
+                    storage,
+                    group,
+                    version,
+                    &kind,
+                    resolved.conversion_webhook.as_ref(),
+                    object,
+                )
+                .await?;
+                return Ok(GetOutcome::Found(object));
             }
         }
     }
@@ -75,7 +89,15 @@ pub async fn get_at_revision(
     let Some(kv) = resp.kvs.into_iter().next() else {
         return Ok(GetOutcome::ObjectNotFound);
     };
-    let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
+    let mut object = decrypt_and_decode_with_rotation(
+        storage,
+        group,
+        resource,
+        &kv.key,
+        &kv.value,
+        kv.mod_revision,
+    )
+    .await?;
     // Real, load-bearing fix, found live (`tests/apiservice_roundtrip.rs`'s
     // own get-then-update round trip): `resourceVersion` is never
     // actually *persisted* into the stored object bytes (`create`/
@@ -96,9 +118,16 @@ pub async fn get_at_revision(
         "resourceVersion",
         Value::String(kv.mod_revision.to_string()),
     );
-    Ok(GetOutcome::Found(crate::scheme::conversion::to_version(
-        group, version, &kind, object,
-    )))
+    let object = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        &kind,
+        resolved.conversion_webhook.as_ref(),
+        object,
+    )
+    .await?;
+    Ok(GetOutcome::Found(object))
 }
 
 #[derive(Debug, PartialEq)]
@@ -217,7 +246,12 @@ pub async fn list_at_revision(
     } else {
         selector::parse_field_selector(field_selector)?
     };
-    selector::validate_field_selector(group, resource, &field_reqs)?;
+    selector::validate_field_selector_with_additional_fields(
+        group,
+        resource,
+        &field_reqs,
+        &resolved.selectable_fields,
+    )?;
 
     let group_version = if group.is_empty() {
         version.to_string()
@@ -242,29 +276,40 @@ pub async fn list_at_revision(
     if let Some(cache) = cache {
         if cache.has_synced() && !paginated {
             let (entries, revision) = cache.list();
-            let items = entries
-                .iter()
-                .filter(|(key, _)| key.starts_with(&prefix))
-                .map(|(key, entry)| {
-                    // Same real fix `get`'s own doc comment covers: a
-                    // stored object never carries `resourceVersion` as
-                    // persisted content, so every item in a `LIST`
-                    // response needs it stamped from its own live
-                    // revision, the same way real upstream does.
-                    let mut object =
-                        decrypt_and_decode(storage, group, resource, key, &entry.value)?;
-                    set_metadata_field(
-                        &mut object,
-                        "resourceVersion",
-                        Value::String(entry.mod_revision.to_string()),
-                    );
-                    object = crate::scheme::conversion::to_version(group, version, kind, object);
-                    Ok(object)
-                })
-                .collect::<Result<Vec<Value>, Error>>()?
-                .into_iter()
-                .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
-                .collect::<Vec<Value>>();
+            let mut items = Vec::new();
+            for (key, entry) in entries.iter().filter(|(key, _)| key.starts_with(&prefix)) {
+                // Same real fix `get`'s own doc comment covers: a stored
+                // object never carries `resourceVersion` as persisted
+                // content, so every item in a `LIST` response needs it
+                // stamped from its own live revision, the same way real
+                // upstream does.
+                let mut object = decrypt_and_decode_with_rotation(
+                    storage,
+                    group,
+                    resource,
+                    key,
+                    &entry.value,
+                    entry.mod_revision,
+                )
+                .await?;
+                set_metadata_field(
+                    &mut object,
+                    "resourceVersion",
+                    Value::String(entry.mod_revision.to_string()),
+                );
+                object = convert_to_requested_version(
+                    storage,
+                    group,
+                    version,
+                    kind,
+                    resolved.conversion_webhook.as_ref(),
+                    object,
+                )
+                .await?;
+                if selector::object_matches(&object, &label_reqs, &field_reqs) {
+                    items.push(object);
+                }
+            }
             return Ok(ListOutcome::Found(json!({
                 "kind": list_kind(kind),
                 "apiVersion": group_version,
@@ -317,23 +362,35 @@ pub async fn list_at_revision(
         k.push(0);
         k
     });
-    let items = resp
-        .kvs
-        .iter()
-        .map(|kv| {
-            let mut object = decrypt_and_decode(storage, group, resource, &kv.key, &kv.value)?;
-            set_metadata_field(
-                &mut object,
-                "resourceVersion",
-                Value::String(kv.mod_revision.to_string()),
-            );
-            object = crate::scheme::conversion::to_version(group, version, kind, object);
-            Ok(object)
-        })
-        .collect::<Result<Vec<Value>, Error>>()?
-        .into_iter()
-        .filter(|item| selector::object_matches(item, &label_reqs, &field_reqs))
-        .collect::<Vec<Value>>();
+    let mut items = Vec::with_capacity(resp.kvs.len());
+    for kv in &resp.kvs {
+        let mut object = decrypt_and_decode_with_rotation(
+            storage,
+            group,
+            resource,
+            &kv.key,
+            &kv.value,
+            kv.mod_revision,
+        )
+        .await?;
+        set_metadata_field(
+            &mut object,
+            "resourceVersion",
+            Value::String(kv.mod_revision.to_string()),
+        );
+        object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            kind,
+            resolved.conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
+        if selector::object_matches(&object, &label_reqs, &field_reqs) {
+            items.push(object);
+        }
+    }
 
     let mut metadata = json!({"resourceVersion": revision.to_string()});
     if more {

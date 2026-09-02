@@ -13,9 +13,9 @@ pub enum PatchKind {
 /// (`k8s.io/apimachinery/pkg/types`): `application/json-patch+json`
 /// (RFC 6902), `application/merge-patch+json` (RFC 7386),
 /// `application/strategic-merge-patch+json` (k8s-specific). Server-Side
-/// Apply's own `application/apply-patch+yaml` isn't recognized — Group
-/// G's own doc comment already names SSA/managedFields as not yet
-/// landed.
+/// Apply's own `application/apply-patch+yaml` is routed separately by the
+/// listener because it has different query parameters and bookkeeping than
+/// the three ordinary patch kinds below.
 pub fn patch_kind_for_content_type(content_type: &str) -> Option<PatchKind> {
     match content_type.split(';').next().unwrap_or("").trim() {
         "application/json-patch+json" => Some(PatchKind::Json),
@@ -97,10 +97,13 @@ pub struct PatchContext {
     /// back to `open_api_schema` in exactly this case).
     schema: Option<&'static str>,
     open_api_schema: Option<Value>,
+    storage_open_api_schema: Option<Value>,
     kind: String,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
     key: String,
     existing_kv: mvccpb::KeyValue,
     existing_object: Value,
+    has_status_subresource: bool,
 }
 
 #[derive(Debug)]
@@ -192,19 +195,30 @@ pub async fn patch_prepare(
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(PatchPrepareOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(
+    let existing_object = decrypt_and_decode_with_rotation(
         storage,
         group,
         resource,
         &existing_kv.key,
         &existing_kv.value,
-    )?;
+        existing_kv.mod_revision,
+    )
+    .await?;
+    let existing_object_for_request = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        &resolved.kind,
+        resolved.conversion_webhook.as_ref(),
+        existing_object.clone(),
+    )
+    .await?;
 
     let patched = match apply_patch(
         kind_of_patch,
         resolved.schema,
         resolved.open_api_schema.as_ref(),
-        &existing_object,
+        &existing_object_for_request,
         patch_doc,
     ) {
         Ok(object) => object,
@@ -216,10 +230,13 @@ pub async fn patch_prepare(
         PatchContext {
             schema: resolved.schema,
             open_api_schema: resolved.open_api_schema,
+            storage_open_api_schema: resolved.storage_open_api_schema,
             kind: resolved.kind,
+            conversion_webhook: resolved.conversion_webhook,
             key,
             existing_kv,
             existing_object,
+            has_status_subresource: resolved.has_status_subresource,
         },
     ))
 }
@@ -230,7 +247,8 @@ pub async fn patch_prepare(
 /// concurrency [`update`] uses (`Txn`-compared-against-`ModRevision`,
 /// via the shared [`persist_update`] tail) — no client-submitted
 /// `resourceVersion` needed, since the object being patched *is* the one
-/// [`patch_prepare`] already read.
+/// [`patch_prepare`] already read. With `dry_run`, it performs all of the
+/// same validation/defaulting and returns the candidate without writing.
 pub async fn patch_persist(
     storage: &mut StorageClient,
     group: &str,
@@ -240,6 +258,27 @@ pub async fn patch_persist(
     name: &str,
     context: PatchContext,
     candidate: Value,
+    dry_run: bool,
+) -> Result<UpdateOutcome, Error> {
+    patch_persist_with_manager(
+        storage, group, version, resource, namespace, name, context, candidate, dry_run, None,
+    )
+    .await
+}
+
+/// [`patch_persist`] with the request's field manager. Ordinary patch writes
+/// use the same managed-fields `Update` operation as ordinary PUT writes.
+pub async fn patch_persist_with_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    context: PatchContext,
+    candidate: Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
     // Group K: same pruning `create`/`update` run, same order (before
     // validation/defaulting) — `candidate` is already owned, so this
@@ -266,6 +305,12 @@ pub async fn patch_persist(
                         )
                     }),
             );
+            v.extend(validation::validate_openapi_constraints(
+                group,
+                version,
+                &context.kind,
+                &candidate,
+            ));
             v
         }
         // Group K: same scope `create`'s own CRD branch runs.
@@ -298,6 +343,7 @@ pub async fn patch_persist(
             .into_iter()
             .map(|e| format!("metadata.name: {e}")),
     );
+    violations.extend(metadata_format_violations(&candidate));
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
     }
@@ -309,6 +355,7 @@ pub async fn patch_persist(
         }
         (None, None) => candidate,
     };
+    let object = defaulting::apply_builtin_defaults(group, version, &context.kind, object);
 
     // CEL Phase 4: same real rule evaluation `create`/`update` both run.
     if let Some(open_api_schema) = &context.open_api_schema {
@@ -327,6 +374,8 @@ pub async fn patch_persist(
     persist_update(
         storage,
         context.schema,
+        context.open_api_schema.as_ref(),
+        context.storage_open_api_schema.as_ref(),
         &context.kind,
         group,
         version,
@@ -336,6 +385,11 @@ pub async fn patch_persist(
         &context.existing_object,
         namespace,
         object,
+        dry_run,
+        context.conversion_webhook,
+        field_manager,
+        "",
+        context.has_status_subresource,
         false,
     )
     .await
@@ -356,7 +410,8 @@ pub async fn patch_persist(
 /// strategies remain the generic, untyped path. There is still no Group J
 /// admission here — and the same
 /// `subresources.status`-must-be-declared gate for a CRD-defined
-/// resource (`update_status`'s own doc comment covers why).
+/// resource (`update_status`'s own doc comment covers why). `dry_run` keeps
+/// the same validation path while skipping the write.
 pub async fn patch_status(
     storage: &mut StorageClient,
     group: &str,
@@ -366,6 +421,35 @@ pub async fn patch_status(
     name: &str,
     kind_of_patch: PatchKind,
     patch_doc: &Value,
+    dry_run: bool,
+) -> Result<UpdateOutcome, Error> {
+    patch_status_with_manager(
+        storage,
+        group,
+        version,
+        resource,
+        namespace,
+        name,
+        kind_of_patch,
+        patch_doc,
+        dry_run,
+        None,
+    )
+    .await
+}
+
+/// [`patch_status`] with the request's field manager.
+pub async fn patch_status_with_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
@@ -384,26 +468,37 @@ pub async fn patch_status(
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(
+    let existing_object = decrypt_and_decode_with_rotation(
         storage,
         group,
         resource,
         &existing_kv.key,
         &existing_kv.value,
-    )?;
+        existing_kv.mod_revision,
+    )
+    .await?;
+    let existing_object_for_request = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        &resolved.kind,
+        resolved.conversion_webhook.as_ref(),
+        existing_object.clone(),
+    )
+    .await?;
 
     let patched = match apply_patch(
         kind_of_patch,
         resolved.schema,
         resolved.open_api_schema.as_ref(),
-        &existing_object,
+        &existing_object_for_request,
         patch_doc,
     ) {
         Ok(object) => object,
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
     };
 
-    let mut object = existing_object.clone();
+    let mut object = existing_object_for_request;
     match patched.get("status") {
         Some(status) => object["status"] = status.clone(),
         None => {
@@ -421,6 +516,8 @@ pub async fn patch_status(
     persist_update(
         storage,
         resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        resolved.storage_open_api_schema.as_ref(),
         &resolved.kind,
         group,
         version,
@@ -430,6 +527,11 @@ pub async fn patch_status(
         &existing_object,
         namespace,
         object,
+        dry_run,
+        resolved.conversion_webhook.clone(),
+        field_manager,
+        "status",
+        false,
         false,
     )
     .await
@@ -463,7 +565,7 @@ pub async fn patch(
     {
         PatchPrepareOutcome::Ready(candidate, context) => {
             patch_persist(
-                storage, group, version, resource, namespace, name, context, candidate,
+                storage, group, version, resource, namespace, name, context, candidate, false,
             )
             .await
         }

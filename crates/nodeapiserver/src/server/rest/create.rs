@@ -18,6 +18,10 @@ pub enum CreateOutcome {
     /// violation (`"containers[1].name: Required value"`-shaped) — the
     /// caller's job to turn into a real `422 Unprocessable Entity`.
     Invalid(Vec<String>),
+    /// No usable compiled or runtime structural schema was available for
+    /// the resolved resource. Established CRDs normally carry the latter;
+    /// this remains a defensive outcome for malformed or legacy CRD data.
+    UnsupportedForCrd,
 }
 
 /// Creates a new object. `namespace: None` for a cluster-scoped resource,
@@ -32,7 +36,10 @@ pub async fn create(
     namespace: Option<&str>,
     body: &Value,
 ) -> Result<CreateOutcome, Error> {
-    create_with_options(storage, group, version, resource, namespace, body, false).await
+    create_with_options_and_manager(
+        storage, group, version, resource, namespace, body, false, None,
+    )
+    .await
 }
 
 /// [`create`] with the real Kubernetes `dryRun=All` write option. Dry-run
@@ -46,6 +53,26 @@ pub async fn create_with_options(
     namespace: Option<&str>,
     body: &Value,
     dry_run: bool,
+) -> Result<CreateOutcome, Error> {
+    create_with_options_and_manager(
+        storage, group, version, resource, namespace, body, dry_run, None,
+    )
+    .await
+}
+
+/// [`create_with_options`] with the request's field manager. The listener
+/// supplies the explicit `fieldManager` or the request's user agent, just as
+/// upstream's `managerOrUserAgent` does. Direct REST callers may omit it;
+/// their submitted `managedFields` are never trusted or persisted.
+pub async fn create_with_options_and_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
 ) -> Result<CreateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(CreateOutcome::UnknownResource);
@@ -111,6 +138,9 @@ pub async fn create_with_options(
                         )
                     }),
             );
+            v.extend(validation::validate_openapi_constraints(
+                group, version, kind, body,
+            ));
             v
         }
         // Group K: real required/type validation against a CRD's own
@@ -144,6 +174,7 @@ pub async fn create_with_options(
             .into_iter()
             .map(|e| format!("metadata.name: {e}")),
     );
+    violations.extend(metadata_format_violations(body));
     // Group K / CEL Phase 3: a CustomResourceDefinition's own
     // `x-kubernetes-validations` rules get their real static cost
     // checked at CRD-acceptance time, real upstream's own posture
@@ -152,6 +183,7 @@ pub async fn create_with_options(
     // multiplication yet).
     if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
         violations.extend(apiextensions::cel_validations::validate_crd_cel_costs(body));
+        violations.extend(apiextensions::cel_validations::validate_crd_cel_types(body));
     }
     if !violations.is_empty() {
         return Ok(CreateOutcome::Invalid(violations));
@@ -164,6 +196,7 @@ pub async fn create_with_options(
         }
         (None, None) => body.clone(),
     };
+    object = defaulting::apply_builtin_defaults(group, version, kind, object);
     object = crate::scheme::conversion::to_version(group, version, kind, object);
 
     // CEL Phase 4: real x-kubernetes-validations rule evaluation against
@@ -214,6 +247,35 @@ pub async fn create_with_options(
         );
     }
 
+    object = reconcile_managed_fields(
+        resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        &json!({}),
+        object,
+        field_manager,
+        "Update",
+        "",
+        group,
+        version,
+        resolved.has_status_subresource,
+    );
+
+    // Conversion sees the complete object, including the system metadata
+    // generated above. This is the same object shape a webhook receives for
+    // an object that is about to be persisted, not the pre-create body.
+    object = convert_to_storage_version(
+        storage,
+        group,
+        version,
+        resolved.conversion_webhook.as_ref(),
+        object,
+    )
+    .await?;
+    object = match revalidate_storage_object(resolved.storage_open_api_schema.as_ref(), object) {
+        Ok(object) => object,
+        Err(violations) => return Ok(CreateOutcome::Invalid(violations)),
+    };
+
     let key = keys::object_key(group, resource, namespace, &name);
     if dry_run {
         let existing = storage
@@ -225,12 +287,25 @@ pub async fn create_with_options(
         if !existing.kvs.is_empty() {
             return Ok(CreateOutcome::AlreadyExists);
         }
+        let object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            kind,
+            resolved.conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
         return Ok(CreateOutcome::Created(object));
     }
+    let stored_version = resolved
+        .conversion_webhook
+        .as_ref()
+        .map_or(version, |conversion| conversion.storage_version.as_str());
     let api_version = if group.is_empty() {
-        version.to_string()
+        stored_version.to_string()
     } else {
-        format!("{group}/{version}")
+        format!("{group}/{stored_version}")
     };
     let object_bytes = match resolved.schema {
         Some(schema) => protobuf::encode_message(schema, &object)?,
@@ -274,5 +349,14 @@ pub async fn create_with_options(
         "resourceVersion",
         Value::String(revision.to_string()),
     );
+    let object = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        kind,
+        resolved.conversion_webhook.as_ref(),
+        object,
+    )
+    .await?;
     Ok(CreateOutcome::Created(object))
 }

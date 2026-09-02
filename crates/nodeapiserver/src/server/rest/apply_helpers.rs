@@ -9,19 +9,50 @@ fn prune_runtime_schema(schema: Option<&Value>, value: Value) -> Value {
 /// candidate [`apply_prepare`] produced, possibly further mutated by
 /// admission in between) with whichever real `Txn` idiom
 /// [`ApplyContext::existing`] calls for.
-pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>, context: ApplyContext, mut object: Value, dry_run: bool) -> Result<ApplyOutcome, Error> {
+pub async fn apply_persist(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    context: ApplyContext,
+    mut object: Value,
+    dry_run: bool,
+) -> Result<ApplyOutcome, Error> {
     let Some((existing_kv, live)) = context.existing else {
-        object = convert_to_storage_version(storage, group, version, context.conversion_webhook.as_ref(), object).await?;
+        object = convert_to_storage_version(
+            storage,
+            group,
+            version,
+            context.conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
         object = match revalidate_storage_object(context.storage_open_api_schema.as_ref(), object) {
             Ok(object) => object,
             Err(violations) => return Ok(ApplyOutcome::Invalid(violations)),
         };
         if dry_run {
-            let object = convert_to_requested_version(storage, group, version, &context.kind, context.conversion_webhook.as_ref(), object).await?;
+            let object = convert_to_requested_version(
+                storage,
+                group,
+                version,
+                &context.kind,
+                context.conversion_webhook.as_ref(),
+                object,
+            )
+            .await?;
             return Ok(ApplyOutcome::Applied(object));
         }
-        let stored_version = context.conversion_webhook.as_ref().map_or(version, |conversion| conversion.storage_version.as_str());
-        let api_version = if group.is_empty() { stored_version.to_string() } else { format!("{group}/{stored_version}") };
+        let stored_version = context
+            .conversion_webhook
+            .as_ref()
+            .map_or(version, |conversion| conversion.storage_version.as_str());
+        let api_version = if group.is_empty() {
+            stored_version.to_string()
+        } else {
+            format!("{group}/{stored_version}")
+        };
         let object_bytes = match context.schema {
             Some(schema) => protobuf::encode_message(schema, &object)?,
             None => serde_json::to_vec(&object).map_err(protobuf::Error::Json)?,
@@ -34,11 +65,18 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
             target_union: Some(pb::compare::TargetUnion::ModRevision(0)),
             range_end: Vec::new(),
         };
-        let envelope = encrypt_for_storage(storage, group, resource, context.key.as_bytes(), &envelope)?;
-        let put = pb::PutRequest { key: context.key.into_bytes(), value: envelope, ..Default::default() };
+        let envelope =
+            encrypt_for_storage(storage, group, resource, context.key.as_bytes(), &envelope)?;
+        let put = pb::PutRequest {
+            key: context.key.into_bytes(),
+            value: envelope,
+            ..Default::default()
+        };
         let txn = pb::TxnRequest {
             compare: vec![compare],
-            success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestPut(put)),
+            }],
             failure: vec![],
         };
         let resp = storage.txn(txn).await?;
@@ -48,12 +86,46 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
             return Ok(ApplyOutcome::Conflict(Vec::new()));
         }
         let revision = resp.header.map(|h| h.revision).unwrap_or(0);
-        set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
-        let object = convert_to_requested_version(storage, group, version, &context.kind, context.conversion_webhook.as_ref(), object).await?;
+        set_metadata_field(
+            &mut object,
+            "resourceVersion",
+            Value::String(revision.to_string()),
+        );
+        let object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            &context.kind,
+            context.conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
         return Ok(ApplyOutcome::Applied(object));
     };
 
-    match persist_update(storage, context.schema, None, context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &existing_kv, &live, namespace, object, dry_run, context.conversion_webhook, None, "", context.has_status_subresource, true).await? {
+    match persist_update(
+        storage,
+        context.schema,
+        None,
+        context.storage_open_api_schema.as_ref(),
+        &context.kind,
+        group,
+        version,
+        resource,
+        context.key,
+        &existing_kv,
+        &live,
+        namespace,
+        object,
+        dry_run,
+        context.conversion_webhook,
+        None,
+        "",
+        context.has_status_subresource,
+        true,
+    )
+    .await?
+    {
         UpdateOutcome::Updated(v) => Ok(ApplyOutcome::Applied(v)),
         // Lost the optimistic-concurrency race between `apply_prepare`'s
         // own read and this write -- a real, if rare, "retry and see
@@ -64,7 +136,9 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
         // rather than inventing a third outcome variant this early
         // caller-side distinction doesn't otherwise need.
         UpdateOutcome::Conflict => Ok(ApplyOutcome::Conflict(Vec::new())),
-        other => unreachable!("persist_update only ever returns Updated or Conflict for an already-decoded, already-validated object: {other:?}"),
+        other => unreachable!(
+            "persist_update only ever returns Updated or Conflict for an already-decoded, already-validated object: {other:?}"
+        ),
     }
 }
 
@@ -138,10 +212,18 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         //   `ValidateClassName` (`pkg/apis/storage/validation/validation.go`,
         //   confirmed this is really StorageClass's own object-name check,
         //   not only the referenced-field usage).
-        ("scheduling.k8s.io", "priorityclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("resource.k8s.io", "resourceclaims") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("resource.k8s.io", "resourceclaimtemplates") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("storage.k8s.io", "storageclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("scheduling.k8s.io", "priorityclasses") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("resource.k8s.io", "resourceclaims") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("resource.k8s.io", "resourceclaimtemplates") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("storage.k8s.io", "storageclasses") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
         // More non-core groups, same two-way verification (real
         // per-type `Validate<Kind>[Create]` function confirmed to apply
         // the var to that type's own `ObjectMeta`, real group confirmed
@@ -170,13 +252,27 @@ fn name_format_violations(group: &str, resource: &str, name: &str) -> Vec<String
         ("apps", "deployments") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "replicasets") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("apps", "statefulsets") => crate::scheme::name_format::is_dns1123_label(name),
-        ("autoscaling", "horizontalpodautoscalers") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("networking.k8s.io", "ingresses") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("networking.k8s.io", "ingressclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("networking.k8s.io", "servicecidrs") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("discovery.k8s.io", "endpointslices") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("flowcontrol.apiserver.k8s.io", "flowschemas") => crate::scheme::name_format::is_dns1123_subdomain(name),
-        ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations") => crate::scheme::name_format::is_dns1123_subdomain(name),
+        ("autoscaling", "horizontalpodautoscalers") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("networking.k8s.io", "ingresses") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("networking.k8s.io", "ingressclasses") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("networking.k8s.io", "servicecidrs") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("discovery.k8s.io", "endpointslices") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("flowcontrol.apiserver.k8s.io", "flowschemas") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
+        ("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations") => {
+            crate::scheme::name_format::is_dns1123_subdomain(name)
+        }
         ("node.k8s.io", "runtimeclasses") => crate::scheme::name_format::is_dns1123_subdomain(name),
         ("coordination.k8s.io", "leases") => crate::scheme::name_format::is_dns1123_subdomain(name),
         // `batch/v1` Job and CronJob names use upstream's
@@ -208,7 +304,9 @@ fn metadata_format_violations(object: &Value) -> Vec<String> {
     let mut violations = Vec::new();
 
     for field in ["labels", "annotations"] {
-        let Some(values) = metadata.get(field) else { continue };
+        let Some(values) = metadata.get(field) else {
+            continue;
+        };
         let Some(values) = values.as_object() else {
             violations.push(format!("metadata.{field} must be an object"));
             continue;
@@ -255,7 +353,9 @@ fn metadata_format_violations(object: &Value) -> Vec<String> {
 /// (an empty-`required`-list schema lets `validate_required`/
 /// `validate_types` both pass on one).
 fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
-    let Some(map) = object.as_object_mut() else { return };
+    let Some(map) = object.as_object_mut() else {
+        return;
+    };
     let metadata = map.entry("metadata").or_insert_with(|| json!({}));
     if !metadata.is_object() {
         *metadata = json!({});
@@ -273,17 +373,28 @@ fn preserve_managed_fields(existing: &Value, object: &mut Value) {
 
 fn strip_managed_field_system_fields(mut object: Value) -> Value {
     if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
-        for field in ["resourceVersion", "creationTimestamp", "selfLink", "uid", "managedFields"] {
+        for field in [
+            "resourceVersion",
+            "creationTimestamp",
+            "selfLink",
+            "uid",
+            "managedFields",
+        ] {
             metadata.remove(field);
         }
     }
     object
 }
 
-fn ignored_managed_fields(has_status_subresource: bool, subresource: &str) -> crate::patch::fieldset::Set {
+fn ignored_managed_fields(
+    has_status_subresource: bool,
+    subresource: &str,
+) -> crate::patch::fieldset::Set {
     let mut ignored = crate::patch::fieldset::Set::new();
     if has_status_subresource && subresource.is_empty() {
-        ignored.insert(&[crate::patch::fieldset::PathElement::Field("status".to_string())]);
+        ignored.insert(&[crate::patch::fieldset::PathElement::Field(
+            "status".to_string(),
+        )]);
     }
     ignored
 }
@@ -310,20 +421,60 @@ fn reconcile_managed_fields(
             preserve_managed_fields(existing, &mut object);
             return object;
         };
-        return reconcile_runtime_managed_fields(manager_schema, existing, object, manager, operation, subresource, group, version, has_status_subresource);
+        return reconcile_runtime_managed_fields(
+            manager_schema,
+            existing,
+            object,
+            manager,
+            operation,
+            subresource,
+            group,
+            version,
+            has_status_subresource,
+        );
     };
 
-    let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let previous = existing
+        .pointer("/metadata/managedFields")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
     let entries = crate::patch::managed_fields::parse_managed_fields(&previous).unwrap_or_default();
     let managers = crate::patch::managed_fields::to_managers_map(&entries);
     let live = strip_managed_field_system_fields(existing.clone());
     let new = strip_managed_field_system_fields(object.clone());
-    let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
+    let manager_key = if subresource.is_empty() {
+        manager.to_string()
+    } else {
+        format!("{manager}/{subresource}")
+    };
     let ignored = ignored_managed_fields(has_status_subresource, subresource);
-    let managers = crate::patch::updater::apply_update_with_ignored_fields(manager_schema, &live, &new, &managers, &manager_key, Some(&ignored));
-    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
-    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
-    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+    let managers = crate::patch::updater::apply_update_with_ignored_fields(
+        manager_schema,
+        &live,
+        &new,
+        &managers,
+        &manager_key,
+        Some(&ignored),
+    );
+    let api_version = if group.is_empty() {
+        version.to_string()
+    } else {
+        format!("{group}/{version}")
+    };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(
+        &entries,
+        &managers,
+        manager,
+        subresource,
+        operation,
+        &api_version,
+        Some(&now_rfc3339()),
+    );
+    set_metadata_field(
+        &mut object,
+        "managedFields",
+        crate::patch::managed_fields::render_managed_fields(&rebuilt),
+    );
     object
 }
 
@@ -338,18 +489,49 @@ fn reconcile_runtime_managed_fields(
     version: &str,
     has_status_subresource: bool,
 ) -> Value {
-    let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let previous = existing
+        .pointer("/metadata/managedFields")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
     let entries = crate::patch::managed_fields::parse_managed_fields(&previous).unwrap_or_default();
     let managers = crate::patch::managed_fields::to_managers_map(&entries);
     let live = strip_managed_field_system_fields(existing.clone());
     let new = strip_managed_field_system_fields(object.clone());
-    let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
-    let managers = crate::apiextensions::schema_apply::reconcile_managed_fields_with_schema(schema, &managers);
+    let manager_key = if subresource.is_empty() {
+        manager.to_string()
+    } else {
+        format!("{manager}/{subresource}")
+    };
+    let managers =
+        crate::apiextensions::schema_apply::reconcile_managed_fields_with_schema(schema, &managers);
     let ignored = ignored_managed_fields(has_status_subresource, subresource);
-    let managers = crate::apiextensions::schema_apply::apply_update_with_ignored_fields(schema, &live, &new, &managers, &manager_key, Some(&ignored));
-    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
-    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
-    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));
+    let managers = crate::apiextensions::schema_apply::apply_update_with_ignored_fields(
+        schema,
+        &live,
+        &new,
+        &managers,
+        &manager_key,
+        Some(&ignored),
+    );
+    let api_version = if group.is_empty() {
+        version.to_string()
+    } else {
+        format!("{group}/{version}")
+    };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(
+        &entries,
+        &managers,
+        manager,
+        subresource,
+        operation,
+        &api_version,
+        Some(&now_rfc3339()),
+    );
+    set_metadata_field(
+        &mut object,
+        "managedFields",
+        crate::patch::managed_fields::render_managed_fields(&rebuilt),
+    );
     object
 }
 
@@ -373,9 +555,14 @@ fn generate_name(prefix: &str) -> String {
 }
 
 fn set_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
-    let Some(map) = object.as_object_mut() else { return };
+    let Some(map) = object.as_object_mut() else {
+        return;
+    };
     map.insert("kind".to_string(), Value::String(kind.to_string()));
-    map.insert("apiVersion".to_string(), Value::String(api_version.to_string()));
+    map.insert(
+        "apiVersion".to_string(),
+        Value::String(api_version.to_string()),
+    );
 }
 
 /// Second-precision RFC3339 with a `Z` suffix (`"2026-08-20T09:30:00Z"`)
@@ -384,5 +571,3 @@ fn set_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
-
-#[derive(Debug, PartialEq)]

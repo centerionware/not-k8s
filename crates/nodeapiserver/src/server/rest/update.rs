@@ -1,28 +1,3 @@
-#[derive(Debug, PartialEq)]
-pub enum UpdateOutcome {
-    Updated(Value),
-    UnknownResource,
-    /// No object exists at this key — this build doesn't support
-    /// create-on-update (`AllowCreateOnUpdate`, real upstream's own
-    /// opt-in a handful of types use), named honestly rather than
-    /// silently creating one.
-    ObjectNotFound,
-    /// The submitted body had no `metadata.resourceVersion` at all —
-    /// real upstream's own generic registry requires one for `PUT`
-    /// (optimistic concurrency has nothing to compare against
-    /// otherwise).
-    MissingResourceVersion,
-    /// The submitted `resourceVersion` didn't match what's currently
-    /// stored — a real conflict, matching real upstream's own
-    /// `errors.NewConflict`.
-    Conflict,
-    NamespaceMismatch,
-    Invalid(Vec<String>),
-    /// [`patch`] only: the `Content-Type` wasn't one of the three real
-    /// patch media types this build understands.
-    UnsupportedPatchType,
-}
-
 /// Replaces an existing object. `namespace: None` for a cluster-scoped
 /// resource, same convention as [`get`]/[`create`]. Real optimistic
 /// concurrency: reads the current object first, requires the submitted
@@ -42,8 +17,8 @@ pub async fn update(
     name: &str,
     body: &Value,
 ) -> Result<UpdateOutcome, Error> {
-    update_with_options(
-        storage, group, version, resource, namespace, name, body, false,
+    update_with_options_and_manager(
+        storage, group, version, resource, namespace, name, body, false, None,
     )
     .await
 }
@@ -61,6 +36,26 @@ pub async fn update_with_options(
     body: &Value,
     dry_run: bool,
 ) -> Result<UpdateOutcome, Error> {
+    update_with_options_and_manager(
+        storage, group, version, resource, namespace, name, body, dry_run, None,
+    )
+    .await
+}
+
+/// [`update_with_options`] with the request's field manager. Ordinary
+/// updates use the same `Update` managed-fields operation as upstream and do
+/// not report ownership conflicts; changed fields move to this manager.
+pub async fn update_with_options_and_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -76,13 +71,15 @@ pub async fn update_with_options(
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(
+    let existing_object = decrypt_and_decode_with_rotation(
         storage,
         group,
         resource,
         &existing_kv.key,
         &existing_kv.value,
-    )?;
+        existing_kv.mod_revision,
+    )
+    .await?;
 
     if let (Some(ns), Some(body_ns)) = (
         namespace,
@@ -135,6 +132,9 @@ pub async fn update_with_options(
                         )
                     }),
             );
+            v.extend(validation::validate_openapi_constraints(
+                group, version, &kind, body,
+            ));
             v
         }
         // Group K: same scope `create`'s own CRD branch runs.
@@ -167,10 +167,12 @@ pub async fn update_with_options(
             .into_iter()
             .map(|e| format!("metadata.name: {e}")),
     );
+    violations.extend(metadata_format_violations(body));
     // Group K / CEL Phase 3: same real static cost check `create`'s own
     // CRD branch runs.
     if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
         violations.extend(apiextensions::cel_validations::validate_crd_cel_costs(body));
+        violations.extend(apiextensions::cel_validations::validate_crd_cel_types(body));
     }
     if !violations.is_empty() {
         return Ok(UpdateOutcome::Invalid(violations));
@@ -183,6 +185,7 @@ pub async fn update_with_options(
         }
         (None, None) => body.clone(),
     };
+    let object = defaulting::apply_builtin_defaults(group, version, &kind, object);
 
     // CEL Phase 4: same real rule evaluation `create`'s own CRD branch
     // runs, `old_value: Some(&existing_object)` this time — real
@@ -204,6 +207,8 @@ pub async fn update_with_options(
     persist_update(
         storage,
         resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        resolved.storage_open_api_schema.as_ref(),
         &kind,
         group,
         version,
@@ -214,6 +219,11 @@ pub async fn update_with_options(
         namespace,
         object,
         dry_run,
+        resolved.conversion_webhook.clone(),
+        field_manager,
+        "",
+        resolved.has_status_subresource,
+        false,
     )
     .await
 }
@@ -247,6 +257,7 @@ pub async fn update_with_options(
 /// unaffected: `resolve_resource` always reports `true` for one, the
 /// same "not modeled per-type yet" scope this crate's own discovery
 /// already has for built-in subresources generally.
+/// `dry_run` validates and returns the status candidate without persisting it.
 pub async fn update_status(
     storage: &mut StorageClient,
     group: &str,
@@ -255,6 +266,26 @@ pub async fn update_status(
     namespace: Option<&str>,
     name: &str,
     body: &Value,
+    dry_run: bool,
+) -> Result<UpdateOutcome, Error> {
+    update_status_with_manager(
+        storage, group, version, resource, namespace, name, body, dry_run, None,
+    )
+    .await
+}
+
+/// [`update_status`] with the request's field manager. Status writes use a
+/// separate managed-fields subresource entry, as in upstream.
+pub async fn update_status_with_manager(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    body: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
@@ -274,13 +305,24 @@ pub async fn update_status(
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode(
+    let existing_object = decrypt_and_decode_with_rotation(
         storage,
         group,
         resource,
         &existing_kv.key,
         &existing_kv.value,
-    )?;
+        existing_kv.mod_revision,
+    )
+    .await?;
+    let existing_object_for_request = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        &kind,
+        resolved.conversion_webhook.as_ref(),
+        existing_object.clone(),
+    )
+    .await?;
 
     let Some(submitted_rv) = body
         .pointer("/metadata/resourceVersion")
@@ -293,7 +335,7 @@ pub async fn update_status(
         return Ok(UpdateOutcome::Conflict);
     }
 
-    let mut object = existing_object.clone();
+    let mut object = existing_object_for_request;
     match body.get("status") {
         Some(status) => object["status"] = status.clone(),
         None => {
@@ -311,6 +353,8 @@ pub async fn update_status(
     persist_update(
         storage,
         resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        resolved.storage_open_api_schema.as_ref(),
         &kind,
         group,
         version,
@@ -320,6 +364,11 @@ pub async fn update_status(
         &existing_object,
         namespace,
         object,
+        dry_run,
+        resolved.conversion_webhook.clone(),
+        field_manager,
+        "status",
+        false,
         false,
     )
     .await
@@ -387,6 +436,8 @@ fn validate_crd_status(open_api_schema: &Option<Value>, object: &mut Value) -> V
 async fn persist_update(
     storage: &mut StorageClient,
     schema: Option<&str>,
+    open_api_schema: Option<&Value>,
+    storage_open_api_schema: Option<&Value>,
     kind: &str,
     group: &str,
     version: &str,
@@ -397,7 +448,23 @@ async fn persist_update(
     namespace: Option<&str>,
     mut object: Value,
     dry_run: bool,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
+    field_manager: Option<&str>,
+    managed_subresource: &str,
+    has_status_subresource: bool,
+    managed_fields_reconciled: bool,
 ) -> Result<UpdateOutcome, Error> {
+    let semantic_violations = validation::validate_builtin_update_semantics(
+        group,
+        version,
+        kind,
+        existing_object,
+        &object,
+    );
+    if !semantic_violations.is_empty() {
+        return Ok(UpdateOutcome::Invalid(semantic_violations));
+    }
+
     for field in ["creationTimestamp", "uid"] {
         if let Some(existing_value) = existing_object
             .pointer(&format!("/metadata/{field}"))
@@ -411,15 +478,120 @@ async fn persist_update(
     }
 
     object = crate::scheme::conversion::to_version(group, version, kind, object);
+    if field_manager.is_some() {
+        let existing_for_fields = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            kind,
+            conversion_webhook.as_ref(),
+            existing_object.clone(),
+        )
+        .await?;
+        object = reconcile_managed_fields(
+            schema,
+            open_api_schema,
+            &existing_for_fields,
+            object,
+            field_manager,
+            "Update",
+            managed_subresource,
+            group,
+            version,
+            has_status_subresource,
+        );
+    } else if !managed_fields_reconciled {
+        preserve_managed_fields(existing_object, &mut object);
+    }
+    object =
+        convert_to_storage_version(storage, group, version, conversion_webhook.as_ref(), object)
+            .await?;
+    object = match revalidate_storage_object(storage_open_api_schema, object) {
+        Ok(object) => object,
+        Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
+    };
 
-    if dry_run {
+    // Removing the last finalizer from an object already marked for deletion
+    // completes the deletion. This mirrors the generic registry's
+    // ShouldDeleteDuringUpdate path: the update is accepted, but the object
+    // is removed atomically instead of being written back as a live object.
+    if has_deletion_timestamp(existing_object) && !has_finalizers(&object) {
+        if dry_run {
+            let object = convert_to_requested_version(
+                storage,
+                group,
+                version,
+                kind,
+                conversion_webhook.as_ref(),
+                object,
+            )
+            .await?;
+            return Ok(UpdateOutcome::Updated(object));
+        }
+        let compare = pb::Compare {
+            key: key.clone().into_bytes(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(
+                existing_kv.mod_revision,
+            )),
+            range_end: Vec::new(),
+        };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestDeleteRange(
+                    pb::DeleteRangeRequest {
+                        key: key.into_bytes(),
+                        prev_kv: true,
+                        ..Default::default()
+                    },
+                )),
+            }],
+            failure: vec![],
+        };
+        let response = storage.txn(txn).await?;
+        if !response.succeeded {
+            return Ok(UpdateOutcome::Conflict);
+        }
+        let revision = response.header.map(|header| header.revision).unwrap_or(0);
+        set_metadata_field(
+            &mut object,
+            "resourceVersion",
+            Value::String(revision.to_string()),
+        );
+        let object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            kind,
+            conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
         return Ok(UpdateOutcome::Updated(object));
     }
 
+    if dry_run {
+        let object = convert_to_requested_version(
+            storage,
+            group,
+            version,
+            kind,
+            conversion_webhook.as_ref(),
+            object,
+        )
+        .await?;
+        return Ok(UpdateOutcome::Updated(object));
+    }
+
+    let stored_version = conversion_webhook
+        .as_ref()
+        .map_or(version, |conversion| conversion.storage_version.as_str());
     let api_version = if group.is_empty() {
-        version.to_string()
+        stored_version.to_string()
     } else {
-        format!("{group}/{version}")
+        format!("{group}/{stored_version}")
     };
     let object_bytes = match schema {
         Some(schema) => protobuf::encode_message(schema, &object)?,
@@ -462,5 +634,14 @@ async fn persist_update(
         "resourceVersion",
         Value::String(revision.to_string()),
     );
+    let object = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        kind,
+        conversion_webhook.as_ref(),
+        object,
+    )
+    .await?;
     Ok(UpdateOutcome::Updated(object))
 }

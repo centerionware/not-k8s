@@ -29,7 +29,10 @@ pub fn encode_message(message: &str, value: &Value) -> Result<Vec<u8>> {
     // message actually declares, so this is safe even when several
     // embedded levels chain (`NamedRuleWithOperations` -> `RuleWithOperations`
     // -> `Rule`) or when the object doesn't carry every nested field.
-    for field in codegen::proto_fields::PROTO_FIELDS.iter().filter(|f| f.message == message) {
+    for field in codegen::proto_fields::PROTO_FIELDS
+        .iter()
+        .filter(|f| f.message == message)
+    {
         if is_inline_embedded_field(message, field.json_name) {
             encode_field(message, field, value, &mut out)?;
         }
@@ -65,21 +68,56 @@ fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
     // API version.
     matches!(
         (message, json_name),
-        ("io.k8s.api.admissionregistration.v1.NamedRuleWithOperations", "ruleWithOperations")
-            | ("io.k8s.api.admissionregistration.v1beta1.NamedRuleWithOperations", "ruleWithOperations")
-            | ("io.k8s.api.admissionregistration.v1alpha1.NamedRuleWithOperations", "ruleWithOperations")
-            | ("io.k8s.api.admissionregistration.v1.RuleWithOperations", "rule")
-            | ("io.k8s.api.core.v1.Volume", "volumeSource")
-            | ("io.k8s.api.core.v1.PersistentVolumeSpec", "persistentVolumeSource")
-            | ("io.k8s.api.core.v1.EphemeralContainer", "ephemeralContainerCommon")
-            | ("io.k8s.api.core.v1.ConfigMapEnvSource", "localObjectReference")
-            | ("io.k8s.api.core.v1.ConfigMapKeySelector", "localObjectReference")
-            | ("io.k8s.api.core.v1.ConfigMapProjection", "localObjectReference")
-            | ("io.k8s.api.core.v1.ConfigMapVolumeSource", "localObjectReference")
+        (
+            "io.k8s.api.admissionregistration.v1.NamedRuleWithOperations",
+            "ruleWithOperations"
+        ) | (
+            "io.k8s.api.admissionregistration.v1beta1.NamedRuleWithOperations",
+            "ruleWithOperations"
+        ) | (
+            "io.k8s.api.admissionregistration.v1alpha1.NamedRuleWithOperations",
+            "ruleWithOperations"
+        ) | (
+            "io.k8s.api.admissionregistration.v1.RuleWithOperations",
+            "rule"
+        ) | ("io.k8s.api.core.v1.Volume", "volumeSource")
+            | (
+                "io.k8s.api.core.v1.PersistentVolumeSpec",
+                "persistentVolumeSource"
+            )
+            | (
+                "io.k8s.api.core.v1.EphemeralContainer",
+                "ephemeralContainerCommon"
+            )
+            | (
+                "io.k8s.api.core.v1.ConfigMapEnvSource",
+                "localObjectReference"
+            )
+            | (
+                "io.k8s.api.core.v1.ConfigMapKeySelector",
+                "localObjectReference"
+            )
+            | (
+                "io.k8s.api.core.v1.ConfigMapProjection",
+                "localObjectReference"
+            )
+            | (
+                "io.k8s.api.core.v1.ConfigMapVolumeSource",
+                "localObjectReference"
+            )
             | ("io.k8s.api.core.v1.SecretEnvSource", "localObjectReference")
-            | ("io.k8s.api.core.v1.SecretKeySelector", "localObjectReference")
-            | ("io.k8s.api.core.v1.SecretProjection", "localObjectReference")
-            | ("io.k8s.api.core.v1.SecretVolumeSource", "localObjectReference")
+            | (
+                "io.k8s.api.core.v1.SecretKeySelector",
+                "localObjectReference"
+            )
+            | (
+                "io.k8s.api.core.v1.SecretProjection",
+                "localObjectReference"
+            )
+            | (
+                "io.k8s.api.core.v1.SecretVolumeSource",
+                "localObjectReference"
+            )
             | ("io.k8s.api.core.v1.Probe", "handler")
     )
 }
@@ -102,36 +140,54 @@ fn encode_field(message: &str, field: &ProtoField, value: &Value, out: &mut Vec<
 
 /// Encodes one value (a single element of a repeated field, or a
 /// non-repeated field's whole value) as one wire field: tag, then payload.
-fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, out: &mut Vec<u8>) -> Result<()> {
+fn encode_scalar_or_message(
+    message: &str,
+    field: &ProtoField,
+    value: &Value,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     match ScalarKind::of(&field.proto_type) {
         Some(ScalarKind::Bool) => {
-            let b = value.as_bool().ok_or_else(|| type_mismatch(message, field, "bool", value))?;
+            let b = value
+                .as_bool()
+                .ok_or_else(|| type_mismatch(message, field, "bool", value))?;
             wire::encode_tag(field.number, WireType::Varint, out);
             wire::encode_varint(b as u64, out);
         }
         Some(ScalarKind::Int32) => {
-            let n = value.as_i64().ok_or_else(|| type_mismatch(message, field, "int32", value))?;
+            let n = value
+                .as_i64()
+                .ok_or_else(|| type_mismatch(message, field, "int32", value))?;
             wire::encode_tag(field.number, WireType::Varint, out);
             wire::encode_varint_i32(n as i32, out);
         }
         Some(ScalarKind::Int64) => {
-            let n = value.as_i64().ok_or_else(|| type_mismatch(message, field, "int64", value))?;
+            let n = value
+                .as_i64()
+                .ok_or_else(|| type_mismatch(message, field, "int64", value))?;
             wire::encode_tag(field.number, WireType::Varint, out);
             wire::encode_varint_i64(n, out);
         }
         Some(ScalarKind::Double) => {
-            let n = value.as_f64().ok_or_else(|| type_mismatch(message, field, "double", value))?;
+            let n = value
+                .as_f64()
+                .ok_or_else(|| type_mismatch(message, field, "double", value))?;
             wire::encode_tag(field.number, WireType::Fixed64, out);
             wire::encode_fixed64(n, out);
         }
         Some(ScalarKind::String) => {
-            let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "string", value))?;
+            let s = value
+                .as_str()
+                .ok_or_else(|| type_mismatch(message, field, "string", value))?;
             wire::encode_tag(field.number, WireType::LengthDelimited, out);
             wire::encode_length_delimited(s.as_bytes(), out);
         }
         Some(ScalarKind::Bytes) => {
-            let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "base64 string", value))?;
-            let bytes = base64_decode(s).map_err(|e| Error::InvalidBase64(format!("{message}.{}", field.json_name), e))?;
+            let s = value
+                .as_str()
+                .ok_or_else(|| type_mismatch(message, field, "base64 string", value))?;
+            let bytes = base64_decode(s)
+                .map_err(|e| Error::InvalidBase64(format!("{message}.{}", field.json_name), e))?;
             wire::encode_tag(field.number, WireType::LengthDelimited, out);
             wire::encode_length_delimited(&bytes, out);
         }
@@ -141,7 +197,9 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
                 // The one genuinely irreducible exception to this
                 // encoder's otherwise fully generic reflection-based
                 // approach — see `encode_time_string`'s own doc comment.
-                let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "RFC3339 timestamp string", value))?;
+                let s = value.as_str().ok_or_else(|| {
+                    type_mismatch(message, field, "RFC3339 timestamp string", value)
+                })?;
                 encode_time_string(&format!("{message}.{}", field.json_name), s)?
             } else if is_fields_v1_message(&nested_message) {
                 // FieldsV1 is a JSON-shaped field set wrapped in a single
@@ -177,16 +235,35 @@ fn encode_scalar_or_message(message: &str, field: &ProtoField, value: &Value, ou
 /// set — confirmed by grep), `value = 2`. One such entry per JSON object
 /// property, each independently length-delimited and tagged with the map
 /// field's own number.
-fn encode_map_field(message: &str, field: &ProtoField, value: &Value, out: &mut Vec<u8>) -> Result<()> {
+fn encode_map_field(
+    message: &str,
+    field: &ProtoField,
+    value: &Value,
+    out: &mut Vec<u8>,
+) -> Result<()> {
     let Value::Object(entries) = value else {
         return Err(type_mismatch(message, field, "object (map)", value));
     };
     let (key_type, value_type) = split_map_type(&field.proto_type)?;
     for (k, v) in entries {
         let mut entry = Vec::new();
-        let key_field = ProtoField { message: field.message, json_name: "key", number: 1, repeated: false, map: false, proto_type: key_type };
+        let key_field = ProtoField {
+            message: field.message,
+            json_name: "key",
+            number: 1,
+            repeated: false,
+            map: false,
+            proto_type: key_type,
+        };
         encode_scalar_or_message(message, &key_field, &Value::String(k.clone()), &mut entry)?;
-        let value_field = ProtoField { message: field.message, json_name: "value", number: 2, repeated: false, map: false, proto_type: value_type };
+        let value_field = ProtoField {
+            message: field.message,
+            json_name: "value",
+            number: 2,
+            repeated: false,
+            map: false,
+            proto_type: value_type,
+        };
         encode_scalar_or_message(message, &value_field, v, &mut entry)?;
         wire::encode_tag(field.number, WireType::LengthDelimited, out);
         wire::encode_length_delimited(&entry, out);

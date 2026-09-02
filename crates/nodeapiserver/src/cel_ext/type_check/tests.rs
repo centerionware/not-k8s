@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -15,11 +16,13 @@ mod tests {
 
     #[test]
     fn declared_fields_and_nested_comprehension_variables_are_typed() {
-        assert!(check_rule(
-            &schema(),
-            "self.replicas > 0 && self.tags.all(tag, tag.name != '')"
-        )
-        .is_empty());
+        assert!(
+            check_rule(
+                &schema(),
+                "self.replicas > 0 && self.tags.all(tag, tag.name != '')"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -33,26 +36,32 @@ mod tests {
     #[test]
     fn an_obvious_operand_mismatch_is_rejected() {
         let errors = check_rule(&schema(), "self.name + 1");
-        assert!(errors
-            .iter()
-            .any(|error| matches!(error, TypeError::IncompatibleOperands { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, TypeError::IncompatibleOperands { .. }))
+        );
     }
 
     #[test]
     fn validation_rules_must_be_boolean() {
         let errors = check_rule(&schema(), "self.name");
-        assert!(errors
-            .iter()
-            .any(|error| matches!(error, TypeError::NonBoolean(CelType::String))));
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, TypeError::NonBoolean(CelType::String)))
+        );
     }
 
     #[test]
     fn root_metadata_is_available_even_when_the_crd_schema_omits_it() {
-        assert!(check_root_rule(
-            &schema(),
-            "self.metadata.name != '' && self.apiVersion != ''"
-        )
-        .is_empty());
+        assert!(
+            check_root_rule(
+                &schema(),
+                "self.metadata.name != '' && self.apiVersion != ''"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -77,10 +86,11 @@ mod tests {
             error,
             TypeError::InvalidOperand { operation, .. } if operation == "add"
         )));
-        assert!(errors.iter().any(|error| matches!(
-            error,
-            TypeError::IncompatibleOperands { .. }
-        )));
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, TypeError::IncompatibleOperands { .. }))
+        );
         assert!(errors.iter().any(|error| matches!(
             error,
             TypeError::InvalidOperand { operation, .. } if operation == "family"
@@ -98,12 +108,14 @@ mod tests {
 
     #[test]
     fn optional_old_self_exposes_has_value_and_value() {
-        assert!(check_root_rule_with_optional_old_self(
-            &schema(),
-            "oldSelf.hasValue() ? oldSelf.value().name != '' : true",
-            true,
-        )
-        .is_empty());
+        assert!(
+            check_root_rule_with_optional_old_self(
+                &schema(),
+                "oldSelf.hasValue() ? oldSelf.value().name != '' : true",
+                true,
+            )
+            .is_empty()
+        );
     }
 
     #[test]

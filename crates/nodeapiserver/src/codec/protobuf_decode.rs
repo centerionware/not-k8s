@@ -22,16 +22,26 @@ pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
             // own doc comment): the nested message's own fields belong
             // flattened directly into this same object, not nested under
             // a `ruleWithOperations`/`rule` wrapper key JSON never has.
-            let Value::Object(nested) = decoded else { unreachable!("an embedded field always decodes to a JSON object") };
+            let Value::Object(nested) = decoded else {
+                unreachable!("an embedded field always decodes to a JSON object")
+            };
             obj.extend(nested);
         } else if field.map {
-            let Value::Object(map) = obj.entry(field.json_name).or_insert_with(|| Value::Object(Map::new())) else {
+            let Value::Object(map) = obj
+                .entry(field.json_name)
+                .or_insert_with(|| Value::Object(Map::new()))
+            else {
                 unreachable!("map field always inserts a JSON object");
             };
-            let Value::Object(entry) = decoded else { unreachable!("map entry decodes to a one-key object") };
+            let Value::Object(entry) = decoded else {
+                unreachable!("map entry decodes to a one-key object")
+            };
             map.extend(entry);
         } else if field.repeated {
-            let Value::Array(arr) = obj.entry(field.json_name).or_insert_with(|| Value::Array(Vec::new())) else {
+            let Value::Array(arr) = obj
+                .entry(field.json_name)
+                .or_insert_with(|| Value::Array(Vec::new()))
+            else {
                 unreachable!("repeated field always inserts a JSON array");
             };
             arr.push(decoded);
@@ -58,10 +68,12 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
         Some(ScalarKind::Bool) => Ok(Value::Bool(as_varint(&label(), raw)? != 0)),
         Some(ScalarKind::Int32) => Ok(Value::from(as_varint(&label(), raw)? as u32 as i32)),
         Some(ScalarKind::Int64) => Ok(Value::from(as_varint(&label(), raw)? as i64)),
-        Some(ScalarKind::Double) => {
-            Ok(serde_json::Number::from_f64(as_fixed64(&label(), raw)?).map(Value::Number).unwrap_or(Value::Null))
-        }
-        Some(ScalarKind::String) => Ok(Value::String(String::from_utf8_lossy(as_bytes(&label(), raw)?).into_owned())),
+        Some(ScalarKind::Double) => Ok(serde_json::Number::from_f64(as_fixed64(&label(), raw)?)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)),
+        Some(ScalarKind::String) => Ok(Value::String(
+            String::from_utf8_lossy(as_bytes(&label(), raw)?).into_owned(),
+        )),
         Some(ScalarKind::Bytes) => Ok(Value::String(base64_encode(as_bytes(&label(), raw)?))),
         None => {
             let nested_message = codegen::resolve_message_ref(message, &field.proto_type);
@@ -108,11 +120,18 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
 /// with hand-built fixtures that happened never to include a `Time`
 /// field.
 fn is_time_message(message: &str) -> bool {
-    matches!(message, "io.k8s.apimachinery.pkg.apis.meta.v1.Time" | "io.k8s.apimachinery.pkg.apis.meta.v1.MicroTime")
+    matches!(
+        message,
+        "io.k8s.apimachinery.pkg.apis.meta.v1.Time"
+            | "io.k8s.apimachinery.pkg.apis.meta.v1.MicroTime"
+    )
 }
 
 fn encode_time_string(field_label: &str, s: &str) -> Result<Vec<u8>> {
-    let dt = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| Error::InvalidTimestamp { field: field_label.to_string(), value: s.to_string() })?;
+    let dt = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| Error::InvalidTimestamp {
+        field: field_label.to_string(),
+        value: s.to_string(),
+    })?;
     let mut out = Vec::new();
     let seconds = dt.timestamp();
     let nanos = dt.timestamp_subsec_nanos() as i32;
@@ -139,8 +158,15 @@ fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
             _ => {}
         }
     }
-    let dt = chrono::DateTime::from_timestamp(seconds, nanos as u32).ok_or_else(|| Error::InvalidTimestamp { field: field_label.to_string(), value: format!("seconds={seconds}, nanos={nanos}") })?;
-    Ok(Value::String(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
+    let dt = chrono::DateTime::from_timestamp(seconds, nanos as u32).ok_or_else(|| {
+        Error::InvalidTimestamp {
+            field: field_label.to_string(),
+            value: format!("seconds={seconds}, nanos={nanos}"),
+        }
+    })?;
+    Ok(Value::String(
+        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    ))
 }
 
 /// Group K's own well-known-type special case, the same shape
@@ -183,7 +209,9 @@ fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
 fn is_json_message(message: &str) -> bool {
     matches!(
         message,
-        "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSON" | "io.k8s.apimachinery.pkg.runtime.RawExtension"
+        "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON"
+            | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSON"
+            | "io.k8s.apimachinery.pkg.runtime.RawExtension"
     )
 }
 
@@ -270,7 +298,12 @@ fn encode_int_or_string(message: &str, field: &ProtoField, value: &Value) -> Res
         wire::encode_tag(3, WireType::LengthDelimited, &mut out);
         wire::encode_length_delimited(s.as_bytes(), &mut out);
     } else {
-        return Err(type_mismatch(message, field, "an int or a string (IntOrString)", value));
+        return Err(type_mismatch(
+            message,
+            field,
+            "an int or a string (IntOrString)",
+            value,
+        ));
     }
     Ok(out)
 }
@@ -316,11 +349,17 @@ fn decode_int_or_string_message(field_label: &str, bytes: &[u8]) -> Result<Value
 /// codec layer already — this is the same value's *protobuf* wire
 /// shape, a separate layer nothing had exercised live yet.
 fn is_quantity_message(message: &str) -> bool {
-    matches!(message, "io.k8s.apimachinery.pkg.api.resource.Quantity" | "io.k8s.apimachinery.pkg.api.resource.QuantityValue")
+    matches!(
+        message,
+        "io.k8s.apimachinery.pkg.api.resource.Quantity"
+            | "io.k8s.apimachinery.pkg.api.resource.QuantityValue"
+    )
 }
 
 fn encode_quantity(message: &str, field: &ProtoField, value: &Value) -> Result<Vec<u8>> {
-    let s = value.as_str().ok_or_else(|| type_mismatch(message, field, "a quantity string", value))?;
+    let s = value
+        .as_str()
+        .ok_or_else(|| type_mismatch(message, field, "a quantity string", value))?;
     let mut out = Vec::new();
     if !s.is_empty() {
         wire::encode_tag(1, WireType::LengthDelimited, &mut out);
@@ -334,7 +373,9 @@ fn decode_quantity_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
     while pos < bytes.len() {
         let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
         if field_number == 1 {
-            return Ok(Value::String(String::from_utf8_lossy(as_bytes(field_label, &raw)?).into_owned()));
+            return Ok(Value::String(
+                String::from_utf8_lossy(as_bytes(field_label, &raw)?).into_owned(),
+            ));
         }
     }
     Ok(Value::String(String::new()))
@@ -358,11 +399,19 @@ fn decode_quantity_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
 /// `tests/crd_roundtrip.rs`'s own strategic-merge-patch-against-a-CRD
 /// test recursed into a list field's `items` schema for real.
 fn is_json_schema_props_or_array(message: &str) -> bool {
-    matches!(message, "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaPropsOrArray")
+    matches!(
+        message,
+        "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrArray"
+            | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaPropsOrArray"
+    )
 }
 
 fn is_json_schema_props_or_bool(message: &str) -> bool {
-    matches!(message, "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool" | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaPropsOrBool")
+    matches!(
+        message,
+        "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrBool"
+            | "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaPropsOrBool"
+    )
 }
 
 /// The real `JSONSchemaProps` message name for a `...OrArray`/`...OrBool`
@@ -370,7 +419,10 @@ fn is_json_schema_props_or_bool(message: &str) -> bool {
 /// `"...v1.JSONSchemaProps"` — both wrapper messages nest exactly that
 /// type, for exactly the version they themselves belong to.
 fn json_schema_props_message_for(wrapper_message: &str) -> String {
-    let base = wrapper_message.rsplit_once('.').map(|(prefix, _)| prefix).unwrap_or(wrapper_message);
+    let base = wrapper_message
+        .rsplit_once('.')
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(wrapper_message);
     format!("{base}.JSONSchemaProps")
 }
 
@@ -403,7 +455,10 @@ fn decode_json_schema_props_or_array(wrapper_message: &str, bytes: &[u8]) -> Res
         let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
         match field_number {
             1 => schema_bytes = Some(as_bytes("JSONSchemaPropsOrArray.schema", &raw)?),
-            2 => list_items.push(decode_message(&inner, as_bytes("JSONSchemaPropsOrArray.jSONSchemas", &raw)?)?),
+            2 => list_items.push(decode_message(
+                &inner,
+                as_bytes("JSONSchemaPropsOrArray.jSONSchemas", &raw)?,
+            )?),
             _ => {}
         }
     }
@@ -465,15 +520,34 @@ fn decode_json_schema_props_or_bool(wrapper_message: &str, bytes: &[u8]) -> Resu
 fn decode_map_entry(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value> {
     let (key_type, value_type) = split_map_type(&field.proto_type)?;
     let entry_bytes = as_bytes(&format!("{message}.{}", field.json_name), raw)?;
-    let key_field = ProtoField { message: field.message, json_name: "key", number: 1, repeated: false, map: false, proto_type: key_type };
-    let value_field = ProtoField { message: field.message, json_name: "value", number: 2, repeated: false, map: false, proto_type: value_type };
+    let key_field = ProtoField {
+        message: field.message,
+        json_name: "key",
+        number: 1,
+        repeated: false,
+        map: false,
+        proto_type: key_type,
+    };
+    let value_field = ProtoField {
+        message: field.message,
+        json_name: "value",
+        number: 2,
+        repeated: false,
+        map: false,
+        proto_type: value_type,
+    };
     let mut key: Option<String> = None;
     let mut val: Value = Value::Null;
     let mut pos = 0;
     while pos < entry_bytes.len() {
         let (num, r) = wire::decode_field(entry_bytes, &mut pos)?;
         if num == 1 {
-            key = Some(decode_one(message, &key_field, &r)?.as_str().unwrap_or_default().to_string());
+            key = Some(
+                decode_one(message, &key_field, &r)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
         } else if num == 2 {
             val = decode_one(message, &value_field, &r)?;
         }
@@ -486,14 +560,18 @@ fn decode_map_entry(message: &str, field: &ProtoField, raw: &RawField) -> Result
 fn as_varint(field: &str, raw: &RawField) -> Result<u64> {
     match raw {
         RawField::Varint(v) => Ok(*v),
-        _ => Err(Error::UnexpectedWireShape { field: field.to_string() }),
+        _ => Err(Error::UnexpectedWireShape {
+            field: field.to_string(),
+        }),
     }
 }
 
 fn as_fixed64(field: &str, raw: &RawField) -> Result<f64> {
     match raw {
         RawField::Fixed64(v) => Ok(*v),
-        _ => Err(Error::UnexpectedWireShape { field: field.to_string() }),
+        _ => Err(Error::UnexpectedWireShape {
+            field: field.to_string(),
+        }),
     }
 }
 
@@ -503,7 +581,9 @@ fn as_fixed64(field: &str, raw: &RawField) -> Result<f64> {
 fn as_bytes<'a>(field: &str, raw: &RawField<'a>) -> Result<&'a [u8]> {
     match raw {
         RawField::LengthDelimited(b) => Ok(b),
-        _ => Err(Error::UnexpectedWireShape { field: field.to_string() }),
+        _ => Err(Error::UnexpectedWireShape {
+            field: field.to_string(),
+        }),
     }
 }
 
@@ -512,7 +592,9 @@ fn split_map_type(proto_type: &str) -> Result<(&'static str, &'static str)> {
         .strip_prefix("map<")
         .and_then(|s| s.strip_suffix('>'))
         .ok_or_else(|| Error::MalformedMapType(proto_type.to_string()))?;
-    let (k, v) = inner.split_once(',').ok_or_else(|| Error::MalformedMapType(proto_type.to_string()))?;
+    let (k, v) = inner
+        .split_once(',')
+        .ok_or_else(|| Error::MalformedMapType(proto_type.to_string()))?;
     // Leaked once per distinct map type at parse time — a small, bounded
     // set (map field variants are rare in the k8s API), and ProtoField's
     // fields are `&'static str` throughout, so this keeps the synthetic
@@ -523,7 +605,12 @@ fn split_map_type(proto_type: &str) -> Result<(&'static str, &'static str)> {
     Ok((k, v))
 }
 
-fn type_mismatch(message: &str, field: &ProtoField, expected: &'static str, value: &Value) -> Error {
+fn type_mismatch(
+    message: &str,
+    field: &ProtoField,
+    expected: &'static str,
+    value: &Value,
+) -> Error {
     Error::TypeMismatch {
         message: message.to_string(),
         field: field.json_name.to_string(),

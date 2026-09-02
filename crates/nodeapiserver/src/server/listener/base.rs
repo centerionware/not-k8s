@@ -30,7 +30,9 @@ enum BodyReadError {
 impl std::fmt::Display for BodyReadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TooLarge { limit } => write!(formatter, "request body exceeds the {limit}-byte limit"),
+            Self::TooLarge { limit } => {
+                write!(formatter, "request body exceeds the {limit}-byte limit")
+            }
             Self::Hyper(error) => error.fmt(formatter),
         }
     }
@@ -44,7 +46,10 @@ impl From<hyper::Error> for BodyReadError {
     }
 }
 
-fn record_admission_outcome(metadata: Option<&SharedAdmissionMetadata>, outcome: &admission::policy_enforcement::ValidationOutcome) {
+fn record_admission_outcome(
+    metadata: Option<&SharedAdmissionMetadata>,
+    outcome: &admission::policy_enforcement::ValidationOutcome,
+) {
     let Some(metadata) = metadata else {
         return;
     };
@@ -52,15 +57,21 @@ fn record_admission_outcome(metadata: Option<&SharedAdmissionMetadata>, outcome:
         return;
     };
     metadata.warnings.extend(outcome.warnings.iter().cloned());
-    metadata.audit_failures.extend(outcome.audit_failures.iter().cloned());
+    metadata
+        .audit_failures
+        .extend(outcome.audit_failures.iter().cloned());
 }
 
 fn audit_annotations(metadata: &AdmissionMetadata) -> BTreeMap<String, String> {
     if metadata.audit_failures.is_empty() {
         return BTreeMap::new();
     }
-    let value = serde_json::to_string(&metadata.audit_failures).unwrap_or_else(|_| "[]".to_string());
-    BTreeMap::from([(admission::policy_enforcement::VALIDATION_FAILURE_AUDIT_ANNOTATION.to_string(), value)])
+    let value =
+        serde_json::to_string(&metadata.audit_failures).unwrap_or_else(|_| "[]".to_string());
+    BTreeMap::from([(
+        admission::policy_enforcement::VALIDATION_FAILURE_AUDIT_ANNOTATION.to_string(),
+        value,
+    )])
 }
 
 fn apply_admission_warnings(response: &mut Response<BoxedBody>, warnings: &[String]) {
@@ -68,8 +79,13 @@ fn apply_admission_warnings(response: &mut Response<BoxedBody>, warnings: &[Stri
     for warning in warnings {
         // RFC 7234's warning-text is quoted; sanitize control characters so
         // a policy cannot inject a second header into the response.
-        let escaped = warning.replace('\\', "\\\\").replace('"', "\\\"").replace('\r', " ").replace('\n', " ");
-        let Ok(value) = hyper::header::HeaderValue::from_str(&format!("299 - \"{escaped}\"")) else {
+        let escaped = warning
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\r', " ")
+            .replace('\n', " ");
+        let Ok(value) = hyper::header::HeaderValue::from_str(&format!("299 - \"{escaped}\""))
+        else {
             continue;
         };
         response.headers_mut().append(warning_header.clone(), value);
@@ -115,7 +131,13 @@ async fn reconcile_crd_caches(
     let mut state = DynamicCacheState::new();
 
     for (key, entry) in entries {
-        match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &key, &entry.value) {
+        match rest::decrypt_and_decode(
+            &storage,
+            "apiextensions.k8s.io",
+            "customresourcedefinitions",
+            &key,
+            &entry.value,
+        ) {
             Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd)),
             Err(error) => warn!(error = ?error, "crd cache: failed to decode an initial CRD"),
         }
@@ -125,9 +147,23 @@ async fn reconcile_crd_caches(
         match events.recv().await {
             Ok(event) => match event.kind {
                 crate::cacher::EventKind::Added | crate::cacher::EventKind::Modified => {
-                    match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &event.key, &event.value) {
-                        Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, event.key, Some(&crd)),
-                        Err(error) => warn!(error = ?error, "crd cache: failed to decode a changed CRD"),
+                    match rest::decrypt_and_decode(
+                        &storage,
+                        "apiextensions.k8s.io",
+                        "customresourcedefinitions",
+                        &event.key,
+                        &event.value,
+                    ) {
+                        Ok(crd) => reconcile_crd_cache(
+                            &storage,
+                            &registry,
+                            &mut state,
+                            event.key,
+                            Some(&crd),
+                        ),
+                        Err(error) => {
+                            warn!(error = ?error, "crd cache: failed to decode a changed CRD")
+                        }
                     }
                 }
                 crate::cacher::EventKind::Deleted => {
@@ -136,17 +172,35 @@ async fn reconcile_crd_caches(
                 crate::cacher::EventKind::Bookmark => {}
             },
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                warn!(skipped, "crd cache: event stream lagged; rebuilding dynamic cache registrations");
+                warn!(
+                    skipped,
+                    "crd cache: event stream lagged; rebuilding dynamic cache registrations"
+                );
                 let (entries, next_events) = crd_cache.snapshot_and_watch();
-                let current_keys: HashSet<Vec<u8>> = entries.iter().map(|(key, _)| key.clone()).collect();
-                let stale_keys: Vec<Vec<u8>> = state.keys().filter(|key| !current_keys.contains(*key)).cloned().collect();
+                let current_keys: HashSet<Vec<u8>> =
+                    entries.iter().map(|(key, _)| key.clone()).collect();
+                let stale_keys: Vec<Vec<u8>> = state
+                    .keys()
+                    .filter(|key| !current_keys.contains(*key))
+                    .cloned()
+                    .collect();
                 for key in stale_keys {
                     reconcile_crd_cache(&storage, &registry, &mut state, key, None);
                 }
                 for (key, entry) in entries {
-                    match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &key, &entry.value) {
-                        Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd)),
-                        Err(error) => warn!(error = ?error, "crd cache: failed to decode a CRD while rebuilding registrations"),
+                    match rest::decrypt_and_decode(
+                        &storage,
+                        "apiextensions.k8s.io",
+                        "customresourcedefinitions",
+                        &key,
+                        &entry.value,
+                    ) {
+                        Ok(crd) => {
+                            reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd))
+                        }
+                        Err(error) => {
+                            warn!(error = ?error, "crd cache: failed to decode a CRD while rebuilding registrations")
+                        }
                     }
                 }
                 events = next_events;
@@ -158,7 +212,9 @@ async fn reconcile_crd_caches(
 
 fn body_from_bytes(bytes: Vec<u8>) -> BoxedBody {
     use http_body_util::{BodyExt, Full};
-    Full::new(hyper::body::Bytes::from(bytes)).map_err(|never: std::convert::Infallible| match never {}).boxed()
+    Full::new(hyper::body::Bytes::from(bytes))
+        .map_err(|never: std::convert::Infallible| match never {})
+        .boxed()
 }
 
 /// Buffers a request's body into memory while enforcing the listener's
@@ -235,7 +291,10 @@ async fn capture_response_object(
         Ok(collected) => collected.to_bytes(),
         Err(error) => {
             warn!(error = ?error, "nodeapiserver: failed to capture response body for audit");
-            return (Response::from_parts(parts, body_from_bytes(Vec::new())), None);
+            return (
+                Response::from_parts(parts, body_from_bytes(Vec::new())),
+                None,
+            );
         }
     };
     let object = decode_audit_object(&bytes, content_type.as_deref());
@@ -263,18 +322,36 @@ fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<Boxe
     json_response_with_content_type(status, value, "application/json")
 }
 
-fn json_response_with_content_type(status: StatusCode, value: &serde_json::Value, content_type: &str) -> Response<BoxedBody> {
+fn json_response_with_content_type(
+    status: StatusCode,
+    value: &serde_json::Value,
+    content_type: &str,
+) -> Response<BoxedBody> {
     let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-    Response::builder().status(status).header("Content-Type", content_type).body(body_from_bytes(bytes)).unwrap()
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(body_from_bytes(bytes))
+        .unwrap()
 }
 
 fn scale_outcome_response(path: &str, outcome: rest::ScaleOutcome) -> Response<BoxedBody> {
     match outcome {
-        rest::ScaleOutcome::Found(scale) | rest::ScaleOutcome::Updated(scale) => json_response(StatusCode::OK, &scale),
-        rest::ScaleOutcome::UnknownResource | rest::ScaleOutcome::ObjectNotFound => json_response(StatusCode::NOT_FOUND, &not_found_status(path)),
-        rest::ScaleOutcome::MissingResourceVersion => json_response(StatusCode::BAD_REQUEST, &bad_request_status(path, "metadata.resourceVersion is required")),
+        rest::ScaleOutcome::Found(scale) | rest::ScaleOutcome::Updated(scale) => {
+            json_response(StatusCode::OK, &scale)
+        }
+        rest::ScaleOutcome::UnknownResource | rest::ScaleOutcome::ObjectNotFound => {
+            json_response(StatusCode::NOT_FOUND, &not_found_status(path))
+        }
+        rest::ScaleOutcome::MissingResourceVersion => json_response(
+            StatusCode::BAD_REQUEST,
+            &bad_request_status(path, "metadata.resourceVersion is required"),
+        ),
         rest::ScaleOutcome::Conflict => json_response(StatusCode::CONFLICT, &conflict_status(path)),
-        rest::ScaleOutcome::Invalid(violations) => json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(path, &violations)),
+        rest::ScaleOutcome::Invalid(violations) => json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &invalid_status(path, &violations),
+        ),
     }
 }
 
@@ -308,10 +385,7 @@ struct WatchOptions {
 /// as upstream's watch handler does. Zero means no server-side timeout.
 fn watch_options_query(query: &str) -> Result<WatchOptions, &'static str> {
     let params = path::parse_query(query);
-    let allow_watch_bookmarks = match params
-        .iter()
-        .find(|(key, _)| key == "allowWatchBookmarks")
-    {
+    let allow_watch_bookmarks = match params.iter().find(|(key, _)| key == "allowWatchBookmarks") {
         None => false,
         Some((_, value)) => match value.to_ascii_lowercase().as_str() {
             "true" | "1" => true,
@@ -394,20 +468,29 @@ fn is_apply_patch_content_type(content_type: &str) -> bool {
 /// `None` when absent, so the caller can reject with a real `400` rather
 /// than inventing a manager name.
 fn field_manager_query(query: &str) -> Option<String> {
-    path::parse_query(query).into_iter().find(|(k, _)| k == "fieldManager").map(|(_, v)| v).filter(|value| !value.is_empty())
+    path::parse_query(query)
+        .into_iter()
+        .find(|(k, _)| k == "fieldManager")
+        .map(|(_, v)| v)
+        .filter(|value| !value.is_empty())
 }
 
 /// Real upstream's own `?force=` query parameter — Server-Side Apply's
 /// conflict-override flag.
 fn force_query(query: &str) -> bool {
-    path::parse_query(query).iter().any(|(k, v)| k == "force" && v == "true")
+    path::parse_query(query)
+        .iter()
+        .any(|(k, v)| k == "force" && v == "true")
 }
 
 /// Parses the write-only `dryRun` query option. Kubernetes currently defines
 /// one value, `All`; accepting anything else would make a misspelled option
 /// look like a successful persisted write.
 fn dry_run_query(query: &str) -> Result<bool, &'static str> {
-    let Some((_, value)) = path::parse_query(query).into_iter().find(|(key, _)| key == "dryRun") else {
+    let Some((_, value)) = path::parse_query(query)
+        .into_iter()
+        .find(|(key, _)| key == "dryRun")
+    else {
         return Ok(false);
     };
     match value.as_str() {
@@ -433,12 +516,12 @@ fn should_run_local_authorization(
     enforce_rbac: bool,
     authorization_webhook_allowed: bool,
 ) -> bool {
-    enforce_rbac
-        && !authorization_webhook_allowed
-        && !is_authorization_review(info)
+    enforce_rbac && !authorization_webhook_allowed && !is_authorization_review(info)
 }
 
-fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest::DeletePreconditions>, &'static str> {
+fn delete_preconditions(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<rest::DeletePreconditions>, &'static str> {
     let Some(preconditions) = value.and_then(|value| value.get("preconditions")) else {
         return Ok(None);
     };
@@ -448,7 +531,10 @@ fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest
     let string_field = |name: &str| -> Result<Option<String>, &'static str> {
         match preconditions.get(name) {
             None | Some(serde_json::Value::Null) => Ok(None),
-            Some(value) => value.as_str().map(|value| Some(value.to_string())).ok_or("delete preconditions must be strings"),
+            Some(value) => value
+                .as_str()
+                .map(|value| Some(value.to_string()))
+                .ok_or("delete preconditions must be strings"),
         }
     };
     Ok(Some(rest::DeletePreconditions {
@@ -464,8 +550,15 @@ fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest
 /// `Status.details.causes` (one `field.ManagedFieldsConflict` entry per
 /// conflicting manager) isn't built, `message` joins them into one
 /// human-readable string instead.
-fn ssa_conflict_status(path_str: &str, conflicts: &[crate::patch::updater::Conflict]) -> serde_json::Value {
-    let detail = conflicts.iter().map(|c| format!("\"{}\" already owns: {}", c.manager, c.fields.to_json())).collect::<Vec<_>>().join("; ");
+fn ssa_conflict_status(
+    path_str: &str,
+    conflicts: &[crate::patch::updater::Conflict],
+) -> serde_json::Value {
+    let detail = conflicts
+        .iter()
+        .map(|c| format!("\"{}\" already owns: {}", c.manager, c.fields.to_json()))
+        .collect::<Vec<_>>()
+        .join("; ");
     serde_json::json!({
         "kind": "Status",
         "apiVersion": "v1",
@@ -519,7 +612,14 @@ fn encode_watch_event(
     partial_metadata: bool,
     initial_events_end: bool,
 ) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
-    match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
+    match crate::server::watch_event::to_watch_event_json(
+        event,
+        kind,
+        api_version,
+        storage,
+        group,
+        resource,
+    ) {
         None => None,
         Some(Ok(mut event_json)) => {
             if partial_metadata {
@@ -538,7 +638,9 @@ fn encode_watch_event(
             // written to a watch client's connection, not per event this
             // build merely considered and filtered out).
             metrics::record_watch_event(group, version, resource);
-            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
+            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(
+                bytes,
+            ))))
         }
         Some(Err(e)) => Some(Err(Box::new(e) as BoxError)),
     }
@@ -581,7 +683,9 @@ async fn encode_watch_event_with_conversion(
             let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
             bytes.push(b'\n');
             metrics::record_watch_event(group, version, resource);
-            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
+            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(
+                bytes,
+            ))))
         }
         Some(Err(error)) => Some(Err(Box::new(error) as BoxError)),
     }
@@ -591,14 +695,18 @@ fn mark_initial_events_end(event_json: &mut Value) {
     let Some(object) = event_json.get_mut("object").and_then(Value::as_object_mut) else {
         return;
     };
-    let metadata = object.entry("metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let metadata = object
+        .entry("metadata")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if !metadata.is_object() {
         *metadata = Value::Object(serde_json::Map::new());
     }
     let Some(metadata) = metadata.as_object_mut() else {
         return;
     };
-    let annotations = metadata.entry("annotations").or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let annotations = metadata
+        .entry("annotations")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if !annotations.is_object() {
         *annotations = Value::Object(serde_json::Map::new());
     }
@@ -607,262 +715,11 @@ fn mark_initial_events_end(event_json: &mut Value) {
 
 type WatchStreamEvent = (crate::cacher::store::WatchEvent, bool);
 type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = WatchStreamEvent> + Send + Sync>>;
-type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
+type WatchFrameFuture = Pin<
+    Box<
+        dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>>
+            + Send,
+    >,
+>;
 
-struct ConversionWatchState {
-    events: WatchEventStream,
-    pending: Option<WatchFrameFuture>,
-    kind: String,
-    api_version: String,
-    storage: Option<StorageClient>,
-    group: String,
-    resource: String,
-    version: String,
-    partial_metadata: bool,
-    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
-}
-
-struct ConversionWatchStream {
-    state: Arc<Mutex<ConversionWatchState>>,
-}
-
-impl tokio_stream::Stream for ConversionWatchStream {
-    type Item = Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut state = self.state.lock().expect("conversion watch state lock poisoned");
-        loop {
-            if state.pending.is_some() {
-                let poll = state.pending.as_mut().expect("pending conversion future exists").as_mut().poll(cx);
-                match poll {
-                    Poll::Ready(result) => {
-                        state.pending = None;
-                        if let Some(result) = result {
-                            return Poll::Ready(Some(result));
-                        }
-                    }
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-
-            let (event, initial_events_end) = match state.events.as_mut().poll_next(cx) {
-                Poll::Ready(Some(event)) => event,
-                Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Pending => return Poll::Pending,
-            };
-            let kind = state.kind.clone();
-            let api_version = state.api_version.clone();
-            let storage = state.storage.clone();
-            let group = state.group.clone();
-            let resource = state.resource.clone();
-            let version = state.version.clone();
-            let partial_metadata = state.partial_metadata;
-            let conversion_webhook = state.conversion_webhook.clone();
-            state.pending = Some(Box::pin(async move {
-                encode_watch_event_with_conversion(
-                    &event,
-                    &kind,
-                    &api_version,
-                    storage,
-                    &group,
-                    &resource,
-                    &version,
-                    partial_metadata,
-                    initial_events_end,
-                    conversion_webhook,
-                )
-                .await
-            }));
-        }
-    }
-}
-
-/// The real streaming `watch` response body: every already-retained
-/// history event past `start_revision` (`replay`), then every live event
-/// as it arrives on `rx`, each encoded by [`encode_watch_event`]. A
-/// `broadcast::Receiver::recv()` `Lagged` error (the watcher fell behind
-/// the channel's bounded capacity) ends the stream rather than skipping
-/// silently past the gap — real kube-apiserver's own posture for a
-/// watcher that falls too far behind: close the connection, the client's
-/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
-/// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
-/// trait object) is what lets this coexist with every other, non-streaming
-/// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
-/// connection handling picks chunked transfer-encoding (h1) or native
-/// framing (h2) automatically for a body with no known `Content-Length`,
-/// no explicit opt-in needed here.
-/// `true` when `event` should reach the client — real upstream's own
-/// `WatchCache`/`cacheWatcher` narrows a watch to matching objects too,
-/// not just the initial `LIST`'s own selector filtering. `Bookmark`
-/// events and any event this cache never retained a value for (an old
-/// `Deleted` with no captured prior state) always pass through — there's
-/// no object to test a selector against, the same "nothing to filter"
-/// case `label_reqs.is_empty() && field_reqs.is_empty()` short-circuits.
-/// A value this build can't decode also passes through rather than
-/// being silently dropped — filtering a watch is a narrowing, never a
-/// hiding, mechanism; a real decode failure is a `warn!`, not a
-/// swallowed event.
-fn watch_event_matches_selector(
-    event: &crate::cacher::store::WatchEvent,
-    label_reqs: &[crate::cacher::selector::Requirement],
-    field_reqs: &[crate::cacher::selector::FieldRequirement],
-    storage: Option<&StorageClient>,
-    group: &str,
-    resource: &str,
-) -> bool {
-    if label_reqs.is_empty() && field_reqs.is_empty() {
-        return true;
-    }
-    if event.value.is_empty() {
-        return true;
-    }
-    let decoded = match storage {
-        Some(s) => rest::decrypt_and_decode(s, group, resource, &event.key, &event.value),
-        None => rest::decode_stored_object(&event.value).map_err(rest::Error::from),
-    };
-    match decoded {
-        Ok(object) => crate::cacher::selector::object_matches(&object, label_reqs, field_reqs),
-        Err(e) => {
-            warn!(error = ?e, "watch: failed to decode a cached value for selector filtering; letting the event through unfiltered");
-            true
-        }
-    }
-}
-
-/// The real streaming `watch` response body: every already-retained
-/// history event past `start_revision` (`replay`), then every live event
-/// as it arrives on `rx`, each filtered by [`watch_event_matches_selector`]
-/// (the same real label/field selector `LIST` already applies, now
-/// applied to a live stream too) and encoded by [`encode_watch_event`]. A
-/// `broadcast::Receiver::recv()` `Lagged` error (the watcher fell behind
-/// the channel's bounded capacity) ends the stream rather than skipping
-/// silently past the gap — real kube-apiserver's own posture for a
-/// watcher that falls too far behind: close the connection, the client's
-/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
-/// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
-/// trait object) is what lets this coexist with every other, non-streaming
-/// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
-/// connection handling picks chunked transfer-encoding (h1) or native
-/// framing (h2) automatically for a body with no known `Content-Length`,
-/// no explicit opt-in needed here.
-fn watch_response_body(
-    replay: Vec<crate::cacher::store::WatchEvent>,
-    rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
-    kind: String,
-    api_version: String,
-    label_reqs: Vec<crate::cacher::selector::Requirement>,
-    field_reqs: Vec<crate::cacher::selector::FieldRequirement>,
-    storage: Option<StorageClient>,
-    group: String,
-    resource: String,
-    version: String,
-    partial_metadata: bool,
-    allow_watch_bookmarks: bool,
-    timeout: Option<std::time::Duration>,
-    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
-) -> BoxedBody {
-    watch_response_body_with_initial_events(
-        replay,
-        rx,
-        kind,
-        api_version,
-        label_reqs,
-        field_reqs,
-        storage,
-        group,
-        resource,
-        version,
-        partial_metadata,
-        allow_watch_bookmarks,
-        timeout,
-        conversion_webhook,
-        None,
-    )
-}
-
-fn watch_response_body_with_initial_events(
-    replay: Vec<crate::cacher::store::WatchEvent>,
-    rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
-    kind: String,
-    api_version: String,
-    label_reqs: Vec<crate::cacher::selector::Requirement>,
-    field_reqs: Vec<crate::cacher::selector::FieldRequirement>,
-    storage: Option<StorageClient>,
-    group: String,
-    resource: String,
-    version: String,
-    partial_metadata: bool,
-    allow_watch_bookmarks: bool,
-    timeout: Option<std::time::Duration>,
-    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
-    initial_events: Option<(Vec<crate::cacher::store::WatchEvent>, i64)>,
-) -> BoxedBody {
-    use http_body_util::{BodyExt, StreamBody};
-    use tokio_stream::wrappers::BroadcastStream;
-    use tokio_stream::StreamExt;
-
-    let initial_stream: WatchEventStream = match initial_events {
-        Some((initial_events, revision)) => {
-            let end = crate::cacher::store::WatchEvent {
-                kind: crate::cacher::store::EventKind::Bookmark,
-                key: Vec::new(),
-                value: Vec::new(),
-                revision,
-            };
-            Box::pin(tokio_stream::iter(
-                initial_events
-                    .into_iter()
-                    .map(|event| (event, false))
-                    .chain(std::iter::once((end, true))),
-            ))
-        }
-        None => Box::pin(tokio_stream::empty()),
-    };
-    let replay_stream = tokio_stream::iter(replay).map(|event| (event, false));
-    let live_stream = BroadcastStream::new(rx)
-        .map_while(|res| res.ok())
-        .map(|event| (event, false));
-    let events = initial_stream
-        .chain(replay_stream)
-        .chain(live_stream)
-        .filter(move |(event, initial_events_end)| {
-            allow_watch_bookmarks || *initial_events_end || event.kind != crate::cacher::store::EventKind::Bookmark
-        });
-    let events: WatchEventStream = if let Some(timeout) = timeout {
-        Box::pin(futures::StreamExt::take_until(
-            events,
-            tokio::time::sleep(timeout),
-        ))
-    } else {
-        Box::pin(events)
-    };
-    // Cloned once per closure (`StorageClient` wraps a cheap-to-clone
-    // `tonic::transport::Channel`, same posture every other real call
-    // site in this crate already takes) — `filter`/`filter_map` each need
-    // their own `'static`-owned copy of the encryption-lookup context.
-    let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
-    let filtered = events.filter(move |(event, _)| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
-    if conversion_webhook.is_none() {
-        let frames = filtered.filter_map(move |(event, initial_events_end)| {
-            encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata, initial_events_end)
-        });
-        return StreamBody::new(frames).boxed();
-    }
-
-    let events: WatchEventStream = Box::pin(filtered);
-    let stream = ConversionWatchStream {
-        state: Arc::new(Mutex::new(ConversionWatchState {
-            events,
-            pending: None,
-            kind,
-            api_version,
-            storage,
-            group,
-            resource,
-            version,
-            partial_metadata,
-            conversion_webhook,
-        })),
-    };
-    StreamBody::new(stream).boxed()
-}
+include!("watch_stream.rs");

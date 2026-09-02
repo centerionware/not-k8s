@@ -309,23 +309,27 @@ mod tests {
         let q = json!({"metadata": {"name": "besteffort-quota"}, "spec": {"scopes": ["BestEffort"], "hard": {"pods": "1"}}});
         // Only the new BestEffort pod counts (1 <= hard 1) -- the
         // Guaranteed existing pod is correctly excluded.
-        assert!(check_pod_create(
-            &besteffort_pod,
-            &[guaranteed_existing.clone()],
-            &[q.clone()]
-        )
-        .is_none());
+        assert!(
+            check_pod_create(
+                &besteffort_pod,
+                &[guaranteed_existing.clone()],
+                &[q.clone()]
+            )
+            .is_none()
+        );
 
         // Add a second BestEffort existing pod -- now 2 BestEffort pods
         // total > hard 1, correctly denied.
         let besteffort_existing =
             json!({"metadata": {"name": "existing2"}, "spec": {"containers": [{"name": "c1"}]}});
-        assert!(check_pod_create(
-            &besteffort_pod,
-            &[guaranteed_existing, besteffort_existing],
-            &[q]
-        )
-        .is_some());
+        assert!(
+            check_pod_create(
+                &besteffort_pod,
+                &[guaranteed_existing, besteffort_existing],
+                &[q]
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -354,7 +358,10 @@ mod tests {
         let pod = pod_with_cpu_request("new", "999");
         let mut q = quota("future-quota", json!({"requests.cpu": "1"}));
         q["spec"]["scopes"] = json!(["SomeFutureScope"]);
-        assert!(check_pod_create(&pod, &[], &[q]).is_some(), "a genuinely unrecognized scope must not exempt the pod from an otherwise-applicable quota");
+        assert!(
+            check_pod_create(&pod, &[], &[q]).is_some(),
+            "a genuinely unrecognized scope must not exempt the pod from an otherwise-applicable quota"
+        );
     }
 
     #[test]
@@ -378,8 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn a_crossnamespaceaffinity_scoped_quota_applies_for_a_preferred_antiaffinity_namespace_selector(
-    ) {
+    fn a_crossnamespaceaffinity_scoped_quota_applies_for_a_preferred_antiaffinity_namespace_selector()
+     {
         let mut pod = pod_with_cpu_request("new", "999");
         pod["spec"]["affinity"] = json!({"podAntiAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [
             {"weight": 1, "podAffinityTerm": {"namespaceSelector": {}, "topologyKey": "kubernetes.io/hostname"}},
@@ -497,7 +504,10 @@ mod tests {
         let pvc = pvc_with_storage("new", "999Gi");
         let mut q = quota("scoped-quota", json!({"requests.storage": "1Gi"}));
         q["spec"]["scopes"] = json!(["BestEffort"]);
-        assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a scoped quota must not apply to PVCs at all, matching real upstream's stable-feature-gate-off default");
+        assert!(
+            check_pvc_create(&pvc, &[], &[q]).is_none(),
+            "a scoped quota must not apply to PVCs at all, matching real upstream's stable-feature-gate-off default"
+        );
     }
 
     #[test]
@@ -520,9 +530,11 @@ mod tests {
     #[test]
     fn pvc_usage_has_no_storage_class_scoped_keys_when_the_pvc_names_no_class() {
         let usage = pvc_usage(&pvc_with_storage("data", "10Gi"));
-        assert!(usage
-            .keys()
-            .all(|k| !k.contains("storageclass.storage.k8s.io")));
+        assert!(
+            usage
+                .keys()
+                .all(|k| !k.contains("storageclass.storage.k8s.io"))
+        );
     }
 
     #[test]
@@ -814,6 +826,9 @@ mod tests {
         let mut q = quota("scoped-quota", json!({"requests.storage": "1Gi"}));
         q["spec"]["scopeSelector"] =
             json!({"matchExpressions": [{"scopeName": "PriorityClass", "operator": "Exists"}]});
-        assert!(check_pvc_create(&pvc, &[], &[q]).is_none(), "a spec.scopeSelector alone (no spec.scopes) must also make the PVC evaluator skip this quota");
+        assert!(
+            check_pvc_create(&pvc, &[], &[q]).is_none(),
+            "a spec.scopeSelector alone (no spec.scopes) must also make the PVC evaluator skip this quota"
+        );
     }
 }

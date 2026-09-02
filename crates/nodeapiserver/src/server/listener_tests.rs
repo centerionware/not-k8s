@@ -9,14 +9,18 @@ mod tests {
     #[test]
     fn api_root_serves_api_versions() {
         let route = route_discovery(&parts("/api"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIVersions");
     }
 
     #[test]
     fn api_v1_serves_the_core_group_resource_list() {
         let route = route_discovery(&parts("/api/v1"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIResourceList");
         assert_eq!(doc["groupVersion"], "v1");
     }
@@ -24,7 +28,9 @@ mod tests {
     #[test]
     fn apis_root_serves_the_group_list() {
         let route = route_discovery(&parts("/apis"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIGroupList");
     }
 
@@ -32,7 +38,9 @@ mod tests {
     fn apis_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
         let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
     }
 
@@ -40,11 +48,19 @@ mod tests {
     fn api_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
         let route = route_discovery(&parts("/api"), Some(accept), &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIGroupDiscoveryList");
         assert_eq!(doc["items"][0]["metadata"]["name"], "");
-        assert_eq!(discovery_content_type(&parts("/api"), Some(accept)), AGGREGATED_DISCOVERY_CONTENT_TYPE);
-        assert_eq!(discovery_content_type(&parts("/api/v1"), Some(accept)), "application/json");
+        assert_eq!(
+            discovery_content_type(&parts("/api"), Some(accept)),
+            AGGREGATED_DISCOVERY_CONTENT_TYPE
+        );
+        assert_eq!(
+            discovery_content_type(&parts("/api/v1"), Some(accept)),
+            "application/json"
+        );
     }
 
     #[test]
@@ -54,14 +70,21 @@ mod tests {
         // the v2 shape as if it matched.
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2beta1;g=apidiscovery.k8s.io";
         let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
-        assert_eq!(doc["kind"], "APIGroupList", "an unmatched as= version must fall back to the legacy shape, not silently serve v2 anyway");
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
+        assert_eq!(
+            doc["kind"], "APIGroupList",
+            "an unmatched as= version must fall back to the legacy shape, not silently serve v2 anyway"
+        );
     }
 
     #[test]
     fn apis_group_serves_the_group_document() {
         let route = route_discovery(&parts("/apis/apps"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIGroup");
         assert_eq!(doc["name"], "apps");
     }
@@ -69,7 +92,9 @@ mod tests {
     #[test]
     fn apis_group_version_serves_the_resource_list() {
         let route = route_discovery(&parts("/apis/apps/v1"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["kind"], "APIResourceList");
         assert_eq!(doc["groupVersion"], "apps/v1");
     }
@@ -77,78 +102,143 @@ mod tests {
     #[test]
     fn aggregated_discovery_group_version_matches_a_real_apis_group_version_path() {
         let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
-        assert_eq!(aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1"), &aggregated), Some(("metrics.k8s.io", "v1beta1")));
+        assert_eq!(
+            aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1"), &aggregated),
+            Some(("metrics.k8s.io", "v1beta1"))
+        );
     }
 
     #[test]
     fn aggregated_discovery_group_version_is_none_for_a_group_not_in_the_aggregated_list() {
         let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
-        assert_eq!(aggregated_discovery_group_version(&parts("/apis/apps/v1"), &aggregated), None);
+        assert_eq!(
+            aggregated_discovery_group_version(&parts("/apis/apps/v1"), &aggregated),
+            None
+        );
     }
 
     #[test]
     fn aggregated_discovery_group_version_requires_exactly_three_apis_segments() {
         let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
-        assert_eq!(aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io"), &aggregated), None, "a group-only path must not match");
         assert_eq!(
-            aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1/nodes"), &aggregated),
+            aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io"), &aggregated),
+            None,
+            "a group-only path must not match"
+        );
+        assert_eq!(
+            aggregated_discovery_group_version(
+                &parts("/apis/metrics.k8s.io/v1beta1/nodes"),
+                &aggregated
+            ),
             None,
             "a resource-shaped path is handled by the resource-request aggregation branch, not this one"
         );
     }
 
     #[test]
-    fn aggregated_discovery_group_version_ignores_a_matching_version_under_a_different_top_level_prefix() {
+    fn aggregated_discovery_group_version_ignores_a_matching_version_under_a_different_top_level_prefix()
+     {
         let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
-        assert_eq!(aggregated_discovery_group_version(&parts("/api/metrics.k8s.io/v1beta1"), &aggregated), None);
+        assert_eq!(
+            aggregated_discovery_group_version(&parts("/api/metrics.k8s.io/v1beta1"), &aggregated),
+            None
+        );
     }
 
     #[test]
     fn an_unknown_group_is_a_real_not_found_not_a_fallthrough() {
-        assert!(matches!(route_discovery(&parts("/apis/totally.made.up"), None, &[], &[]), DiscoveryRoute::NotFound));
-        assert!(matches!(route_discovery(&parts("/apis/apps/v999"), None, &[], &[]), DiscoveryRoute::NotFound));
-        assert!(matches!(route_discovery(&parts("/api/v999"), None, &[], &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(
+            route_discovery(&parts("/apis/totally.made.up"), None, &[], &[]),
+            DiscoveryRoute::NotFound
+        ));
+        assert!(matches!(
+            route_discovery(&parts("/apis/apps/v999"), None, &[], &[]),
+            DiscoveryRoute::NotFound
+        ));
+        assert!(matches!(
+            route_discovery(&parts("/api/v999"), None, &[], &[]),
+            DiscoveryRoute::NotFound
+        ));
     }
 
     #[test]
     fn a_resource_shaped_path_is_not_applicable_to_discovery_routing() {
-        assert!(matches!(route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[], &[]), DiscoveryRoute::NotApplicable));
-        assert!(matches!(route_discovery(&parts("/apis/apps/v1/namespaces/default/deployments"), None, &[], &[]), DiscoveryRoute::NotApplicable));
-        assert!(matches!(route_discovery(&parts("/"), None, &[], &[]), DiscoveryRoute::NotApplicable));
+        assert!(matches!(
+            route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[], &[]),
+            DiscoveryRoute::NotApplicable
+        ));
+        assert!(matches!(
+            route_discovery(
+                &parts("/apis/apps/v1/namespaces/default/deployments"),
+                None,
+                &[],
+                &[]
+            ),
+            DiscoveryRoute::NotApplicable
+        ));
+        assert!(matches!(
+            route_discovery(&parts("/"), None, &[], &[]),
+            DiscoveryRoute::NotApplicable
+        ));
     }
 
     #[test]
     fn openapi_v3_root_serves_the_root_index() {
         let route = route_discovery(&parts("/openapi/v3"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
-        assert!(doc["paths"].as_object().unwrap().contains_key("apis/apps/v1"));
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
+        assert!(
+            doc["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("apis/apps/v1")
+        );
     }
 
     #[test]
     fn openapi_v2_serves_a_swagger_document() {
         let route = route_discovery(&parts("/openapi/v2"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert_eq!(doc["swagger"], "2.0");
-        assert!(doc["definitions"].as_object().is_some_and(|definitions| definitions.contains_key("io.k8s.api.core.v1.Pod")));
+        assert!(
+            doc["definitions"]
+                .as_object()
+                .is_some_and(|definitions| definitions.contains_key("io.k8s.api.core.v1.Pod"))
+        );
     }
 
     #[test]
     fn openapi_v3_a_multi_segment_path_serves_the_raw_vendored_document() {
         let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[], &[]);
-        let DiscoveryRoute::FoundRaw(bytes) = route else { panic!("expected FoundRaw") };
+        let DiscoveryRoute::FoundRaw(bytes) = route else {
+            panic!("expected FoundRaw")
+        };
         let parsed: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert!(parsed.get("openapi").is_some());
     }
 
     #[test]
     fn openapi_v3_an_unvendored_path_is_a_real_not_found() {
-        assert!(matches!(route_discovery(&parts("/openapi/v3/apis/totally.made.up/v1"), None, &[], &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(
+            route_discovery(
+                &parts("/openapi/v3/apis/totally.made.up/v1"),
+                None,
+                &[],
+                &[]
+            ),
+            DiscoveryRoute::NotFound
+        ));
     }
 
     #[test]
     fn version_serves_the_real_version_info_document() {
         let route = route_discovery(&parts("/version"), None, &[], &[]);
-        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        let DiscoveryRoute::Found(doc) = route else {
+            panic!("expected Found")
+        };
         assert!(doc.get("gitVersion").is_some());
     }
 
@@ -168,7 +258,12 @@ mod tests {
         assert_eq!(status["kind"], "Status");
         assert_eq!(status["reason"], "BadRequest");
         assert_eq!(status["code"], 400);
-        assert!(status["message"].as_str().unwrap().contains("malformed selector"));
+        assert!(
+            status["message"]
+                .as_str()
+                .unwrap()
+                .contains("malformed selector")
+        );
     }
 
     #[test]
@@ -177,7 +272,12 @@ mod tests {
         assert_eq!(status["kind"], "Status");
         assert_eq!(status["reason"], "RequestEntityTooLarge");
         assert_eq!(status["code"], 413);
-        assert!(status["message"].as_str().unwrap().contains("8192-byte limit"));
+        assert!(
+            status["message"]
+                .as_str()
+                .unwrap()
+                .contains("8192-byte limit")
+        );
     }
 
     #[test]
@@ -186,7 +286,12 @@ mod tests {
         assert_eq!(status["kind"], "Status");
         assert_eq!(status["reason"], "Forbidden");
         assert_eq!(status["code"], 403);
-        assert!(status["message"].as_str().unwrap().contains("system:anonymous"));
+        assert!(
+            status["message"]
+                .as_str()
+                .unwrap()
+                .contains("system:anonymous")
+        );
     }
 
     #[test]
@@ -201,7 +306,10 @@ mod tests {
     fn dry_run_query_accepts_only_all() {
         assert_eq!(dry_run_query("dryRun=All").unwrap(), true);
         assert_eq!(dry_run_query("fieldManager=test").unwrap(), false);
-        assert_eq!(dry_run_query("dryRun=Unknown").unwrap_err(), "dryRun must be All");
+        assert_eq!(
+            dry_run_query("dryRun=Unknown").unwrap_err(),
+            "dryRun must be All"
+        );
     }
 
     #[test]
@@ -253,16 +361,55 @@ mod tests {
             groups: vec!["developers".to_string(), "system:authenticated".to_string()],
             uid: Some("uid-1".to_string()),
             extra: Default::default(),
-            credential_id: ("authentication.kubernetes.io/credential-id".to_string(), vec!["X509SHA256=abc".to_string()]),
+            credential_id: (
+                "authentication.kubernetes.io/credential-id".to_string(),
+                vec!["X509SHA256=abc".to_string()],
+            ),
         };
 
         let headers = aggregation_proxy_headers(&incoming, Some(&identity), true);
-        assert_eq!(headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-user")).map(|(_, value)| value.as_str()).collect::<Vec<_>>(), ["alice"]);
-        assert_eq!(headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-group")).map(|(_, value)| value.as_str()).collect::<Vec<_>>(), ["developers", "system:authenticated"]);
-        assert_eq!(headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("x-remote-uid")).map(|(_, value)| value.as_str()), Some("uid-1"));
-        assert_eq!(headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("x-remote-extra-authentication.kubernetes.io%2Fcredential-id")).map(|(_, value)| value.as_str()), Some("X509SHA256=abc"));
-        assert!(headers.iter().any(|(name, value)| name == "x-trace-id" && value == "trace-1"));
-        assert!(!headers.iter().any(|(_, value)| value == "attacker" || value == "untrusted"));
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-user"))
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-group"))
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>(),
+            ["developers", "system:authenticated"]
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-remote-uid"))
+                .map(|(_, value)| value.as_str()),
+            Some("uid-1")
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(
+                    "x-remote-extra-authentication.kubernetes.io%2Fcredential-id"
+                ))
+                .map(|(_, value)| value.as_str()),
+            Some("X509SHA256=abc")
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name == "x-trace-id" && value == "trace-1")
+        );
+        assert!(
+            !headers
+                .iter()
+                .any(|(_, value)| value == "attacker" || value == "untrusted")
+        );
     }
 
     #[test]
@@ -284,14 +431,27 @@ mod tests {
             credential_id: (String::new(), Vec::new()),
         };
         let headers = aggregation_proxy_headers(&http::HeaderMap::new(), Some(&identity), true);
-        assert_eq!(headers.iter().filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-user")).count(), 1);
-        assert!(!headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-remote-extra-")));
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("x-remote-user"))
+                .count(),
+            1
+        );
+        assert!(
+            !headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("x-remote-extra-"))
+        );
     }
 
     #[test]
     fn connection_upgrade_requires_upgrade_token_and_header() {
         let mut headers = http::HeaderMap::new();
-        headers.insert(http::header::CONNECTION, "keep-alive, Upgrade".parse().unwrap());
+        headers.insert(
+            http::header::CONNECTION,
+            "keep-alive, Upgrade".parse().unwrap(),
+        );
         headers.insert(http::header::UPGRADE, "websocket".parse().unwrap());
         assert!(is_connection_upgrade(&headers));
 
@@ -308,13 +468,22 @@ mod tests {
         let value = serde_json::json!({"preconditions": {"resourceVersion": "7", "uid": "abc"}});
         assert_eq!(
             delete_preconditions(Some(&value)).unwrap(),
-            Some(rest::DeletePreconditions { resource_version: Some("7".to_string()), uid: Some("abc".to_string()) })
+            Some(rest::DeletePreconditions {
+                resource_version: Some("7".to_string()),
+                uid: Some("abc".to_string())
+            })
         );
     }
 
     #[test]
     fn invalid_status_joins_every_violation_into_the_message() {
-        let status = invalid_status("/api/v1/pods", &["spec.containers: Required value".to_string(), "spec.foo: expected type string, got number".to_string()]);
+        let status = invalid_status(
+            "/api/v1/pods",
+            &[
+                "spec.containers: Required value".to_string(),
+                "spec.foo: expected type string, got number".to_string(),
+            ],
+        );
         assert_eq!(status["kind"], "Status");
         assert_eq!(status["reason"], "Invalid");
         assert_eq!(status["code"], 422);
@@ -322,9 +491,15 @@ mod tests {
         assert!(message.contains("spec.containers: Required value"));
         assert!(message.contains("spec.foo: expected type string, got number"));
         assert_eq!(status["details"]["causes"][0]["field"], "spec.containers");
-        assert_eq!(status["details"]["causes"][0]["reason"], "FieldValueRequired");
+        assert_eq!(
+            status["details"]["causes"][0]["reason"],
+            "FieldValueRequired"
+        );
         assert_eq!(status["details"]["causes"][1]["field"], "spec.foo");
-        assert_eq!(status["details"]["causes"][1]["reason"], "FieldValueInvalid");
+        assert_eq!(
+            status["details"]["causes"][1]["reason"],
+            "FieldValueInvalid"
+        );
     }
 
     #[test]
@@ -338,7 +513,10 @@ mod tests {
     #[test]
     fn resource_version_query_reads_the_real_param() {
         assert_eq!(resource_version_query("resourceVersion=42"), 42);
-        assert_eq!(resource_version_query("watch=true&resourceVersion=7&timeoutSeconds=30"), 7);
+        assert_eq!(
+            resource_version_query("watch=true&resourceVersion=7&timeoutSeconds=30"),
+            7
+        );
     }
 
     #[test]
@@ -358,11 +536,18 @@ mod tests {
 
     #[test]
     fn watch_options_parse_bookmarks_and_timeout() {
-        let options = watch_options_query("watch=true&allowWatchBookmarks=true&sendInitialEvents=true&timeoutSeconds=7").unwrap();
+        let options = watch_options_query(
+            "watch=true&allowWatchBookmarks=true&sendInitialEvents=true&timeoutSeconds=7",
+        )
+        .unwrap();
         assert!(options.allow_watch_bookmarks);
         assert!(options.send_initial_events);
         assert_eq!(options.timeout, Some(std::time::Duration::from_secs(7)));
-        assert_eq!(watch_options_query("allowWatchBookmarks=0&sendInitialEvents=0&timeoutSeconds=0").unwrap(), WatchOptions::default());
+        assert_eq!(
+            watch_options_query("allowWatchBookmarks=0&sendInitialEvents=0&timeoutSeconds=0")
+                .unwrap(),
+            WatchOptions::default()
+        );
         assert!(watch_options_query("allowWatchBookmarks=maybe").is_err());
         assert!(watch_options_query("sendInitialEvents=maybe").is_err());
         assert!(watch_options_query("timeoutSeconds=-1").is_err());
@@ -372,15 +557,25 @@ mod tests {
     #[test]
     fn is_apply_patch_content_type_recognizes_the_real_media_type_and_ignores_charset() {
         assert!(is_apply_patch_content_type("application/apply-patch+yaml"));
-        assert!(is_apply_patch_content_type("application/apply-patch+yaml; charset=utf-8"));
-        assert!(!is_apply_patch_content_type("application/strategic-merge-patch+json"));
+        assert!(is_apply_patch_content_type(
+            "application/apply-patch+yaml; charset=utf-8"
+        ));
+        assert!(!is_apply_patch_content_type(
+            "application/strategic-merge-patch+json"
+        ));
         assert!(!is_apply_patch_content_type(""));
     }
 
     #[test]
     fn field_manager_query_reads_the_real_param() {
-        assert_eq!(field_manager_query("fieldManager=kubectl-apply"), Some("kubectl-apply".to_string()));
-        assert_eq!(field_manager_query("force=true&fieldManager=kubectl-apply"), Some("kubectl-apply".to_string()));
+        assert_eq!(
+            field_manager_query("fieldManager=kubectl-apply"),
+            Some("kubectl-apply".to_string())
+        );
+        assert_eq!(
+            field_manager_query("force=true&fieldManager=kubectl-apply"),
+            Some("kubectl-apply".to_string())
+        );
         assert_eq!(field_manager_query(""), None);
         assert_eq!(field_manager_query("force=true"), None);
     }
@@ -397,18 +592,38 @@ mod tests {
     #[test]
     fn ssa_conflict_status_names_every_conflicting_manager() {
         let mut fields = crate::patch::fieldset::Set::new();
-        fields.insert(&[crate::patch::fieldset::PathElement::Field("replicas".to_string())]);
-        let conflicts = vec![crate::patch::updater::Conflict { manager: "hpa-controller".to_string(), fields }];
-        let status = ssa_conflict_status("/apis/apps/v1/namespaces/default/deployments/my-app", &conflicts);
+        fields.insert(&[crate::patch::fieldset::PathElement::Field(
+            "replicas".to_string(),
+        )]);
+        let conflicts = vec![crate::patch::updater::Conflict {
+            manager: "hpa-controller".to_string(),
+            fields,
+        }];
+        let status = ssa_conflict_status(
+            "/apis/apps/v1/namespaces/default/deployments/my-app",
+            &conflicts,
+        );
         assert_eq!(status["code"], 409);
         assert_eq!(status["reason"], "Conflict");
-        assert!(status["message"].as_str().unwrap().contains("hpa-controller"));
+        assert!(
+            status["message"]
+                .as_str()
+                .unwrap()
+                .contains("hpa-controller")
+        );
     }
 
     #[test]
     fn encode_watch_event_produces_a_newline_terminated_json_line() {
-        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, false).expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let event = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Bookmark,
+            key: Vec::new(),
+            value: Vec::new(),
+            revision: 9,
+        };
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, false)
+            .expect("Bookmark always converts")
+            .expect("Bookmark conversion never fails");
         let bytes = frame.into_data().unwrap();
         assert!(bytes.ends_with(b"\n"));
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
@@ -430,13 +645,23 @@ mod tests {
         let bytes = frame.into_data().unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
         assert_eq!(parsed["type"], "BOOKMARK");
-        assert_eq!(parsed["object"]["metadata"]["annotations"]["k8s.io/initial-events-end"], "true");
+        assert_eq!(
+            parsed["object"]["metadata"]["annotations"]["k8s.io/initial-events-end"],
+            "true"
+        );
     }
 
     #[test]
     fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
-        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
-        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, false).is_none());
+        let event = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Deleted,
+            key: b"k".to_vec(),
+            value: Vec::new(),
+            revision: 9,
+        };
+        assert!(
+            encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false, false).is_none()
+        );
     }
 
     #[test]
@@ -447,9 +672,19 @@ mod tests {
             value: envelope_for("default", serde_json::json!({"app": "demo"})),
             revision: 9,
         };
-        let frame = encode_watch_event(&event, "Namespace", "v1", None, "", "namespaces", "v1", true, false)
-            .expect("Added events always convert")
-            .expect("the test envelope must decode");
+        let frame = encode_watch_event(
+            &event,
+            "Namespace",
+            "v1",
+            None,
+            "",
+            "namespaces",
+            "v1",
+            true,
+            false,
+        )
+        .expect("Added events always convert")
+        .expect("the test envelope must decode");
         let bytes = frame.into_data().unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
         assert_eq!(parsed["object"]["apiVersion"], "meta.k8s.io/v1");
@@ -460,181 +695,78 @@ mod tests {
 
     fn envelope_for(name: &str, labels: serde_json::Value) -> Vec<u8> {
         let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
-        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": name, "labels": labels}})).unwrap();
+        let object_bytes = crate::codec::protobuf::encode_message(
+            schema,
+            &serde_json::json!({"metadata": {"name": name, "labels": labels}}),
+        )
+        .unwrap();
         crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes)
     }
 
     #[test]
     fn watch_event_matches_selector_passes_bookmarks_and_valueless_events_through() {
         let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
-        let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 1 };
-        assert!(watch_event_matches_selector(&bookmark, &reqs, &[], None, "", ""));
+        let bookmark = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Bookmark,
+            key: Vec::new(),
+            value: Vec::new(),
+            revision: 1,
+        };
+        assert!(watch_event_matches_selector(
+            &bookmark,
+            &reqs,
+            &[],
+            None,
+            "",
+            ""
+        ));
     }
 
     #[test]
     fn watch_event_matches_selector_filters_on_labels() {
         let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
-        let matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({"env": "prod"})), revision: 1 };
-        let non_matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"b".to_vec(), value: envelope_for("b", serde_json::json!({"env": "dev"})), revision: 2 };
-        assert!(watch_event_matches_selector(&matching, &reqs, &[], None, "", ""));
-        assert!(!watch_event_matches_selector(&non_matching, &reqs, &[], None, "", ""));
+        let matching = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: b"a".to_vec(),
+            value: envelope_for("a", serde_json::json!({"env": "prod"})),
+            revision: 1,
+        };
+        let non_matching = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: b"b".to_vec(),
+            value: envelope_for("b", serde_json::json!({"env": "dev"})),
+            revision: 2,
+        };
+        assert!(watch_event_matches_selector(
+            &matching,
+            &reqs,
+            &[],
+            None,
+            "",
+            ""
+        ));
+        assert!(!watch_event_matches_selector(
+            &non_matching,
+            &reqs,
+            &[],
+            None,
+            "",
+            ""
+        ));
     }
 
     #[test]
     fn watch_event_matches_selector_is_a_no_op_with_no_selector() {
-        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({})), revision: 1 };
+        let event = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: b"a".to_vec(),
+            value: envelope_for("a", serde_json::json!({})),
+            revision: 1,
+        };
         assert!(watch_event_matches_selector(&event, &[], &[], None, "", ""));
     }
 
-    #[tokio::test]
-    async fn watch_response_body_streams_the_replay_then_live_events() {
-        use http_body_util::BodyExt;
-
-        // An unrelated event at revision 2 first, purely so `watch_from`'s
-        // own "not older than the oldest retained history entry" check
-        // has something at or before the requested start_revision (same
-        // pre-existing `watch_from` quirk `cacher::store`'s own tests hit
-        // — untouched by, and unrelated to, what this test is proving).
-        // The event actually under test needs a real encoded envelope —
-        // `to_watch_event_json` decodes it for real, same as
-        // `server::watch_event`'s own tests do.
-        let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
-        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": "default"}})).unwrap();
-        let envelope = crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes);
-
-        let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
-        let shared = crate::cacher::store::SharedCache::new(cache);
-        shared.apply(crate::cacher::store::EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
-        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), envelope, 3);
-        let (replay, rx) = shared.watch_from(2).unwrap();
-        assert_eq!(replay.len(), 1, "only the revision-3 event should be in the replay");
-        // Drop the cache (and its own broadcast::Sender) before consuming
-        // the stream to completion below — otherwise the live half of
-        // `watch_response_body` never ends (a real watch stream is
-        // meant to run forever; only exercised for the replay half here,
-        // the live half is real end-to-end behavior, not something a
-        // `.collect()`-to-completion unit test can observe without
-        // artificially closing the channel first).
-        drop(shared);
-
-        let body = watch_response_body(
-            replay,
-            rx,
-            "Namespace".to_string(),
-            "v1".to_string(),
-            Vec::new(),
-            Vec::new(),
-            None,
-            String::new(),
-            "namespaces".to_string(),
-            "v1".to_string(),
-            false,
-            true,
-            None,
-            None,
-        );
-        let collected = body.collect().await.unwrap().to_bytes();
-        let text = String::from_utf8(collected.to_vec()).unwrap();
-        assert_eq!(text.lines().count(), 1);
-        let parsed: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        assert_eq!(parsed["type"], "ADDED");
-    }
-
-    #[tokio::test]
-    async fn watch_response_body_honors_bookmark_negotiation_and_timeout() {
-        use http_body_util::BodyExt;
-
-        let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
-        let (_, rx) = {
-            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
-            cache.watch_from(0).unwrap()
-        };
-        let body = watch_response_body(
-            vec![bookmark.clone()],
-            rx,
-            "Namespace".to_string(),
-            "v1".to_string(),
-            Vec::new(),
-            Vec::new(),
-            None,
-            String::new(),
-            "namespaces".to_string(),
-            "v1".to_string(),
-            false,
-            false,
-            None,
-            None,
-        );
-        let bytes = body.collect().await.unwrap().to_bytes();
-        assert!(bytes.is_empty(), "bookmarks must be opt-in");
-
-        let (_, rx) = {
-            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
-            cache.watch_from(0).unwrap()
-        };
-        let body = watch_response_body(
-            Vec::new(),
-            rx,
-            "Namespace".to_string(),
-            "v1".to_string(),
-            Vec::new(),
-            Vec::new(),
-            None,
-            String::new(),
-            "namespaces".to_string(),
-            "v1".to_string(),
-            false,
-            false,
-            Some(std::time::Duration::from_millis(10)),
-            None,
-        );
-        let bytes = tokio::time::timeout(std::time::Duration::from_secs(1), body.collect()).await.unwrap().unwrap().to_bytes();
-        assert!(bytes.is_empty(), "an idle watch must terminate at timeoutSeconds");
-    }
-
-    #[tokio::test]
-    async fn watch_response_body_sends_streaming_list_initial_events_end_bookmark() {
-        use http_body_util::BodyExt;
-
-        let initial = crate::cacher::store::WatchEvent {
-            kind: crate::cacher::store::EventKind::Added,
-            key: b"/registry/namespaces/default".to_vec(),
-            value: envelope_for("default", serde_json::json!({})),
-            revision: 5,
-        };
-        let cache = crate::cacher::store::WatchCache::new(vec![], 5, 16, 16);
-        let (_, rx) = cache.watch_from(5).unwrap();
-        drop(cache);
-
-        let body = watch_response_body_with_initial_events(
-            Vec::new(),
-            rx,
-            "Namespace".to_string(),
-            "v1".to_string(),
-            Vec::new(),
-            Vec::new(),
-            None,
-            String::new(),
-            "namespaces".to_string(),
-            "v1".to_string(),
-            false,
-            true,
-            None,
-            None,
-            Some((vec![initial], 5)),
-        );
-        let bytes = body.collect().await.unwrap().to_bytes();
-        let lines: Vec<serde_json::Value> = bytes
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| serde_json::from_slice(line).unwrap())
-            .collect();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0]["type"], "ADDED");
-        assert_eq!(lines[1]["type"], "BOOKMARK");
-        assert_eq!(lines[1]["object"]["metadata"]["resourceVersion"], "5");
-        assert_eq!(lines[1]["object"]["metadata"]["annotations"]["k8s.io/initial-events-end"], "true");
-    }
+    include!("listener_tests/watch.rs");
 
     fn test_peer() -> SocketAddr {
         "10.0.0.7:54321".parse().unwrap()
@@ -642,7 +774,16 @@ mod tests {
 
     #[test]
     fn build_audit_event_carries_the_real_request_shape_for_an_anonymous_user() {
-        let event = build_audit_event("GET", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 200, &BTreeMap::new());
+        let event = build_audit_event(
+            "GET",
+            "/api/v1/namespaces/default/pods/web-1",
+            "",
+            None,
+            None,
+            &test_peer(),
+            200,
+            &BTreeMap::new(),
+        );
         assert_eq!(event["verb"], "get");
         assert_eq!(event["user"]["username"], "system:anonymous");
         assert_eq!(event["responseStatus"]["code"], 200);
@@ -654,8 +795,23 @@ mod tests {
 
     #[test]
     fn build_audit_event_carries_the_real_identity_when_present() {
-        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], uid: None, extra: Default::default(), credential_id: (String::new(), Vec::new()) };
-        let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200, &BTreeMap::new());
+        let identity = crate::authn::x509::Identity {
+            name: "alice".to_string(),
+            groups: vec!["developers".to_string()],
+            uid: None,
+            extra: Default::default(),
+            credential_id: (String::new(), Vec::new()),
+        };
+        let event = build_audit_event(
+            "GET",
+            "/api/v1/pods",
+            "watch=true",
+            None,
+            Some(&identity),
+            &test_peer(),
+            200,
+            &BTreeMap::new(),
+        );
         assert_eq!(event["user"]["username"], "alice");
         assert_eq!(event["user"]["groups"], serde_json::json!(["developers"]));
         assert_eq!(event["verb"], "watch");
@@ -664,13 +820,31 @@ mod tests {
 
     #[test]
     fn build_audit_event_has_no_object_ref_for_a_non_resource_request() {
-        let event = build_audit_event("GET", "/version", "", None, None, &test_peer(), 200, &BTreeMap::new());
+        let event = build_audit_event(
+            "GET",
+            "/version",
+            "",
+            None,
+            None,
+            &test_peer(),
+            200,
+            &BTreeMap::new(),
+        );
         assert!(event.get("objectRef").is_none());
     }
 
     #[test]
     fn build_audit_event_carries_a_denied_response_code() {
-        let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403, &BTreeMap::new());
+        let event = build_audit_event(
+            "DELETE",
+            "/api/v1/namespaces/default/pods/web-1",
+            "",
+            None,
+            None,
+            &test_peer(),
+            403,
+            &BTreeMap::new(),
+        );
         assert_eq!(event["responseStatus"]["code"], 403);
     }
 
@@ -774,12 +948,19 @@ mod tests {
     fn admission_warnings_use_warning_code_299_and_are_header_safe() {
         let mut response = Response::new(body_from_bytes(Vec::new()));
         apply_admission_warnings(&mut response, &["policy \"failed\"\nnext".to_string()]);
-        assert_eq!(response.headers().get("warning").unwrap(), "299 - \"policy \\\"failed\\\" next\"");
+        assert_eq!(
+            response.headers().get("warning").unwrap(),
+            "299 - \"policy \\\"failed\\\" next\""
+        );
     }
 
     #[test]
     fn proxy_suffix_supports_the_normal_subresource_form() {
-        let info = path::parse("GET", "/api/v1/namespaces/default/services/web:http/proxy/healthz", "");
+        let info = path::parse(
+            "GET",
+            "/api/v1/namespaces/default/services/web:http/proxy/healthz",
+            "",
+        );
         assert_eq!(info.resource, "services");
         assert_eq!(info.name, "web:http");
         assert_eq!(info.subresource, "proxy");

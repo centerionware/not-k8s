@@ -268,7 +268,11 @@ fn check_capabilities_baseline(pod: &Value) -> Option<String> {
     if bad_containers.is_empty() {
         None
     } else {
-        Some(format!("non-default capabilities: container(s) {} must not include {} in securityContext.capabilities.add", bad_containers.join(", "), bad_caps.into_iter().collect::<Vec<_>>().join(", ")))
+        Some(format!(
+            "non-default capabilities: container(s) {} must not include {} in securityContext.capabilities.add",
+            bad_containers.join(", "),
+            bad_caps.into_iter().collect::<Vec<_>>().join(", ")
+        ))
     }
 }
 
@@ -726,7 +730,10 @@ fn check_run_as_non_root(pod: &Value) -> Option<String> {
         ));
     }
     if !implicitly_bad.is_empty() {
-        return Some(format!("runAsNonRoot != true: pod or container(s) {} must set securityContext.runAsNonRoot=true", implicitly_bad.join(", ")));
+        return Some(format!(
+            "runAsNonRoot != true: pod or container(s) {} must set securityContext.runAsNonRoot=true",
+            implicitly_bad.join(", ")
+        ));
     }
     None
 }
@@ -786,7 +793,10 @@ fn check_allow_privilege_escalation(pod: &Value) -> Option<String> {
     if bad.is_empty() {
         None
     } else {
-        Some(format!("allowPrivilegeEscalation != false: container(s) {} must set securityContext.allowPrivilegeEscalation=false", bad.join(", ")))
+        Some(format!(
+            "allowPrivilegeEscalation != false: container(s) {} must set securityContext.allowPrivilegeEscalation=false",
+            bad.join(", ")
+        ))
     }
 }
 

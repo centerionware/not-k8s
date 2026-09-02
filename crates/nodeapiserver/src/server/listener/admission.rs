@@ -16,8 +16,12 @@ async fn handle_with_audit(
     pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
     pod_node_selector_config: Option<Arc<crate::admission::pod_node_selector::PluginConfig>>,
     identity: Option<crate::authn::x509::Identity>,
-    bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
-    service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
+    bootstrap_token_authenticator: Option<
+        Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>,
+    >,
+    service_account_authenticator: Option<
+        Arc<crate::authn::service_account::ReloadableAuthenticator>,
+    >,
     oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
     authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
     aggregation_proxy_identity: Option<Arc<crate::aggregator::client_tls::ClientIdentity>>,
@@ -33,11 +37,16 @@ async fn handle_with_audit(
     let admission_metadata = Arc::new(Mutex::new(AdmissionMetadata::default()));
     let mut req = req;
     req.extensions_mut().insert(admission_metadata.clone());
-    req.extensions_mut().insert(RequestBodyLimit(max_request_body_bytes));
+    req.extensions_mut()
+        .insert(RequestBodyLimit(max_request_body_bytes));
     let method = req.method().as_str().to_string();
     let path_str = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
-    let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let user_agent = req
+        .headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let request_info = path::parse(&method, &path_str, &query);
     let audit_id = uuid::Uuid::new_v4().to_string();
     let identity = match authenticate_request(
@@ -73,7 +82,10 @@ async fn handle_with_audit(
         }
     };
     let audit_identity = identity.clone();
-    let audit_user = audit_identity.as_ref().map(|identity| identity.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+    let audit_user = audit_identity
+        .as_ref()
+        .map(|identity| identity.name.as_str())
+        .unwrap_or(ANONYMOUS_USERNAME);
     let audit_groups = audit_identity
         .as_ref()
         .map(|identity| identity.groups.clone())
@@ -81,7 +93,11 @@ async fn handle_with_audit(
     let long_running = is_long_running_request(&request_info, &query);
     let audit_level = audit_policy
         .as_ref()
-        .map(|policy| policy.decide(&request_info, audit_user, &audit_groups).level)
+        .map(|policy| {
+            policy
+                .decide(&request_info, audit_user, &audit_groups)
+                .level
+        })
         .unwrap_or(crate::audit::policy::Level::Metadata);
     let capture_request_body = !long_running
         && matches!(
@@ -90,7 +106,8 @@ async fn handle_with_audit(
         );
     let request_body_capture = capture_request_body.then(|| {
         let capture = Arc::new(Mutex::new(None));
-        req.extensions_mut().insert(AuditRequestBodyCapture(capture.clone()));
+        req.extensions_mut()
+            .insert(AuditRequestBodyCapture(capture.clone()));
         capture
     });
     let request_content_type = req
@@ -161,11 +178,7 @@ async fn handle_with_audit(
                             .unwrap_or(ANONYMOUS_USERNAME);
                         let response = json_response(
                             StatusCode::FORBIDDEN,
-                            &forbidden_status_with_reason(
-                                &path_str,
-                                user_name,
-                                &details.reason,
-                            ),
+                            &forbidden_status_with_reason(&path_str, user_name, &details.reason),
                         );
                         log_audit_rejected_request(
                             &audit_id,
@@ -227,14 +240,25 @@ async fn handle_with_audit(
     } else {
         None
     };
-    let selected_priority_config = selected_priority.as_ref().map(|selected| &selected.priority_level);
+    let selected_priority_config = selected_priority
+        .as_ref()
+        .map(|selected| &selected.priority_level);
     let configured_priorities = selected_priority
         .as_ref()
         .map(|selected| selected.priority_levels.as_slice())
         .unwrap_or(&[]);
-    let flow_distinguisher = selected_priority.as_ref().map(|selected| selected.flow_distinguisher.as_str()).unwrap_or("");
+    let flow_distinguisher = selected_priority
+        .as_ref()
+        .map(|selected| selected.flow_distinguisher.as_str())
+        .unwrap_or("");
     let _permit = match concurrency_limiter
-        .acquire_with_priorities(&request_info, &query, selected_priority_config, configured_priorities, flow_distinguisher)
+        .acquire_with_priorities(
+            &request_info,
+            &query,
+            selected_priority_config,
+            configured_priorities,
+            flow_distinguisher,
+        )
         .await
     {
         Ok(permit) => permit,
@@ -294,10 +318,25 @@ async fn handle_with_audit(
     // stream lifetime.
     let start = std::time::Instant::now();
     let mut response_object = None;
-    let mut response = match handle(req, storage, cache_registry, pure_admission, pod_node_selector_config, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, aggregation_proxy_identity, kubelet_tls).await {
+    let mut response = match handle(
+        req,
+        storage,
+        cache_registry,
+        pure_admission,
+        pod_node_selector_config,
+        identity,
+        service_account_authenticator,
+        enforce_rbac,
+        authorization_webhook_allowed,
+        aggregation_proxy_identity,
+        kubelet_tls,
+    )
+    .await
+    {
         Ok(response) => {
             if audit_level == crate::audit::policy::Level::RequestResponse && !long_running {
-                let (response, object) = capture_response_object(response, max_request_body_bytes).await;
+                let (response, object) =
+                    capture_response_object(response, max_request_body_bytes).await;
                 response_object = object;
                 Ok(response)
             } else {
@@ -309,7 +348,10 @@ async fn handle_with_audit(
     let elapsed = start.elapsed().as_secs_f64();
 
     if let Ok(resp) = &mut response {
-        let metadata = admission_metadata.lock().map(|metadata| metadata.clone()).unwrap_or_default();
+        let metadata = admission_metadata
+            .lock()
+            .map(|metadata| metadata.clone())
+            .unwrap_or_default();
         apply_admission_warnings(resp, &metadata.warnings);
         let audit_annotations = audit_annotations(&metadata);
         let status = resp.status().as_u16();
@@ -399,8 +441,10 @@ async fn handle_with_audit(
                 hyper::header::HeaderValue::from_str(&selected.flow_schema_uid),
                 hyper::header::HeaderValue::from_str(&selected.priority_level_uid),
             ) {
-                resp.headers_mut().insert(flowcontrol::resolve::FLOW_SCHEMA_UID_HEADER, fs);
-                resp.headers_mut().insert(flowcontrol::resolve::PRIORITY_LEVEL_UID_HEADER, pl);
+                resp.headers_mut()
+                    .insert(flowcontrol::resolve::FLOW_SCHEMA_UID_HEADER, fs);
+                resp.headers_mut()
+                    .insert(flowcontrol::resolve::PRIORITY_LEVEL_UID_HEADER, pl);
             }
         }
     }
@@ -420,9 +464,9 @@ fn is_long_running_request(info: &path::RequestInfo, query: &str) -> bool {
         return true;
     }
     info.subresource == "log"
-        && path::parse_query(query).iter().any(|(key, value)| {
-            key == "follow" && !matches!(value.as_str(), "" | "0" | "false")
-        })
+        && path::parse_query(query)
+            .iter()
+            .any(|(key, value)| key == "follow" && !matches!(value.as_str(), "" | "0" | "false"))
 }
 
 fn log_audit_event(
@@ -634,31 +678,62 @@ fn build_audit_event_at_stage_with_objects(
 ) -> serde_json::Value {
     let info = path::parse(method, path_str, query);
     let anonymous_extra = BTreeMap::new();
-    let (user_name, user_uid, user_groups, user_extra): (&str, Option<&str>, Vec<String>, &BTreeMap<String, Vec<String>>) = match identity {
-        Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone(), &id.extra),
-        None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()], &anonymous_extra),
+    let (user_name, user_uid, user_groups, user_extra): (
+        &str,
+        Option<&str>,
+        Vec<String>,
+        &BTreeMap<String, Vec<String>>,
+    ) = match identity {
+        Some(id) => (
+            id.name.as_str(),
+            id.uid.as_deref(),
+            id.groups.clone(),
+            &id.extra,
+        ),
+        None => (
+            ANONYMOUS_USERNAME,
+            None,
+            vec![UNAUTHENTICATED_GROUP.to_string()],
+            &anonymous_extra,
+        ),
     };
-    let object_ref = info.is_resource_request.then(|| crate::audit::event::ObjectRef { group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name, api_version: &info.api_version });
-    let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
+    let object_ref = info
+        .is_resource_request
+        .then(|| crate::audit::event::ObjectRef {
+            group: &info.api_group,
+            resource: &info.resource,
+            namespace: &info.namespace,
+            name: &info.name,
+            api_version: &info.api_version,
+        });
+    let request_uri = if query.is_empty() {
+        path_str.to_string()
+    } else {
+        format!("{path_str}?{query}")
+    };
     let timestamp = chrono::Utc::now().to_rfc3339();
     let source_ip = peer.ip().to_string();
-    crate::audit::event::build_event_at_stage_with_level(&crate::audit::event::EventInput {
-        audit_id,
-        request_uri: &request_uri,
-        verb: &info.verb,
-        user_name,
-        user_uid,
-        user_groups: user_groups.as_slice(),
-        user_extra,
-        source_ip: Some(&source_ip),
-        user_agent,
-        object_ref,
-        response_code: status,
-        annotations: (!annotations.is_empty()).then_some(annotations),
-        request_object,
-        response_object,
-        timestamp: &timestamp,
-    }, level, stage)
+    crate::audit::event::build_event_at_stage_with_level(
+        &crate::audit::event::EventInput {
+            audit_id,
+            request_uri: &request_uri,
+            verb: &info.verb,
+            user_name,
+            user_uid,
+            user_groups: user_groups.as_slice(),
+            user_extra,
+            source_ip: Some(&source_ip),
+            user_agent,
+            object_ref,
+            response_code: status,
+            annotations: (!annotations.is_empty()).then_some(annotations),
+            request_object,
+            response_object,
+            timestamp: &timestamp,
+        },
+        level,
+        stage,
+    )
 }
 
 async fn authenticate_request(
@@ -673,10 +748,19 @@ async fn authenticate_request(
         return Ok(client_cert_identity);
     }
     let Some(header) = req.headers().get("authorization") else {
-        return if anonymous_auth { Ok(None) } else { Err("anonymous authentication is disabled") };
+        return if anonymous_auth {
+            Ok(None)
+        } else {
+            Err("anonymous authentication is disabled")
+        };
     };
-    let value = header.to_str().map_err(|_| "Authorization header is not valid UTF-8")?;
-    let Some(token) = value.strip_prefix("Bearer ").filter(|token| !token.is_empty()) else {
+    let value = header
+        .to_str()
+        .map_err(|_| "Authorization header is not valid UTF-8")?;
+    let Some(token) = value
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty())
+    else {
         return Err("Authorization must use the Bearer scheme");
     };
     if let Some(authenticator) = bootstrap_token_authenticator {

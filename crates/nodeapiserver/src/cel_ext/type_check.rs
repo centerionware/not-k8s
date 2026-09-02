@@ -9,8 +9,8 @@
 //! result. Unknown schema portions remain dynamic, matching Kubernetes'
 //! treatment of data whose type cannot be declared structurally.
 
-use cel::common::ast::{operators, EntryExpr, Expr, LiteralValue};
 use cel::IdedExpr;
+use cel::common::ast::{EntryExpr, Expr, LiteralValue, operators};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
@@ -245,8 +245,24 @@ pub fn schema_type_for_root(schema: &Value) -> Option<CelType> {
 /// Return the CEL identifier Kubernetes exposes for an OpenAPI property.
 pub fn cel_field_name(name: &str) -> String {
     const RESERVED: &[&str] = &[
-        "as", "break", "const", "continue", "else", "for", "function", "if", "import",
-        "in", "let", "loop", "namespace", "package", "return", "true", "false", "null",
+        "as",
+        "break",
+        "const",
+        "continue",
+        "else",
+        "for",
+        "function",
+        "if",
+        "import",
+        "in",
+        "let",
+        "loop",
+        "namespace",
+        "package",
+        "return",
+        "true",
+        "false",
+        "null",
     ];
     if RESERVED.contains(&name) {
         return format!("__{name}__");
@@ -303,7 +319,10 @@ fn schema_type(schema: &Value) -> Option<CelType> {
                     properties
                         .iter()
                         .map(|(name, value)| {
-                            (cel_field_name(name), schema_type(value).unwrap_or(CelType::Dyn))
+                            (
+                                cel_field_name(name),
+                                schema_type(value).unwrap_or(CelType::Dyn),
+                            )
                         })
                         .collect()
                 })

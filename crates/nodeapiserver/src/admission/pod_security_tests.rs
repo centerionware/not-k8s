@@ -272,9 +272,11 @@ mod tests {
     fn restricted_rejects_a_container_without_allow_privilege_escalation_false() {
         let pod = json!({"spec": {"securityContext": {"runAsNonRoot": true}, "containers": [{"name": "c1"}]}});
         let violations = validate(&pod, Level::Restricted);
-        assert!(violations
-            .iter()
-            .any(|v| v.contains("allowPrivilegeEscalation")));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("allowPrivilegeEscalation"))
+        );
     }
 
     #[test]
@@ -309,9 +311,11 @@ mod tests {
     fn restricted_rejects_a_disallowed_volume_type() {
         let pod = json!({"spec": {"containers": [], "volumes": [{"name": "v1", "nfs": {"server": "1.2.3.4", "path": "/"}}]}});
         let violations = validate(&pod, Level::Restricted);
-        assert!(violations
-            .iter()
-            .any(|v| v.contains("restricted volume type")));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("restricted volume type"))
+        );
     }
 
     #[test]
@@ -328,18 +332,24 @@ mod tests {
         let pod = json!({"spec": {"containers": [], "volumes": [{"name": "v1", "hostPath": {"path": "/etc"}}]}});
         let violations = validate(&pod, Level::Restricted);
         let matching: Vec<_> = violations.iter().filter(|v| v.contains("v1")).collect();
-        assert_eq!(matching.len(), 1, "hostPath must only be reported once, by restrictedVolumes, not also by hostPathVolumes: {violations:?}");
+        assert_eq!(
+            matching.len(),
+            1,
+            "hostPath must only be reported once, by restrictedVolumes, not also by hostPathVolumes: {violations:?}"
+        );
     }
 
     #[test]
     fn restricted_exempts_a_windows_pod_from_linux_only_checks() {
         let pod = json!({"spec": {"os": {"name": "windows"}, "containers": [{"name": "c1"}]}});
         let violations = validate(&pod, Level::Restricted);
-        assert!(!violations
-            .iter()
-            .any(|v| v.contains("allowPrivilegeEscalation")
-                || v.contains("capabilities")
-                || v.contains("seccompProfile")));
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.contains("allowPrivilegeEscalation")
+                    || v.contains("capabilities")
+                    || v.contains("seccompProfile"))
+        );
     }
 
     #[test]

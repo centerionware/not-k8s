@@ -93,10 +93,10 @@
 use crate::admission;
 use crate::aggregator;
 use crate::authz;
+use crate::codec::negotiation;
+use crate::config::Config;
 use crate::flowcontrol;
 use crate::proxy;
-use crate::config::Config;
-use crate::codec::negotiation;
 use crate::server::{discovery, healthz, metrics, openapi, path, rest, version};
 use crate::storage::client::StorageClient;
 use hyper::body::Incoming;

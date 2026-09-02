@@ -94,5 +94,3 @@ fn unify(left: CelType, right: CelType) -> CelType {
         CelType::Dyn
     }
 }
-
-#[cfg(test)]

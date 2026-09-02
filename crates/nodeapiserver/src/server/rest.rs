@@ -134,13 +134,13 @@ use crate::cacher::selector::{self, ParseError};
 use crate::codec::protobuf;
 use crate::codegen;
 use crate::scheme::{defaulting, validation};
+use crate::storage::client::{Error as StorageError, StorageClient, prefix_range_end};
 use crate::storage::encryption::Transformer;
-use crate::storage::client::{prefix_range_end, Error as StorageError, StorageClient};
 use crate::storage::keys;
 use crate::storage::pb::etcdserverpb as pb;
 use crate::storage::pb::etcdserverpb::RangeRequest;
 use crate::storage::pb::mvccpb;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, thiserror::Error)]
@@ -175,7 +175,11 @@ pub enum GetOutcome {
 /// `None` if this build doesn't know that resource at all. Pure and
 /// unit-tested apart from [`get`]'s own network call.
 pub fn resolve_kind(group: &str, version: &str, resource: &str) -> Option<&'static str> {
-    codegen::api_resources_by_group_version().get(&(group, version))?.iter().find(|r| r.resource == resource).map(|r| r.kind)
+    codegen::api_resources_by_group_version()
+        .get(&(group, version))?
+        .iter()
+        .find(|r| r.resource == resource)
+        .map(|r| r.kind)
 }
 
 /// Resolves a parameter kind from a `ValidatingAdmissionPolicy`'s
@@ -184,38 +188,72 @@ pub fn resolve_kind(group: &str, version: &str, resource: &str) -> Option<&'stat
 /// from the static discovery table, then fall back to an Established CRD.
 /// This is intentionally a read-only inverse of the normal resource lookup;
 /// callers still use [`get`]` and [`list`]` for the actual parameter object.
-pub async fn resolve_resource_for_kind(storage: &mut StorageClient, group: &str, kind: &str) -> Result<Option<(String, String, String, bool)>, Error> {
+pub async fn resolve_resource_for_kind(
+    storage: &mut StorageClient,
+    group: &str,
+    kind: &str,
+) -> Result<Option<(String, String, String, bool)>, Error> {
     let mut static_matches = codegen::api_resources::API_RESOURCES
         .iter()
         .filter(|resource| resource.group == group && resource.kind == kind)
         .collect::<Vec<_>>();
-    static_matches.sort_by(|left, right| super::version_compare::compare_kube_aware_versions(&right.version, &left.version));
+    static_matches.sort_by(|left, right| {
+        super::version_compare::compare_kube_aware_versions(&right.version, &left.version)
+    });
     if let Some(resource) = static_matches.into_iter().next() {
-        return Ok(Some((resource.group.to_string(), resource.version.to_string(), resource.resource.to_string(), resource.namespaced)));
+        return Ok(Some((
+            resource.group.to_string(),
+            resource.version.to_string(),
+            resource.resource.to_string(),
+            resource.namespaced,
+        )));
     }
 
-    let mut dynamic_matches = apiextensions::registry::discoverable_resources(list_stored_crds(storage).await?.iter())
-        .into_iter()
-        .filter(|resource| resource.group == group && resource.kind == kind)
-        .collect::<Vec<_>>();
-    dynamic_matches.sort_by(|left, right| super::version_compare::compare_kube_aware_versions(&right.version, &left.version));
-    Ok(dynamic_matches.into_iter().next().map(|resource| (resource.group, resource.version, resource.resource, resource.namespaced)))
+    let mut dynamic_matches =
+        apiextensions::registry::discoverable_resources(list_stored_crds(storage).await?.iter())
+            .into_iter()
+            .filter(|resource| resource.group == group && resource.kind == kind)
+            .collect::<Vec<_>>();
+    dynamic_matches.sort_by(|left, right| {
+        super::version_compare::compare_kube_aware_versions(&right.version, &left.version)
+    });
+    Ok(dynamic_matches.into_iter().next().map(|resource| {
+        (
+            resource.group,
+            resource.version,
+            resource.resource,
+            resource.namespaced,
+        )
+    }))
 }
 
 /// Resolve the served resource's namespacedness for admission matching. The
 /// static discovery table handles built-ins without I/O; a CRD lookup uses
 /// the same established definitions as ordinary REST resolution.
-pub async fn resource_is_namespaced(storage: &mut StorageClient, group: &str, version: &str, resource: &str) -> Result<Option<bool>, Error> {
+pub async fn resource_is_namespaced(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+) -> Result<Option<bool>, Error> {
     if let Some(found) = codegen::api_resources_by_group_version()
         .get(&(group, version))
-        .and_then(|resources| resources.iter().find(|candidate| candidate.resource == resource))
+        .and_then(|resources| {
+            resources
+                .iter()
+                .find(|candidate| candidate.resource == resource)
+        })
     {
         return Ok(Some(found.namespaced));
     }
     let crds = list_stored_crds(storage).await?;
     Ok(apiextensions::registry::discoverable_resources(crds.iter())
         .into_iter()
-        .find(|candidate| candidate.group == group && candidate.version == version && candidate.resource == resource)
+        .find(|candidate| {
+            candidate.group == group
+                && candidate.version == version
+                && candidate.resource == resource
+        })
         .map(|candidate| candidate.namespaced))
 }
 

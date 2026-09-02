@@ -1,72 +1,16 @@
-/// The `Kind` this build serves at `(group, version, resource)`, or
-/// `None` if this build doesn't know that resource at all. Pure and
-/// unit-tested apart from [`get`]'s own network call.
-pub fn resolve_kind(group: &str, version: &str, resource: &str) -> Option<&'static str> {
-    codegen::api_resources_by_group_version()
-        .get(&(group, version))?
-        .iter()
-        .find(|r| r.resource == resource)
-        .map(|r| r.kind)
-}
-
-/// Resolves a parameter kind from a `ValidatingAdmissionPolicy`'s
-/// `spec.paramKind`. Parameter kinds carry an API group and Kind but no
-/// version or resource plural, so choose the most-preferred served version
-/// from the static discovery table, then fall back to an Established CRD.
-/// This is intentionally a read-only inverse of the normal resource lookup;
-/// callers still use [`get`]` and [`list`]` for the actual parameter object.
-pub async fn resolve_resource_for_kind(
-    storage: &mut StorageClient,
-    group: &str,
-    kind: &str,
-) -> Result<Option<(String, String, String, bool)>, Error> {
-    let mut static_matches = codegen::api_resources::API_RESOURCES
-        .iter()
-        .filter(|resource| resource.group == group && resource.kind == kind)
-        .collect::<Vec<_>>();
-    static_matches.sort_by(|left, right| {
-        super::version_compare::compare_kube_aware_versions(&right.version, &left.version)
-    });
-    if let Some(resource) = static_matches.into_iter().next() {
-        return Ok(Some((
-            resource.group.to_string(),
-            resource.version.to_string(),
-            resource.resource.to_string(),
-            resource.namespaced,
-        )));
-    }
-
-    let mut dynamic_matches =
-        apiextensions::registry::discoverable_resources(list_stored_crds(storage).await?.iter())
-            .into_iter()
-            .filter(|resource| resource.group == group && resource.kind == kind)
-            .collect::<Vec<_>>();
-    dynamic_matches.sort_by(|left, right| {
-        super::version_compare::compare_kube_aware_versions(&right.version, &left.version)
-    });
-    Ok(dynamic_matches.into_iter().next().map(|resource| {
-        (
-            resource.group,
-            resource.version,
-            resource.resource,
-            resource.namespaced,
-        )
-    }))
-}
-
-/// What [`resolve_resource`] found `(group, version, resource)` to be —
-/// either a built-in with a compiled proto schema (`resolve_kind`/
-/// `schema_for_gvk`, unchanged from before Group K existed), or a
-/// CRD-defined resource (`apiextensions::registry`), which has no
-/// compiled schema at all: its body is stored/read as plain JSON, and
-/// defaulting (when `open_api_schema` is present) walks that schema at
-/// runtime instead of a compiled `FIELD_META` table
-/// (`apiextensions::schema_defaults`).
 struct ResolvedResource {
     kind: String,
     /// `Some(proto message name)` for a built-in; `None` for a CRD.
     schema: Option<&'static str>,
     open_api_schema: Option<Value>,
+    /// Additional field-selector paths declared by an established CRD. An
+    /// empty list is the built-in/default CRD behavior: only metadata fields
+    /// are selectable.
+    selectable_fields: Vec<String>,
+    /// The CRD storage version's schema, when this is a dynamic resource.
+    /// Requests are validated against their served version before conversion;
+    /// converted objects must also satisfy this schema before persistence.
+    storage_open_api_schema: Option<Value>,
     /// Only ever meaningfully `true` for a CRD (`schema: None`) whose
     /// matched version declares `subresources.status` — always `true`
     /// for a static built-in, since this crate doesn't model per-type
@@ -74,6 +18,7 @@ struct ResolvedResource {
     /// separate, wider gap this field doesn't attempt to close — see
     /// `update_status`/`patch_status`'s own doc comment).
     has_status_subresource: bool,
+    conversion_webhook: Option<apiextensions::registry::ConversionWebhook>,
 }
 
 /// The single place every real verb in this module decides what
@@ -103,7 +48,10 @@ async fn resolve_resource(
                 kind: kind.to_string(),
                 schema: Some(schema),
                 open_api_schema: None,
+                selectable_fields: Vec::new(),
+                storage_open_api_schema: None,
                 has_status_subresource: true,
+                conversion_webhook: None,
             }),
         );
     }
@@ -113,8 +61,209 @@ async fn resolve_resource(
             kind: r.kind,
             schema: None,
             open_api_schema: r.open_api_schema,
+            selectable_fields: r.selectable_fields,
+            storage_open_api_schema: r.storage_open_api_schema,
             has_status_subresource: r.has_status_subresource,
+            conversion_webhook: r.conversion_webhook,
         }))
+}
+
+/// Resolve the OpenAPI schema used to declare CEL mutation object aliases.
+/// Built-in schemas come from the same vendored document advertised by
+/// `/openapi/v3`; CRD schemas come from their established version directly.
+/// Built-in references are expanded here so the CEL environment can register
+/// names such as `Object.spec.containers` without duplicating schema lookup
+/// rules in the admission layer.
+pub async fn mutation_openapi_schema(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+) -> Result<Option<Value>, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Ok(None);
+    };
+    if let Some(schema) = resolved.open_api_schema {
+        return Ok(Some(schema));
+    }
+    let Some(schema_name) = resolved.schema else {
+        return Ok(None);
+    };
+    let path = if group.is_empty() {
+        format!("api/{version}")
+    } else {
+        format!("apis/{group}/{version}")
+    };
+    let Some(document) = codegen::openapi_v3_document(&path) else {
+        return Ok(None);
+    };
+    let Some(schemas) = document
+        .pointer("/components/schemas")
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let Some(root) = schemas.get(schema_name) else {
+        return Ok(None);
+    };
+    Ok(Some(expand_openapi_refs(
+        root,
+        schemas,
+        &mut BTreeSet::new(),
+    )))
+}
+
+fn expand_openapi_refs(
+    value: &Value,
+    schemas: &Map<String, Value>,
+    active: &mut BTreeSet<String>,
+) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| expand_openapi_refs(value, schemas, active))
+                .collect(),
+        ),
+        Value::Object(object) => {
+            if let Some(reference) = object
+                .get("$ref")
+                .and_then(Value::as_str)
+                .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+            {
+                if let Some(target) = schemas.get(reference) {
+                    if active.insert(reference.to_string()) {
+                        let mut expanded = expand_openapi_refs(target, schemas, active);
+                        active.remove(reference);
+                        if let Value::Object(expanded_object) = &mut expanded {
+                            for (key, value) in object {
+                                if key != "$ref" {
+                                    expanded_object.insert(
+                                        key.clone(),
+                                        expand_openapi_refs(value, schemas, active),
+                                    );
+                                }
+                            }
+                        }
+                        return expanded;
+                    }
+                    // Recursive OpenAPI types cannot be represented by a
+                    // finite CEL struct tree. Keep the recursive edge
+                    // dynamic while retaining the containing object fields.
+                    return json!({"type": "object"});
+                }
+            }
+            Value::Object(
+                object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), expand_openapi_refs(value, schemas, active)))
+                    .collect(),
+            )
+        }
+        _ => value.clone(),
+    }
+}
+
+async fn convert_to_storage_version(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    conversion_webhook: Option<&apiextensions::registry::ConversionWebhook>,
+    object: Value,
+) -> Result<Value, Error> {
+    let Some(conversion_webhook) = conversion_webhook else {
+        return Ok(object);
+    };
+    if conversion_webhook.storage_version == version {
+        return Ok(object);
+    }
+    let mut objects = apiextensions::conversion::convert(
+        storage,
+        group,
+        conversion_webhook,
+        &conversion_webhook.storage_version,
+        vec![object],
+    )
+    .await
+    .map_err(|error| Error::InvalidProtobufRequest(error.to_string()))?;
+    objects.pop().ok_or_else(|| {
+        Error::InvalidProtobufRequest("conversion webhook returned no object".to_string())
+    })
+}
+
+async fn convert_to_requested_version(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    kind: &str,
+    conversion_webhook: Option<&apiextensions::registry::ConversionWebhook>,
+    object: Value,
+) -> Result<Value, Error> {
+    let object = if let Some(conversion_webhook) = conversion_webhook {
+        let source_version = object
+            .get("apiVersion")
+            .and_then(Value::as_str)
+            .map(|api_version| {
+                api_version
+                    .rsplit_once('/')
+                    .map_or(api_version, |(_, version)| version)
+            });
+        if source_version != Some(version) {
+            let mut objects = apiextensions::conversion::convert(
+                storage,
+                group,
+                conversion_webhook,
+                version,
+                vec![object],
+            )
+            .await
+            .map_err(|error| Error::InvalidProtobufRequest(error.to_string()))?;
+            objects.pop().ok_or_else(|| {
+                Error::InvalidProtobufRequest("conversion webhook returned no object".to_string())
+            })?
+        } else {
+            object
+        }
+    } else {
+        object
+    };
+    Ok(crate::scheme::conversion::to_version(
+        group, version, kind, object,
+    ))
+}
+
+/// Validate and prune an object after a conversion webhook has produced the
+/// representation that will be written. The request version's schema is not
+/// sufficient here: a webhook may return an object that passed validation
+/// before conversion but does not satisfy the storage version's schema.
+fn revalidate_storage_object(schema: Option<&Value>, object: Value) -> Result<Value, Vec<String>> {
+    let Some(schema) = schema else {
+        return Ok(object);
+    };
+    let object = apiextensions::schema_pruning::prune(schema, &object);
+    let mut violations = apiextensions::schema_validation::validate_required(schema, &object)
+        .into_iter()
+        .map(|violation| format!("{}: Required value", violation.path))
+        .collect::<Vec<_>>();
+    violations.extend(
+        apiextensions::schema_validation::validate_types(schema, &object)
+            .into_iter()
+            .map(|violation| {
+                format!(
+                    "{}: expected type {}, got {}",
+                    violation.path, violation.expected, violation.actual_kind
+                )
+            }),
+    );
+    violations.extend(apiextensions::schema_validation::validate_constraints(
+        schema, &object,
+    ));
+    violations.extend(metadata_format_violations(&object));
+    if violations.is_empty() {
+        Ok(object)
+    } else {
+        Err(violations)
+    }
 }
 
 /// The dynamic (CRD-only) half of [`resolve_resource`] — skips the
@@ -157,9 +306,22 @@ pub async fn resolve_dynamic_kind(
     version: &str,
     resource: &str,
 ) -> Result<Option<String>, Error> {
-    Ok(resolve_crd(storage, group, version, resource)
+    Ok(resolve_dynamic_resource(storage, group, version, resource)
         .await?
         .map(|r| r.kind))
+}
+
+/// Public dynamic-registry lookup for callers that need more than the
+/// resolved Kind. In particular, the watch path needs the CRD's conversion
+/// webhook configuration while it formats events from the storage-version
+/// cache for a client's requested served version.
+pub async fn resolve_dynamic_resource(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+) -> Result<Option<apiextensions::registry::CrdResource>, Error> {
+    resolve_crd(storage, group, version, resource).await
 }
 
 /// Every stored `CustomResourceDefinition`, decoded — `server::listener`'s
@@ -198,18 +360,21 @@ async fn list_stored_crds(storage: &mut StorageClient) -> Result<Vec<Value>, Err
             ..Default::default()
         })
         .await?;
-    resp.kvs
-        .iter()
-        .map(|kv| {
-            decrypt_and_decode(
+    let mut objects = Vec::with_capacity(resp.kvs.len());
+    for kv in resp.kvs {
+        objects.push(
+            decrypt_and_decode_with_rotation(
                 storage,
                 "apiextensions.k8s.io",
                 "customresourcedefinitions",
                 &kv.key,
                 &kv.value,
+                kv.mod_revision,
             )
-        })
-        .collect()
+            .await?,
+        );
+    }
+    Ok(objects)
 }
 
 /// Decodes a value exactly as stored in nodestore — the full `k8s\0`-
@@ -295,13 +460,9 @@ fn decode_protobuf_object(
 /// comment: "so a ciphertext can't be copied to a different key and
 /// still decrypt"), matching real upstream's own
 /// `dataCtx.AuthenticatedData()` convention exactly. The real upstream
-/// `stale` flag `transform_from_storage` returns (real upstream's own
-/// signal that a value was encrypted under a non-primary key — a
-/// migration-in-progress marker meaning "rewrite this with the current
-/// primary key next time it's written") is intentionally discarded here:
-/// this build has nowhere to act on it yet (no background re-encryption
-/// sweep), a named, narrower gap than the wiring itself, not silently
-/// dropped without comment.
+/// The plain helper is retained for synchronous callers such as watch-event
+/// formatting. Async REST reads use [`decrypt_and_decode_with_rotation`],
+/// which honors the transformer's stale-key signal after decoding.
 pub(crate) fn decrypt_and_decode(
     storage: &StorageClient,
     group: &str,
@@ -316,6 +477,78 @@ pub(crate) fn decrypt_and_decode(
         }
         None => Ok(decode_stored_object(bytes)?),
     }
+}
+
+/// The read path with upstream's key-rotation behavior. A value encrypted
+/// with any non-primary provider/key is returned normally, then rewritten
+/// with the first configured transformer only if the optimistic-concurrency
+/// check still sees the revision that was read. Rotation is bookkeeping: a
+/// failed or raced rewrite must never turn a successful read into an API
+/// error, and the next read can safely try again.
+pub(crate) async fn decrypt_and_decode_with_rotation(
+    storage: &mut StorageClient,
+    group: &str,
+    resource: &str,
+    key: &[u8],
+    bytes: &[u8],
+    revision: i64,
+) -> Result<Value, Error> {
+    let Some(transformers) = storage.transformers_for(group, resource) else {
+        return Ok(decode_stored_object(bytes)?);
+    };
+    let (plaintext, stale) = transformers.transform_from_storage(bytes, key)?;
+    let object = decode_stored_object(&plaintext)?;
+
+    if stale && revision > 0 {
+        let rotated = match encrypt_for_storage(storage, group, resource, key, &plaintext) {
+            Ok(rotated) => rotated,
+            Err(error) => {
+                tracing::warn!(group, resource, revision, error = ?error, "storage: stale-key rewrite could not encrypt the value; returning the decrypted value");
+                return Ok(object);
+            }
+        };
+        let compare = pb::Compare {
+            key: key.to_vec(),
+            result: pb::compare::CompareResult::Equal as i32,
+            target: pb::compare::CompareTarget::Mod as i32,
+            target_union: Some(pb::compare::TargetUnion::ModRevision(revision)),
+            range_end: Vec::new(),
+        };
+        let txn = pb::TxnRequest {
+            compare: vec![compare],
+            success: vec![pb::RequestOp {
+                request: Some(pb::request_op::Request::RequestPut(pb::PutRequest {
+                    key: key.to_vec(),
+                    value: rotated,
+                    ..Default::default()
+                })),
+            }],
+            failure: Vec::new(),
+        };
+        match storage.txn(txn).await {
+            Ok(response) if response.succeeded => {
+                tracing::debug!(
+                    group,
+                    resource,
+                    revision,
+                    "storage: re-encrypted a value with the primary key"
+                );
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    group,
+                    resource,
+                    revision,
+                    "storage: skipped stale-key rewrite after a concurrent update"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(group, resource, revision, error = ?error, "storage: stale-key rewrite failed; returning the decrypted value");
+            }
+        }
+    }
+
+    Ok(object)
 }
 
 /// The write-side counterpart to [`decrypt_and_decode`]: encrypts `bytes`

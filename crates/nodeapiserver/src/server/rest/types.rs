@@ -1,3 +1,4 @@
+#[derive(Debug, PartialEq)]
 pub enum UpdateOutcome {
     Updated(Value),
     UnknownResource,
@@ -21,9 +22,3 @@ pub enum UpdateOutcome {
     /// patch media types this build understands.
     UnsupportedPatchType,
 }
-
-/// The virtual `autoscaling/v1 Scale` resource exposed by the built-in
-/// workload scale subresources. Scale reads and writes are translated to
-/// the parent object's `spec.replicas`; the Scale object itself is never
-/// persisted in nodestore.
-#[derive(Debug, PartialEq)]
