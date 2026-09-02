@@ -511,4 +511,61 @@ mod tests {
             Some("io.k8s.api.apps.v1.Deployment")
         );
     }
+
+    #[test]
+    fn dra_resource_slice_round_trips_the_scheduler_inventory_shape() {
+        let message = "io.k8s.api.resource.v1.ResourceSlice";
+        let value = json!({
+            "metadata": {"name": "gpu.example.com-node-a"},
+            "spec": {
+                "driver": "gpu.example.com",
+                "pool": {"name": "node-a", "generation": 1, "resourceSliceCount": 1},
+                "nodeName": "node-a",
+                "devices": [{
+                    "name": "gpu-0",
+                    "attributes": {"gpu.example.com": {"string": "a100"}},
+                    "capacity": {"gpu.example.com": {"value": "1"}}
+                }]
+            }
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn dra_resource_claim_round_trips_allocation_and_reservation() {
+        let message = "io.k8s.api.resource.v1.ResourceClaim";
+        let value = json!({
+            "metadata": {"name": "claim", "namespace": "default"},
+            "spec": {
+                "devices": {
+                    "requests": [{
+                        "name": "gpu",
+                        "exactly": {"deviceClassName": "gpu.example.com"}
+                    }]
+                }
+            },
+            "status": {
+                "allocation": {
+                    "devices": {
+                        "results": [{
+                            "request": "gpu",
+                            "driver": "gpu.example.com",
+                            "pool": "node-a",
+                            "device": "gpu-0"
+                        }]
+                    }
+                },
+                "reservedFor": [{
+                    "resource": "pods",
+                    "name": "consumer",
+                    "uid": "pod-uid"
+                }]
+            }
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
 }

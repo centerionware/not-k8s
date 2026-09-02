@@ -21,116 +21,14 @@
 //! (`apiextensions::schema_defaults`) actually filled in a field the
 //! client never submitted.
 
-use nodeapiserver::config::Config;
 use nodeapiserver::server::rest;
-use nodeapiserver::storage::client::StorageClient;
 use serde_json::json;
-use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Mirrors `tests/encryption_roundtrip.rs`'s own `find_nodestore_binary`
-/// exactly — see that file's doc comment for why building on demand
-/// (rather than only checking for an already-built binary) matters.
-fn find_nodestore_binary() -> Option<PathBuf> {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?.to_path_buf();
-    let candidates = ["bin/nodestore", "target/release/nodestore", "target/debug/nodestore"];
-    for candidate in candidates {
-        let path = repo_root.join(candidate);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    if !repo_root.join("crates/nodestore").is_dir() {
-        return None;
-    }
-    eprintln!("no nodestore binary found at any of {candidates:?} -- building one now (cargo build -p nodestore)");
-    let status = std::process::Command::new("cargo").args(["build", "-p", "nodestore"]).current_dir(&repo_root).status().ok()?;
-    if !status.success() {
-        return None;
-    }
-    let built = repo_root.join("target/debug/nodestore");
-    built.is_file().then_some(built)
-}
-
-/// Spawns a real, throwaway `nodestore` on `port` and returns a connected
-/// [`StorageClient`] once it's reachable — the shared setup both test
-/// functions in this file use, each on its own port so `cargo test`'s
-/// default parallel-test-execution doesn't collide the two.
-async fn spawn_nodestore(nodestore_bin: &std::path::Path, port: u16) -> (tokio::process::Child, tempfile::TempDir, StorageClient) {
-    let data_dir = tempfile::tempdir().expect("creating a scratch nodestore data dir");
-    let listen = format!("127.0.0.1:{port}");
-
-    let mut child = tokio::process::Command::new(nodestore_bin)
-        .env("NODESTORE_LISTEN", &listen)
-        .env("NODESTORE_DATA_DIR", data_dir.path())
-        .env("RUST_LOG", "warn")
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawning the real nodestore binary");
-
-    let pki_dir = data_dir.path().join("pki/client");
-    let cert = pki_dir.join("client.crt");
-    let key = pki_dir.join("client.key");
-    let ca = pki_dir.join("ca.crt");
-
-    let mut cfg = Config::default();
-    cfg.nodestore_endpoint = format!("https://{listen}");
-    cfg.nodestore_cert_file = Some(cert.clone());
-    cfg.nodestore_key_file = Some(key.clone());
-    cfg.nodestore_ca_file = Some(ca.clone());
-
-    let mut storage = None;
-    for _ in 0..100 {
-        if let Some(status) = child.try_wait().expect("checking whether nodestore is still running") {
-            panic!("nodestore exited during startup with {status:?}");
-        }
-        if cert.is_file() && key.is_file() && ca.is_file() {
-            if let Ok(client) = StorageClient::connect(&cfg).await {
-                storage = Some(client);
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let storage = storage.expect("nodestore never became reachable within 20s");
-    (child, data_dir, storage)
-}
-
-fn a_crd() -> serde_json::Value {
-    json!({
-        "apiVersion": "apiextensions.k8s.io/v1",
-        "kind": "CustomResourceDefinition",
-        "metadata": {"name": "widgets.example.com"},
-        "spec": {
-            "group": "example.com",
-            "scope": "Namespaced",
-            "names": {"plural": "widgets", "singular": "widget", "kind": "Widget", "listKind": "WidgetList"},
-            "versions": [{
-                "name": "v1",
-                "served": true,
-                "storage": true,
-                "additionalPrinterColumns": [{"name": "Color", "type": "string", "jsonPath": ".spec.color"}],
-                "schema": {
-                    "openAPIV3Schema": {
-                        "type": "object",
-                        "properties": {
-                            "spec": {
-                                "type": "object",
-                                "properties": {
-                                    "size": {"type": "string", "default": "small"},
-                                    "color": {"type": "string"},
-                                },
-                            },
-                        },
-                    },
-                },
-            }],
-        },
-    })
-}
+mod support;
+use support::{a_crd, find_nodestore_binary, spawn_nodestore};
 
 fn conversion_crd(webhook_url: &str) -> serde_json::Value {
     json!({
@@ -974,87 +872,6 @@ async fn create_prunes_a_field_the_crd_schema_does_not_declare() {
         other => panic!("expected Found, got {other:?}"),
     };
     assert!(read_back["spec"].get("totallyUndeclaredField").is_none());
-
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-}
-
-/// The `status` subresource only exists for a CRD version that actually
-/// declares `subresources.status` — `a_crd()`'s own shared schema never
-/// does, so `rest::update_status`/`patch_status` against it must be a
-/// real `UnknownResource`, not a silent write; a CRD that *does* declare
-/// it gets a real, working status write.
-#[tokio::test]
-async fn status_subresource_is_gated_on_the_crd_declaring_it() {
-    let Some(nodestore_bin) = find_nodestore_binary() else {
-        eprintln!("SKIPPED: no nodestore binary available and building one on demand failed");
-        return;
-    };
-    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23806).await;
-
-    rest::create(&mut storage, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, &a_crd()).await.expect("rest::create(CRD) must not itself error");
-    let widget = json!({
-        "apiVersion": "example.com/v1",
-        "kind": "Widget",
-        "metadata": {"name": "no-status-widget", "namespace": "default"},
-        "spec": {"color": "red"},
-    });
-    let created = match rest::create(&mut storage, "example.com", "v1", "widgets", Some("default"), &widget).await.expect("rest::create must not itself error") {
-        rest::CreateOutcome::Created(object) => object,
-        other => panic!("expected Created, got {other:?}"),
-    };
-
-    // 1. a_crd()'s own schema never declares subresources.status -- a
-    // real UnknownResource, not a silent write.
-    let mut with_status = created.clone();
-    with_status["status"] = json!({"phase": "Ready"});
-    let outcome = rest::update_status(&mut storage, "example.com", "v1", "widgets", Some("default"), "no-status-widget", &with_status, false).await.expect("rest::update_status must not itself error");
-    assert_eq!(outcome, rest::UpdateOutcome::UnknownResource);
-
-    let status_patch = json!({"status": {"phase": "Ready"}});
-    let outcome = rest::patch_status(&mut storage, "example.com", "v1", "widgets", Some("default"), "no-status-widget", rest::PatchKind::Merge, &status_patch, false)
-        .await
-        .expect("rest::patch_status must not itself error");
-    assert_eq!(outcome, rest::UpdateOutcome::UnknownResource);
-
-    // 2. A CRD that *does* declare subresources.status gets a real,
-    // working status write.
-    let crd_with_status = json!({
-        "apiVersion": "apiextensions.k8s.io/v1",
-        "kind": "CustomResourceDefinition",
-        "metadata": {"name": "trackers.example.com"},
-        "spec": {
-            "group": "example.com",
-            "scope": "Namespaced",
-            "names": {"plural": "trackers", "singular": "tracker", "kind": "Tracker", "listKind": "TrackerList"},
-            "versions": [{
-                "name": "v1",
-                "served": true,
-                "storage": true,
-                "schema": {"openAPIV3Schema": {"type": "object", "properties": {"spec": {"type": "object"}, "status": {"type": "object", "properties": {"phase": {"type": "string"}}}}}},
-                "subresources": {"status": {}},
-            }],
-        },
-    });
-    rest::create(&mut storage, "apiextensions.k8s.io", "v1", "customresourcedefinitions", None, &crd_with_status).await.expect("rest::create(CRD) must not itself error");
-    let tracker = json!({
-        "apiVersion": "example.com/v1",
-        "kind": "Tracker",
-        "metadata": {"name": "t1", "namespace": "default"},
-        "spec": {},
-    });
-    let created_tracker = match rest::create(&mut storage, "example.com", "v1", "trackers", Some("default"), &tracker).await.expect("rest::create must not itself error") {
-        rest::CreateOutcome::Created(object) => object,
-        other => panic!("expected Created, got {other:?}"),
-    };
-    let mut tracker_with_status = created_tracker.clone();
-    tracker_with_status["status"] = json!({"phase": "Running"});
-    let updated = match rest::update_status(&mut storage, "example.com", "v1", "trackers", Some("default"), "t1", &tracker_with_status, false).await.expect("rest::update_status must not itself error") {
-        rest::UpdateOutcome::Updated(object) => object,
-        other => panic!("expected Updated, got {other:?}"),
-    };
-    assert_eq!(updated["status"]["phase"], "Running");
-    assert_eq!(updated["spec"], json!({}), "update_status must never touch spec");
 
     let _ = child.kill().await;
     let _ = child.wait().await;
