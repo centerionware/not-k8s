@@ -1,0 +1,1 @@
+    Ok(GetOutcome::Found(object))

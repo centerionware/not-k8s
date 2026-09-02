@@ -1,0 +1,1 @@
+    Ok(ApplyPrepareOutcome::Ready(object, ApplyContext { schema, storage_open_api_schema: resolved.storage_open_api_schema, kind: resolved.kind, conversion_webhook: resolved.conversion_webhook, key, existing: Some((existing_kv, live)) }))

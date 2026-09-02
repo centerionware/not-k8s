@@ -1,0 +1,1 @@
+    Ok(DeleteOutcome::Deleted(object))

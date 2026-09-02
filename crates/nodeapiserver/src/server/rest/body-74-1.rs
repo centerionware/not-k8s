@@ -1,0 +1,23 @@
+    let Some(manager) = field_manager.filter(|manager| !manager.is_empty()) else {
+        preserve_managed_fields(existing, &mut object);
+        return object;
+    };
+
+    let Some(manager_schema) = schema else {
+        let Some(manager_schema) = open_api_schema else {
+            preserve_managed_fields(existing, &mut object);
+            return object;
+        };
+        return reconcile_runtime_managed_fields(manager_schema, existing, object, manager, operation, subresource, group, version);
+    };
+
+    let previous = existing.pointer("/metadata/managedFields").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    let entries = crate::patch::managed_fields::parse_managed_fields(&previous).unwrap_or_default();
+    let managers = crate::patch::managed_fields::to_managers_map(&entries);
+    let live = strip_managed_field_system_fields(existing.clone());
+    let new = strip_managed_field_system_fields(object.clone());
+    let manager_key = if subresource.is_empty() { manager.to_string() } else { format!("{manager}/{subresource}") };
+    let managers = crate::patch::updater::apply_update(manager_schema, &live, &new, &managers, &manager_key);
+    let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+    let rebuilt = crate::patch::managed_fields::rebuild_managed_fields(&entries, &managers, manager, subresource, operation, &api_version, Some(&now_rfc3339()));
+    set_metadata_field(&mut object, "managedFields", crate::patch::managed_fields::render_managed_fields(&rebuilt));

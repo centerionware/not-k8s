@@ -1,0 +1,1 @@
+    StreamBody::new(stream).boxed()

@@ -1,0 +1,1 @@
+    persist_update(storage, resolved.schema, resolved.open_api_schema.as_ref(), resolved.storage_open_api_schema.as_ref(), &resolved.kind, group, version, resource, key, &existing_kv, &existing_object, namespace, object, dry_run, resolved.conversion_webhook.clone(), field_manager, "status", false).await

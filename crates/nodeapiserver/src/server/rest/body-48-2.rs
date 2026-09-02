@@ -1,0 +1,1 @@
+    Ok(UpdateOutcome::Updated(object))
