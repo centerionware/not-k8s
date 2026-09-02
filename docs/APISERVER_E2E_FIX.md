@@ -16,7 +16,7 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | CSI and DRA workload startup | open | Shard 1 CSI tests and shard 2 DRA/raw-block/fsGroup tests timed out waiting for Pods. Re-run after API recovery is fixed to distinguish nodelet/runtime failures from cascade failures. | — |
 | Namespace-selector ServiceAccount error | open | Shard 1: `test_scheduler_resolves_a_namespace_selector_against_real_labels` received a 403 for a missing default ServiceAccount. | — |
 | Dry-run collection delete semantics | verified | The dedicated `deletecollection` listener path now parses `dryRun=All`, forwards it through admission and webhooks, and uses `delete_with_options` so selected objects are not persisted as deleted. Focused e2e `33569985186` passed `test_nodeapiserver_honors_dry_run_and_delete_preconditions` on shard 4; nodeapiserver quick-check `33569976266` also passed. | [#490](https://github.com/centerionware/not-k8s/pull/490) |
-| Termination grace period | open | Shard 4: `test_termination_grace_period_is_honored_not_instant` observed the Pod disappear after about 20ms despite a 20s grace period. | — |
+| Termination grace period | triage (nodelet/runtime) | The focused nodeapiserver run `33573473607` used a strengthened assertion that passed after DELETE: the API returned a Pod with `deletionTimestamp` and `deletionGracePeriodSeconds=8`. The same test then observed nodelet/CRI remove it after 48ms. The relevant teardown code is unchanged from `main`, so closed PR #491 without merge; the remaining timing failure is outside this API branch. | — |
 | Nodeproxy headless/ClusterIP routing | open | Shard 4: `test_headless_service_programs_no_rules_and_does_not_break_others` and `test_losing_every_backend_removes_the_dnat_rule` failed. Re-run independently after API recovery. | — |
 | TLS bootstrap client certificate kubeconfig | open | Shard 1: `test_tls_bootstrap_issues_a_real_client_certificate` timed out waiting for nodelet's issued kubeconfig. | — |
 | Remaining nodelet runtime, streaming, storage, and scheduler timeouts | triage | Many failures begin after the API listener/recovery failures. Reclassify only after the focused API recovery test is green. | — |
@@ -47,3 +47,8 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | `33568205267` | passed | Current-base focused e2e: `test_nodeapiserver_enforces_node_restriction` passed on shard 2; the previously reported mirror-Pod denial was not reproducible, so no source change or PR was needed. |
 | `33569976266` | passed | PR #490 nodeapiserver quick-check. |
 | `33569985186` | passed | PR #490 focused e2e: `test_nodeapiserver_honors_dry_run_and_delete_preconditions` passed on shard 4. |
+| `33571657597` | failed | PR #491 first focused e2e reached the test but observed Pod removal after 1.046s; the API fix was not sufficient to establish the runtime grace interval. |
+| `33573269584` | passed | PR #491 nodeapiserver quick-check after aligning the deletion timestamp with upstream. |
+| `33573271801` | failed | PR #491 e2e failed during source compilation because the strengthened test omitted the `anyhow::Context` import; no behavior was exercised. |
+| `33573471045` | passed | PR #491 nodeapiserver quick-check after fixing the test import. |
+| `33573473607` | failed | PR #491 focused e2e reached the test; the API deletion metadata assertion passed, but nodelet/CRI removed the Pod after 48ms. PR #491 was closed without merge because this remaining failure is outside nodeapiserver. |
