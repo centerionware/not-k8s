@@ -3066,6 +3066,18 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
 
+    if group == "discovery.k8s.io"
+        && resource == "endpointslices"
+        && namespace.is_some_and(|namespace| namespace.starts_with("nk-e2e-"))
+    {
+        tracing::warn!(
+            ?namespace,
+            name,
+            existing = !existing_resp.kvs.is_empty(),
+            "diagnostic: EndpointSlice apply preparation reached storage"
+        );
+    }
+
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         // Create-on-apply: real upstream's own Apply can create a
         // brand-new object when none exists yet (`liveObject` starts

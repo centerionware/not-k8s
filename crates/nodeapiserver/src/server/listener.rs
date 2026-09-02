@@ -659,7 +659,10 @@ fn encode_watch_event(
     match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
         None => None,
         Some(Ok(mut event_json)) => {
-            if group == "discovery.k8s.io" && resource == "endpointslices" {
+            if group == "discovery.k8s.io"
+                && resource == "endpointslices"
+                && event.key.windows(b"nk-e2e-".len()).any(|window| window == b"nk-e2e-")
+            {
                 tracing::warn!(kind = ?event.kind, key = %String::from_utf8_lossy(&event.key), revision = event.revision, "diagnostic: encoded EndpointSlice watch event");
             }
             if partial_metadata {
