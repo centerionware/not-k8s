@@ -511,6 +511,18 @@ fn is_apply_patch_content_type(content_type: &str) -> bool {
     content_type.split(';').next().unwrap_or("").trim() == "application/apply-patch+yaml"
 }
 
+/// Recognizes Server-Side Apply even when an intermediary drops the
+/// `Content-Type` header but preserves the apply-only `force` query parameter
+/// and the required `fieldManager`. A request with `force=true` cannot be an
+/// ordinary PATCH: upstream only accepts that parameter for Server-Side
+/// Apply, so retaining it is enough to recover the intended operation.
+fn is_server_side_apply_request(content_type: Option<&str>, query: &str) -> bool {
+    match content_type {
+        Some(content_type) => is_apply_patch_content_type(content_type),
+        None => field_manager_query(query).is_some() && force_query(query),
+    }
+}
+
 /// Real upstream's own required `?fieldManager=` query parameter for
 /// Server-Side Apply — `path::RequestInfo` doesn't carry it, same reason
 /// `resource_version_query` above doesn't come from there either.
@@ -3025,7 +3037,7 @@ async fn handle(
         // three-patch-kind branch's own coverage exactly. **Named,
         // The runtime-schema CRD path is handled by the same orchestration;
         // schema-less legacy CRD records remain a defensive 501 outcome.
-        if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
+        if is_server_side_apply_request(content_type.as_deref(), &query) {
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             };
@@ -3072,8 +3084,7 @@ async fn handle(
                         admission::namespace_lifecycle::Decision::Forbidden(msg) => {
                             return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
                         }
-                        admission::namespace_lifecycle::Decision::NamespaceNotFound(message) => {
-                            warn!(path = %path_str, namespace = %info.namespace, reason = %message, "server-side apply namespace admission rejected request");
+                        admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
                             return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
                         }
                     }
@@ -3082,10 +3093,7 @@ async fn handle(
 
             let (mut candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
-                Ok(rest::ApplyPrepareOutcome::UnknownResource) => {
-                    warn!(path = %path_str, api_group = %info.api_group, api_version = %info.api_version, resource = %info.resource, "server-side apply resource resolution returned unknown resource");
-                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
-                }
+                Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => {
                     return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply requires a usable structural schema")));
                 }
@@ -7252,6 +7260,14 @@ mod tests {
         assert!(is_apply_patch_content_type("application/apply-patch+yaml; charset=utf-8"));
         assert!(!is_apply_patch_content_type("application/strategic-merge-patch+json"));
         assert!(!is_apply_patch_content_type(""));
+    }
+
+    #[test]
+    fn server_side_apply_request_recovers_an_apply_query_without_content_type() {
+        assert!(is_server_side_apply_request(Some("application/apply-patch+yaml"), ""));
+        assert!(is_server_side_apply_request(None, "fieldManager=nodecontroller&force=true"));
+        assert!(!is_server_side_apply_request(None, "fieldManager=nodecontroller"));
+        assert!(!is_server_side_apply_request(Some("application/merge-patch+json"), "force=true&fieldManager=nodecontroller"));
     }
 
     #[test]
