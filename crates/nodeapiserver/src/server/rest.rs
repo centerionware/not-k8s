@@ -3066,23 +3066,6 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
     let existing_resp = storage.range(RangeRequest { key: key.clone().into_bytes(), ..Default::default() }).await?;
     let api_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
 
-    if group == "discovery.k8s.io"
-        && resource == "endpointslices"
-        && namespace.is_some_and(|namespace| namespace.starts_with("nk-e2e-"))
-    {
-        static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        if name == "headless-probe-nc"
-            && COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8
-        {
-            tracing::warn!(
-                ?namespace,
-                name,
-                existing = !existing_resp.kvs.is_empty(),
-                "diagnostic: EndpointSlice apply preparation reached storage"
-            );
-        }
-    }
-
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         // Create-on-apply: real upstream's own Apply can create a
         // brand-new object when none exists yet (`liveObject` starts
@@ -3393,7 +3376,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
             range_end: Vec::new(),
         };
         let envelope = encrypt_for_storage(storage, group, resource, context.key.as_bytes(), &envelope)?;
-        let put = pb::PutRequest { key: context.key.clone().into_bytes(), value: envelope, ..Default::default() };
+        let put = pb::PutRequest { key: context.key.into_bytes(), value: envelope, ..Default::default() };
         let txn = pb::TxnRequest {
             compare: vec![compare],
             success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
@@ -3406,9 +3389,6 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
             return Ok(ApplyOutcome::Conflict(Vec::new()));
         }
         let revision = resp.header.map(|h| h.revision).unwrap_or(0);
-        if group == "discovery.k8s.io" && resource == "endpointslices" {
-            tracing::warn!(key = %context.key, revision, "diagnostic: persisted EndpointSlice through SSA create");
-        }
         set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
         let object = convert_to_requested_version(storage, group, version, &context.kind, context.conversion_webhook.as_ref(), object).await?;
         return Ok(ApplyOutcome::Applied(object));

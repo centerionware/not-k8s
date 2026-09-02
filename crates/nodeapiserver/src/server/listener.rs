@@ -511,29 +511,6 @@ fn is_apply_patch_content_type(content_type: &str) -> bool {
     content_type.split(';').next().unwrap_or("").trim() == "application/apply-patch+yaml"
 }
 
-fn trace_endpoint_probe(path: &str, stage: &'static str) {
-    static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    if path.ends_with("/endpointslices/headless-probe-nc")
-        && COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 32
-    {
-        warn!(path, stage, "diagnostic: EndpointSlice apply handoff");
-    }
-}
-
-/// Recognizes Server-Side Apply even when an intermediary drops or mangles
-/// the `Content-Type` header but preserves the apply-only `force` query
-/// parameter and the required `fieldManager`. A request with `force=true`
-/// cannot be an ordinary PATCH: upstream only accepts that parameter for
-/// Server-Side Apply, so retaining it is enough to recover the intended
-/// operation.
-fn is_server_side_apply_request(content_type: Option<&str>, query: &str) -> bool {
-    match content_type {
-        Some(content_type) if is_apply_patch_content_type(content_type) => true,
-        Some(content_type) if rest::patch_kind_for_content_type(content_type).is_some() => false,
-        Some(_) | None => field_manager_query(query).is_some() && force_query(query),
-    }
-}
-
 /// Real upstream's own required `?fieldManager=` query parameter for
 /// Server-Side Apply — `path::RequestInfo` doesn't carry it, same reason
 /// `resource_version_query` above doesn't come from there either.
@@ -668,15 +645,6 @@ fn encode_watch_event(
     match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
         None => None,
         Some(Ok(mut event_json)) => {
-            if group == "discovery.k8s.io"
-                && resource == "endpointslices"
-                && event.key.windows(b"nk-e2e-".len()).any(|window| window == b"nk-e2e-")
-            {
-                static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-                if COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
-                    tracing::warn!(kind = ?event.kind, key = %String::from_utf8_lossy(&event.key), revision = event.revision, "diagnostic: encoded EndpointSlice watch event");
-                }
-            }
             if partial_metadata {
                 if let Some(object) = event_json.get_mut("object") {
                     *object = crate::codec::partial_metadata::object(object);
@@ -3042,8 +3010,6 @@ async fn handle(
     // between the two.
     if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource.is_empty() {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
-        let apply_request = is_server_side_apply_request(content_type.as_deref(), &query);
-        trace_endpoint_probe(&path_str, "classified");
 
         // Server-Side Apply — its own branch, not folded into the
         // three-patch-kind block below: `rest::patch_kind_for_content_type`
@@ -3059,7 +3025,7 @@ async fn handle(
         // three-patch-kind branch's own coverage exactly. **Named,
         // The runtime-schema CRD path is handled by the same orchestration;
         // schema-less legacy CRD records remain a defensive 501 outcome.
-        if apply_request {
+        if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             };
@@ -3113,21 +3079,7 @@ async fn handle(
                 }
             }
 
-            trace_endpoint_probe(&path_str, "before-apply-prepare");
-            let apply_result = rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await;
-            trace_endpoint_probe(
-                &path_str,
-                match &apply_result {
-                    Ok(rest::ApplyPrepareOutcome::Ready(..)) => "apply-prepare-ready",
-                    Ok(rest::ApplyPrepareOutcome::UnknownResource) => "apply-prepare-unknown-resource",
-                    Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => "apply-prepare-unsupported",
-                    Ok(rest::ApplyPrepareOutcome::Conflict(..)) => "apply-prepare-conflict",
-                    Ok(rest::ApplyPrepareOutcome::Invalid(..)) => "apply-prepare-invalid",
-                    Ok(rest::ApplyPrepareOutcome::NoOp(..)) => "apply-prepare-no-op",
-                    Err(_) => "apply-prepare-error",
-                },
-            );
-            let (mut candidate, apply_context) = match apply_result {
+            let (mut candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
                 Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
                 Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => {
@@ -4075,21 +4027,7 @@ async fn handle(
                 }
             }
 
-            trace_endpoint_probe(&path_str, "before-apply-persist");
-            let persist_result = rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate, dry_run).await;
-            trace_endpoint_probe(
-                &path_str,
-                match &persist_result {
-                    Ok(rest::ApplyOutcome::Applied(..)) => "apply-persist-applied",
-                    Ok(rest::ApplyOutcome::NoOp(..)) => "apply-persist-no-op",
-                    Ok(rest::ApplyOutcome::UnknownResource) => "apply-persist-unknown-resource",
-                    Ok(rest::ApplyOutcome::UnsupportedForCrd) => "apply-persist-unsupported",
-                    Ok(rest::ApplyOutcome::Conflict(..)) => "apply-persist-conflict",
-                    Ok(rest::ApplyOutcome::Invalid(..)) => "apply-persist-invalid",
-                    Err(_) => "apply-persist-error",
-                },
-            );
-            return match persist_result {
+            return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate, dry_run).await {
                 Ok(rest::ApplyOutcome::Applied(object)) => {
                     if operation == admission::attributes::Operation::Create {
                         if let Some(ns) = namespace {
@@ -7310,15 +7248,6 @@ mod tests {
         assert!(is_apply_patch_content_type("application/apply-patch+yaml; charset=utf-8"));
         assert!(!is_apply_patch_content_type("application/strategic-merge-patch+json"));
         assert!(!is_apply_patch_content_type(""));
-    }
-
-    #[test]
-    fn server_side_apply_request_recovers_an_apply_query_without_content_type() {
-        assert!(is_server_side_apply_request(Some("application/apply-patch+yaml"), ""));
-        assert!(is_server_side_apply_request(None, "fieldManager=nodecontroller&force=true"));
-        assert!(is_server_side_apply_request(Some("application/octet-stream"), "fieldManager=nodecontroller&force=true"));
-        assert!(!is_server_side_apply_request(None, "fieldManager=nodecontroller"));
-        assert!(!is_server_side_apply_request(Some("application/merge-patch+json"), "force=true&fieldManager=nodecontroller"));
     }
 
     #[test]
