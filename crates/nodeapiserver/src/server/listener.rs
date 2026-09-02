@@ -3022,6 +3022,8 @@ async fn handle(
     // between the two.
     if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource.is_empty() {
         let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let apply_request = is_server_side_apply_request(content_type.as_deref(), &query);
+        warn!(path = %path_str, query = %query, content_type = ?content_type, apply_request, "diagnostic: classified named PATCH");
 
         // Server-Side Apply — its own branch, not folded into the
         // three-patch-kind block below: `rest::patch_kind_for_content_type`
@@ -3037,7 +3039,7 @@ async fn handle(
         // three-patch-kind branch's own coverage exactly. **Named,
         // The runtime-schema CRD path is handled by the same orchestration;
         // schema-less legacy CRD records remain a defensive 501 outcome.
-        if is_server_side_apply_request(content_type.as_deref(), &query) {
+        if apply_request {
             let Some(mut client) = storage else {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
             };
