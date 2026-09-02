@@ -1,1 +1,0 @@
-    persist_update(storage, context.schema, context.open_api_schema.as_ref(), context.storage_open_api_schema.as_ref(), &context.kind, group, version, resource, context.key, &context.existing_kv, &context.existing_object, namespace, object, dry_run, context.conversion_webhook, field_manager, "", false).await

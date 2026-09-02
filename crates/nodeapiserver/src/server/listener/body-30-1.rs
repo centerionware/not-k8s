@@ -1,1 +1,0 @@
-    let mut storage = storage;

@@ -1,1 +1,0 @@
-    Ok(CreateOutcome::Created(object))

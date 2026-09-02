@@ -112,47 +112,4656 @@ use std::task::{Context, Poll};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
-include!("listener/part-1.rs");
-include!("listener/part-2.rs");
-include!("listener/part-3.rs");
-include!("listener/part-4.rs");
-include!("listener/part-5.rs");
-include!("listener/part-6.rs");
-include!("listener/part-7.rs");
-include!("listener/part-8.rs");
-include!("listener/part-9.rs");
-include!("listener/part-10.rs");
-include!("listener/part-11.rs");
-include!("listener/part-12.rs");
-include!("listener/part-13.rs");
-include!("listener/part-14.rs");
-include!("listener/part-15.rs");
-include!("listener/part-16.rs");
-include!("listener/part-17.rs");
-include!("listener/part-18.rs");
-include!("listener/part-19.rs");
-include!("listener/part-20.rs");
-include!("listener/part-21.rs");
-include!("listener/part-22.rs");
-include!("listener/part-23.rs");
-include!("listener/part-24.rs");
-include!("listener/part-25.rs");
-include!("listener/part-26.rs");
-include!("listener/part-27.rs");
-include!("listener/part-28.rs");
-include!("listener/part-29.rs");
-include!("listener/part-30.rs");
-include!("listener/part-31.rs");
-include!("listener/part-32.rs");
-include!("listener/part-33.rs");
-include!("listener/part-34.rs");
-include!("listener/part-35.rs");
-include!("listener/part-36.rs");
-include!("listener/part-37.rs");
-include!("listener/part-38.rs");
-include!("listener/part-39.rs");
-include!("listener/part-40.rs");
-include!("listener/part-41.rs");
-include!("listener/part-42.rs");
-include!("listener/part-43.rs");
-include!("listener/part-44.rs");
+
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub type BoxedBody = http_body_util::combinators::BoxBody<hyper::body::Bytes, BoxError>;
+
+type DynamicCacheState = HashMap<Vec<u8>, HashSet<crate::cacher::registry::ResourceKey>>;
+
+#[derive(Debug, Clone, Default)]
+struct AdmissionMetadata {
+    warnings: Vec<String>,
+    audit_failures: Vec<Value>,
+}
+
+type SharedAdmissionMetadata = Arc<Mutex<AdmissionMetadata>>;
+
+fn record_admission_outcome(metadata: Option<&SharedAdmissionMetadata>, outcome: &admission::policy_enforcement::ValidationOutcome) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let Ok(mut metadata) = metadata.lock() else {
+        return;
+    };
+    metadata.warnings.extend(outcome.warnings.iter().cloned());
+    metadata.audit_failures.extend(outcome.audit_failures.iter().cloned());
+}
+
+fn audit_annotations(metadata: &AdmissionMetadata) -> BTreeMap<String, String> {
+    if metadata.audit_failures.is_empty() {
+        return BTreeMap::new();
+    }
+    let value = serde_json::to_string(&metadata.audit_failures).unwrap_or_else(|_| "[]".to_string());
+    BTreeMap::from([(admission::policy_enforcement::VALIDATION_FAILURE_AUDIT_ANNOTATION.to_string(), value)])
+}
+
+fn apply_admission_warnings(response: &mut Response<BoxedBody>, warnings: &[String]) {
+    let warning_header = hyper::header::HeaderName::from_static("warning");
+    for warning in warnings {
+        // RFC 7234's warning-text is quoted; sanitize control characters so
+        // a policy cannot inject a second header into the response.
+        let escaped = warning.replace('\\', "\\\\").replace('"', "\\\"").replace('\r', " ").replace('\n', " ");
+        let Ok(value) = hyper::header::HeaderValue::from_str(&format!("299 - \"{escaped}\"")) else {
+            continue;
+        };
+        response.headers_mut().append(warning_header.clone(), value);
+    }
+}
+
+fn crd_cache_keys(crd: &serde_json::Value) -> HashSet<crate::cacher::registry::ResourceKey> {
+    crate::apiextensions::registry::discoverable_resources(std::iter::once(crd))
+        .into_iter()
+        .map(|resource| (resource.group, resource.version, resource.resource))
+        .collect()
+}
+
+fn reconcile_crd_cache(
+    storage: &StorageClient,
+    registry: &crate::cacher::CacheRegistry,
+    state: &mut DynamicCacheState,
+    crd_key: Vec<u8>,
+    crd: Option<&serde_json::Value>,
+) {
+    let previous = state.remove(&crd_key).unwrap_or_default();
+    let desired = crd.map(crd_cache_keys).unwrap_or_default();
+
+    for (group, version, resource) in previous.difference(&desired) {
+        registry.remove(group, version, resource);
+    }
+    for (group, version, resource) in desired.difference(&previous) {
+        registry.spawn(storage.clone(), group, version, resource);
+    }
+
+    if crd.is_some() {
+        state.insert(crd_key, desired);
+    }
+}
+
+async fn reconcile_crd_caches(
+    storage: StorageClient,
+    crd_cache: crate::cacher::SharedCache,
+    registry: crate::cacher::CacheRegistry,
+) {
+    crd_cache.wait_until_synced().await;
+    let (entries, mut events) = crd_cache.snapshot_and_watch();
+    let mut state = DynamicCacheState::new();
+
+    for (key, entry) in entries {
+        match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &key, &entry.value) {
+            Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd)),
+            Err(error) => warn!(error = ?error, "crd cache: failed to decode an initial CRD"),
+        }
+    }
+
+    loop {
+        match events.recv().await {
+            Ok(event) => match event.kind {
+                crate::cacher::EventKind::Added | crate::cacher::EventKind::Modified => {
+                    match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &event.key, &event.value) {
+                        Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, event.key, Some(&crd)),
+                        Err(error) => warn!(error = ?error, "crd cache: failed to decode a changed CRD"),
+                    }
+                }
+                crate::cacher::EventKind::Deleted => {
+                    reconcile_crd_cache(&storage, &registry, &mut state, event.key, None);
+                }
+                crate::cacher::EventKind::Bookmark => {}
+            },
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                warn!(skipped, "crd cache: event stream lagged; rebuilding dynamic cache registrations");
+                let (entries, next_events) = crd_cache.snapshot_and_watch();
+                let current_keys: HashSet<Vec<u8>> = entries.iter().map(|(key, _)| key.clone()).collect();
+                let stale_keys: Vec<Vec<u8>> = state.keys().filter(|key| !current_keys.contains(*key)).cloned().collect();
+                for key in stale_keys {
+                    reconcile_crd_cache(&storage, &registry, &mut state, key, None);
+                }
+                for (key, entry) in entries {
+                    match rest::decrypt_and_decode(&storage, "apiextensions.k8s.io", "customresourcedefinitions", &key, &entry.value) {
+                        Ok(crd) => reconcile_crd_cache(&storage, &registry, &mut state, key, Some(&crd)),
+                        Err(error) => warn!(error = ?error, "crd cache: failed to decode a CRD while rebuilding registrations"),
+                    }
+                }
+                events = next_events;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
+fn body_from_bytes(bytes: Vec<u8>) -> BoxedBody {
+    use http_body_util::{BodyExt, Full};
+    Full::new(hyper::body::Bytes::from(bytes)).map_err(|never: std::convert::Infallible| match never {}).boxed()
+}
+
+/// Buffers a request's entire body into memory — fine for the object
+/// sizes this build's own resources actually reach (real kube-apiserver
+/// itself has no streaming write path either; every write is a single
+/// decoded object). No size cap yet — a named, real gap, not a
+/// forgotten one: real upstream enforces `--max-request-body-bytes`.
+async fn read_body_bytes(req: Request<Incoming>) -> Result<Vec<u8>, hyper::Error> {
+    use http_body_util::BodyExt;
+    let collected = req.into_body().collect().await?;
+    Ok(collected.to_bytes().to_vec())
+}
+
+fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxedBody> {
+    json_response_with_content_type(status, value, "application/json")
+}
+
+fn json_response_with_content_type(status: StatusCode, value: &serde_json::Value, content_type: &str) -> Response<BoxedBody> {
+    let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder().status(status).header("Content-Type", content_type).body(body_from_bytes(bytes)).unwrap()
+}
+
+/// Real upstream's own `resourceVersion` query parameter for a `watch`
+/// request — `path::RequestInfo` doesn't carry this (it's not part of
+/// the URL *path* grammar `path::parse` ports, only the query string), so
+/// this is read directly off the raw query the same ad hoc way
+/// `content-type` is read off headers elsewhere in this function. `0` (the
+/// same "unset"/"start from now" value `cacher::store::WatchCache::watch_from`
+/// already treats `<= 0` as) for a missing or unparsable value.
+fn resource_version_query(query: &str) -> i64 {
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("resourceVersion="))
+        .and_then(|v| urlencoding_decode(v).parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WatchOptions {
+    allow_watch_bookmarks: bool,
+    timeout: Option<std::time::Duration>,
+}
+
+/// Parses the two watch-only `ListOptions` this listener can honor without
+/// changing the cache protocol. `allowWatchBookmarks` controls delivery of
+/// the cache driver's synthetic bookmark events; `timeoutSeconds` bounds the
+/// complete stream, including a quiet watch, just as upstream's watch
+/// handler does. Zero means no server-side timeout.
+fn watch_options_query(query: &str) -> Result<WatchOptions, &'static str> {
+    let params = path::parse_query(query);
+    let allow_watch_bookmarks = match params
+        .iter()
+        .find(|(key, _)| key == "allowWatchBookmarks")
+    {
+        None => false,
+        Some((_, value)) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => return Err("allowWatchBookmarks must be true or false"),
+        },
+    };
+    let timeout = match params.iter().find(|(key, _)| key == "timeoutSeconds") {
+        None => None,
+        Some((_, value)) => {
+            let seconds = value
+                .parse::<u64>()
+                .map_err(|_| "timeoutSeconds must be a non-negative integer")?;
+            if seconds == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(seconds))
+            }
+        }
+    };
+    Ok(WatchOptions {
+        allow_watch_bookmarks,
+        timeout,
+    })
+}
+
+/// The minimal `%XX`/`+` decoding a bare integer query value could ever
+/// actually need — `resourceVersion` is always digits, so this only
+/// exists to be defensive against a client that percent-encodes it
+/// anyway (real browsers/`curl --data-urlencode` do this unconditionally
+/// for some tooling); not a general URL-decoder.
+fn urlencoding_decode(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('%') && !s.contains('+') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '+' => out.push(' '),
+            '%' => {
+                let hi = chars.next();
+                let lo = chars.next();
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    if let Ok(byte) = u8::from_str_radix(&format!("{hi}{lo}"), 16) {
+                        out.push(byte as char);
+                        continue;
+                    }
+                }
+                out.push('%');
+            }
+            other => out.push(other),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Real upstream's own Server-Side Apply media type
+/// (`application/apply-patch+yaml`) — the one `rest::
+/// patch_kind_for_content_type` deliberately doesn't recognize (its own
+/// doc comment), since it isn't one of that function's three patch
+/// kinds; this is the separate check that routes a `PATCH` into
+/// `rest::server_side_apply` instead.
+fn is_apply_patch_content_type(content_type: &str) -> bool {
+    content_type.split(';').next().unwrap_or("").trim() == "application/apply-patch+yaml"
+}
+
+/// Real upstream's own required `?fieldManager=` query parameter for
+/// Server-Side Apply — `path::RequestInfo` doesn't carry it, same reason
+/// `resource_version_query` above doesn't come from there either.
+/// `None` when absent, so the caller can reject with a real `400` rather
+/// than inventing a manager name.
+fn field_manager_query(query: &str) -> Option<String> {
+    path::parse_query(query).into_iter().find(|(k, _)| k == "fieldManager").map(|(_, v)| v).filter(|value| !value.is_empty())
+}
+
+/// Real upstream's own `?force=` query parameter — Server-Side Apply's
+/// conflict-override flag.
+fn force_query(query: &str) -> bool {
+    path::parse_query(query).iter().any(|(k, v)| k == "force" && v == "true")
+}
+
+/// Parses the write-only `dryRun` query option. Kubernetes currently defines
+/// one value, `All`; accepting anything else would make a misspelled option
+/// look like a successful persisted write.
+fn dry_run_query(query: &str) -> Result<bool, &'static str> {
+    let Some((_, value)) = path::parse_query(query).into_iter().find(|(key, _)| key == "dryRun") else {
+        return Ok(false);
+    };
+    match value.as_str() {
+        "All" => Ok(true),
+        _ => Err("dryRun must be All"),
+    }
+}
+
+fn is_authorization_review(info: &path::RequestInfo) -> bool {
+    (info.api_group == "authorization.k8s.io"
+        && matches!(
+            info.resource.as_str(),
+            "subjectaccessreviews"
+                | "selfsubjectaccessreviews"
+                | "localsubjectaccessreviews"
+                | "selfsubjectrulesreviews"
+        ))
+        || (info.api_group == "authentication.k8s.io" && info.resource == "selfsubjectreviews")
+}
+
+fn should_run_local_authorization(
+    info: &path::RequestInfo,
+    enforce_rbac: bool,
+    authorization_webhook_allowed: bool,
+) -> bool {
+    enforce_rbac
+        && !authorization_webhook_allowed
+        && info.is_resource_request
+        && !is_authorization_review(info)
+}
+
+fn delete_preconditions(value: Option<&serde_json::Value>) -> Result<Option<rest::DeletePreconditions>, &'static str> {
+    let Some(preconditions) = value.and_then(|value| value.get("preconditions")) else {
+        return Ok(None);
+    };
+    let Some(preconditions) = preconditions.as_object() else {
+        return Err("metadata.preconditions must be an object");
+    };
+    let string_field = |name: &str| -> Result<Option<String>, &'static str> {
+        match preconditions.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => value.as_str().map(|value| Some(value.to_string())).ok_or("delete preconditions must be strings"),
+        }
+    };
+    Ok(Some(rest::DeletePreconditions {
+        resource_version: string_field("resourceVersion")?,
+        uid: string_field("uid")?,
+    }))
+}
+
+/// Real upstream's own `Conflict` shape for a Server-Side Apply
+/// ownership conflict — `reason: "Conflict"`, `code: 409`. Same "real
+/// subset, not the full type" posture every other `Status` builder in
+/// this module takes: real upstream's own structured
+/// `Status.details.causes` (one `field.ManagedFieldsConflict` entry per
+/// conflicting manager) isn't built, `message` joins them into one
+/// human-readable string instead.
+fn ssa_conflict_status(path_str: &str, conflicts: &[crate::patch::updater::Conflict]) -> serde_json::Value {
+    let detail = conflicts.iter().map(|c| format!("\"{}\" already owns: {}", c.manager, c.fields.to_json())).collect::<Vec<_>>().join("; ");
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: conflict with existing field manager(s): {detail}"),
+        "reason": "Conflict",
+        "details": {},
+        "code": 409,
+    })
+}
+
+/// Real upstream's own minimal `Status` shape for the `410 Gone` a watch
+/// whose `resourceVersion` has fallen out of the cache's retained history
+/// window gets — `reason: "Gone"`, `code: 410`, matching real
+/// kube-apiserver's own `errors.NewResourceExpired` (the signal every
+/// real `client-go` informer relists on).
+fn resource_expired_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: the requested resource version is too old — relist required"),
+        "reason": "Gone",
+        "details": {},
+        "code": 410,
+    })
+}
+
+/// Encodes one `WatchEvent` as a single newline-terminated JSON document —
+/// the same framing real `client-go`'s own `StreamWatcher`/
+/// `restclientwatch.NewDecoder` reads a JSON watch response with
+/// (`io.Reader`-based JSON decoders read one value at a time regardless of
+/// a trailing newline, but emitting one keeps every line independently
+/// parseable by simpler line-oriented tooling like `curl | jq -c`, and
+/// matches what a real kube-apiserver response looks like on the wire).
+/// `None` when [`crate::server::watch_event::to_watch_event_json`] itself
+/// returns `None` (the one honest, narrow case: a `Deleted` event for a
+/// key this cache never held a value for — see that module's own doc
+/// comment) — the event is silently skipped from the stream rather than
+/// breaking it, since there is nothing real to report for it.
+fn encode_watch_event(
+    event: &crate::cacher::store::WatchEvent,
+    kind: &str,
+    api_version: &str,
+    storage: Option<&StorageClient>,
+    group: &str,
+    resource: &str,
+    version: &str,
+    partial_metadata: bool,
+) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+    match crate::server::watch_event::to_watch_event_json(event, kind, api_version, storage, group, resource) {
+        None => None,
+        Some(Ok(mut event_json)) => {
+            if partial_metadata {
+                if let Some(object) = event_json.get_mut("object") {
+                    *object = crate::codec::partial_metadata::object(object);
+                }
+            }
+            let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
+            bytes.push(b'\n');
+            // Group M: `apiserver_watch_events_total` -- real upstream's
+            // own increment point too (`metrics.go`'s own `WatchEvents.
+            // WithLabelValues(...).Inc()`, called once per event actually
+            // written to a watch client's connection, not per event this
+            // build merely considered and filtered out).
+            metrics::record_watch_event(group, version, resource);
+            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
+        }
+        Some(Err(e)) => Some(Err(Box::new(e) as BoxError)),
+    }
+}
+
+async fn encode_watch_event_with_conversion(
+    event: &crate::cacher::store::WatchEvent,
+    kind: &str,
+    api_version: &str,
+    storage: Option<StorageClient>,
+    group: &str,
+    resource: &str,
+    version: &str,
+    partial_metadata: bool,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+) -> Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>> {
+    let mut storage = storage;
+    match crate::server::watch_event::to_watch_event_json_with_conversion(
+        event,
+        kind,
+        api_version,
+        storage.as_mut(),
+        group,
+        resource,
+        conversion_webhook.as_ref(),
+    )
+    .await
+    {
+        None => None,
+        Some(Ok(mut event_json)) => {
+            if partial_metadata {
+                if let Some(object) = event_json.get_mut("object") {
+                    *object = crate::codec::partial_metadata::object(object);
+                }
+            }
+            let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
+            bytes.push(b'\n');
+            metrics::record_watch_event(group, version, resource);
+            Some(Ok(hyper::body::Frame::data(hyper::body::Bytes::from(bytes))))
+        }
+        Some(Err(error)) => Some(Err(Box::new(error) as BoxError)),
+    }
+}
+
+type WatchEventStream = Pin<Box<dyn tokio_stream::Stream<Item = crate::cacher::store::WatchEvent> + Send + Sync>>;
+type WatchFrameFuture = Pin<Box<dyn Future<Output = Option<Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>>> + Send>>;
+
+struct ConversionWatchState {
+    events: WatchEventStream,
+    pending: Option<WatchFrameFuture>,
+    kind: String,
+    api_version: String,
+    storage: Option<StorageClient>,
+    group: String,
+    resource: String,
+    version: String,
+    partial_metadata: bool,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+}
+
+struct ConversionWatchStream {
+    state: Arc<Mutex<ConversionWatchState>>,
+}
+
+impl tokio_stream::Stream for ConversionWatchStream {
+    type Item = Result<hyper::body::Frame<hyper::body::Bytes>, BoxError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut state = self.state.lock().expect("conversion watch state lock poisoned");
+        loop {
+            if state.pending.is_some() {
+                let poll = state.pending.as_mut().expect("pending conversion future exists").as_mut().poll(cx);
+                match poll {
+                    Poll::Ready(result) => {
+                        state.pending = None;
+                        if let Some(result) = result {
+                            return Poll::Ready(Some(result));
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            let event = match state.events.as_mut().poll_next(cx) {
+                Poll::Ready(Some(event)) => event,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            let kind = state.kind.clone();
+            let api_version = state.api_version.clone();
+            let storage = state.storage.clone();
+            let group = state.group.clone();
+            let resource = state.resource.clone();
+            let version = state.version.clone();
+            let partial_metadata = state.partial_metadata;
+            let conversion_webhook = state.conversion_webhook.clone();
+            state.pending = Some(Box::pin(async move {
+                encode_watch_event_with_conversion(
+                    &event,
+                    &kind,
+                    &api_version,
+                    storage,
+                    &group,
+                    &resource,
+                    &version,
+                    partial_metadata,
+                    conversion_webhook,
+                )
+                .await
+            }));
+        }
+    }
+}
+
+/// The real streaming `watch` response body: every already-retained
+/// history event past `start_revision` (`replay`), then every live event
+/// as it arrives on `rx`, each encoded by [`encode_watch_event`]. A
+/// `broadcast::Receiver::recv()` `Lagged` error (the watcher fell behind
+/// the channel's bounded capacity) ends the stream rather than skipping
+/// silently past the gap — real kube-apiserver's own posture for a
+/// watcher that falls too far behind: close the connection, the client's
+/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
+/// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
+/// trait object) is what lets this coexist with every other, non-streaming
+/// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
+/// connection handling picks chunked transfer-encoding (h1) or native
+/// framing (h2) automatically for a body with no known `Content-Length`,
+/// no explicit opt-in needed here.
+/// `true` when `event` should reach the client — real upstream's own
+/// `WatchCache`/`cacheWatcher` narrows a watch to matching objects too,
+/// not just the initial `LIST`'s own selector filtering. `Bookmark`
+/// events and any event this cache never retained a value for (an old
+/// `Deleted` with no captured prior state) always pass through — there's
+/// no object to test a selector against, the same "nothing to filter"
+/// case `label_reqs.is_empty() && field_reqs.is_empty()` short-circuits.
+/// A value this build can't decode also passes through rather than
+/// being silently dropped — filtering a watch is a narrowing, never a
+/// hiding, mechanism; a real decode failure is a `warn!`, not a
+/// swallowed event.
+fn watch_event_matches_selector(
+    event: &crate::cacher::store::WatchEvent,
+    label_reqs: &[crate::cacher::selector::Requirement],
+    field_reqs: &[crate::cacher::selector::FieldRequirement],
+    storage: Option<&StorageClient>,
+    group: &str,
+    resource: &str,
+) -> bool {
+    if label_reqs.is_empty() && field_reqs.is_empty() {
+        return true;
+    }
+    if event.value.is_empty() {
+        return true;
+    }
+    let decoded = match storage {
+        Some(s) => rest::decrypt_and_decode(s, group, resource, &event.key, &event.value),
+        None => rest::decode_stored_object(&event.value).map_err(rest::Error::from),
+    };
+    match decoded {
+        Ok(object) => crate::cacher::selector::object_matches(&object, label_reqs, field_reqs),
+        Err(e) => {
+            warn!(error = ?e, "watch: failed to decode a cached value for selector filtering; letting the event through unfiltered");
+            true
+        }
+    }
+}
+
+/// The real streaming `watch` response body: every already-retained
+/// history event past `start_revision` (`replay`), then every live event
+/// as it arrives on `rx`, each filtered by [`watch_event_matches_selector`]
+/// (the same real label/field selector `LIST` already applies, now
+/// applied to a live stream too) and encoded by [`encode_watch_event`]. A
+/// `broadcast::Receiver::recv()` `Lagged` error (the watcher fell behind
+/// the channel's bounded capacity) ends the stream rather than skipping
+/// silently past the gap — real kube-apiserver's own posture for a
+/// watcher that falls too far behind: close the connection, the client's
+/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
+/// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
+/// trait object) is what lets this coexist with every other, non-streaming
+/// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
+/// connection handling picks chunked transfer-encoding (h1) or native
+/// framing (h2) automatically for a body with no known `Content-Length`,
+/// no explicit opt-in needed here.
+fn watch_response_body(
+    replay: Vec<crate::cacher::store::WatchEvent>,
+    rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
+    kind: String,
+    api_version: String,
+    label_reqs: Vec<crate::cacher::selector::Requirement>,
+    field_reqs: Vec<crate::cacher::selector::FieldRequirement>,
+    storage: Option<StorageClient>,
+    group: String,
+    resource: String,
+    version: String,
+    partial_metadata: bool,
+    allow_watch_bookmarks: bool,
+    timeout: Option<std::time::Duration>,
+    conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+) -> BoxedBody {
+    use http_body_util::{BodyExt, StreamBody};
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::StreamExt;
+
+    let replay_stream = tokio_stream::iter(replay);
+    let live_stream = BroadcastStream::new(rx).map_while(|res| res.ok());
+    let events = replay_stream
+        .chain(live_stream)
+        .filter(move |event| allow_watch_bookmarks || event.kind != crate::cacher::store::EventKind::Bookmark);
+    let events: WatchEventStream = if let Some(timeout) = timeout {
+        Box::pin(futures::StreamExt::take_until(
+            events,
+            tokio::time::sleep(timeout),
+        ))
+    } else {
+        Box::pin(events)
+    };
+    // Cloned once per closure (`StorageClient` wraps a cheap-to-clone
+    // `tonic::transport::Channel`, same posture every other real call
+    // site in this crate already takes) — `filter`/`filter_map` each need
+    // their own `'static`-owned copy of the encryption-lookup context.
+    let (storage_for_filter, group_for_filter, resource_for_filter) = (storage.clone(), group.clone(), resource.clone());
+    let filtered = events.filter(move |event| watch_event_matches_selector(event, &label_reqs, &field_reqs, storage_for_filter.as_ref(), &group_for_filter, &resource_for_filter));
+    if conversion_webhook.is_none() {
+        let frames = filtered.filter_map(move |event| {
+            encode_watch_event(&event, &kind, &api_version, storage.as_ref(), &group, &resource, &version, partial_metadata)
+        });
+        return StreamBody::new(frames).boxed();
+    }
+
+    let events: WatchEventStream = Box::pin(filtered);
+    let stream = ConversionWatchStream {
+        state: Arc::new(Mutex::new(ConversionWatchState {
+            events,
+            pending: None,
+            kind,
+            api_version,
+            storage,
+            group,
+            resource,
+            version,
+            partial_metadata,
+            conversion_webhook,
+        })),
+    };
+    StreamBody::new(stream).boxed()
+}
+
+/// Runs the listener forever (until the process exits). Best-effort on
+/// bind/TLS failure — logs and returns rather than panicking, matching
+/// every other background loop's degrade-and-continue posture in this
+/// workspace (see `crates/nodelet/src/server/mod.rs::run`'s own doc
+/// comment for the precedent).
+pub async fn run(cfg: Config) {
+    let cert_result = match (&cfg.tls_cert_file, &cfg.tls_key_file) {
+        (Some(cert), Some(key)) => super::tls::load_from_pem(cert, key),
+        _ => {
+            let cert_dir = std::path::PathBuf::from("/var/lib/nodeapiserver/pki");
+            let sans = vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "kubernetes".to_string(),
+                "kubernetes.default".to_string(),
+            ];
+            super::tls::load_or_generate(&cert_dir, &sans)
+        }
+    };
+    let cert = match cert_result {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            warn!(error = ?e, "failed to load/generate the TLS certificate; the REST/watch listener will not run");
+            return;
+        }
+    };
+
+    // Group H: client certificate authentication is offered but not
+    // required (see server::tls's own doc comment). The CA bundle is
+    // reloadable, so a valid replacement applies to new connections without
+    // restarting the listener. A misconfigured initial file still disables
+    // client-cert auth for this run rather than stopping the listener.
+    let client_ca = match &cfg.client_ca_file {
+        Some(path) => match super::tls::ReloadableClientCa::from_file(path) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_CLIENT_CA_FILE; client certificate authentication is disabled for this run");
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Group H: ServiceAccount JWTs are optional for standalone development,
+    // but the nodebootstrap target supplies the cluster signing key so
+    // projected pod tokens and nodelet's TokenReview fallback work before
+    // RBAC enforcement is enabled.
+    let service_account_authenticator = match &cfg.service_account_signing_key_file {
+        Some(path) => match crate::authn::service_account::ReloadableAuthenticator::from_pem(path, cfg.service_account_issuer.clone()) {
+            Ok(authenticator) => Some(Arc::new(authenticator)),
+            Err(e) => {
+                warn!(path = %path.display(), error = ?e, "failed to load NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
+    // Group H: the upstream-compatible static token file is optional. A
+    // malformed initial file disables the listener rather than leaving a
+    // partially loaded token table in place; later malformed rotations are
+    // handled by ReloadableAuthenticator, which retains the last valid table.
+    let bootstrap_token_authenticator = match &cfg.bootstrap_token_file {
+        Some(path) => match crate::authn::bootstrap_token::ReloadableAuthenticator::from_file(path) {
+            Ok(authenticator) => Some(Arc::new(authenticator)),
+            Err(error) => {
+                warn!(path = %path.display(), error, "failed to load NODEAPISERVER_TOKEN_AUTH_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
+    // Group H: OIDC is optional, but a configured issuer must complete
+    // discovery and load a usable JWKS before its bearer tokens are accepted.
+    // If that setup fails, keep OIDC disabled rather than accepting tokens
+    // without a verified identity.
+    let oidc_authenticator = match (&cfg.oidc_issuer_url, &cfg.oidc_client_id) {
+        (Some(issuer_url), Some(client_id)) => {
+            let ca_certificate_pem = match &cfg.oidc_ca_file {
+                Some(path) => match std::fs::read(path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) => {
+                        warn!(path = %path.display(), error = ?error, "failed to read NODEAPISERVER_OIDC_CA_FILE; OIDC authentication is disabled for this run");
+                        None
+                    }
+                },
+                None => None,
+            };
+            if cfg.oidc_ca_file.is_some() && ca_certificate_pem.is_none() {
+                None
+            } else {
+                let oidc_config = crate::authn::oidc::Config {
+                    issuer_url: issuer_url.clone(),
+                    client_id: client_id.clone(),
+                    username_claim: cfg.oidc_username_claim.clone(),
+                    username_prefix: cfg.oidc_username_prefix.clone(),
+                    groups_claim: cfg.oidc_groups_claim.clone(),
+                    groups_prefix: cfg.oidc_groups_prefix.clone(),
+                    required_claims: cfg.oidc_required_claims.clone(),
+                    signing_algs: cfg.oidc_signing_algs.clone(),
+                    ca_certificate_pem,
+                };
+                match crate::authn::oidc::Authenticator::from_config(oidc_config).await {
+                    Ok(authenticator) => Some(Arc::new(authenticator)),
+                    Err(error) => {
+                        warn!(issuer = %issuer_url, error = ?error, "OIDC discovery/JWKS initialization failed; OIDC authentication is disabled for this run");
+                        None
+                    }
+                }
+            }
+        }
+        _ => None,
+    };
+
+    let authorization_webhook = match cfg.authorization_webhook_url.clone() {
+        Some(url) => match crate::authz::webhook::WebhookAuthorizer::new_with_cache_ttls(
+            url.clone(),
+            cfg.authorization_webhook_authorized_ttl,
+            cfg.authorization_webhook_unauthorized_ttl,
+        ) {
+            Ok(authorizer) => Some(Arc::new(authorizer)),
+            Err(error) => {
+                warn!(%url, error = ?error, "invalid NODEAPISERVER_AUTHORIZATION_WEBHOOK_URL; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
+    let audit_sink = match cfg.audit_log_path.as_deref() {
+        Some(path) => match crate::audit::sink::AuditSink::open(path) {
+            Ok(sink) => {
+                info!(path = %path.display(), "nodeapiserver: opened audit log");
+                Some(Arc::new(sink))
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error = ?error, "failed to open NODEAPISERVER_AUDIT_LOG_PATH; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+    let audit_policy = match cfg.audit_policy_file.as_deref() {
+        Some(path) => match crate::audit::policy::AuditPolicy::from_file(path) {
+            Ok(policy) => {
+                info!(path = %path.display(), "nodeapiserver: loaded audit policy");
+                Some(Arc::new(policy))
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error, "failed to load NODEAPISERVER_AUDIT_POLICY_FILE; the REST/watch listener will not run");
+                return;
+            }
+        },
+        None => None,
+    };
+
+    // Group C: load and validate `EncryptionConfiguration` *before*
+    // connecting to nodestore — a misconfigured file is a real, loud
+    // startup failure this way, and the parsed config needs to be ready
+    // to attach to `storage` the moment it exists, before any clone of
+    // it (the cache-registry spawn loop below, or a per-connection clone
+    // in the accept loop) gets made without it.
+    let encryption_config = match &cfg.encryption_config_file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(yaml) => match crate::storage::encryption_config::parse(&yaml) {
+                Ok(parsed) => {
+                    info!(path = %path.display(), entries = parsed.entries.len(), "nodeapiserver: loaded EncryptionConfiguration");
+                    Some(parsed)
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = ?e, "invalid NODEAPISERVER_ENCRYPTION_CONFIG_FILE; continuing with no encryption-at-rest");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(path = %path.display(), error = ?e, "failed to read NODEAPISERVER_ENCRYPTION_CONFIG_FILE; continuing with no encryption-at-rest");
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Best-effort, matching every other failure in this function: a
+    // nodestore that isn't reachable yet at startup shouldn't stop the
+    // listener from serving discovery (which needs no storage at all) —
+    // `rest::get` degrades to the bring-up echo stub when this is `None`
+    // (see its own call site's comment). Connected once here and cloned
+    // per connection below: `StorageClient` wraps a cheap-to-clone
+    // `tonic::transport::Channel`, the same "clone per use, don't share a
+    // `&mut` behind a lock" posture `cacher`'s own driver takes.
+    // `with_encryption` attaches Group C's config to `storage` right
+    // away — before `cache_registry.spawn` below ever clones it — so
+    // every clone made from this point on (including every long-running
+    // background reflect loop) carries it too.
+    let storage = match StorageClient::connect(&cfg).await {
+        Ok(c) => Some(c.with_encryption(encryption_config)),
+        Err(e) => {
+            warn!(error = ?e, "failed to connect to nodestore at startup; resource GET requests will fall back to the bring-up echo stub until this succeeds");
+            None
+        }
+    };
+
+    // Group D: register one reflector for every built-in resource in the
+    // generated discovery table. `StorageClient::clone()` is cheap (a
+    // `tonic::transport::Channel` clone), and each reflector shares the
+    // same nodestore connection pool while keeping one cache per GVR, like
+    // a real informer factory.
+    let cache_registry = crate::cacher::CacheRegistry::new();
+    if let Some(s) = storage.as_ref() {
+        for resource in crate::codegen::api_resources::API_RESOURCES {
+            cache_registry.spawn(s.clone(), resource.group, resource.version, resource.resource);
+        }
+
+        // Group K: CRD-backed caches follow the CRD watch rather than
+        // waiting for a client to issue the first watch against each new
+        // resource. This also retires reflectors when a CRD is removed or
+        // stops serving a version, so a deleted definition cannot leave a
+        // stale resource cache alive in this process.
+        if let Some(crd_cache) = cache_registry.get("apiextensions.k8s.io", "v1", "customresourcedefinitions") {
+            let crd_storage = s.clone();
+            let crd_registry = cache_registry.clone();
+            tokio::spawn(async move {
+                reconcile_crd_caches(crd_storage, crd_cache, crd_registry).await;
+            });
+        } else {
+            warn!("crd cache: built-in CustomResourceDefinition cache was not registered");
+        }
+    }
+
+    // Group L Phase 2: the live `APIService` availability reconciliation
+    // loop (`aggregator::reconcile`'s own doc comment covers the real
+    // scope) — best effort, same posture the cache-registry spawn loop
+    // just above already has: no storage at startup just means this
+    // loop never runs, not a reason to stop the listener. A fixed
+    // interval, not watch-driven (`aggregator::reconcile`'s own real
+    // work — a Service/EndpointSlice health check, a live network dial —
+    // is exactly the kind of externally-changing state real upstream's
+    // own controller resyncs periodically for too, not purely reactive
+    // to `APIService` object mutations).
+    if let Some(s) = storage.as_ref() {
+        let mut reconcile_storage = s.clone();
+        tokio::spawn(async move {
+            loop {
+                match crate::aggregator::reconcile::reconcile_once(&mut reconcile_storage).await {
+                    Ok(n) if n > 0 => info!(reconciled = n, "aggregator: reconciled APIService availability"),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = ?e, "aggregator: APIService availability reconciliation pass failed"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
+    let addr: SocketAddr = match cfg.bind_addr.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(bind_addr = %cfg.bind_addr, error = ?e, "invalid NODEAPISERVER_BIND_ADDR");
+            return;
+        }
+    };
+    let listener = match TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            warn!(%addr, error = ?e, "failed to bind the REST/watch listener port");
+            return;
+        }
+    };
+    info!(%addr, storage_connected = storage.is_some(), enforce_rbac = cfg.enforce_rbac, anonymous_auth = cfg.anonymous_auth, cached_resources = crate::codegen::api_resources::API_RESOURCES.len(), "nodeapiserver: REST/watch listener up (discovery + GET/LIST/CREATE/DELETE/UPDATE/PATCH/DELETECOLLECTION/WATCH are real; unsupported paths remain bring-up stubs — see server::listener's own doc comment)");
+    let enforce_rbac = cfg.enforce_rbac;
+    let concurrency_limiter = Arc::new(crate::flowcontrol::limiter::ConcurrencyLimiter::new(
+        cfg.apf_max_requests_inflight,
+        cfg.apf_max_mutating_requests_inflight,
+        cfg.apf_queue_length_limit,
+    ));
+    let anonymous_auth = cfg.anonymous_auth;
+
+    // Group N: built once at startup, not per request — the TLS config
+    // itself doesn't depend on which pod/node a given `pods/log` request
+    // targets, only on this crate's own static configuration
+    // (`NODEAPISERVER_KUBELET_CLIENT_CERT_FILE`/`_KEY_FILE`). Best-effort
+    // like everything else here: a misconfigured cert/key pair falls
+    // back to no client identity (the same "connects, but nodelet's own
+    // TokenReview fallback path has nothing to accept" situation an
+    // unset config already produces), logged rather than stopping the
+    // listener.
+    let kubelet_client_cert_key = match (&cfg.kubelet_client_cert_file, &cfg.kubelet_client_key_file) {
+        (Some(cert), Some(key)) => Some((cert.as_path(), key.as_path())),
+        _ => None,
+    };
+    let kubelet_tls = std::sync::Arc::new(match crate::proxy::client_tls::build_client_config(kubelet_client_cert_key) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = ?e, "failed to build the kubelet-proxy TLS client config with the configured client cert; falling back to no client identity");
+            crate::proxy::client_tls::build_client_config(None).expect("a client config with no client cert must always succeed")
+        }
+    });
+
+    loop {
+        let (tcp, peer) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = ?e, "listener: accept failed");
+                continue;
+            }
+        };
+        let cert = cert.clone();
+        let client_ca = client_ca.clone();
+        let storage = storage.clone();
+        let cache_registry = cache_registry.clone();
+        let kubelet_tls = kubelet_tls.clone();
+        let service_account_authenticator = service_account_authenticator.clone();
+        let oidc_authenticator = oidc_authenticator.clone();
+        let bootstrap_token_authenticator = bootstrap_token_authenticator.clone();
+        let authorization_webhook = authorization_webhook.clone();
+        let concurrency_limiter = concurrency_limiter.clone();
+        let audit_sink = audit_sink.clone();
+        let audit_policy = audit_policy.clone();
+        tokio::spawn(async move {
+            let client_ca_store = client_ca.as_ref().map(super::tls::ReloadableClientCa::current);
+            let server_config = match cert.server_config(client_ca_store.as_ref()) {
+                Ok(config) => config,
+                Err(error) => {
+                    warn!(%peer, error = ?error, "listener: failed to build the TLS server config for the connection");
+                    return;
+                }
+            };
+            let acceptor = TlsAcceptor::from(Arc::new(server_config));
+            let tls_stream = match acceptor.accept(tcp).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(%peer, error = ?e, "listener: TLS handshake failed");
+                    return;
+                }
+            };
+            // Group H: if the client presented a certificate and it chains
+            // to the configured CA (rustls already verified this during
+            // the handshake above — `with_client_cert_verifier`'s job, not
+            // this code's), extract its identity. `None` either because no
+            // client-cert auth is configured at all, or because this
+            // particular client didn't present one — both are the same
+            // "unauthenticated by x509" outcome from here.
+            let identity = tls_stream.get_ref().1.peer_certificates().and_then(|certs| certs.first()).and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
+            let io = TokioIo::new(tls_stream);
+            let service = hyper::service::service_fn(move |req| handle_with_audit(req, storage.clone(), cache_registry.clone(), identity.clone(), bootstrap_token_authenticator.clone(), service_account_authenticator.clone(), oidc_authenticator.clone(), authorization_webhook.clone(), concurrency_limiter.clone(), audit_sink.clone(), audit_policy.clone(), anonymous_auth, enforce_rbac, peer, kubelet_tls.clone()));
+            if let Err(e) = ConnBuilder::new(TokioExecutor::new()).serve_connection_with_upgrades(io, service).await {
+                tracing::debug!(%peer, error = ?e, "listener: connection ended");
+            }
+        });
+    }
+}
+
+/// Outcome of trying to route a path as one of the five non-resource
+/// discovery endpoints. Kept distinct from a plain `Option<Value>` so the
+/// caller can tell "not a discovery-shaped path at all, fall through to
+/// resource handling" apart from "was discovery-shaped, but this build
+/// serves no such group/version" — the latter is a real `404`, not a
+/// silent fallthrough into the resource-request echo stub, which would
+/// otherwise mis-describe a `/apis/totally.made.up/v1` request as some
+/// kind of resource request.
+enum DiscoveryRoute {
+    NotApplicable,
+    Found(serde_json::Value),
+    /// Same as `Found`, but the bytes are already-serialized JSON (an
+    /// `/openapi/v3/<path>` document, embedded verbatim at build time) —
+    /// serving them directly avoids a pointless parse-then-reserialize
+    /// round trip through `serde_json::Value` for a payload that can be
+    /// tens of kilobytes.
+    FoundRaw(&'static [u8]),
+    NotFound,
+}
+
+/// `true` if `accept_header` asks for aggregated discovery v2
+/// (`as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io`) via
+/// `codec::negotiation` — the same header real client-go's aggregated
+/// discovery client sends when it wants one `/api`/`/apis` call instead of
+/// the legacy `/apis` + one `/apis/{group}/{version}` per group-version.
+/// Requires an exact `v2` match (not `v2beta1`, the pre-GA shape this
+/// crate doesn't separately model) rather than accepting any version
+/// under that group, so a client asking for a shape this build doesn't
+/// actually build never silently gets served a possibly-wrong one.
+fn wants_aggregated_discovery(accept_header: Option<&str>) -> bool {
+    let Some(header) = accept_header else { return false };
+    let Some(accepted) = negotiation::negotiate(header) else { return false };
+    accepted.as_kind.as_deref() == Some("APIGroupDiscoveryList") && accepted.as_group.as_deref() == Some("apidiscovery.k8s.io") && accepted.as_version.as_deref() == Some("v2")
+}
+
+const AGGREGATED_DISCOVERY_CONTENT_TYPE: &str = "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList";
+
+fn discovery_content_type(parts: &[String], accept_header: Option<&str>) -> &'static str {
+    if parts.len() == 1 && matches!(parts.first().map(String::as_str), Some("api") | Some("apis")) && wants_aggregated_discovery(accept_header) {
+        AGGREGATED_DISCOVERY_CONTENT_TYPE
+    } else {
+        "application/json"
+    }
+}
+
+/// Pure and unit-tested (unlike `handle`, which needs a live TLS
+/// connection to exercise at all): `parts` is the already-split, prefix-
+/// intact path (`["api", "v1"]`, `["apis", "apps", "v1"]`, ...) from
+/// [`path::split_path`]. `accept_header` is the raw `Accept` header value,
+/// if any — its only job here is picking legacy vs. aggregated discovery
+/// for the two group-list routes (`/api`, `/apis`); every other route
+/// ignores it entirely (it already only serves one shape).
+/// `crds` — Group K's own discovery merge: every served, `Established`
+/// CRD's resources, only ever non-empty for an `/apis`-prefixed path
+/// (the core group at `/api` never has CRDs in it — a CRD's own
+/// `spec.group` is never empty, real upstream's own CRD validation
+/// requires it). `handle`'s own call site fetches this live (one `LIST`
+/// of `customresourcedefinitions`) only when the path actually starts
+/// with `apis`, rather than paying that cost on every single discovery
+/// request — see that call site's own comment.
+/// The pure decision half of Group L Phase 3's live discovery proxy: is
+/// `parts` exactly a bare `/apis/{group}/{version}` path (`route_discovery`'s
+/// own `NotFound` outcome for it means no local answer exists at all —
+/// not statically, not via a CRD), and does `aggregated` (the same
+/// pre-flight-gated live list `server::listener::handle`'s own caller
+/// already fetched) claim that exact `(group, version)`? `Some` hands
+/// back borrowed references into `parts`/`aggregated` themselves — no
+/// cloning needed, the caller only ever uses them for one more `resolve`
+/// call before either succeeding or falling through to a real `404`.
+fn aggregated_discovery_group_version<'a>(parts: &'a [String], aggregated: &'a [(String, String)]) -> Option<(&'a str, &'a str)> {
+    if parts.len() != 3 || parts[0] != "apis" {
+        return None;
+    }
+    aggregated.iter().find(|(g, v)| g == &parts[1] && v == &parts[2]).map(|(g, v)| (g.as_str(), v.as_str()))
+}
+
+fn route_discovery(parts: &[String], accept_header: Option<&str>, crds: &[crate::apiextensions::registry::DiscoverableResource], aggregated: &[(String, String)]) -> DiscoveryRoute {
+    let seg = |i: usize| parts.get(i).map(String::as_str);
+    match (seg(0), seg(1), parts.len()) {
+        (Some("api"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_v1_group_discovery_list_with_crds()),
+        (Some("api"), _, 1) => DiscoveryRoute::Found(discovery::api_versions()),
+        (Some("api"), _, 2) => match discovery::api_resource_list("", &parts[1]) {
+            Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(discovery::api_group_discovery_list_with_crds(crds, aggregated)),
+        (Some("apis"), _, 1) => DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated)),
+        (Some("apis"), _, 2) => match discovery::api_group_with_crds(&parts[1], crds, aggregated) {
+            Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("apis"), _, 3) => match discovery::api_resource_list_with_crds(&parts[1], &parts[2], crds) {
+            Some(doc) => DiscoveryRoute::Found(doc),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("openapi"), Some("v2"), 2) => DiscoveryRoute::Found(openapi::v2()),
+        (Some("openapi"), Some("v3"), 2) => DiscoveryRoute::Found(openapi::root()),
+        (Some("openapi"), Some("v3"), n) if n > 2 => match openapi::doc(&parts[2..].join("/")) {
+            Some(bytes) => DiscoveryRoute::FoundRaw(bytes),
+            None => DiscoveryRoute::NotFound,
+        },
+        (Some("version"), _, 1) => DiscoveryRoute::Found(version::info()),
+        _ => DiscoveryRoute::NotApplicable,
+    }
+}
+
+/// A minimal `meta/v1.Status` body for a `404` — real upstream's full
+/// `Status` type (structured `details.causes`, per-reason `retryAfter`,
+/// ...) isn't built yet (Group E/J territory), but `kind`/`apiVersion`/
+/// `status`/`message`/`reason`/`code` is exactly what `client-go`'s own
+/// `errors.NewNotFound`-decoding path (`apimachinery/pkg/api/errors`)
+/// reads off an error response, so this shape is a real, not approximate,
+/// subset rather than an invented one.
+fn not_found_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("the server could not find the requested resource ({path_str})"),
+        "reason": "NotFound",
+        "details": {},
+        "code": 404,
+    })
+}
+
+/// Same minimal `Status` shape as [`not_found_status`], for the one real
+/// failure mode `rest::get` can hit that isn't "not found" — a nodestore
+/// request that itself errored (connection drop, decode failure on
+/// malformed stored data, ...).
+fn internal_error_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("the server encountered an internal error handling {path_str}"),
+        "reason": "InternalError",
+        "details": {},
+        "code": 500,
+    })
+}
+
+fn unauthorized_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "Unauthorized",
+        "details": {},
+        "code": 401,
+    })
+}
+
+/// Same minimal `Status` shape again, for a request the client itself
+/// malformed (today: an unparsable `labelSelector`/`fieldSelector`) —
+/// real upstream's `reason: "BadRequest"`, `code: 400`.
+fn bad_request_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "BadRequest",
+        "details": {},
+        "code": 400,
+    })
+}
+
+/// Same minimal `Status` shape again, for an RBAC denial (`enforce_rbac`
+/// only — see this module's own doc comment) — real upstream's
+/// `reason: "Forbidden"`, `code: 403`.
+fn forbidden_status(path_str: &str, user_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: User {user_name:?} does not have permission for this request (RBAC)"),
+        "reason": "Forbidden",
+        "details": {},
+        "code": 403,
+    })
+}
+
+/// Same minimal `Status` shape, for a Group J admission denial (today:
+/// only `admission::namespace_lifecycle`) — real upstream's `reason:
+/// "Forbidden"`, `code: 403`, same as an RBAC denial's shape but carrying
+/// the plugin's own message rather than a generic "does not have
+/// permission" one.
+fn admission_forbidden_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "Forbidden",
+        "details": {},
+        "code": 403,
+    })
+}
+
+fn admission_webhook_error_response(
+    path_str: &str,
+    error: &admission::webhook::Error,
+) -> Response<BoxedBody> {
+    match error {
+        admission::webhook::Error::DryRunUnsupported { detail, .. } => {
+            json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, detail))
+        }
+        _ => json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str)),
+    }
+}
+
+/// Real upstream's own shape for a proxy subresource (`pods/log`, ...)
+/// whose dial to the real backend (nodelet) itself failed — `reason:
+/// "" ` (upstream doesn't set one for this case either), `code: 502`,
+/// distinct from [`internal_error_status`]'s `500` because the fault is
+/// nodelet/the network, not this process.
+fn bad_gateway_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "",
+        "details": {},
+        "code": 502,
+    })
+}
+
+/// Real upstream's own `ServiceUnavailable` shape — used here when an
+/// aggregated `APIService`'s own pre-flight check
+/// (`aggregator::availability::preflight_check`) fails: the backing
+/// Service/EndpointSlice state itself is the fault, not this process nor
+/// the backend's own dial (that's [`bad_gateway_status`]'s case
+/// instead), matching real upstream's own `errors.NewServiceUnavailable`
+/// for the identical real situation.
+fn service_unavailable_status(path_str: &str, detail: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {detail}"),
+        "reason": "ServiceUnavailable",
+        "details": {},
+        "code": 503,
+    })
+}
+
+fn too_many_requests_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: the API request queue is full"),
+        "reason": "TooManyRequests",
+        "details": {},
+        "code": 429,
+    })
+}
+
+/// Real upstream's own `AlreadyExists` shape for a `CREATE` that lost the
+/// create-only-if-absent race — `reason: "AlreadyExists"`, `code: 409`.
+fn conflict_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: object already exists"),
+        "reason": "AlreadyExists",
+        "details": {},
+        "code": 409,
+    })
+}
+
+fn precondition_failed_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: delete precondition failed"),
+        "reason": "Conflict",
+        "details": {},
+        "code": 409,
+    })
+}
+
+/// Real upstream's own `Invalid` shape for a `CREATE` that failed
+/// `scheme::validation` — `reason: "Invalid"`, `code: 422`. Real
+/// upstream's full `Status.details.causes` (one structured entry per
+/// violation) isn't built — `message` joins every violation into one
+/// human-readable string instead, same "real subset, not the full type"
+/// posture every other `Status` builder in this module already takes.
+fn invalid_status(path_str: &str, violations: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str} is invalid: {}", violations.join("; ")),
+        "reason": "Invalid",
+        "details": {},
+        "code": 422,
+    })
+}
+
+/// Real upstream's own `user.Anonymous`/`user.AllUnauthenticated`
+/// constants — what a request with no established identity is treated
+/// as for authorization purposes (RBAC then denies it unless some policy
+/// explicitly grants access to `system:anonymous`/`system:unauthenticated`,
+/// same as real upstream).
+const ANONYMOUS_USERNAME: &str = "system:anonymous";
+const UNAUTHENTICATED_GROUP: &str = "system:unauthenticated";
+
+/// Group J: persists `ResourceQuota.status.used` after a successful pod/
+/// PVC/service `CREATE`, or the generic object-count evaluator's own
+/// `count/<resource>` fallback — real upstream's own
+/// `quotaAccessor.UpdateQuotaStatus`
+/// (`plugin/pkg/admission/resourcequota/apis/resourcequota/...`),
+/// scoped to whichever evaluator's own `usage_after_*_create` the caller
+/// already computed. A bounded retry (3 attempts) on a real optimistic-
+/// concurrency `Conflict` from `rest::update_status` re-reads the quota
+/// and merges again, same "retry on lost race" posture every other write
+/// path in this crate already uses. **Read-modify-write, not
+/// overwrite**: only the keys the calling evaluator itself tracks are
+/// replaced in the quota's existing `status.used` map — every
+/// `ResourceQuota` evaluator this crate has now persists its own
+/// `status.used` this way, so the read-modify-write is what keeps them
+/// from clobbering each other's keys, not a "some evaluator doesn't
+/// persist yet" gap. Every failure (quota vanished, storage error, retries
+/// exhausted) is logged and dropped — a status write is bookkeeping, not the
+/// admission decision itself, which has already succeeded by the time
+/// this runs.
+async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str, updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)>, path_str: &str) {
+    for (quota_name, new_usage) in updates {
+        for _attempt in 0..3 {
+            let current = match rest::get(client, None, "", "v1", "resourcequotas", Some(namespace), &quota_name).await {
+                Ok(rest::GetOutcome::Found(q)) => q,
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => break,
+                Err(e) => {
+                    warn!(path = %path_str, %quota_name, error = ?e, "admission: reading ResourceQuota to persist status.used failed");
+                    break;
+                }
+            };
+            let mut merged: std::collections::BTreeMap<String, crate::scheme::quantity::Quantity> = current
+                .pointer("/status/used")
+                .and_then(serde_json::Value::as_object)
+                .map(|m| m.iter().filter_map(|(k, v)| v.as_str().and_then(|s| crate::scheme::quantity::Quantity::parse(s).ok()).map(|q| (k.clone(), q))).collect())
+                .unwrap_or_default();
+            for (k, v) in &new_usage {
+                merged.insert(k.clone(), *v);
+            }
+            let mut status_body = current.clone();
+            status_body["status"]["used"] = serde_json::Value::Object(merged.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string()))).collect());
+
+            match rest::update_status(client, "", "v1", "resourcequotas", Some(namespace), &quota_name, &status_body, false).await {
+                Ok(rest::UpdateOutcome::Updated(_)) => break,
+                Ok(rest::UpdateOutcome::Conflict) => continue,
+                Ok(_) => break,
+                Err(e) => {
+                    warn!(path = %path_str, %quota_name, error = ?e, "admission: persisting ResourceQuota.status.used failed");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Group M: wraps every request with a real `audit::event::build_event`
+/// call, logged rather than delegated back into `handle` itself — this
+/// wrapper needs nothing `handle` doesn't already compute internally
+/// (method/path/query are read off `req` before it's ever consumed, and
+/// `path::parse` is a pure function safe to call a second time here),
+/// so it's the far less invasive place to add auditing than threading an
+/// audit-context return value out through every one of `handle`'s own
+/// early-return branches would have been. The sink is this crate's own
+/// `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
+/// request) and, when configured, an append-only file selected by
+/// `NODEAPISERVER_AUDIT_LOG_PATH`; rotation and webhook delivery remain
+/// separate backends. See
+/// `audit::event`'s own doc comment for exactly which real `Event`
+/// fields are populated and which stage/level this always uses.
+async fn handle_with_audit(
+    req: Request<Incoming>,
+    storage: Option<StorageClient>,
+    cache_registry: crate::cacher::CacheRegistry,
+    identity: Option<crate::authn::x509::Identity>,
+    bootstrap_token_authenticator: Option<Arc<crate::authn::bootstrap_token::ReloadableAuthenticator>>,
+    service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
+    oidc_authenticator: Option<Arc<crate::authn::oidc::Authenticator>>,
+    authorization_webhook: Option<Arc<crate::authz::webhook::WebhookAuthorizer>>,
+    concurrency_limiter: Arc<crate::flowcontrol::limiter::ConcurrencyLimiter>,
+    audit_sink: Option<Arc<crate::audit::sink::AuditSink>>,
+    audit_policy: Option<Arc<crate::audit::policy::AuditPolicy>>,
+    anonymous_auth: bool,
+    enforce_rbac: bool,
+    peer: SocketAddr,
+    kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Response<BoxedBody>, Infallible> {
+    let admission_metadata = Arc::new(Mutex::new(AdmissionMetadata::default()));
+    let mut req = req;
+    req.extensions_mut().insert(admission_metadata.clone());
+    let method = req.method().as_str().to_string();
+    let path_str = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
+    let user_agent = req.headers().get("user-agent").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let identity = match authenticate_request(&req, identity, bootstrap_token_authenticator.as_deref(), service_account_authenticator.as_deref(), oidc_authenticator.as_deref(), anonymous_auth).await {
+        Ok(identity) => identity,
+        Err(detail) => return Ok(json_response(StatusCode::UNAUTHORIZED, &unauthorized_status(&path_str, detail))),
+    };
+    let audit_identity = identity.clone();
+    let request_info = path::parse(&method, &path_str, &query);
+    let audit_user = audit_identity.as_ref().map(|identity| identity.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+    let audit_groups = audit_identity
+        .as_ref()
+        .map(|identity| identity.groups.clone())
+        .unwrap_or_else(|| vec![UNAUTHENTICATED_GROUP.to_string()]);
+    let audit_response_complete = audit_policy
+        .as_ref()
+        .map_or(true, |policy| policy.should_emit_response_complete(&request_info, audit_user, &audit_groups));
+    let mut authorization_webhook_allowed = false;
+    if let Some(authorizer) = authorization_webhook {
+        match authorizer.authorize(&request_info, identity.as_ref()).await {
+            Ok(crate::authz::webhook::Decision::Allow) => {
+                authorization_webhook_allowed = true;
+            }
+            Ok(crate::authz::webhook::Decision::NoOpinion) => {}
+            Ok(crate::authz::webhook::Decision::Deny) => {
+                let user_name = identity
+                    .as_ref()
+                    .map(|identity| identity.name.as_str())
+                    .unwrap_or(ANONYMOUS_USERNAME);
+                return Ok(json_response(
+                    StatusCode::FORBIDDEN,
+                    &forbidden_status(&path_str, user_name),
+                ));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "authorization webhook failed");
+                return Ok(json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &service_unavailable_status(&path_str, "authorization webhook unavailable"),
+                ));
+            }
+        }
+    }
+    let selected_priority = if let Some(mut client) = storage.clone() {
+        let (user_name, user_groups): (&str, Vec<String>) = match identity.as_ref() {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let digest = flowcontrol::flow_schema::RequestDigest {
+            user_name,
+            user_groups: &user_groups,
+            verb: &request_info.verb,
+            is_resource_request: request_info.is_resource_request,
+            api_group: &request_info.api_group,
+            resource: &request_info.resource,
+            subresource: &request_info.subresource,
+            namespace: &request_info.namespace,
+            path: &request_info.path,
+        };
+        flowcontrol::resolve::select_for_request(&mut client, &digest).await
+    } else {
+        None
+    };
+    let selected_priority_config = selected_priority.as_ref().map(|selected| &selected.priority_level);
+    let configured_priorities = selected_priority
+        .as_ref()
+        .map(|selected| selected.priority_levels.as_slice())
+        .unwrap_or(&[]);
+    let flow_distinguisher = selected_priority.as_ref().map(|selected| selected.flow_distinguisher.as_str()).unwrap_or("");
+    let _permit = match concurrency_limiter
+        .acquire_with_priorities(&request_info, &query, selected_priority_config, configured_priorities, flow_distinguisher)
+        .await
+    {
+        Ok(permit) => permit,
+        Err(crate::flowcontrol::limiter::Error::QueueFull) => {
+            return Ok(json_response(StatusCode::TOO_MANY_REQUESTS, &too_many_requests_status(&path_str)));
+        }
+        Err(crate::flowcontrol::limiter::Error::Closed) => {
+            return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "API request concurrency limiter is unavailable")));
+        }
+    };
+    let _inflight = _permit
+        .as_ref()
+        .map(|_| metrics::begin_inflight(is_mutating_request(&request_info)));
+
+    // Group M: `apiserver_request_duration_seconds`'s own start time —
+    // measured around the exact same `handle()` call the audit event and
+    // `apiserver_request_total` are both already keyed off of. For
+    // `watch` specifically this measures time-to-first-byte (when
+    // `handle()` returns the still-streaming response), not the full
+    // stream lifetime — the identical, already-named caveat
+    // `log_audit_event`'s own `ResponseComplete`-at-stream-start choice
+    // has, not a new gap this metric introduces.
+    let start = std::time::Instant::now();
+    let mut response = handle(req, storage, cache_registry, identity, service_account_authenticator, enforce_rbac, authorization_webhook_allowed, kubelet_tls).await;
+    let elapsed = start.elapsed().as_secs_f64();
+
+    if let Ok(resp) = &mut response {
+        let metadata = admission_metadata.lock().map(|metadata| metadata.clone()).unwrap_or_default();
+        apply_admission_warnings(resp, &metadata.warnings);
+        let audit_annotations = audit_annotations(&metadata);
+        let status = resp.status().as_u16();
+        if audit_response_complete {
+            log_audit_event(&method, &path_str, &query, user_agent.as_deref(), audit_identity.as_ref(), &peer, status, audit_sink.as_deref(), &audit_annotations);
+        }
+        // Group M: `/metrics`'s own request counter (`server::metrics`) —
+        // recorded from the exact same parsed `RequestInfo` the audit
+        // event above already builds, so a non-resource request (a
+        // discovery route, `/healthz`, ...) is counted under its real
+        // verb with an empty `resource` label, matching real upstream's
+        // own convention for that case.
+        let info = &request_info;
+        metrics::record_request(&info.verb, &info.resource, status);
+        metrics::record_duration(&info.verb, &info.resource, elapsed);
+        // Group M: `apiserver_response_sizes` — only recorded when the
+        // body's own size is known up front (`size_hint().exact()`,
+        // `None` for a `watch`'s unbounded stream) — see `server::
+        // metrics`'s own doc comment for why that's a real, named,
+        // narrower scope than real upstream's own byte-counting
+        // instrumentation, not a silent gap.
+        {
+            use http_body::Body as _;
+            if let Some(size) = resp.body().size_hint().exact() {
+                metrics::record_response_size(&info.verb, &info.resource, size);
+            }
+        }
+
+        // Group M (APF): label the response with the FlowSchema and
+        // PriorityLevelConfiguration selected before the request entered
+        // the bounded concurrency gate.
+        if let Some(selected) = selected_priority {
+            if let (Ok(fs), Ok(pl)) = (
+                hyper::header::HeaderValue::from_str(&selected.flow_schema_uid),
+                hyper::header::HeaderValue::from_str(&selected.priority_level_uid),
+            ) {
+                resp.headers_mut().insert(flowcontrol::resolve::FLOW_SCHEMA_UID_HEADER, fs);
+                resp.headers_mut().insert(flowcontrol::resolve::PRIORITY_LEVEL_UID_HEADER, pl);
+            }
+        }
+    }
+    response
+}
+
+fn is_mutating_request(info: &path::RequestInfo) -> bool {
+    matches!(
+        info.verb.as_str(),
+        "create" | "update" | "patch" | "delete" | "deletecollection"
+    )
+}
+
+fn log_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, audit_sink: Option<&crate::audit::sink::AuditSink>, annotations: &BTreeMap<String, String>) {
+    let event = build_audit_event(method, path_str, query, user_agent, identity, peer, status, annotations);
+    if let Some(sink) = audit_sink {
+        if let Err(error) = sink.write(&event) {
+            warn!(error = ?error, "nodeapiserver: failed to write audit event");
+        }
+    }
+    tracing::info!(target: "nodeapiserver::audit", "{event}");
+}
+
+/// The pure half of [`log_audit_event`] — everything up to the built
+/// `Value`, factored out so it's unit-testable without capturing
+/// `tracing`'s own log output.
+fn build_audit_event(method: &str, path_str: &str, query: &str, user_agent: Option<&str>, identity: Option<&crate::authn::x509::Identity>, peer: &SocketAddr, status: u16, annotations: &BTreeMap<String, String>) -> serde_json::Value {
+    let info = path::parse(method, path_str, query);
+    let (user_name, user_uid, user_groups): (&str, Option<&str>, Vec<String>) = match identity {
+        Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
+        None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()]),
+    };
+    let object_ref = info.is_resource_request.then(|| crate::audit::event::ObjectRef { group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name, api_version: &info.api_version });
+    let request_uri = if query.is_empty() { path_str.to_string() } else { format!("{path_str}?{query}") };
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let source_ip = peer.ip().to_string();
+    crate::audit::event::build_event(&crate::audit::event::EventInput {
+        audit_id: &audit_id,
+        request_uri: &request_uri,
+        verb: &info.verb,
+        user_name,
+        user_uid,
+        user_groups: user_groups.as_slice(),
+        source_ip: Some(&source_ip),
+        user_agent,
+        object_ref,
+        response_code: status,
+        annotations: (!annotations.is_empty()).then_some(annotations),
+        timestamp: &timestamp,
+    })
+}
+
+async fn authenticate_request(
+    req: &Request<Incoming>,
+    client_cert_identity: Option<crate::authn::x509::Identity>,
+    bootstrap_token_authenticator: Option<&crate::authn::bootstrap_token::ReloadableAuthenticator>,
+    service_account_authenticator: Option<&crate::authn::service_account::ReloadableAuthenticator>,
+    oidc_authenticator: Option<&crate::authn::oidc::Authenticator>,
+    anonymous_auth: bool,
+) -> std::result::Result<Option<crate::authn::x509::Identity>, &'static str> {
+    if client_cert_identity.is_some() {
+        return Ok(client_cert_identity);
+    }
+    let Some(header) = req.headers().get("authorization") else {
+        return if anonymous_auth { Ok(None) } else { Err("anonymous authentication is disabled") };
+    };
+    let value = header.to_str().map_err(|_| "Authorization header is not valid UTF-8")?;
+    let Some(token) = value.strip_prefix("Bearer ").filter(|token| !token.is_empty()) else {
+        return Err("Authorization must use the Bearer scheme");
+    };
+    if let Some(authenticator) = bootstrap_token_authenticator {
+        if let Some(authenticated) = authenticator.authenticate(token) {
+            return Ok(Some(authenticated.identity));
+        }
+    }
+    if let Some(authenticator) = service_account_authenticator {
+        if let Some(authenticated) = authenticator.authenticate(token) {
+            return Ok(Some(authenticated.identity));
+        }
+    }
+    if let Some(authenticator) = oidc_authenticator {
+        if let Some(identity) = authenticator.authenticate(token).await {
+            return Ok(Some(identity));
+        }
+    }
+    if bootstrap_token_authenticator.is_none()
+        && service_account_authenticator.is_none()
+        && oidc_authenticator.is_none()
+    {
+        return Err("bearer-token authentication is not configured");
+    }
+    Err("bearer token is invalid or expired")
+}
+
+async fn handle(
+    req: Request<Incoming>,
+    mut storage: Option<StorageClient>,
+    cache_registry: crate::cacher::CacheRegistry,
+    identity: Option<crate::authn::x509::Identity>,
+    service_account_authenticator: Option<Arc<crate::authn::service_account::ReloadableAuthenticator>>,
+    enforce_rbac: bool,
+    authorization_webhook_allowed: bool,
+    kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Response<BoxedBody>, Infallible> {
+    let method = req.method().as_str().to_string();
+    let path_str = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
+    let request_field_manager = field_manager_query(&query)
+        .or_else(|| req.headers().get("user-agent").and_then(|value| value.to_str().ok()).map(str::to_string))
+        .filter(|value| !value.is_empty());
+    let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
+
+    if let Some(check_name) = path_str.strip_prefix('/').filter(|p| matches!(*p, "healthz" | "readyz" | "livez")) {
+        let verbose = path::parse_query(&query).iter().any(|(k, _)| k == "verbose");
+        let checks = healthz::run_checks(check_name, storage.is_some());
+        let (status, body) = healthz::render(check_name, &checks, verbose);
+        let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return Ok(Response::builder().status(code).header("Content-Type", "text/plain; charset=utf-8").header("X-Content-Type-Options", "nosniff").body(body_from_bytes(body.into_bytes())).unwrap());
+    }
+
+    if path_str == "/metrics" {
+        return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "text/plain; version=0.0.4; charset=utf-8").body(body_from_bytes(metrics::render().into_bytes())).unwrap());
+    }
+
+    if method == "GET" || method == "HEAD" {
+        let parts = path::split_path(&path_str);
+        let accept_header = req.headers().get("accept").and_then(|v| v.to_str().ok());
+        // Group K: only fetch CRDs for a request that could actually need
+        // them — an `/apis`-prefixed path with 3 or fewer segments is
+        // exactly `route_discovery`'s own three real `apis`-shaped
+        // branches (`/apis`, `/apis/{group}`, `/apis/{group}/{version}`);
+        // anything longer is a resource-shaped GET (`/apis/{group}/
+        // {version}/namespaces/{ns}/{resource}/...`), which `route_discovery`
+        // itself answers `NotApplicable` for and which the generic REST
+        // dispatch further down handles instead — that path, by far the
+        // hottest one in practice, never pays this extra `LIST`.
+        let (crds, aggregated) = if parts.first().map(String::as_str) == Some("apis") && parts.len() <= 3 {
+            match storage.clone() {
+                Some(mut client) => {
+                    let crds = match rest::list_all_crds(&mut client).await {
+                        Ok(crds) => crate::apiextensions::registry::discoverable_resources(crds.iter()),
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "discovery: fetching CRDs for the dynamic resource merge failed");
+                            Vec::new()
+                        }
+                    };
+                    // Group L Phase 3: the same real gate, the same
+                    // bounded cost — only paid for a discovery-shaped
+                    // request, never the hot resource-request path.
+                    // `discovery::merged_group_version_map`'s own doc
+                    // comment covers why this is group-level only.
+                    let aggregated = match aggregator::route::discoverable_group_versions(&mut client).await {
+                        Ok(pairs) => pairs,
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "discovery: fetching aggregated APIServices for the dynamic group merge failed");
+                            Vec::new()
+                        }
+                    };
+                    (crds, aggregated)
+                }
+                None => (Vec::new(), Vec::new()),
+            }
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        match route_discovery(&parts, accept_header, &crds, &aggregated) {
+            DiscoveryRoute::Found(doc) => return Ok(json_response_with_content_type(StatusCode::OK, &doc, discovery_content_type(&parts, accept_header))),
+            DiscoveryRoute::FoundRaw(bytes) => {
+                return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body_from_bytes(bytes.to_vec())).unwrap());
+            }
+            DiscoveryRoute::NotFound => {
+                // Group L Phase 3's own last named gap, closed: a real
+                // `GET /apis/{group}/{version}` for an aggregated group
+                // real upstream itself answers with a *live* fetch to
+                // the backend's own discovery endpoint (`checkAPIService`'s
+                // own discovery-check dial reused for real traffic too) —
+                // this build had no compiled/CRD/discovery-merge answer
+                // for that path at all (`discovery::merged_group_version_
+                // map`'s own doc comment names this exact gap), so it's
+                // the one real case where falling through to `aggregate_
+                // proxy` on a `NotFound` (rather than the resource-shaped
+                // dispatch's own early check) is correct: `route_discovery`
+                // already ruled out every local answer, and `aggregated`
+                // (fetched above, same real pre-flight-gated list
+                // `aggregate_proxy` itself would recompute) is the one
+                // remaining source of truth. Any other `NotFound` (a
+                // genuinely unserved group/version) still falls through
+                // to the real `404` below unchanged.
+                if let Some((group, version)) = aggregated_discovery_group_version(&parts, &aggregated) {
+                    if let Some(mut client) = storage.clone() {
+                        if let Ok(Some(api_service)) = aggregator::route::resolve(&mut client, group, version).await {
+                            return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query).await);
+                        }
+                    }
+                }
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            DiscoveryRoute::NotApplicable => {}
+        }
+    }
+
+    let info = path::parse(&method, &path_str, &query);
+
+    // Keep authorization ahead of every admission and REST handler. The
+    // earlier implementation performed this check only inside the generic
+    // CRUD block, which let PATCH, status writes, deletecollection, and the
+    // proxy/streaming branches reach their handlers without RBAC when
+    // enforcement was enabled. Virtual review resources are intentionally
+    // exempt: they answer questions about authorization rather than mutate
+    // the resource named by the request.
+    if should_run_local_authorization(&info, enforce_rbac, authorization_webhook_allowed) {
+        let Some(client) = storage.as_mut() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let allowed = match authz::request_allowed(client, identity.as_ref(), &info).await {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        if !allowed {
+            let user_name = identity.as_ref().map(|id| id.name.as_str()).unwrap_or(ANONYMOUS_USERNAME);
+            return Ok(json_response(StatusCode::FORBIDDEN, &forbidden_status(&path_str, user_name)));
+        }
+    }
+
+    // Group N: the core node and Service proxy subresources are ordinary
+    // request/response relays.  Keep them ahead of the generic REST
+    // branches below: `GET .../services/name/proxy` otherwise looks like a
+    // normal GET with an unknown subresource and would be returned as a
+    // bring-up-shaped error instead of reaching the selected backend.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && matches!(info.resource.as_str(), "nodes" | "services")
+        && is_proxy_request(&info)
+        && !info.name.is_empty()
+        && matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")
+    {
+        return Ok(proxy_resource(req, storage, &info, &method, &path_str, &query, &identity, enforce_rbac, kubelet_tls).await);
+    }
+
+    // Group E's real resource verbs so far: single-object GET (`get`, not
+    // `list`/`watch` — `path::parse` already tells those apart by an empty
+    // `name`), LIST (`list`, no name), CREATE (`create`, no name — a POST
+    // to the collection URL), single-object DELETE (`delete`, name
+    // required — no name means `deletecollection`, now real too — see its
+    // own dedicated branch below), and UPDATE (`update`, name
+    // required — a PUT). The scheduler's core `pods/binding` and Pod
+    // `pods/ephemeralcontainers` subresources are handled separately below;
+    // the remaining subresources still fall through (see `rest`'s own doc
+    // comment). Everything else still falls through to the RequestInfo echo
+    // below. `storage` is only
+    // ever consumed once (moved into `client` here), which is why all
+    // five verbs share this one `if let` rather than each checking it
+    // separately.
+    let is_get = info.is_resource_request && info.verb == "get" && !info.name.is_empty() && info.subresource.is_empty();
+    let is_list = info.is_resource_request && info.verb == "list" && info.name.is_empty() && info.subresource.is_empty();
+    let is_create = info.is_resource_request && info.verb == "create" && info.name.is_empty() && info.subresource.is_empty();
+    let is_delete = info.is_resource_request && info.verb == "delete" && !info.name.is_empty() && info.subresource.is_empty();
+    let is_update = info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource.is_empty();
+    // `watch` (no name — `path::parse` already tells a namefull `watch`
+    // apart, though real upstream's own single-resource watch form isn't
+    // handled specially here either way today) is deliberately handled in
+    // its own branch below, not folded into the five-verb block above:
+    // unlike those five, it needs no request body, no `storage`/`client`
+    // (it's served purely from an already-registered `cacher::CacheRegistry`
+    // cache — see that branch's own doc comment), and produces a
+    // streaming response rather than one JSON document.
+    let is_watch = info.is_resource_request && info.verb == "watch" && info.subresource.is_empty();
+
+    // The scheduler binds a pending Pod through the real core
+    // `pods/binding` subresource rather than replacing the whole Pod. This
+    // must run before generic CRUD dispatch: `Binding` contains only the
+    // selected Node and optional binding preconditions, while the REST
+    // operation itself atomically updates the stored Pod.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.api_version == "v1"
+        && info.resource == "pods"
+        && info.subresource == "binding"
+        && info.verb == "create"
+        && !info.name.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        if info.namespace.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "Pod binding requires a namespace")));
+        }
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "reading the Pod binding request failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(body) => body,
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+        };
+        return match rest::bind_pod(&mut client, &info.namespace, &info.name, &body).await {
+            Ok(rest::BindOutcome::Bound) => Ok(json_response(
+                StatusCode::CREATED,
+                &serde_json::json!({
+                    "kind": "Status",
+                    "apiVersion": "v1",
+                    "metadata": {},
+                    "status": "Success",
+                    "code": 201,
+                }),
+            )),
+            Ok(rest::BindOutcome::UnknownResource) | Ok(rest::BindOutcome::ObjectNotFound) => {
+                Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)))
+            }
+            Ok(rest::BindOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&path_str))),
+            Ok(rest::BindOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::bind_pod failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+
+    // The core Pod `ephemeralcontainers` subresource has its own update
+    // strategy: GET returns the Pod, while PUT/PATCH may change only
+    // `spec.ephemeralContainers`. The REST helpers reset every other field
+    // and reject removal or mutation of an existing ephemeral container
+    // before using the normal MVCC write path.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.api_version == "v1"
+        && info.resource == "pods"
+        && info.subresource == "ephemeralcontainers"
+        && !info.name.is_empty()
+    {
+        if info.namespace.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "Pod ephemeralcontainers requires a namespace")));
+        }
+        if info.verb == "get" {
+            let Some(mut client) = storage else {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            };
+            return match rest::get_ephemeral_containers(&mut client, &info.namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "rest::get_ephemeral_containers failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
+
+        if info.verb == "update" || info.verb == "patch" {
+            let Some(mut client) = storage else {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            };
+            let dry_run = match dry_run_query(&query) {
+                Ok(value) => value,
+                Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+            };
+            let content_type = req.headers().get("content-type").and_then(|value| value.to_str().ok()).map(str::to_string);
+            let body_bytes = match read_body_bytes(req).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "reading the ephemeralcontainers request failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+                Ok(body) => body,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            };
+            let outcome = if info.verb == "update" {
+                rest::update_ephemeral_containers(&mut client, &info.namespace, &info.name, &body, dry_run, request_field_manager.as_deref()).await
+            } else {
+                let kind_of_patch = match content_type.as_deref() {
+                    Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                        Some(kind) => kind,
+                        None => {
+                            return Ok(json_response(
+                                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                                &bad_request_status(&path_str, "unsupported Content-Type for the ephemeralcontainers subresource"),
+                            ));
+                        }
+                    },
+                    None => rest::PatchKind::StrategicMerge,
+                };
+                rest::patch_ephemeral_containers(&mut client, &info.namespace, &info.name, kind_of_patch, &body, dry_run, request_field_manager.as_deref()).await
+            };
+            return match outcome {
+                Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "ephemeralcontainers update failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
+    }
+
+    // `PATCH` is handled in its own branch, not folded into the five-verb
+    // block below: its request body is a patch document, not a
+    // full/partial object, and which of `rest::patch`'s three real patch
+    // kinds applies is decided by `Content-Type` rather than the
+    // JSON-vs-YAML negotiation `has_body` below uses. Group J admission
+    // now runs on it too (`namespace_lifecycle` + `LimitRanger`'s own
+    // PVC-update validation — the only two plugins that ever apply to an
+    // `Update`-shaped write in this crate; every other Group J plugin is
+    // `CREATE`-only, so there's nothing else to run here), via
+    // `rest::patch_prepare`/`patch_persist`'s own split, which exists
+    // specifically so admission can see the real candidate object in
+    // between the two.
+    if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource.is_empty() {
+        let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+
+        // Server-Side Apply — its own branch, not folded into the
+        // three-patch-kind block below: `rest::patch_kind_for_content_type`
+        // deliberately doesn't recognize this media type (its own doc
+        // comment), the body is YAML (or JSON, a valid subset), and the
+        // real orchestration (`rest::apply_prepare`/`apply_persist`,
+        // Group G's `updater::apply` wired to storage) is a wholly
+        // different code path from the three-patch-kind `rest::
+        // patch_prepare`/`patch_persist` split above -- but the *same
+        // shape* of split, for the same reason: so both
+        // `namespace_lifecycle` and `LimitRanger` admission can run
+        // against the real candidate object in between, matching the
+        // three-patch-kind branch's own coverage exactly. **Named,
+        // The runtime-schema CRD path is handled by the same orchestration;
+        // schema-less legacy CRD records remain a defensive 501 outcome.
+        if content_type.as_deref().map(is_apply_patch_content_type).unwrap_or(false) {
+            let Some(mut client) = storage else {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            };
+            let Some(manager) = field_manager_query(&query) else {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "the fieldManager query parameter is required for Server-Side Apply")));
+            };
+            let force = force_query(&query);
+            let dry_run = match dry_run_query(&query) {
+                Ok(value) => value,
+                Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+            };
+            let body_bytes = match read_body_bytes(req).await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "reading the request body failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let config: serde_json::Value = match crate::codec::yaml::decode(&body_bytes) {
+                Ok(v) => v,
+                Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+            };
+            let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+            // Group J: `namespace_lifecycle`, same `Update`-shaped check
+            // every other write-shaped verb gets.
+            let admission_attrs = admission::attributes::Attributes { operation: admission::attributes::Operation::Update, group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name };
+            match admission::namespace_lifecycle::quick_decision(&admission_attrs) {
+                admission::namespace_lifecycle::QuickDecision::Allow => {}
+                admission::namespace_lifecycle::QuickDecision::Forbidden(msg) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                }
+                admission::namespace_lifecycle::QuickDecision::NeedsNamespaceLookup => {
+                    let namespace_phase = match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                        Ok(rest::GetOutcome::Found(ns)) => Some(ns.get("status").and_then(|s| s.get("phase")).and_then(|p| p.as_str()).unwrap_or("").to_string()),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: namespace lookup failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    };
+                    match admission::namespace_lifecycle::decide(&admission_attrs, namespace_phase.as_deref()) {
+                        admission::namespace_lifecycle::Decision::Allow => {}
+                        admission::namespace_lifecycle::Decision::Forbidden(msg) => {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                        }
+                        admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                            return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                        }
+                    }
+                }
+            }
+
+            let (mut candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
+                Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
+                Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => {
+                    return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply requires a usable structural schema")));
+                }
+                Ok(rest::ApplyPrepareOutcome::Conflict(conflicts)) => return Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
+                Ok(rest::ApplyPrepareOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                Ok(rest::ApplyPrepareOutcome::NoOp(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "rest::apply_prepare failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+
+            // Group J: `LimitRanger`'s own PVC-`Update` validation — the
+            // same real candidate object this build's own three-patch-
+            // kind `PATCH` branch below already gates the same way (its
+            // own comment covers why this is PVC-only).
+            if admission::limit_ranger::applies_to(admission::attributes::Operation::Update, &info.api_group, &info.resource, "") {
+                match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "", 0, "").await {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        for limit_range in list["items"].as_array().cloned().unwrap_or_default() {
+                            let errs = admission::limit_ranger::validate_pvc(&limit_range, &candidate);
+                            if !errs.is_empty() {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &errs.join("; "))));
+                            }
+                        }
+                    }
+                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            }
+
+            let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                Ok(rest::GetOutcome::Found(object)) => Some(object),
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "admission: reading the existing object for apply webhooks failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            };
+            let operation = if old_object.is_some() {
+                admission::attributes::Operation::Update
+            } else {
+                admission::attributes::Operation::Create
+            };
+            match admission::webhook::admit(
+                &mut client,
+                operation,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                &info.name,
+                candidate.clone(),
+                old_object,
+                identity.as_ref(),
+                dry_run,
+            )
+            .await
+            {
+                Ok(admission::webhook::Outcome::Allowed(admitted)) => candidate = admitted,
+                Ok(admission::webhook::Outcome::Denied(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, "admission webhook invocation failed for apply");
+                    return Ok(admission_webhook_error_response(&path_str, &error));
+                }
+            }
+
+            return match rest::apply_persist(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, apply_context, candidate, dry_run).await {
+                Ok(rest::ApplyOutcome::Applied(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::ApplyOutcome::NoOp(object)) => Ok(json_response(StatusCode::OK, &object)),
+                Ok(rest::ApplyOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyOutcome::UnsupportedForCrd) => {
+                    Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply requires a usable structural schema")))
+                }
+                Ok(rest::ApplyOutcome::Conflict(conflicts)) => Ok(json_response(StatusCode::CONFLICT, &ssa_conflict_status(&path_str, &conflicts))),
+                Ok(rest::ApplyOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "rest::apply_persist failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+                }
+            };
+        }
+
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+        };
+        let kind_of_patch = match content_type.as_deref() {
+            Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                Some(kind) => kind,
+                None => {
+                    return Ok(json_response(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        &bad_request_status(&path_str, "unsupported Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
+                    ));
+                }
+            },
+            None => match rest::default_patch_kind_for_request(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(kind)) => kind,
+                Ok(None) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "resolving the default PATCH strategy failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            },
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let patch_doc: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+        // Group J: `namespace_lifecycle`, same `Update`-shaped check
+        // `CREATE`/`UPDATE` already get (an "operation" of `Update` is
+        // exactly right for a `PATCH` too — real upstream's own
+        // `admission.Update` covers both).
+        let admission_attrs = admission::attributes::Attributes { operation: admission::attributes::Operation::Update, group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name };
+        match admission::namespace_lifecycle::quick_decision(&admission_attrs) {
+            admission::namespace_lifecycle::QuickDecision::Allow => {}
+            admission::namespace_lifecycle::QuickDecision::Forbidden(msg) => {
+                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+            }
+            admission::namespace_lifecycle::QuickDecision::NeedsNamespaceLookup => {
+                let namespace_phase = match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                    Ok(rest::GetOutcome::Found(ns)) => Some(ns.get("status").and_then(|s| s.get("phase")).and_then(|p| p.as_str()).unwrap_or("").to_string()),
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: namespace lookup failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                match admission::namespace_lifecycle::decide(&admission_attrs, namespace_phase.as_deref()) {
+                    admission::namespace_lifecycle::Decision::Allow => {}
+                    admission::namespace_lifecycle::Decision::Forbidden(msg) => {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                    }
+                    admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                }
+            }
+        }
+
+        let (mut candidate, context) = match rest::patch_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc).await {
+            Ok(rest::PatchPrepareOutcome::Ready(candidate, context)) => (candidate, context),
+            Ok(rest::PatchPrepareOutcome::UnknownResource) | Ok(rest::PatchPrepareOutcome::ObjectNotFound) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Ok(rest::PatchPrepareOutcome::Invalid(violations)) => {
+                return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::patch_prepare failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        // Group J: `LimitRanger`'s own PVC-`Update` validation — its only
+        // `Update`-shaped check (pods are `CREATE`-only, real upstream's
+        // own "containers are immutable after create" posture, see
+        // `admission::limit_ranger::applies_to`'s own doc comment).
+        if admission::limit_ranger::applies_to(admission::attributes::Operation::Update, &info.api_group, &info.resource, &info.subresource) {
+            match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "", 0, "").await {
+                Ok(rest::ListOutcome::Found(list)) => {
+                    for limit_range in list["items"].as_array().cloned().unwrap_or_default() {
+                        let errs = admission::limit_ranger::validate_pvc(&limit_range, &candidate);
+                        if !errs.is_empty() {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &errs.join("; "))));
+                        }
+                    }
+                }
+                Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+
+        let old_object = match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => Some(object),
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "admission: reading the existing object for patch webhooks failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        match admission::webhook::admit(
+            &mut client,
+            admission::attributes::Operation::Update,
+            &info.api_group,
+            &info.api_version,
+            &info.resource,
+            &info.subresource,
+            &info.namespace,
+            &info.name,
+            candidate.clone(),
+            old_object,
+            identity.as_ref(),
+            dry_run,
+        )
+        .await
+        {
+            Ok(admission::webhook::Outcome::Allowed(admitted)) => candidate = admitted,
+            Ok(admission::webhook::Outcome::Denied(message)) => {
+                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "admission webhook invocation failed for patch");
+                return Ok(admission_webhook_error_response(&path_str, &error));
+            }
+        }
+
+        return match rest::patch_persist_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, context, candidate, dry_run, request_field_manager.as_deref()).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            // `rest::patch_persist` never itself returns these two -- a
+            // submitted resourceVersion/namespace are `update`-only
+            // outcomes, and `UnsupportedPatchType` is pre-checked before
+            // `rest::patch_prepare` is ever called. Kept exhaustive rather
+            // than `unreachable!()` so a future real use doesn't silently
+            // panic in production.
+            Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::patch_persist failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+    // The generic `<resource>/status` subresource — its own branch for
+    // the same reason `PATCH` is: the request body here is the caller's
+    // view of the *whole* object (typically a GET's own response,
+    // status field modified), not a patch document, and only
+    // `rest::update_status`'s narrower "replace `.status` only" write
+    // applies, not the general five-verb block's `rest::update`. **No
+    // Group J admission runs here, named honestly**: every admission
+    // plugin that ever applies to an `Update`-shaped write in this crate
+    // (`namespace_lifecycle`'s Terminating-namespace check,
+    // `LimitRanger`'s PVC-minimum check) is specific to a create/full
+    // object write and has nothing meaningful to say about a status-only
+    // replace, so there's nothing to wire here yet either — same
+    // reasoning `deletecollection`'s own doc comment below already gives
+    // for skipping the same two plugins.
+    if info.is_resource_request && info.verb == "update" && !info.name.is_empty() && info.subresource == "status" {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        return match rest::update_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run, request_field_manager.as_deref()).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Ok(rest::UpdateOutcome::MissingResourceVersion) => {
+                Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.resourceVersion is required for an update")))
+            }
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            // `rest::update_status` never itself returns these two -- it
+            // does not check a body namespace, and `UnsupportedPatchType`
+            // is `rest::patch`-only. Keep the match exhaustive rather than
+            // turning a future implementation change into a panic.
+            Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::update_status failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+    // `PATCH .../status` — the patch counterpart to the `PUT` branch just
+    // above, closing the "PUT-only" gap that branch's own doc comment
+    // named. Same no-admission posture as the `PUT` branch (nothing
+    // applicable exists for a status-only write); the only new outcome
+    // to handle is `Invalid` (a malformed patch document), which
+    // `update_status` never itself returns but `rest::patch_status` can.
+    if info.is_resource_request && info.verb == "patch" && !info.name.is_empty() && info.subresource == "status" {
+        let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let dry_run = match dry_run_query(&query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+        };
+        let kind_of_patch = match content_type.as_deref() {
+            Some(content_type) => match rest::patch_kind_for_content_type(content_type) {
+                Some(kind) => kind,
+                None => {
+                    return Ok(json_response(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        &bad_request_status(&path_str, "unsupported Content-Type for PATCH -- use application/json-patch+json, application/merge-patch+json, or application/strategic-merge-patch+json"),
+                    ));
+                }
+            },
+            None => match rest::default_patch_kind_for_request(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(kind)) => kind,
+                Ok(None) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "resolving the default PATCH strategy failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            },
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let patch_doc: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        return match rest::patch_status_with_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, kind_of_patch, &patch_doc, dry_run, request_field_manager.as_deref()).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+            // `rest::patch_status` never itself returns these three --
+            // no client-submitted `resourceVersion` is required (the
+            // object being patched is the one this same call just read,
+            // same reasoning `patch_persist` already established), no
+            // body namespace is ever checked, and `UnsupportedPatchType`
+            // is pre-checked above before `rest::patch_status` is ever
+            // called. Kept exhaustive rather than `unreachable!()`.
+            Ok(rest::UpdateOutcome::MissingResourceVersion) | Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "rest::patch_status failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)))
+            }
+        };
+    }
+    // `deletecollection` is handled in its own branch too, for the same
+    // reason `patch` is: it needs no request body at all (unlike
+    // `create`/`update`), and has to validate each selected object before
+    // deleting it. This mirrors upstream's DeleteCollection handler, which
+    // passes its delete validator into the store and lets the store invoke
+    // it for every matched object.
+    if info.is_resource_request && info.verb == "deletecollection" && info.subresource.is_empty() {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+        let listed = match rest::list_delete_collection(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector).await {
+            Ok(outcome) => outcome,
+            Err(rest::Error::Selector(error)) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "rest::list_delete_collection failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let rest::DeleteCollectionOutcome::Deleted(list) = listed else {
+            return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+        };
+        let items = list.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in &items {
+            let Some(name) = item.pointer("/metadata/name").and_then(Value::as_str) else {
+                continue;
+            };
+
+            // DeleteCollection's admission attributes intentionally retain
+            // an empty request name, as upstream does; the selected object
+            // is still supplied as oldObject to policy/webhook admission.
+            match admission::policy_enforcement::validate(
+                &mut client,
+                "DELETE",
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                "",
+                None,
+                Some(item),
+                false,
+                identity.as_ref(),
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    record_admission_outcome(admission_metadata.as_ref(), &outcome);
+                    if let Some(message) = outcome.denial {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                    }
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed for deletecollection");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+
+            match admission::webhook::admit(
+                &mut client,
+                admission::attributes::Operation::Delete,
+                &info.api_group,
+                &info.api_version,
+                &info.resource,
+                &info.subresource,
+                &info.namespace,
+                "",
+                item.clone(),
+                Some(item.clone()),
+                identity.as_ref(),
+                false,
+            )
+            .await
+            {
+                Ok(admission::webhook::Outcome::Allowed(_)) => {}
+                Ok(admission::webhook::Outcome::Denied(message)) => {
+                    return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                }
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, name, "admission webhook invocation failed for deletecollection");
+                    return Ok(admission_webhook_error_response(&path_str, &error));
+                }
+            }
+
+            match rest::delete(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, name).await {
+                Ok(rest::DeleteOutcome::Deleted(_)) | Ok(rest::DeleteOutcome::ObjectNotFound) => {}
+                Ok(rest::DeleteOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::DeleteOutcome::PreconditionFailed) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                Err(error) => {
+                    warn!(path = %path_str, error = ?error, name, "rest::delete failed for deletecollection");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+        return Ok(json_response(StatusCode::OK, &list));
+    }
+    // Group I: `SubjectAccessReview`/`SelfSubjectAccessReview`/
+    // `LocalSubjectAccessReview` — its own branch, checked before the
+    // generic `is_create` handling below, because it's a virtual
+    // resource: real upstream never persists any of the three kinds to
+    // storage (`pkg/registry/authorization/subjectaccessreview`'s own
+    // synthetic REST connector), and letting this fall through to the
+    // generic `rest::create` path would actually try to write one to
+    // nodestore — a real, wrong side effect this early return prevents.
+    // Unconditional, not gated by `enforce_rbac`: answering "would RBAC
+    // allow this" is a read on the RBAC engine's own state, not itself
+    // an enforcement decision.
+    if info.is_resource_request
+        && info.api_group == "authorization.k8s.io"
+        && matches!(info.resource.as_str(), "subjectaccessreviews" | "selfsubjectaccessreviews" | "localsubjectaccessreviews")
+        && info.verb == "create"
+        && info.subresource.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let (fallback_user, fallback_groups): (&str, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let spec = body_value.get("spec").cloned().unwrap_or_default();
+        let mut review = match authz::sar::parse_spec(&spec, fallback_user, &fallback_groups) {
+            Ok(r) => r,
+            Err(msg) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &msg))),
+        };
+        // `LocalSubjectAccessReview`'s own real semantics: the namespace
+        // is the URL's, not whatever (if anything) the submitted
+        // `resourceAttributes.namespace` said — the same "the URL is
+        // authoritative over the body" rule `rest::update`'s own
+        // namespace-mismatch check already establishes elsewhere in this
+        // crate, applied here as an override rather than a rejection
+        // since a `LocalSubjectAccessReview` isn't required to name a
+        // namespace in its body at all.
+        if info.resource == "localsubjectaccessreviews" {
+            review.namespace = info.namespace.clone();
+        }
+        // Non-resource rules are only ever granted via ClusterRoleBindings
+        // in real RBAC too (a namespace-scoped RoleBinding can't grant a
+        // non-resource-URL permission) -- resolving with an empty
+        // namespace naturally restricts to just those, no separate branch
+        // needed.
+        let resolve_namespace = if review.is_resource { review.namespace.as_str() } else { "" };
+        let resolved = authz::resolve::rules_for(&mut client, &review.user_name, &review.user_groups, resolve_namespace).await;
+        let attrs = authz::rbac::RequestAttributes {
+            is_resource_request: review.is_resource,
+            verb: &review.verb,
+            api_group: &review.group,
+            resource: &review.resource,
+            subresource: &review.subresource,
+            name: &review.name,
+            path: &review.path,
+        };
+        let allowed = authz::rbac::rules_allow(&attrs, &resolved.rules);
+        let mut response_body = body_value;
+        response_body["status"] = authz::sar::build_status(allowed);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // `SelfSubjectRulesReview` — lists the caller's own resolved rules
+    // for one namespace, rather than answering a single allow/deny
+    // question. Same virtual-resource/no-persistence reasoning as the
+    // branch above, its own separate branch only because the response
+    // shape (`resourceRules`/`nonResourceRules`, not `allowed`) and
+    // input (`spec.namespace`, no attributes to parse) are different
+    // enough not to share code cleanly.
+    if info.is_resource_request && info.api_group == "authorization.k8s.io" && info.resource == "selfsubjectrulesreviews" && info.verb == "create" && info.subresource.is_empty() {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let (user_name, user_groups): (&str, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let review_namespace = body_value.pointer("/spec/namespace").and_then(serde_json::Value::as_str).unwrap_or("");
+        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, review_namespace).await;
+        let mut response_body = body_value;
+        response_body["status"] = authz::sar::build_rules_status(&resolved.rules, &resolved.errors);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // `SelfSubjectReview` (`kubectl auth whoami`) — the simplest of this
+    // crate's virtual resources: no storage, no RBAC, purely reflects
+    // whatever identity `authn::x509` (or the real anonymous fallback)
+    // already produced. Same "checked before generic `is_create`, never
+    // persisted" reasoning as every other review kind above.
+    if info.is_resource_request && info.api_group == "authentication.k8s.io" && info.resource == "selfsubjectreviews" && info.verb == "create" && info.subresource.is_empty() {
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the request body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let (username, uid, groups): (&str, Option<&str>, Vec<String>) = match &identity {
+            Some(id) => (id.name.as_str(), id.uid.as_deref(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, None, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let mut response_body = body_value;
+        response_body["status"] = crate::authn::self_review::build_status(username, uid, &groups);
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // Group H: TokenReview is the webhook endpoint nodelet uses when a pod
+    // presents its projected ServiceAccount token. It is virtual, just like
+    // the authorization review resources above, and must never be written to
+    // nodestore.
+    if info.is_resource_request
+        && info.api_group == "authentication.k8s.io"
+        && info.resource == "tokenreviews"
+        && info.verb == "create"
+        && info.subresource.is_empty()
+    {
+        if storage.is_none() {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        }
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the TokenReview body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let mut response_body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let token = response_body.pointer("/spec/token").and_then(serde_json::Value::as_str).unwrap_or("");
+        let authenticated = service_account_authenticator
+            .as_deref()
+            .and_then(|authenticator| (!token.is_empty()).then(|| authenticator.authenticate(token)).flatten());
+        response_body["apiVersion"] = serde_json::json!("authentication.k8s.io/v1");
+        response_body["kind"] = serde_json::json!("TokenReview");
+        response_body["status"] = match authenticated {
+            Some(authenticated) => serde_json::json!({
+                "authenticated": true,
+                "user": {
+                    "username": authenticated.identity.name,
+                    "uid": authenticated.service_account_uid,
+                    "groups": authenticated.identity.groups,
+                }
+            }),
+            None => serde_json::json!({"authenticated": false}),
+        };
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // Group H: ServiceAccount TokenRequest backs projected pod tokens. The
+    // caller must be authorized for the serviceaccounts/token subresource;
+    // the ServiceAccount and, when supplied, bound Pod are read from storage
+    // before the stateless signer is allowed to mint a token.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.resource == "serviceaccounts"
+        && info.subresource == "token"
+        && info.verb == "create"
+        && !info.namespace.is_empty()
+        && !info.name.is_empty()
+    {
+        let Some(mut client) = storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let Some(authenticator) = service_account_authenticator.as_deref() else {
+            return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "ServiceAccount token signing is not configured")));
+        };
+        let body_bytes = match read_body_bytes(req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "reading the TokenRequest body failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let request = match crate::authn::service_account::parse_token_request(&body_value) {
+            Ok(request) => request,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e))),
+        };
+        let service_account = match rest::get(&mut client, None, "", "v1", "serviceaccounts", Some(&info.namespace), &info.name).await {
+            Ok(rest::GetOutcome::Found(service_account)) => service_account,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "TokenRequest ServiceAccount lookup failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let service_account_uid = service_account
+            .pointer("/metadata/uid")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if let Some((pod_name, pod_uid)) = &request.bound_pod {
+            match rest::get(&mut client, None, "", "v1", "pods", Some(&info.namespace), pod_name).await {
+                Ok(rest::GetOutcome::Found(pod)) if pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str) == Some(pod_uid) => {}
+                Ok(rest::GetOutcome::Found(_)) => {
+                    return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "bound Pod UID does not match the current Pod")));
+                }
+                Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                }
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "TokenRequest bound Pod lookup failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                }
+            }
+        }
+        let issued = match authenticator.issue_token(&info.namespace, &info.name, service_account_uid, &request) {
+            Ok(issued) => issued,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+        };
+        let mut response_body = body_value;
+        response_body["apiVersion"] = serde_json::json!("authentication.k8s.io/v1");
+        response_body["kind"] = serde_json::json!("TokenRequest");
+        response_body["status"] = serde_json::json!({
+            "token": issued.token,
+            "expirationTimestamp": issued.expiration_timestamp,
+        });
+        return Ok(json_response(StatusCode::CREATED, &response_body));
+    }
+    // Group L: aggregated APIs (`APIService`) — a genuine live reverse
+    // proxy to a real aggregated backend now, Phase 4's remaining wiring.
+    // Checked before the generic verb dispatch (every other special-cased
+    // route in this function is too), and before `pods/log` right below
+    // since an aggregated group could in principle define its own `pods`
+    // resource — the check itself costs nothing extra for the vastly more
+    // common non-aggregated request (`aggregator::route::resolve` is a
+    // bounded `LIST` of `APIService`s only, not per-item I/O, and a
+    // request with an empty `api_group` — the core group — short-circuits
+    // inside it immediately). See `aggregator::route`/`::client_tls`/
+    // `::availability`/`::proxy_target`'s own doc comments for the full
+    // design; `aggregate_proxy` below is the dispatch glue, same split
+    // `pods/log`'s own branch already established. **Discovery merge
+    // (Phase 3) is still not done** — an aggregated group's own
+    // `/apis/{group}/{version}` discovery document isn't proxied yet, a
+    // real, separate, named gap (`aggregator::mod`'s own doc comment);
+    // only resource-shaped requests under an already-known `(group,
+    // version)` reach this branch at all, matching real upstream's own
+    // "resource requests only" scope for its aggregation proxy handler.
+    if info.is_resource_request && !info.api_group.is_empty() {
+        if let Some(mut client) = storage.clone() {
+            match aggregator::route::resolve(&mut client, &info.api_group, &info.api_version).await {
+                Ok(Some(api_service)) => return Ok(aggregate_proxy(req, &method, &api_service, client, &path_str, &query).await),
+                Ok(None) => {}
+                Err(e) => warn!(path = %path_str, error = ?e, "aggregation: looking up a matching APIService failed"),
+            }
+        }
+    }
+    // Group N: pod connection subresources are HTTP upgrades. Resolve the
+    // pod and its node here, then let the streaming proxy carry the upgrade
+    // through to nodelet. This must run before the generic REST branches:
+    // `POST .../pods/{name}/exec` is otherwise indistinguishable from an
+    // ordinary create-shaped request to the path parser.
+    if info.is_resource_request
+        && info.api_group.is_empty()
+        && info.resource == "pods"
+        && !info.name.is_empty()
+        && matches!(info.subresource.as_str(), "exec" | "attach" | "portforward")
+        && matches!(method.as_str(), "GET" | "POST")
+    {
+        let Some(mut client) = storage.clone() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+        let pod = match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: fetching the pod for a streaming subresource failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let node_name = pod.pointer("/spec/nodeName").and_then(serde_json::Value::as_str).unwrap_or("");
+        if node_name.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+        }
+        let node = match rest::get(&mut client, None, "", "v1", "nodes", None, node_name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+            Err(error) => {
+                warn!(path = %path_str, node = %node_name, error = ?error, "proxy: fetching the pod node for a streaming subresource failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        let pairs = path::parse_query(&query);
+        let target = match proxy::pod_stream::target(&pod, &node, &info.subresource, &pairs) {
+            Ok(target) => target,
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::NoDefaultContainer { pod_name, candidates })) => {
+                let detail = if candidates.is_empty() {
+                    format!("a container name must be specified for pod {pod_name}")
+                } else {
+                    format!("a container name must be specified for pod {pod_name}, choose one of: {candidates:?}")
+                };
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &detail)));
+            }
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::UnknownContainer { pod_name, container })) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &format!("container {container} is not valid for pod {pod_name}"))));
+            }
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::PodNotScheduled)) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+            }
+            Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::NoNodeAddress)) => {
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+            Err(proxy::pod_stream::Error::MissingPort) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "at least one port is required for port-forward")));
+            }
+            Err(proxy::pod_stream::Error::InvalidPort(port)) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &format!("invalid port {port}"))));
+            }
+        };
+
+        return match proxy::http_client::upgrade(req, &target, kubelet_tls).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                warn!(path = %path_str, node = %node_name, error = ?error, "proxy: streaming upgrade to nodelet failed");
+                Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &error.to_string())))
+            }
+        };
+    }
+    // Group N: `pods/log` — a genuine live proxy to nodelet's own
+    // `/containerLogs` endpoint (`crates/nodelet/src/server/logs.rs`),
+    // not a stub. See `proxy::pod_log`/`proxy::client_tls`/
+    // `proxy::http_client`'s own doc comments for the full design; this
+    // branch is just the dispatch glue: fetch the pod, fetch its node,
+    // resolve the target (`proxy::pod_log::log_location`), dial nodelet
+    // for real, relay its response — status, headers, streaming body —
+    // back unmodified. Checked before the generic `is_get` handling below
+    // (which requires an empty `subresource`), same "specific virtual/
+    // special-cased routes before the generic verb block" ordering every
+    // other early-return branch above already uses.
+    if info.is_resource_request && info.api_group.is_empty() && info.resource == "pods" && info.subresource == "log" && !info.name.is_empty() && (method == "GET" || method == "HEAD") {
+        let Some(mut client) = storage.clone() else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+        };
+        let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+
+        let pod = match rest::get(&mut client, None, "", "v1", "pods", namespace, &info.name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "proxy: fetching the pod for pods/log failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+        let node_name = pod.get("spec").and_then(|s| s.get("nodeName")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        if node_name.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+        }
+        // Nodes are cluster-scoped -- `namespace: None`, matching every
+        // other cluster-scoped `rest::get` call in this module.
+        let node = match rest::get(&mut client, None, "", "v1", "nodes", None, &node_name).await {
+            Ok(rest::GetOutcome::Found(object)) => object,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                warn!(path = %path_str, node = %node_name, "proxy: pod's own node not found for pods/log");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+            Err(e) => {
+                warn!(path = %path_str, error = ?e, "proxy: fetching the pod's node for pods/log failed");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        let query_pairs = path::parse_query(&query);
+        let container = query_pairs.iter().find(|(k, _)| k == "container").map(|(_, v)| v.clone()).unwrap_or_default();
+        let target = match proxy::pod_log::log_location(&pod, &node, &container, &query_pairs) {
+            Ok(t) => t,
+            Err(proxy::pod_log::Error::NoDefaultContainer { pod_name, candidates }) => {
+                let detail = if candidates.is_empty() {
+                    format!("a container name must be specified for pod {pod_name}")
+                } else {
+                    format!("a container name must be specified for pod {pod_name}, choose one of: {candidates:?}")
+                };
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &detail)));
+            }
+            Err(proxy::pod_log::Error::UnknownContainer { pod_name, container }) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &format!("container {container} is not valid for pod {pod_name}"))));
+            }
+            Err(proxy::pod_log::Error::PodNotScheduled) => {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "pod has not yet been scheduled to a node")));
+            }
+            Err(proxy::pod_log::Error::NoNodeAddress) => {
+                warn!(path = %path_str, node = %node_name, "proxy: node has no address of any preferred type for pods/log");
+                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+            }
+        };
+
+        return match proxy::http_client::fetch(&target, kubelet_tls).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                warn!(path = %path_str, node = %node_name, error = ?e, "proxy: dialing nodelet for pods/log failed");
+                Ok(json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(&path_str, &e.to_string())))
+            }
+        };
+    }
+
+    // WATCH is dispatched below the CRUD block, so retain this negotiated
+    // representation before the request body can be consumed by a mutating
+    // request.
+    let wants_partial_metadata = req
+        .headers()
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .and_then(negotiation::negotiate)
+        .is_some_and(|accepted| accepted.wants_partial_object_metadata());
+    let has_body = is_create || is_update;
+    if is_get || is_list || is_create || is_delete || is_update {
+        // Captured before `req` is potentially consumed below (`has_body`
+        // moves it into `read_body_bytes`) — a borrow of `req.headers()`
+        // can't outlive that move.
+        let content_type = req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        // Same reasoning — `GET`/`LIST`'s own `Table` negotiation
+        // (`kubectl get`'s real default `Accept` header) needs this
+        // after `req` may already be gone.
+        let accepted = req.headers().get("accept").and_then(|v| v.to_str().ok()).and_then(negotiation::negotiate);
+        let wants_table = accepted.as_ref().is_some_and(|a| a.wants_table());
+
+        if let Some(mut client) = storage {
+            let namespace = if info.namespace.is_empty() { None } else { Some(info.namespace.as_str()) };
+            let crd_printer_columns = if wants_table {
+                match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                    Ok(Some(resolved)) => Some(resolved.additional_printer_columns),
+                    Ok(None) => None,
+                    Err(error) => {
+                        warn!(path = %path_str, error = ?error, "table response: failed to resolve CRD printer columns");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let dry_run = if is_create || is_update || is_delete {
+                match dry_run_query(&query) {
+                    Ok(value) => value,
+                    Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+                }
+            } else {
+                false
+            };
+
+            // CREATE/UPDATE carry a full submitted object; DELETE carries
+            // DeleteOptions. Read the request exactly once because hyper's
+            // incoming body is single-consumer.
+            let (mut body_value, delete_options) = if has_body || is_delete {
+                let body_bytes = match read_body_bytes(req).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "reading the request body failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                if is_delete {
+                    if body_bytes.is_empty() {
+                        (None, None)
+                    } else {
+                        let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
+                        let decoded = match format {
+                            negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
+                            negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
+                            negotiation::Format::Protobuf => Err("protobuf DELETE options are not decoded yet".to_string()),
+                        };
+                        match decoded {
+                            Ok(value) => (None, Some(value)),
+                            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error))),
+                        }
+                    }
+                } else {
+                    let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
+                    let decoded: Result<serde_json::Value, String> = match format {
+                        negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
+                        negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
+                        negotiation::Format::Protobuf => match rest::decode_protobuf_request(&mut client, &info.api_group, &info.api_version, &info.resource, &body_bytes).await {
+                            Ok(Some(value)) => Ok(value),
+                            Ok(None) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                            Err(error) => Err(error.to_string()),
+                        },
+                    };
+                    match decoded {
+                        Ok(value) => (Some(value), None),
+                        Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error))),
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+            // Group J: run the pure mutating admission registry before the
+            // storage-backed admission stages. This preserves the existing
+            // DefaultTolerationSeconds -> ServiceAccount defaulting order,
+            // while making pure plugins extensible without another direct
+            // listener call for each one.
+            if let Some(body) = body_value.as_mut() {
+                let operation = if is_create {
+                    admission::attributes::Operation::Create
+                } else {
+                    admission::attributes::Operation::Update
+                };
+                let registry = admission::chain::MutatingRegistry::with_builtins();
+                let mut request = admission::chain::Request {
+                    operation,
+                    group: &info.api_group,
+                    resource: &info.resource,
+                    subresource: &info.subresource,
+                    namespace: &info.namespace,
+                    name: &info.name,
+                    object: body,
+                };
+                registry.run(&mut request);
+            }
+
+            // `ServiceAccount`'s validating and I/O-backed mutation step
+            // follows the pure registry. Defaulting has already happened;
+            // `quick_decision` now says whether a real ServiceAccount lookup
+            // is needed to finish the plugin.
+            if is_create {
+                if let Some(pod) = body_value.as_mut() {
+                    if admission::service_account::applies_to(&info.api_group, &info.resource, &info.subresource) {
+                        match admission::service_account::quick_decision(pod, admission::attributes::Operation::Create) {
+                            admission::service_account::Decision::Allow => {}
+                            admission::service_account::Decision::Forbidden(msg) => {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                            }
+                            admission::service_account::Decision::NeedsServiceAccountLookup => {
+                                let sa_name = pod.get("spec").and_then(|s| s.get("serviceAccountName")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                                match rest::get(&mut client, None, "", "v1", "serviceaccounts", namespace, &sa_name).await {
+                                    Ok(rest::GetOutcome::Found(sa)) => {
+                                        admission::service_account::mutate_with_service_account(pod, &sa, || {
+                                            let suffix: String = uuid::Uuid::new_v4().to_string().chars().take(5).collect();
+                                            format!("{}{suffix}", admission::service_account::SERVICE_ACCOUNT_VOLUME_PREFIX)
+                                        });
+                                    }
+                                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                                        return Ok(json_response(
+                                            StatusCode::FORBIDDEN,
+                                            &admission_forbidden_status(&path_str, &format!("error looking up service account {:?}/{sa_name:?}: not found", info.namespace)),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        warn!(path = %path_str, error = ?e, "admission: service account lookup failed");
+                                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Group J: `DefaultStorageClass` — mutating, `CREATE` only
+            // (see `admission::default_storage_class`'s own doc comment).
+            // Unlike `namespace_lifecycle`/`service_account`, this one has
+            // no cheap `QuickDecision`-style early-out before the one real
+            // I/O step: `mutate` itself checks whether the PVC already has
+            // a class and no-ops, but only after the `StorageClass` list
+            // has already been fetched — a real (small) inefficiency for
+            // the common already-classed case, named honestly rather than
+            // silently optimized around with a duplicated has-class check.
+            if is_create {
+                if let Some(pvc) = body_value.as_mut() {
+                    if admission::default_storage_class::applies_to(&info.api_group, &info.resource, &info.subresource) {
+                        match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "", 0, "").await {
+                            Ok(rest::ListOutcome::Found(list)) => {
+                                let classes = list["items"].as_array().cloned().unwrap_or_default();
+                                admission::default_storage_class::mutate(pvc, &classes);
+                            }
+                            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                                // This build's own discovery table doesn't
+                                // know `storageclasses` at all — treat the
+                                // same as "no default class exists" rather
+                                // than failing the PVC create, matching
+                                // upstream's own "no default class
+                                // selected, do nothing" no-op path.
+                            }
+                            Err(e) => {
+                                warn!(path = %path_str, error = ?e, "admission: listing storage classes failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Group J: `LimitRanger` — mutating (pods only, `CREATE` only)
+            // + validating (pods and PVCs; see
+            // `admission::limit_ranger`'s own doc comment for exact scope
+            // and what's not yet ported). `operation` mirrors the same
+            // three-way mapping the other Group J blocks each compute
+            // locally.
+            {
+                let operation = if is_create {
+                    Some(admission::attributes::Operation::Create)
+                } else if is_update {
+                    Some(admission::attributes::Operation::Update)
+                } else if is_delete {
+                    Some(admission::attributes::Operation::Delete)
+                } else {
+                    None
+                };
+                if let Some(operation) = operation {
+                    if admission::limit_ranger::applies_to(operation, &info.api_group, &info.resource, &info.subresource) {
+                        match rest::list(&mut client, None, "", "v1", "limitranges", namespace, "", "", 0, "").await {
+                            Ok(rest::ListOutcome::Found(list)) => {
+                                let limit_ranges = list["items"].as_array().cloned().unwrap_or_default();
+                                if let Some(body) = body_value.as_mut() {
+                                    if is_create && info.resource == "pods" {
+                                        admission::limit_ranger::mutate_pod(body, &limit_ranges);
+                                    }
+                                    for limit_range in &limit_ranges {
+                                        let errs = if info.resource == "pods" {
+                                            admission::limit_ranger::validate_pod(limit_range, body)
+                                        } else {
+                                            admission::limit_ranger::validate_pvc(limit_range, body)
+                                        };
+                                        if !errs.is_empty() {
+                                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &errs.join("; "))));
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                                // No `limitranges` known to this build at
+                                // all — same "nothing to enforce" no-op as
+                                // an empty list.
+                            }
+                            Err(e) => {
+                                warn!(path = %path_str, error = ?e, "admission: listing limit ranges failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Group J: storage-backed `MutatingAdmissionPolicy` bindings.
+            // Apply policy mutations after built-in mutators and before
+            // built-in validators inspect or account for the final
+            // candidate. UPDATE supplies the existing object as `oldObject`;
+            // CREATE has no old object. The policy module also enforces the
+            // admission-configuration exemptions required to avoid locking
+            // the API server out of its own policy storage.
+            if is_create || is_update {
+                let old_object = if is_update {
+                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(object)) => Some(object),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(error) => {
+                            warn!(path = %path_str, error = %error, "admission: reading the existing object for MutatingAdmissionPolicy failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some(candidate) = body_value.take() {
+                    match admission::mutating_admission_policy::mutate(
+                        &mut client,
+                        if is_create { "CREATE" } else { "UPDATE" },
+                        &info.api_group,
+                        &info.api_version,
+                        &info.resource,
+                        &info.subresource,
+                        &info.namespace,
+                        &info.name,
+                        candidate,
+                        old_object.as_ref(),
+                        dry_run,
+                        identity.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(mutated) => body_value = Some(mutated),
+                        Err(error) => {
+                            warn!(path = %path_str, error = %error, "admission: MutatingAdmissionPolicy evaluation failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                }
+            }
+
+            // Group J: `PodSecurity` — validating, `CREATE` only (see
+            // `admission::pod_security`'s own doc comment for exactly
+            // which checks are ported and which are named, honest gaps).
+            // The one real I/O step: fetch the target namespace to read
+            // its own `pod-security.kubernetes.io/enforce` label.
+            if is_create && admission::pod_security::applies_to(&info.api_group, &info.resource, &info.subresource, admission::attributes::Operation::Create) {
+                if let Some(pod) = body_value.as_ref() {
+                    match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                        Ok(rest::GetOutcome::Found(ns)) => {
+                            let level = admission::pod_security::enforcement_level(&ns);
+                            let violations = admission::pod_security::validate(pod, level);
+                            if !violations.is_empty() {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &violations.join("; "))));
+                            }
+                        }
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                            // No real namespace to read a label off —
+                            // `namespace_lifecycle` is what's responsible
+                            // for rejecting a create into a namespace that
+                            // doesn't exist at all; this check just has
+                            // nothing to enforce in that case.
+                        }
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: namespace lookup for PodSecurity failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                }
+            }
+
+            // Group J: `ResourceQuota` — validating, `CREATE` only, pods/
+            // PVCs/services only (see `admission::resource_quota`'s own
+            // doc comment for the full, honestly-named scope). Runs last
+            // among the mutating-then-validating admission blocks above,
+            // same relative position real upstream's own default plugin
+            // order uses (quota checks the final, fully-defaulted/mutated
+            // object) — placed after `LimitRanger`'s own defaulting, so a
+            // container that only got its requests/limits from a
+            // `LimitRange` default is still counted correctly here. Two
+            // real I/O steps: list every existing object of the same kind
+            // already in the namespace (to sum existing usage) and every
+            // `ResourceQuota` in it.
+            let quota_kind = if !is_create {
+                None
+            } else if admission::resource_quota::applies_to(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
+                Some("pods")
+            } else if admission::resource_quota::applies_to_pvc(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
+                Some("persistentvolumeclaims")
+            } else if admission::resource_quota::applies_to_service(admission::attributes::Operation::Create, &info.api_group, &info.resource, &info.subresource) {
+                Some("services")
+            } else {
+                None
+            };
+            // Populated for the pod/PVC/service evaluators (the generic
+            // object-count evaluator doesn't persist its own status.used
+            // yet — a named follow-up), consumed after `rest::create`
+            // actually succeeds below. Computing this here (before
+            // creation) rather than re-listing after
+            // is deliberate: it's the exact same existing-usage snapshot
+            // `check_pod_create` just used to allow the request, so the
+            // two stay consistent with each other.
+            let mut quota_usage_updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)> = Vec::new();
+            if let Some(list_resource) = quota_kind {
+                if let Some(new_object) = body_value.as_ref() {
+                    let existing = match rest::list(&mut client, None, "", "v1", list_resource, namespace, "", "", 0, "").await {
+                        Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
+                        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, resource = list_resource, "admission: listing existing objects for ResourceQuota failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    };
+                    match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "", 0, "").await {
+                        Ok(rest::ListOutcome::Found(list)) => {
+                            let quotas = list["items"].as_array().cloned().unwrap_or_default();
+                            let denial = match list_resource {
+                                "pods" => admission::resource_quota::check_pod_create(new_object, &existing, &quotas),
+                                "persistentvolumeclaims" => admission::resource_quota::check_pvc_create(new_object, &existing, &quotas),
+                                _ => admission::resource_quota::check_service_create(new_object, &existing, &quotas),
+                            };
+                            if let Some(denial) = denial {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
+                            }
+                            quota_usage_updates = match list_resource {
+                                "pods" => admission::resource_quota::usage_after_pod_create(new_object, &existing, &quotas),
+                                "persistentvolumeclaims" => admission::resource_quota::usage_after_pvc_create(new_object, &existing, &quotas),
+                                _ => admission::resource_quota::usage_after_service_create(new_object, &existing, &quotas),
+                            };
+                        }
+                        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {
+                            // No `resourcequotas` known to this build —
+                            // same "nothing to enforce" no-op as an empty
+                            // list.
+                        }
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: listing resource quotas failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                }
+            } else if is_create && !info.namespace.is_empty() {
+                // Group J: `ResourceQuota`'s generic object-count
+                // evaluator (`admission::resource_quota::check_object_count_create`'s
+                // own doc comment) — runs for any namespaced resource
+                // `CREATE` that isn't already covered by the pod/PVC/
+                // service evaluators above (a real, deliberate skip, not
+                // an oversight: those three already track their own
+                // legacy bare-name object count). Safe to run
+                // unconditionally: a namespace with no `ResourceQuota`
+                // referencing this resource's `count/...` key has
+                // nothing to enforce.
+                let existing = match rest::list(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, "", "", 0, "").await {
+                    Ok(rest::ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
+                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: listing existing objects for ResourceQuota's object-count check failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                };
+                match rest::list(&mut client, None, "", "v1", "resourcequotas", namespace, "", "", 0, "").await {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let quotas = list["items"].as_array().cloned().unwrap_or_default();
+                        if let Some(denial) = admission::resource_quota::check_object_count_create(&info.api_group, &info.resource, &existing, &quotas) {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &denial)));
+                        }
+                        quota_usage_updates = admission::resource_quota::usage_after_object_count_create(&info.api_group, &info.resource, &existing, &quotas);
+                    }
+                    Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => {}
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "admission: listing resource quotas failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            }
+
+            // Group J: storage-backed `ValidatingAdmissionPolicy` bindings.
+            // Authorization must complete before admission, and CEL gets
+            // the same candidate/old object pair that the write will use.
+            if is_create || is_update || is_delete {
+                let operation = if is_create {
+                    "CREATE"
+                } else if is_update {
+                    "UPDATE"
+                } else {
+                    "DELETE"
+                };
+                let old_object = if is_update || is_delete {
+                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(object)) => Some(object),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission: reading the existing object for ValidatingAdmissionPolicy failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                } else {
+                    None
+                };
+                match admission::policy_enforcement::validate(&mut client, operation, &info.api_group, &info.api_version, &info.resource, &info.subresource, &info.namespace, &info.name, body_value.as_ref(), old_object.as_ref(), dry_run, identity.as_ref()).await {
+                    Ok(outcome) => {
+                        record_admission_outcome(admission_metadata.as_ref(), &outcome);
+                        if let Some(message) = outcome.denial {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                        }
+                    }
+                    Err(error) => {
+                        warn!(path = %path_str, error = %error, "admission: ValidatingAdmissionPolicy evaluation failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            }
+
+            // Group J: admission control, unconditional — see
+            // `admission`'s own doc comment for why this plugin, unlike
+            // Group I's RBAC, needs no config gate (it needs no
+            // operator-provisioned bootstrap data, so there's no
+            // "could lock every request out" risk). Only the three
+            // mutating verbs pass through a real admission plugin at all;
+            // GET/LIST are unaffected, matching real upstream (admission
+            // only ever runs on write operations).
+            if is_create || is_update || is_delete {
+                let operation = if is_create {
+                    admission::attributes::Operation::Create
+                } else if is_update {
+                    admission::attributes::Operation::Update
+                } else {
+                    admission::attributes::Operation::Delete
+                };
+                let admission_attrs = admission::attributes::Attributes { operation, group: &info.api_group, resource: &info.resource, namespace: &info.namespace, name: &info.name };
+
+                match admission::namespace_lifecycle::quick_decision(&admission_attrs) {
+                    admission::namespace_lifecycle::QuickDecision::Allow => {}
+                    admission::namespace_lifecycle::QuickDecision::Forbidden(msg) => {
+                        return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                    }
+                    admission::namespace_lifecycle::QuickDecision::NeedsNamespaceLookup => {
+                        // `namespaces` is cluster-scoped — looked up by
+                        // name with no parent namespace, same convention
+                        // every other cluster-scoped `get` in this crate
+                        // uses.
+                        let namespace_phase = match rest::get(&mut client, None, "", "v1", "namespaces", None, &info.namespace).await {
+                            Ok(rest::GetOutcome::Found(ns)) => Some(ns.get("status").and_then(|s| s.get("phase")).and_then(|p| p.as_str()).unwrap_or("").to_string()),
+                            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                            Err(e) => {
+                                warn!(path = %path_str, error = ?e, "admission: namespace lookup failed");
+                                return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                            }
+                        };
+                        match admission::namespace_lifecycle::decide(&admission_attrs, namespace_phase.as_deref()) {
+                            admission::namespace_lifecycle::Decision::Allow => {}
+                            admission::namespace_lifecycle::Decision::Forbidden(msg) => {
+                                return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
+                            }
+                            admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                                return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Group J: invoke configured mutating and validating webhooks
+            // after built-in admission and authorization have produced the
+            // candidate object, but before REST persists it. UPDATE and
+            // DELETE need the current object as oldObject (and DELETE's
+            // object); a missing object is left to REST to report NotFound.
+            if is_create || is_update || is_delete {
+                let old_object = if is_update || is_delete {
+                    match rest::get(&mut client, None, &info.api_group, &info.api_version, &info.resource, namespace, &info.name).await {
+                        Ok(rest::GetOutcome::Found(object)) => Some(object),
+                        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+                        Err(e) => {
+                            warn!(path = %path_str, error = ?e, "admission: reading the existing object for webhooks failed");
+                            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let webhook_object = body_value.clone().or_else(|| old_object.clone());
+                if let Some(webhook_object) = webhook_object {
+                    let operation = if is_create {
+                        admission::attributes::Operation::Create
+                    } else if is_update {
+                        admission::attributes::Operation::Update
+                    } else {
+                        admission::attributes::Operation::Delete
+                    };
+                    match admission::webhook::admit(
+                        &mut client,
+                        operation,
+                        &info.api_group,
+                        &info.api_version,
+                        &info.resource,
+                        &info.subresource,
+                        &info.namespace,
+                        &info.name,
+                        webhook_object,
+                        old_object,
+                        identity.as_ref(),
+                        dry_run,
+                    )
+                    .await
+                    {
+                        Ok(admission::webhook::Outcome::Allowed(admitted)) => {
+                            if is_create || is_update {
+                                body_value = Some(admitted);
+                            }
+                        }
+                        Ok(admission::webhook::Outcome::Denied(message)) => {
+                            return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &message)));
+                        }
+                        Err(error) => {
+                            warn!(path = %path_str, error = ?error, "admission webhook invocation failed");
+                            return Ok(admission_webhook_error_response(&path_str, &error));
+                        }
+                    }
+                }
+            }
+
+            // Built-in resources have a real cache registered at startup;
+            // dynamically discovered CRD resources are registered by the
+            // CRD lifecycle reconciler and can still be registered lazily
+            // by the first watch if startup discovery has not caught up.
+            // Shared by both verbs below; `rest::list`'s own doc
+            // comment covers why an unsynced cache is safe to pass here
+            // too (it just falls through, same as `None`).
+            let resource_cache = cache_registry.get(&info.api_group, &info.api_version, &info.resource);
+            let resource_cache = resource_cache.as_ref();
+
+            if is_get {
+                match rest::get_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, resource_version_query(&query)).await {
+                    Ok(rest::GetOutcome::Found(object)) => {
+                        let body = if wants_table {
+                            crate::codec::table::convert_to_table_for_resource_with_crd_columns(&info.api_group, &info.api_version, &info.resource, crd_printer_columns.as_deref(), &object)
+                        } else if wants_partial_metadata {
+                            crate::codec::partial_metadata::object(&object)
+                        } else {
+                            object
+                        };
+                        return Ok(json_response(StatusCode::OK, &body));
+                    }
+                    Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::get failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else if is_list {
+                if !info.field_selector.is_empty() {
+                    match crate::cacher::selector::parse_field_selector(&info.field_selector) {
+                        Ok(requirements) => {
+                            if let Err(error) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &requirements) {
+                                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string())));
+                            }
+                        }
+                        Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &error.to_string()))),
+                    }
+                }
+                match rest::list_at_revision(&mut client, resource_cache, &info.api_group, &info.api_version, &info.resource, namespace, &info.label_selector, &info.field_selector, info.limit, &info.continue_token, resource_version_query(&query)).await {
+                    Ok(rest::ListOutcome::Found(list)) => {
+                        let body = if wants_table {
+                            crate::codec::table::convert_to_table_for_resource_with_crd_columns(&info.api_group, &info.api_version, &info.resource, crd_printer_columns.as_deref(), &list)
+                        } else if wants_partial_metadata {
+                            crate::codec::partial_metadata::list(&list)
+                        } else {
+                            list
+                        };
+                        return Ok(json_response(StatusCode::OK, &body));
+                    }
+                    Ok(rest::ListOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                    Ok(rest::ListOutcome::InvalidContinueToken) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "continue token is not valid")));
+                    }
+                    // A malformed selector is the client's fault, not a
+                    // server failure — real upstream answers this with a
+                    // 400, not a 500.
+                    Err(rest::Error::Selector(e)) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::list failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else if is_create {
+                // `has_body` guarantees this is `Some` — the decode
+                // happened above, before this branch was even chosen.
+                let body_value = body_value.expect("body_value is Some whenever is_create is true (has_body covers it)");
+                match rest::create_with_options_and_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &body_value, dry_run, request_field_manager.as_deref()).await {
+                    Ok(rest::CreateOutcome::Created(object)) => {
+                        // Group J: persist `ResourceQuota.status.used` now
+                        // that the object this usage total was computed
+                        // for is genuinely real. Best-effort — a status
+                        // write failing here must never turn an already-
+                        // succeeded create into an error response; the
+                        // request was correctly admitted regardless of
+                        // whether its bookkeeping write lands.
+                        if let Some(ns) = namespace {
+                            persist_quota_usage_updates(&mut client, ns, quota_usage_updates, &path_str).await;
+                        }
+                        return Ok(json_response(StatusCode::CREATED, &object));
+                    }
+                    Ok(rest::CreateOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                    Ok(rest::CreateOutcome::MissingName) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.name or metadata.generateName is required")));
+                    }
+                    Ok(rest::CreateOutcome::NamespaceMismatch) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.namespace does not match the request URL")));
+                    }
+                    Ok(rest::CreateOutcome::AlreadyExists) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                    Ok(rest::CreateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    Ok(rest::CreateOutcome::UnsupportedForCrd) => {
+                        return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "this resource has no usable structural schema")));
+                    }
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::create failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else if is_update {
+                let body_value = body_value.expect("body_value is Some whenever is_update is true (has_body covers it)");
+                match rest::update_with_options_and_manager(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &body_value, dry_run, request_field_manager.as_deref()).await {
+                    Ok(rest::UpdateOutcome::Updated(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                    Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Ok(rest::UpdateOutcome::MissingResourceVersion) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.resourceVersion is required for an update")));
+                    }
+                    Ok(rest::UpdateOutcome::NamespaceMismatch) => {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, "metadata.namespace does not match the request URL")));
+                    }
+                    Ok(rest::UpdateOutcome::Conflict) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&path_str))),
+                    Ok(rest::UpdateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&path_str, &violations))),
+                    // `rest::update` never itself returns this -- it's
+                    // `rest::patch`-only, checked before `rest::patch` is
+                    // even called (see the `PATCH` branch above). Kept
+                    // exhaustive rather than `unreachable!()`.
+                    Ok(rest::UpdateOutcome::UnsupportedPatchType) => return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str))),
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::update failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            } else {
+                // is_delete.
+                let preconditions = match delete_preconditions(delete_options.as_ref()) {
+                    Ok(value) => value,
+                    Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, detail))),
+                };
+                match rest::delete_with_options(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, preconditions.as_ref(), dry_run).await {
+                    Ok(rest::DeleteOutcome::Deleted(object)) => return Ok(json_response(StatusCode::OK, &object)),
+                    Ok(rest::DeleteOutcome::ObjectNotFound) | Ok(rest::DeleteOutcome::UnknownResource) => {
+                        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                    }
+                    Ok(rest::DeleteOutcome::PreconditionFailed) => {
+                        return Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&path_str)));
+                    }
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "rest::delete failed");
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&path_str)));
+                    }
+                }
+            }
+        }
+        // No nodestore connection at all (failed at startup, or not yet
+        // reconnected) — falls through to the echo stub below rather than
+        // claiming a 503 for a request this build genuinely can't judge
+        // "not found" vs. "unreachable" for yet.
+    }
+
+    // Group D/E: real `WATCH`, served purely from an already-registered
+    // `cacher::CacheRegistry` cache. A live cache already holds
+    // everything the read side of this handler needs (a snapshot to
+    // replay from, a live event subscription), and if a resource has no
+    // registered cache, this falls through to the RequestInfo echo below
+    // exactly like the "no nodestore connection" case above, rather than
+    // claiming a real watch this build can't actually serve.
+    //
+    // Group I: RBAC, gated by `enforce_rbac` same as every other verb —
+    // resolved against a fresh `storage.clone()` (cheap — a
+    // `tonic::transport::Channel` clone, same as every other real call
+    // site), since `watch` doesn't otherwise need `storage`/`client` at
+    // all. Unlike a request this build can *choose* to allow when RBAC is
+    // off, "enforcement is on but there's no storage connection to
+    // resolve rules against" fails closed (`500`), never silently
+    // degrading to "allow" — the whole reason `enforce_rbac` exists is to
+    // guarantee a denial-capable policy actually ran. Group J admission
+    // intentionally does **not** gate `watch` here, matching real
+    // upstream's own posture (admission never runs on a read, whatever
+    // the verb) — not a gap.
+    if is_watch {
+        // Group K: an already-registered cache first (unchanged), else —
+        // only when the static table doesn't know this resource at all —
+        // a live check against the dynamic CRD registry, lazily spawning
+        // a cache for it right now on this, its first-ever watch request
+        // (`cacher::registry::CacheRegistry::spawn` is callable at any
+        // time, not just at boot — see its own doc comment). Only
+        // a resource the static table has never heard of falls through to
+        // the dynamic check, so this never masks a genuine 404 as "maybe
+        // a CRD." Proactive CRD lifecycle reconciliation is started with
+        // the listener's built-in CRD cache above; this lazy path remains
+        // only as a bounded startup-race fallback for a CRD that is
+        // discovered before that reconciler has registered its cache.
+        let cache_and_kind: Option<(
+            crate::cacher::store::SharedCache,
+            String,
+            Option<crate::apiextensions::registry::ConversionWebhook>,
+        )> = if let Some(cache) = cache_registry.get(&info.api_group, &info.api_version, &info.resource) {
+            if let Some(kind) = rest::resolve_kind(&info.api_group, &info.api_version, &info.resource) {
+                Some((cache, kind.to_string(), None))
+            } else if let Some(mut client) = storage.clone() {
+                match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                    Ok(Some(resource)) => Some((cache, resource.kind, resource.conversion_webhook)),
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!(path = %path_str, error = ?e, "watch: resolving the registered CRD-defined resource failed");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else if rest::resolve_kind(&info.api_group, &info.api_version, &info.resource).is_some() {
+            None
+        } else if let Some(mut client) = storage.clone() {
+            match rest::resolve_dynamic_resource(&mut client, &info.api_group, &info.api_version, &info.resource).await {
+                Ok(Some(resource)) => {
+                    let cache = cache_registry.spawn(client, &info.api_group, &info.api_version, &info.resource);
+                    Some((cache, resource.kind, resource.conversion_webhook))
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "watch: resolving a possible CRD-defined resource failed");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some((cache, kind, conversion_webhook)) = cache_and_kind {
+            if !cache.has_synced() {
+                if tokio::time::timeout(std::time::Duration::from_secs(30), cache.wait_until_synced()).await.is_err() {
+                    warn!(path = %path_str, "watch: cache did not complete its initial LIST before the startup wait expired");
+                    return Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(&path_str, "watch cache is not synchronized yet")));
+                }
+            }
+            // Same real label/field selector parsing `rest::list` already
+            // runs — a malformed selector is the client's fault, a `400`,
+            // not a server failure, checked before the stream even starts
+            // (matching `list`'s own "fail before doing any work" posture).
+            let label_reqs = if info.label_selector.is_empty() {
+                Vec::new()
+            } else {
+                match crate::cacher::selector::parse_label_selector(&info.label_selector) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+                }
+            };
+            let field_reqs = if info.field_selector.is_empty() {
+                Vec::new()
+            } else {
+                match crate::cacher::selector::parse_field_selector(&info.field_selector) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string()))),
+                }
+            };
+            if let Err(e) = crate::cacher::selector::validate_field_selector(&info.api_group, &info.resource, &field_reqs) {
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, &e.to_string())));
+            }
+            let start_revision = resource_version_query(&query);
+            let watch_options = match watch_options_query(&query) {
+                Ok(options) => options,
+                Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&path_str, error))),
+            };
+            match cache.watch_from(start_revision) {
+                Ok((replay, rx)) => {
+                    let group_version = if info.api_group.is_empty() { info.api_version.clone() } else { format!("{}/{}", info.api_group, info.api_version) };
+                    let body = watch_response_body(
+                        replay,
+                        rx,
+                        kind,
+                        group_version,
+                        label_reqs,
+                        field_reqs,
+                        storage.clone(),
+                        info.api_group.clone(),
+                        info.resource.clone(),
+                        info.api_version.clone(),
+                        wants_partial_metadata,
+                        watch_options.allow_watch_bookmarks,
+                        watch_options.timeout,
+                        conversion_webhook,
+                    );
+                    // No explicit `Transfer-Encoding` header: hyper's own
+                    // h1/h2 connection handling already frames a body with
+                    // no known length correctly for whichever protocol
+                    // this connection negotiated (chunked for h1, native
+                    // DATA-frame streaming for h2, where the
+                    // `Transfer-Encoding` header is actually forbidden by
+                    // the HTTP/2 spec) — setting it here ourselves would
+                    // be wrong for an h2 connection.
+                    return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body).unwrap());
+                }
+                Err(crate::cacher::store::Error::TooOld { .. }) => {
+                    return Ok(json_response(StatusCode::GONE, &resource_expired_status(&path_str)));
+                }
+            }
+        }
+        // No cache registered (or spawnable) for this resource — falls
+        // through to the echo stub below, same posture as every other
+        // not-yet-served case in this handler.
+    }
+
+    // A resource-shaped request that reached this point targeted a verb or
+    // subresource this server does not serve. Returning the request-info
+    // echo with HTTP 200 makes kubectl treat an unsupported route as a
+    // successful API response. Real kube-apiserver returns a Kubernetes
+    // NotFound status for an unknown subresource, so keep the bring-up echo
+    // limited to non-resource requests.
+    if info.is_resource_request {
+        return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+    }
+
+    // Surfaced for real observability (this is the only response shape
+    // that ever includes it today), not consulted for any access-control
+    // decision anywhere yet — there is no authorization (Group I) to
+    // enforce it against. `rest::get`/`list` above don't take it either,
+    // for the same reason: nothing yet checks a caller's identity before
+    // serving a read.
+    let user = identity.as_ref().map(|i| serde_json::json!({"username": i.name, "uid": i.uid, "groups": i.groups}));
+    let value = serde_json::json!({
+        "isResourceRequest": info.is_resource_request,
+        "verb": info.verb,
+        "apiPrefix": info.api_prefix,
+        "apiGroup": info.api_group,
+        "apiVersion": info.api_version,
+        "namespace": info.namespace,
+        "resource": info.resource,
+        "subresource": info.subresource,
+        "name": info.name,
+        "user": user,
+    });
+    Ok(json_response(StatusCode::OK, &value))
+}
+
+/// Request headers this build never forwards to an aggregated backend —
+/// hop-by-hop headers (`Connection`'s own listed value plus the fixed
+/// standard set, RFC 7230 §6.1) and `Host` (rebuilt from the resolved
+/// target instead, same as `proxy::http_client::fetch`'s own posture for
+/// nodelet).
+const HOP_BY_HOP_HEADERS: &[&str] = &["host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade"];
+
+/// Group L Phase 4's dispatch glue for one already-matched, non-local
+/// `APIService`: fetch its backing Service and `EndpointSlice`s, run the
+/// same real pre-flight chain `aggregator::availability::preflight_check`
+/// would run before a live discovery-endpoint dial, resolve the actual
+/// dial target (`aggregator::proxy_target`), build this backend's own
+/// TLS trust (`aggregator::client_tls`), and relay the whole request —
+/// method, headers minus [`HOP_BY_HOP_HEADERS`], body — unmodified
+/// (`proxy::http_client::relay`). A real transparent proxy, matching
+/// real upstream's own aggregation posture exactly: nothing about the
+/// request or response is inspected or altered beyond what dialing
+/// itself requires.
+///
+/// A cached `Available: False` condition (`aggregator::reconcile`'s own
+/// periodic write, `availability::cached_available`) short-circuits
+/// straight to `503` before any of the Service/`EndpointSlice` I/O below
+/// — a known-broken backend fails fast without paying for a fetch this
+/// build already knows the answer to. `Available: True` or no cached
+/// condition yet both fall through to the full check unchanged (the
+/// backing Service still has to be fetched either way, to resolve the
+/// actual dial target — this only ever saves the *negative* path).
+async fn aggregate_proxy(req: Request<Incoming>, method: &str, api_service: &serde_json::Value, mut client: StorageClient, path_str: &str, query: &str) -> Response<BoxedBody> {
+    if aggregator::availability::cached_available(api_service) == Some(false) {
+        return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, "backing service is not currently available (cached)"));
+    }
+    let Some(service_ref) = api_service.pointer("/spec/service") else {
+        // `aggregator::route::resolve` already filters this out -- reached
+        // only if the stored object changed between that check and here.
+        return json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, "APIService has no backing service"));
+    };
+    let namespace = service_ref.get("namespace").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let name = service_ref.get("name").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let port = service_ref.get("port").and_then(serde_json::Value::as_i64).unwrap_or(443);
+
+    let service = match rest::get(&mut client, None, "", "v1", "services", Some(&namespace), &name).await {
+        Ok(rest::GetOutcome::Found(object)) => Some(object),
+        Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: fetching the backing service failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+    let endpoint_slices = match rest::list(&mut client, None, "discovery.k8s.io", "v1", "endpointslices", Some(&namespace), &format!("kubernetes.io/service-name={name}"), "", 0, "").await {
+        Ok(rest::ListOutcome::Found(list)) => list.get("items").and_then(serde_json::Value::as_array).cloned().unwrap_or_default(),
+        Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: listing endpointslices for the backing service failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+    if let Err(condition) = aggregator::availability::preflight_check(&namespace, &name, port, service.as_ref(), &endpoint_slices) {
+        warn!(path = %path_str, reason = condition.reason, message = %condition.message, "aggregation: pre-flight check failed, not attempting the backend dial");
+        return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, &condition.message));
+    }
+    let Some(service) = service else {
+        return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, "backing service not found"));
+    };
+
+    let target = match aggregator::proxy_target::resolve(api_service, &service, path_str, query) {
+        Ok(t) => t,
+        Err(aggregator::proxy_target::Error::Local) => return json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, "APIService has no backing service")),
+        Err(aggregator::proxy_target::Error::NoClusterIp) => return json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, "backing service has no clusterIP to dial")),
+    };
+
+    let insecure_skip_tls_verify = api_service.pointer("/spec/insecureSkipTLSVerify").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let ca_bundle_pem = match api_service.pointer("/spec/caBundle").and_then(serde_json::Value::as_str) {
+        Some(b64) if !b64.is_empty() => {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(b64) {
+                Ok(bytes) => Some(bytes),
+                Err(e) => {
+                    warn!(path = %path_str, error = ?e, "aggregation: spec.caBundle is not valid base64");
+                    return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+                }
+            }
+        }
+        _ => None,
+    };
+    let client_config = match aggregator::client_tls::build_client_config(ca_bundle_pem.as_deref(), insecure_skip_tls_verify) {
+        Ok(cfg) => std::sync::Arc::new(cfg),
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: building the backend TLS client config failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+
+    let headers = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str().to_ascii_lowercase().as_str()))
+        .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str().to_string(), v.to_string())))
+        .collect::<Vec<_>>();
+    let body = match read_body_bytes(req).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(path = %path_str, error = ?e, "aggregation: reading the request body failed");
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+        }
+    };
+
+    match proxy::http_client::relay(&target, client_config, method, &headers, body).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            warn!(path = %path_str, host = %target.host, error = ?e, "aggregation: dialing the backend failed");
+            json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, &e.to_string()))
+        }
+    }
+}
+
+fn is_proxy_request(info: &path::RequestInfo) -> bool {
+    info.verb == "proxy" || info.subresource == "proxy"
+}
+
+/// Returns the path after the `proxy` marker.  `RequestInfo.parts` has
+/// already removed the API prefix, group/version, and optional namespace,
+/// so this handles both supported Kubernetes forms:
+/// `.../{resource}/{name}/proxy/{path}` and
+/// `.../proxy/{resource}/{name}/{path}`.
+fn proxy_suffix(info: &path::RequestInfo) -> String {
+    let start = if info.verb == "proxy" {
+        2
+    } else {
+        info.parts.iter().position(|part| part == "proxy").map_or(info.parts.len(), |index| index + 1)
+    };
+    let suffix = info.parts.get(start..).map(|parts| parts.join("/")).unwrap_or_default();
+    if suffix.is_empty() { "/".to_string() } else { format!("/{suffix}") }
+}
+
+/// Group N's core node/service proxy dispatch.  The object and EndpointSlice
+/// reads are intentionally performed before consuming the request body so an
+/// invalid or unavailable target returns a normal Kubernetes Status response.
+async fn proxy_resource(
+    req: Request<Incoming>,
+    storage: Option<StorageClient>,
+    info: &path::RequestInfo,
+    method: &str,
+    path_str: &str,
+    query: &str,
+    identity: &Option<crate::authn::x509::Identity>,
+    enforce_rbac: bool,
+    kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Response<BoxedBody> {
+    let Some(mut client) = storage else {
+        return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+    };
+
+    if enforce_rbac {
+        let (user_name, user_groups): (&str, Vec<String>) = match identity {
+            Some(id) => (id.name.as_str(), id.groups.clone()),
+            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        };
+        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+        let subresource = if info.verb == "proxy" { "proxy" } else { info.subresource.as_str() };
+        let attrs = authz::rbac::RequestAttributes {
+            is_resource_request: true,
+            verb: &info.verb,
+            api_group: &info.api_group,
+            resource: &info.resource,
+            subresource,
+            name: &info.name,
+            path: path_str,
+        };
+        if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
+            return json_response(StatusCode::FORBIDDEN, &forbidden_status(path_str, user_name));
+        }
+    }
+
+    let suffix = proxy_suffix(info);
+    let target = if info.resource == "nodes" {
+        let node = match rest::get(&mut client, None, "", "v1", "nodes", None, &info.name).await {
+            Ok(rest::GetOutcome::Found(node)) => node,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return json_response(StatusCode::NOT_FOUND, &not_found_status(path_str));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: fetching the node failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        };
+        match proxy::node_proxy::target(&node, &suffix, query) {
+            Ok(target) => target,
+            Err(proxy::node_proxy::Error::NoNodeAddress) => {
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        }
+    } else {
+        if info.namespace.is_empty() {
+            return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "service proxy requires a namespace"));
+        }
+        let (service_name, _) = proxy::service_proxy::split_name(&info.name);
+        let service = match rest::get(&mut client, None, "", "v1", "services", Some(&info.namespace), service_name).await {
+            Ok(rest::GetOutcome::Found(service)) => service,
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
+                return json_response(StatusCode::NOT_FOUND, &not_found_status(path_str));
+            }
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: fetching the Service failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        };
+        let endpoint_slices = match rest::list(&mut client, None, "discovery.k8s.io", "v1", "endpointslices", Some(&info.namespace), &format!("kubernetes.io/service-name={service_name}"), "", 0, "").await {
+            Ok(rest::ListOutcome::Found(list)) => list.get("items").and_then(serde_json::Value::as_array).cloned().unwrap_or_default(),
+            Ok(rest::ListOutcome::UnknownResource) | Ok(rest::ListOutcome::InvalidContinueToken) => Vec::new(),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: listing EndpointSlices failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        };
+        match proxy::service_proxy::target(&service, &endpoint_slices, &info.name, &suffix, query) {
+            Ok(target) => target,
+            Err(proxy::service_proxy::Error::MissingPort
+                | proxy::service_proxy::Error::InvalidPort(_)
+                | proxy::service_proxy::Error::UnsupportedProtocol(_)) =>
+            {
+                return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "the requested Service port does not exist"));
+            }
+            Err(proxy::service_proxy::Error::NoClusterIpOrEndpoint) => {
+                return json_response(StatusCode::SERVICE_UNAVAILABLE, &service_unavailable_status(path_str, "Service has no ready endpoints or ClusterIP"));
+            }
+        }
+    };
+
+    let headers = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| !HOP_BY_HOP_HEADERS.contains(&name.as_str()))
+        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string())))
+        .collect::<Vec<_>>();
+    let body = match read_body_bytes(req).await {
+        Ok(body) => body,
+        Err(error) => {
+            warn!(path = %path_str, error = ?error, "proxy: reading the request body failed");
+            return json_response(StatusCode::BAD_REQUEST, &bad_request_status(path_str, "request body could not be read"));
+        }
+    };
+
+    let client_config = if target.scheme == "https" && info.resource == "services" {
+        match crate::proxy::client_tls::build_client_config(None) {
+            Ok(config) => std::sync::Arc::new(config),
+            Err(error) => {
+                warn!(path = %path_str, error = ?error, "proxy: building the Service TLS client config failed");
+                return json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(path_str));
+            }
+        }
+    } else {
+        // Node proxies use the kubelet client configuration built at
+        // listener startup.  Plain HTTP Service targets ignore it.
+        kubelet_tls
+    };
+
+    match proxy::http_client::relay(&target, client_config, method, &headers, body).await {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(path = %path_str, host = %target.host, error = ?error, "proxy: dialing the backend failed");
+            json_response(StatusCode::BAD_GATEWAY, &bad_gateway_status(path_str, &error.to_string()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(path: &str) -> Vec<String> {
+        path::split_path(path)
+    }
+
+    #[test]
+    fn api_root_serves_api_versions() {
+        let route = route_discovery(&parts("/api"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIVersions");
+    }
+
+    #[test]
+    fn api_v1_serves_the_core_group_resource_list() {
+        let route = route_discovery(&parts("/api/v1"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIResourceList");
+        assert_eq!(doc["groupVersion"], "v1");
+    }
+
+    #[test]
+    fn apis_root_serves_the_group_list() {
+        let route = route_discovery(&parts("/apis"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroupList");
+    }
+
+    #[test]
+    fn apis_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
+        let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
+        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroupDiscoveryList");
+    }
+
+    #[test]
+    fn api_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
+        let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
+        let route = route_discovery(&parts("/api"), Some(accept), &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroupDiscoveryList");
+        assert_eq!(doc["items"][0]["metadata"]["name"], "");
+        assert_eq!(discovery_content_type(&parts("/api"), Some(accept)), AGGREGATED_DISCOVERY_CONTENT_TYPE);
+        assert_eq!(discovery_content_type(&parts("/api/v1"), Some(accept)), "application/json");
+    }
+
+    #[test]
+    fn a_mismatched_as_version_falls_back_to_the_legacy_shape() {
+        // v2beta1 is real upstream's pre-GA aggregated-discovery shape,
+        // which this build doesn't separately model — must not be served
+        // the v2 shape as if it matched.
+        let accept = "application/json;as=APIGroupDiscoveryList;v=v2beta1;g=apidiscovery.k8s.io";
+        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroupList", "an unmatched as= version must fall back to the legacy shape, not silently serve v2 anyway");
+    }
+
+    #[test]
+    fn apis_group_serves_the_group_document() {
+        let route = route_discovery(&parts("/apis/apps"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIGroup");
+        assert_eq!(doc["name"], "apps");
+    }
+
+    #[test]
+    fn apis_group_version_serves_the_resource_list() {
+        let route = route_discovery(&parts("/apis/apps/v1"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["kind"], "APIResourceList");
+        assert_eq!(doc["groupVersion"], "apps/v1");
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_matches_a_real_apis_group_version_path() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1"), &aggregated), Some(("metrics.k8s.io", "v1beta1")));
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_is_none_for_a_group_not_in_the_aggregated_list() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/apis/apps/v1"), &aggregated), None);
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_requires_exactly_three_apis_segments() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io"), &aggregated), None, "a group-only path must not match");
+        assert_eq!(
+            aggregated_discovery_group_version(&parts("/apis/metrics.k8s.io/v1beta1/nodes"), &aggregated),
+            None,
+            "a resource-shaped path is handled by the resource-request aggregation branch, not this one"
+        );
+    }
+
+    #[test]
+    fn aggregated_discovery_group_version_ignores_a_matching_version_under_a_different_top_level_prefix() {
+        let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
+        assert_eq!(aggregated_discovery_group_version(&parts("/api/metrics.k8s.io/v1beta1"), &aggregated), None);
+    }
+
+    #[test]
+    fn an_unknown_group_is_a_real_not_found_not_a_fallthrough() {
+        assert!(matches!(route_discovery(&parts("/apis/totally.made.up"), None, &[], &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/apis/apps/v999"), None, &[], &[]), DiscoveryRoute::NotFound));
+        assert!(matches!(route_discovery(&parts("/api/v999"), None, &[], &[]), DiscoveryRoute::NotFound));
+    }
+
+    #[test]
+    fn a_resource_shaped_path_is_not_applicable_to_discovery_routing() {
+        assert!(matches!(route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[], &[]), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/apis/apps/v1/namespaces/default/deployments"), None, &[], &[]), DiscoveryRoute::NotApplicable));
+        assert!(matches!(route_discovery(&parts("/"), None, &[], &[]), DiscoveryRoute::NotApplicable));
+    }
+
+    #[test]
+    fn openapi_v3_root_serves_the_root_index() {
+        let route = route_discovery(&parts("/openapi/v3"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert!(doc["paths"].as_object().unwrap().contains_key("apis/apps/v1"));
+    }
+
+    #[test]
+    fn openapi_v2_serves_a_swagger_document() {
+        let route = route_discovery(&parts("/openapi/v2"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert_eq!(doc["swagger"], "2.0");
+        assert!(doc["definitions"].as_object().is_some_and(|definitions| definitions.contains_key("io.k8s.api.core.v1.Pod")));
+    }
+
+    #[test]
+    fn openapi_v3_a_multi_segment_path_serves_the_raw_vendored_document() {
+        let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[], &[]);
+        let DiscoveryRoute::FoundRaw(bytes) = route else { panic!("expected FoundRaw") };
+        let parsed: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert!(parsed.get("openapi").is_some());
+    }
+
+    #[test]
+    fn openapi_v3_an_unvendored_path_is_a_real_not_found() {
+        assert!(matches!(route_discovery(&parts("/openapi/v3/apis/totally.made.up/v1"), None, &[], &[]), DiscoveryRoute::NotFound));
+    }
+
+    #[test]
+    fn version_serves_the_real_version_info_document() {
+        let route = route_discovery(&parts("/version"), None, &[], &[]);
+        let DiscoveryRoute::Found(doc) = route else { panic!("expected Found") };
+        assert!(doc.get("gitVersion").is_some());
+    }
+
+    #[test]
+    fn not_found_status_has_the_real_client_go_status_shape() {
+        let status = not_found_status("/apis/totally.made.up");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["apiVersion"], "v1");
+        assert_eq!(status["status"], "Failure");
+        assert_eq!(status["reason"], "NotFound");
+        assert_eq!(status["code"], 404);
+    }
+
+    #[test]
+    fn bad_request_status_carries_the_selector_parse_detail() {
+        let status = bad_request_status("/api/v1/pods", "malformed selector");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "BadRequest");
+        assert_eq!(status["code"], 400);
+        assert!(status["message"].as_str().unwrap().contains("malformed selector"));
+    }
+
+    #[test]
+    fn forbidden_status_names_the_user_and_uses_the_real_rbac_denial_shape() {
+        let status = forbidden_status("/api/v1/pods", "system:anonymous");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Forbidden");
+        assert_eq!(status["code"], 403);
+        assert!(status["message"].as_str().unwrap().contains("system:anonymous"));
+    }
+
+    #[test]
+    fn conflict_status_uses_the_real_already_exists_shape() {
+        let status = conflict_status("/api/v1/namespaces/default/pods");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "AlreadyExists");
+        assert_eq!(status["code"], 409);
+    }
+
+    #[test]
+    fn dry_run_query_accepts_only_all() {
+        assert_eq!(dry_run_query("dryRun=All").unwrap(), true);
+        assert_eq!(dry_run_query("fieldManager=test").unwrap(), false);
+        assert_eq!(dry_run_query("dryRun=Unknown").unwrap_err(), "dryRun must be All");
+    }
+
+    #[test]
+    fn authorization_reviews_bypass_resource_enforcement() {
+        let sar = path::parse(
+            "POST",
+            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+            "",
+        );
+        let self_review = path::parse(
+            "POST",
+            "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+            "",
+        );
+        let pods = path::parse("PATCH", "/api/v1/namespaces/default/pods/p1", "");
+
+        assert!(is_authorization_review(&sar));
+        assert!(is_authorization_review(&self_review));
+        assert!(!is_authorization_review(&pods));
+    }
+
+    #[test]
+    fn an_authorization_webhook_allow_short_circuits_local_resource_authorization() {
+        let pod = path::parse("GET", "/api/v1/namespaces/default/pods/p1", "");
+        let review = path::parse(
+            "POST",
+            "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+            "",
+        );
+
+        assert!(!should_run_local_authorization(&pod, true, true));
+        assert!(should_run_local_authorization(&pod, true, false));
+        assert!(!should_run_local_authorization(&review, true, false));
+        assert!(!should_run_local_authorization(&pod, false, false));
+    }
+
+    #[test]
+    fn delete_preconditions_decode_resource_version_and_uid() {
+        let value = serde_json::json!({"preconditions": {"resourceVersion": "7", "uid": "abc"}});
+        assert_eq!(
+            delete_preconditions(Some(&value)).unwrap(),
+            Some(rest::DeletePreconditions { resource_version: Some("7".to_string()), uid: Some("abc".to_string()) })
+        );
+    }
+
+    #[test]
+    fn invalid_status_joins_every_violation_into_the_message() {
+        let status = invalid_status("/api/v1/pods", &["spec.containers: Required value".to_string(), "spec.foo: expected type string, got number".to_string()]);
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Invalid");
+        assert_eq!(status["code"], 422);
+        let message = status["message"].as_str().unwrap();
+        assert!(message.contains("spec.containers: Required value"));
+        assert!(message.contains("spec.foo: expected type string, got number"));
+    }
+
+    #[test]
+    fn resource_expired_status_uses_the_real_gone_shape() {
+        let status = resource_expired_status("/api/v1/watch/pods");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Gone");
+        assert_eq!(status["code"], 410);
+    }
+
+    #[test]
+    fn resource_version_query_reads_the_real_param() {
+        assert_eq!(resource_version_query("resourceVersion=42"), 42);
+        assert_eq!(resource_version_query("watch=true&resourceVersion=7&timeoutSeconds=30"), 7);
+    }
+
+    #[test]
+    fn resource_version_query_defaults_to_zero_when_absent_or_unparsable() {
+        assert_eq!(resource_version_query(""), 0);
+        assert_eq!(resource_version_query("watch=true"), 0);
+        assert_eq!(resource_version_query("resourceVersion=not-a-number"), 0);
+    }
+
+    #[test]
+    fn resource_version_query_handles_a_percent_encoded_value() {
+        // Real clients never percent-encode a bare integer, but some
+        // generic HTTP tooling does anyway — defensive, not a case real
+        // kubectl/client-go traffic would ever hit.
+        assert_eq!(resource_version_query("resourceVersion=%34%32"), 42);
+    }
+
+    #[test]
+    fn watch_options_parse_bookmarks_and_timeout() {
+        let options = watch_options_query("watch=true&allowWatchBookmarks=true&timeoutSeconds=7").unwrap();
+        assert!(options.allow_watch_bookmarks);
+        assert_eq!(options.timeout, Some(std::time::Duration::from_secs(7)));
+        assert_eq!(watch_options_query("allowWatchBookmarks=0&timeoutSeconds=0").unwrap(), WatchOptions::default());
+        assert!(watch_options_query("allowWatchBookmarks=maybe").is_err());
+        assert!(watch_options_query("timeoutSeconds=-1").is_err());
+        assert!(watch_options_query("timeoutSeconds=not-a-number").is_err());
+    }
+
+    #[test]
+    fn is_apply_patch_content_type_recognizes_the_real_media_type_and_ignores_charset() {
+        assert!(is_apply_patch_content_type("application/apply-patch+yaml"));
+        assert!(is_apply_patch_content_type("application/apply-patch+yaml; charset=utf-8"));
+        assert!(!is_apply_patch_content_type("application/strategic-merge-patch+json"));
+        assert!(!is_apply_patch_content_type(""));
+    }
+
+    #[test]
+    fn field_manager_query_reads_the_real_param() {
+        assert_eq!(field_manager_query("fieldManager=kubectl-apply"), Some("kubectl-apply".to_string()));
+        assert_eq!(field_manager_query("force=true&fieldManager=kubectl-apply"), Some("kubectl-apply".to_string()));
+        assert_eq!(field_manager_query(""), None);
+        assert_eq!(field_manager_query("force=true"), None);
+    }
+
+    #[test]
+    fn force_query_reads_the_real_param() {
+        assert!(force_query("force=true"));
+        assert!(force_query("fieldManager=x&force=true"));
+        assert!(!force_query(""));
+        assert!(!force_query("force=false"));
+        assert!(!force_query("force=1"));
+    }
+
+    #[test]
+    fn ssa_conflict_status_names_every_conflicting_manager() {
+        let mut fields = crate::patch::fieldset::Set::new();
+        fields.insert(&[crate::patch::fieldset::PathElement::Field("replicas".to_string())]);
+        let conflicts = vec![crate::patch::updater::Conflict { manager: "hpa-controller".to_string(), fields }];
+        let status = ssa_conflict_status("/apis/apps/v1/namespaces/default/deployments/my-app", &conflicts);
+        assert_eq!(status["code"], 409);
+        assert_eq!(status["reason"], "Conflict");
+        assert!(status["message"].as_str().unwrap().contains("hpa-controller"));
+    }
+
+    #[test]
+    fn encode_watch_event_produces_a_newline_terminated_json_line() {
+        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
+        let frame = encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false).expect("Bookmark always converts").expect("Bookmark conversion never fails");
+        let bytes = frame.into_data().unwrap();
+        assert!(bytes.ends_with(b"\n"));
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(parsed["type"], "BOOKMARK");
+        assert_eq!(parsed["object"]["kind"], "Pod");
+    }
+
+    #[test]
+    fn encode_watch_event_skips_a_deleted_event_with_no_retained_value() {
+        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Deleted, key: b"k".to_vec(), value: Vec::new(), revision: 9 };
+        assert!(encode_watch_event(&event, "Pod", "v1", None, "", "pods", "v1", false).is_none());
+    }
+
+    #[test]
+    fn encode_watch_event_converts_objects_to_partial_metadata_when_requested() {
+        let event = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: b"k".to_vec(),
+            value: envelope_for("default", serde_json::json!({"app": "demo"})),
+            revision: 9,
+        };
+        let frame = encode_watch_event(&event, "Namespace", "v1", None, "", "namespaces", "v1", true)
+            .expect("Added events always convert")
+            .expect("the test envelope must decode");
+        let bytes = frame.into_data().unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(parsed["object"]["apiVersion"], "meta.k8s.io/v1");
+        assert_eq!(parsed["object"]["kind"], "PartialObjectMetadata");
+        assert_eq!(parsed["object"]["metadata"]["name"], "default");
+        assert!(parsed["object"].get("spec").is_none());
+    }
+
+    fn envelope_for(name: &str, labels: serde_json::Value) -> Vec<u8> {
+        let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": name, "labels": labels}})).unwrap();
+        crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes)
+    }
+
+    #[test]
+    fn watch_event_matches_selector_passes_bookmarks_and_valueless_events_through() {
+        let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
+        let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 1 };
+        assert!(watch_event_matches_selector(&bookmark, &reqs, &[], None, "", ""));
+    }
+
+    #[test]
+    fn watch_event_matches_selector_filters_on_labels() {
+        let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
+        let matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({"env": "prod"})), revision: 1 };
+        let non_matching = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"b".to_vec(), value: envelope_for("b", serde_json::json!({"env": "dev"})), revision: 2 };
+        assert!(watch_event_matches_selector(&matching, &reqs, &[], None, "", ""));
+        assert!(!watch_event_matches_selector(&non_matching, &reqs, &[], None, "", ""));
+    }
+
+    #[test]
+    fn watch_event_matches_selector_is_a_no_op_with_no_selector() {
+        let event = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Added, key: b"a".to_vec(), value: envelope_for("a", serde_json::json!({})), revision: 1 };
+        assert!(watch_event_matches_selector(&event, &[], &[], None, "", ""));
+    }
+
+    #[tokio::test]
+    async fn watch_response_body_streams_the_replay_then_live_events() {
+        use http_body_util::BodyExt;
+
+        // An unrelated event at revision 2 first, purely so `watch_from`'s
+        // own "not older than the oldest retained history entry" check
+        // has something at or before the requested start_revision (same
+        // pre-existing `watch_from` quirk `cacher::store`'s own tests hit
+        // — untouched by, and unrelated to, what this test is proving).
+        // The event actually under test needs a real encoded envelope —
+        // `to_watch_event_json` decodes it for real, same as
+        // `server::watch_event`'s own tests do.
+        let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+        let object_bytes = crate::codec::protobuf::encode_message(schema, &serde_json::json!({"metadata": {"name": "default"}})).unwrap();
+        let envelope = crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes);
+
+        let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
+        let shared = crate::cacher::store::SharedCache::new(cache);
+        shared.apply(crate::cacher::store::EventKind::Added, b"seed".to_vec(), b"unrelated".to_vec(), 2);
+        shared.apply(crate::cacher::store::EventKind::Added, b"a".to_vec(), envelope, 3);
+        let (replay, rx) = shared.watch_from(2).unwrap();
+        assert_eq!(replay.len(), 1, "only the revision-3 event should be in the replay");
+        // Drop the cache (and its own broadcast::Sender) before consuming
+        // the stream to completion below — otherwise the live half of
+        // `watch_response_body` never ends (a real watch stream is
+        // meant to run forever; only exercised for the replay half here,
+        // the live half is real end-to-end behavior, not something a
+        // `.collect()`-to-completion unit test can observe without
+        // artificially closing the channel first).
+        drop(shared);
+
+        let body = watch_response_body(
+            replay,
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            true,
+            None,
+            None,
+        );
+        let collected = body.collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(collected.to_vec()).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["type"], "ADDED");
+    }
+
+    #[tokio::test]
+    async fn watch_response_body_honors_bookmark_negotiation_and_timeout() {
+        use http_body_util::BodyExt;
+
+        let bookmark = crate::cacher::store::WatchEvent { kind: crate::cacher::store::EventKind::Bookmark, key: Vec::new(), value: Vec::new(), revision: 9 };
+        let (_, rx) = {
+            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+            cache.watch_from(0).unwrap()
+        };
+        let body = watch_response_body(
+            vec![bookmark.clone()],
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            false,
+            None,
+            None,
+        );
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert!(bytes.is_empty(), "bookmarks must be opt-in");
+
+        let (_, rx) = {
+            let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+            cache.watch_from(0).unwrap()
+        };
+        let body = watch_response_body(
+            Vec::new(),
+            rx,
+            "Namespace".to_string(),
+            "v1".to_string(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+            "namespaces".to_string(),
+            "v1".to_string(),
+            false,
+            false,
+            Some(std::time::Duration::from_millis(10)),
+            None,
+        );
+        let bytes = tokio::time::timeout(std::time::Duration::from_secs(1), body.collect()).await.unwrap().unwrap().to_bytes();
+        assert!(bytes.is_empty(), "an idle watch must terminate at timeoutSeconds");
+    }
+
+    fn test_peer() -> SocketAddr {
+        "10.0.0.7:54321".parse().unwrap()
+    }
+
+    #[test]
+    fn build_audit_event_carries_the_real_request_shape_for_an_anonymous_user() {
+        let event = build_audit_event("GET", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 200, &BTreeMap::new());
+        assert_eq!(event["verb"], "get");
+        assert_eq!(event["user"]["username"], "system:anonymous");
+        assert_eq!(event["responseStatus"]["code"], 200);
+        assert_eq!(event["sourceIPs"], serde_json::json!(["10.0.0.7"]));
+        assert_eq!(event["objectRef"]["resource"], "pods");
+        assert_eq!(event["objectRef"]["namespace"], "default");
+        assert_eq!(event["objectRef"]["name"], "web-1");
+    }
+
+    #[test]
+    fn build_audit_event_carries_the_real_identity_when_present() {
+        let identity = crate::authn::x509::Identity { name: "alice".to_string(), groups: vec!["developers".to_string()], uid: None, credential_id: (String::new(), Vec::new()) };
+        let event = build_audit_event("GET", "/api/v1/pods", "watch=true", None, Some(&identity), &test_peer(), 200, &BTreeMap::new());
+        assert_eq!(event["user"]["username"], "alice");
+        assert_eq!(event["user"]["groups"], serde_json::json!(["developers"]));
+        assert_eq!(event["verb"], "watch");
+        assert_eq!(event["requestURI"], "/api/v1/pods?watch=true");
+    }
+
+    #[test]
+    fn build_audit_event_has_no_object_ref_for_a_non_resource_request() {
+        let event = build_audit_event("GET", "/version", "", None, None, &test_peer(), 200, &BTreeMap::new());
+        assert!(event.get("objectRef").is_none());
+    }
+
+    #[test]
+    fn build_audit_event_carries_a_denied_response_code() {
+        let event = build_audit_event("DELETE", "/api/v1/namespaces/default/pods/web-1", "", None, None, &test_peer(), 403, &BTreeMap::new());
+        assert_eq!(event["responseStatus"]["code"], 403);
+    }
+
+    #[test]
+    fn admission_warnings_use_warning_code_299_and_are_header_safe() {
+        let mut response = Response::new(body_from_bytes(Vec::new()));
+        apply_admission_warnings(&mut response, &["policy \"failed\"\nnext".to_string()]);
+        assert_eq!(response.headers().get("warning").unwrap(), "299 - \"policy \\\"failed\\\" next\"");
+    }
+
+    #[test]
+    fn proxy_suffix_supports_the_normal_subresource_form() {
+        let info = path::parse("GET", "/api/v1/namespaces/default/services/web:http/proxy/healthz", "");
+        assert_eq!(info.resource, "services");
+        assert_eq!(info.name, "web:http");
+        assert_eq!(info.subresource, "proxy");
+        assert_eq!(proxy_suffix(&info), "/healthz");
+    }
+
+    #[test]
+    fn proxy_suffix_supports_the_legacy_proxy_prefix_form() {
+        let info = path::parse("GET", "/api/v1/proxy/nodes/node-a/stats/summary", "");
+        assert_eq!(info.verb, "proxy");
+        assert_eq!(info.resource, "nodes");
+        assert_eq!(info.name, "node-a");
+        assert_eq!(proxy_suffix(&info), "/stats/summary");
+    }
+}
