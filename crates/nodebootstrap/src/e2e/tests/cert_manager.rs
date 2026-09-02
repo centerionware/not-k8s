@@ -2,7 +2,9 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret, ServiceAccount};
+use k8s_openapi::api::authentication::v1::{BoundObjectReference, TokenRequest, TokenRequestSpec};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, ServiceAccount};
+use http::Request;
 use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, PostParams};
 use kube::core::{GroupVersionKind, ObjectMeta};
 use kube::discovery::ApiResource;
@@ -155,6 +157,7 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
     );
     let deployments: Api<Deployment> =
         Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
     let service_accounts: Api<ServiceAccount> =
         Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
     let secrets: Api<Secret> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -177,6 +180,62 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
                 )
                 .await?;
         }
+
+        context
+            .wait_until(
+                "a cert-manager Pod to be created",
+                Duration::from_secs(30),
+                || {
+                    let pods = pods.clone();
+                    async move { Ok(!pods.list(&Default::default()).await?.items.is_empty()) }
+                },
+            )
+            .await?;
+        let pod = pods
+            .list(&Default::default())
+            .await?
+            .items
+            .into_iter()
+            .next()
+            .context("cert-manager e2e found no Pod after its readiness wait")?;
+        let pod_name = pod.name_any();
+        let pod_uid = pod
+            .uid()
+            .context("cert-manager e2e Pod had no UID")?;
+        let service_account_name = pod
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.service_account_name.clone())
+            .unwrap_or_else(|| "default".to_string());
+        let token_request = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/v1/namespaces/{CERT_MANAGER_NAMESPACE}/serviceaccounts/{service_account_name}/token"
+            ))
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&TokenRequest {
+                metadata: Default::default(),
+                spec: TokenRequestSpec {
+                    audiences: Vec::new(),
+                    bound_object_ref: Some(BoundObjectReference {
+                        api_version: Some("v1".to_string()),
+                        kind: Some("Pod".to_string()),
+                        name: Some(pod_name),
+                        uid: Some(pod_uid),
+                    }),
+                    expiration_seconds: Some(600),
+                },
+                status: None,
+            })?)?;
+        let token: TokenRequest = context
+            .client
+            .request(token_request)
+            .await
+            .context("requesting a bound cert-manager ServiceAccount token")?;
+        anyhow::ensure!(
+            token.status.as_ref().is_some_and(|status| !status.token.is_empty()),
+            "nodeapiserver returned an empty bound cert-manager ServiceAccount token"
+        );
 
         context
             .wait_until(
