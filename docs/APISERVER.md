@@ -43,8 +43,8 @@ complete while compatibility extensions remain.
 
 ## Current status snapshot
 
-This snapshot is checked against `origin/nodeapiserver` at `449c5494` on
-2026-09-01. It describes what is integrated on that branch; open child PRs
+This snapshot is checked against `origin/nodeapiserver` at `aef12abc` on
+2026-09-02. It describes what is integrated on that branch; open child PRs
 are not counted until they merge. The detailed sections below remain the
 explanation of each boundary.
 
@@ -194,7 +194,9 @@ Go types (the same "doesn't marshal as its own struct shape" pattern
 for) that write completely unwrapped in real JSON (a plain schema
 object, or a plain array/bool), not as `{"schema": ...}`/`{"allows":
 ...}` — `codec::protobuf`'s `is_json_schema_props_or_array`/
-`_or_bool` now handle both. `codec::json`/`codec::yaml` are thin wrappers; `codec::negotiation`
+`_or_bool` now handle both. `codec::json`/`codec::yaml` are thin wrappers;
+DRA `ResourceSlice` and `ResourceClaim` scheduler shapes are covered by
+protobuf round-trip regressions; `codec::negotiation`
 parses `Accept`/`Content-Type` including `kubectl get`'s `as=Table;g=...;v=...`
 parameters. `codec::table::convert_to_table` lands the generic default
 `Table` converter — a faithful port of real upstream's own
@@ -1824,7 +1826,8 @@ exists in real upstream to protect against exactly the kind of
 distributed-consistency problem a single-process build with no separate
 storage-installation step to wait on doesn't have).
 
-**Real, wired, and live-tested now** (`tests/crd_roundtrip.rs`, the CRD
+**Real, wired, and live-tested now** (`tests/crd_roundtrip.rs` and
+`tests/crd_status_subresource.rs`, the CRD
 analogue of `tests/encryption_roundtrip.rs` — a real `nodestore` spawned
 and driven end to end, not assumed from unit tests alone): `GET`/
 `LIST`/`CREATE`/`DELETE`/`DELETECOLLECTION` (`delete_collection` gets
