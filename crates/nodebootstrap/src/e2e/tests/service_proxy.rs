@@ -1,6 +1,7 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use http::Request;
 use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
