@@ -142,7 +142,6 @@ macro_rules! handle_crud_persist {
                     }
                 }
             }
-        }
         // No nodestore connection at all (failed at startup, or not yet
         // reconnected) — handled by the real unavailable/not-found response below.
     }};
