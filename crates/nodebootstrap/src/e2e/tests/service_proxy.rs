@@ -5,10 +5,13 @@ use http::Request;
 use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::rbac::v1::{Role, RoleBinding};
-use kube::api::{Api, AttachParams, DeleteParams, ListParams, Patch, PatchParams, PostParams};
+use kube::api::{
+    Api, AttachParams, DeleteParams, ListParams, Patch, PatchParams, PostParams, WatchEvent,
+    WatchParams,
+};
 use serde_json::json;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
@@ -413,6 +416,12 @@ pub(super) async fn headless_service_does_not_break_other_services(
 
     let probe = "headless-probe";
     create_backend(context, probe).await?;
+    let all_slices: Api<EndpointSlice> = Api::all(context.client.clone());
+    let endpoint_watch = all_slices
+        .watch(&WatchParams::default().timeout(60), "0")
+        .await
+        .context("starting the all-namespaces EndpointSlice watch")?;
+    futures::pin_mut!(endpoint_watch);
     create_service(context, probe, "ClusterIP", 18095, None).await?;
     let probe_slices = slices.clone();
     context
@@ -421,6 +430,43 @@ pub(super) async fn headless_service_does_not_break_other_services(
             async move { Ok(ready_endpoint_count_from_api(&probe_slices, probe).await? > 0) }
         })
         .await?;
+    let watch_deadline = Instant::now() + Duration::from_secs(60);
+    let mut observed_ready_endpoint = false;
+    while Instant::now() < watch_deadline {
+        let event = tokio::time::timeout(Duration::from_secs(1), endpoint_watch.next()).await;
+        let Ok(Some(event)) = event else {
+            continue;
+        };
+        match event? {
+            WatchEvent::Added(slice) | WatchEvent::Modified(slice)
+                if slice
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("kubernetes.io/service-name"))
+                    .is_some_and(|name| name == probe)
+                    && slice.endpoints.iter().any(|endpoint| {
+                        endpoint
+                            .conditions
+                            .as_ref()
+                            .and_then(|conditions| conditions.ready)
+                            != Some(false)
+                            && !endpoint.addresses.is_empty()
+                    }) =>
+            {
+                observed_ready_endpoint = true;
+                break;
+            }
+            WatchEvent::Error(status) => {
+                anyhow::bail!("all-namespaces EndpointSlice watch returned an error: {status:?}");
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(
+        observed_ready_endpoint,
+        "nodeapiserver did not deliver the ready EndpointSlice through an all-namespaces watch"
+    );
     context
         .wait_until("normal Service beside headless Service", Duration::from_secs(90), || {
             let services = services.clone();

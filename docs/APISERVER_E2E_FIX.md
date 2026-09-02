@@ -8,6 +8,18 @@ for triage rather than assumed to be separate defects.
 
 Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/not-k8s/actions/runs/33541038722), commit `6c6c0060`.
 
+## Priority order
+
+| PRIORITY | ISSUE | STATUS |
+| --- | --- | --- |
+| 1 | API listener availability after a failure or reconfiguration | Recovery fix verified in PR #488; keep this as the release-blocking regression gate. |
+| 2 | EndpointSlice/Service watch handoff and nodeproxy routing | Active in PR #497; API LIST readiness passes, but the matching ClusterIP traffic path still fails. |
+| 3 | CRD discovery and cert-manager usability | Unverified on the current triage run; isolate after the EndpointSlice path. |
+| 4 | Nodelet reconciliation after API/runtime restart | Unverified on this branch; keep separate from API work until an isolated failure is reproduced. |
+| 5 | TLS bootstrap and remaining compatibility gaps | Open or triage; address after the higher-impact runtime paths. |
+| 6 | Large-file refactor | Maintainability work; separate PR after runtime defects, with no single source file over 500 lines. |
+| 7 | Termination grace-period timing | Lower priority and outside nodeapiserver; the API metadata assertion already passes. |
+
 | ISSUE | STATUS | EVIDENCE / NEXT TEST | PR |
 | --- | --- | --- | --- |
 | `/metrics` metrics access and e2e authentication | verified | The original anonymous curl was not upstream-compatible: release-1.34 protects `/metrics` with the `system:monitoring` RBAC group. The bootstrap manifest was also missing that upstream role and binding. PR #487 restores the policy and makes both focused checks use the authenticated admin kube client. Runs `33554455305` (quick-check) and `33554455419` (focused e2e, shards 1 and 5) passed. | [#487](https://github.com/centerionware/not-k8s/pull/487) |
@@ -19,7 +31,7 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | Namespace-selector ServiceAccount error | triage (controller timing) | Isolated run `33575004375` reproduced the 403 because the helper Namespace's `default` ServiceAccount had not yet been created. This is the expected ServiceAccount admission behavior; the remaining race belongs to the service-account controller or fixture readiness, not nodeapiserver authorization. No API PR was opened. | — |
 | Dry-run collection delete semantics | verified | The dedicated `deletecollection` listener path now parses `dryRun=All`, forwards it through admission and webhooks, and uses `delete_with_options` so selected objects are not persisted as deleted. Focused e2e `33569985186` passed `test_nodeapiserver_honors_dry_run_and_delete_preconditions` on shard 4; nodeapiserver quick-check `33569976266` also passed. | [#490](https://github.com/centerionware/not-k8s/pull/490) |
 | Termination grace period | triage (nodelet/runtime) | The focused nodeapiserver run `33573473607` used a strengthened assertion that passed after DELETE: the API returned a Pod with `deletionTimestamp` and `deletionGracePeriodSeconds=8`. The same test then observed nodelet/CRI remove it after 48ms. The relevant teardown code is unchanged from `main`, so closed PR #491 without merge; the remaining timing failure is outside this API branch. | — |
-| Nodeproxy headless/ClusterIP routing | in progress | Focused run `33595560126` still timed out before normal ClusterIP traffic reached its backend. The bounded stage traces were not retained by the shard's short service-log tail, and the selected failure snapshot still had no test ClusterIP nft rule. The e2e case now adds an explicit ready EndpointSlice wait for the normal Service, so the next run will distinguish API-visible endpoint state from nodeproxy watch/rule programming. PR #497 remains open while that initial handoff is traced. | [#497](https://github.com/centerionware/not-k8s/pull/497) |
+| Nodeproxy headless/ClusterIP routing | in progress | Focused run `33596833290` passed the explicit ready EndpointSlice LIST wait, then timed out only at normal ClusterIP traffic. This proves the API can expose a ready EndpointSlice; the new e2e watch assertion now checks the all-namespaces live watch shape used by nodeproxy. PR #497 remains open while that handoff is isolated. | [#497](https://github.com/centerionware/not-k8s/pull/497) |
 | TLS bootstrap client certificate kubeconfig | open | Shard 1: `test_tls_bootstrap_issues_a_real_client_certificate` timed out waiting for nodelet's issued kubeconfig. | — |
 | Remaining nodelet runtime, streaming, storage, and scheduler timeouts | triage | Many failures begin after the API listener/recovery failures. Reclassify only after the focused API recovery test is green. | — |
 | Cert-manager CRD usability | triage | Shard 4's CRD test could not create its test namespace after API recovery failed; do not treat this run as evidence against CRD discovery. | — |
@@ -70,3 +82,4 @@ Initial evidence: [full e2e run 33541038722](https://github.com/centerionware/no
 | `33593828918` | failed | PR #497 focused e2e with bounded diagnostics: build, bootstrap, and the selected test setup passed, but the same normal ClusterIP traffic wait timed out. The diagnostic lines were still outside the shard's retained service-log tail, so the initial EndpointSlice apply/cache/watch handoff remained unproven. |
 | `33595273761` | passed | PR #497 focused nodeapiserver quick-check after adding stage-level apply tracing. |
 | `33595560126` | failed | PR #497 focused e2e with bounded stage tracing: bootstrap passed and the same normal ClusterIP traffic wait timed out. The result motivated an explicit ready EndpointSlice wait in the test before the traffic assertion; no source fix is claimed from this run. |
+| `33596833290` | failed | PR #497 focused e2e after adding the explicit ready EndpointSlice wait: the wait passed and the test still timed out only at the normal ClusterIP traffic assertion. This proves nodeapiserver can serve a ready EndpointSlice; no source fix is claimed yet. |
