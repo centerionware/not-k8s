@@ -3376,7 +3376,7 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
             range_end: Vec::new(),
         };
         let envelope = encrypt_for_storage(storage, group, resource, context.key.as_bytes(), &envelope)?;
-        let put = pb::PutRequest { key: context.key.into_bytes(), value: envelope, ..Default::default() };
+        let put = pb::PutRequest { key: context.key.clone().into_bytes(), value: envelope, ..Default::default() };
         let txn = pb::TxnRequest {
             compare: vec![compare],
             success: vec![pb::RequestOp { request: Some(pb::request_op::Request::RequestPut(put)) }],
