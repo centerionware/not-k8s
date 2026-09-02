@@ -306,6 +306,5 @@ macro_rules! handle_patch_apply_admission {
                     Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
                 }
             };
-        }
     }};
 }
