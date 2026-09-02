@@ -204,6 +204,9 @@ pub fn apply_watch_response(cache: &mut WatchCache, resp: &WatchResponse) {
 /// this loop drives it — see `SharedCache`'s own doc comment).
 pub fn apply_watch_response_shared(cache: &crate::cacher::store::SharedCache, resp: &WatchResponse) {
     for (kind, key, value, revision) in decode_applies(resp, cache.revision()) {
+        if key.windows(b"endpointslices".len()).any(|window| window == b"endpointslices") {
+            tracing::warn!(?kind, key = %String::from_utf8_lossy(&key), revision, "diagnostic: cached EndpointSlice event");
+        }
         cache.apply(kind, key, value, revision);
     }
 }

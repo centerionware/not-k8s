@@ -3389,6 +3389,9 @@ pub async fn apply_persist(storage: &mut StorageClient, group: &str, version: &s
             return Ok(ApplyOutcome::Conflict(Vec::new()));
         }
         let revision = resp.header.map(|h| h.revision).unwrap_or(0);
+        if group == "discovery.k8s.io" && resource == "endpointslices" {
+            tracing::warn!(key = %context.key, revision, "diagnostic: persisted EndpointSlice through SSA create");
+        }
         set_metadata_field(&mut object, "resourceVersion", Value::String(revision.to_string()));
         let object = convert_to_requested_version(storage, group, version, &context.kind, context.conversion_webhook.as_ref(), object).await?;
         return Ok(ApplyOutcome::Applied(object));
