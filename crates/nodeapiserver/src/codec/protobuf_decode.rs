@@ -1,3 +1,5 @@
+/// Decode a raw protobuf message body (no envelope) into a JSON object
+/// shaped like `message`'s fields.
 pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
     if !codegen::proto_fields::PROTO_MESSAGES.contains(&message) {
         return Err(Error::UnknownMessage(message.to_string()));
@@ -39,7 +41,6 @@ pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
     }
     Ok(Value::Object(obj))
 }
-
 fn fields_by_number(message: &str) -> std::collections::HashMap<u32, &'static ProtoField> {
     codegen::proto_fields::PROTO_FIELDS
         .iter()
@@ -567,9 +568,3 @@ fn base64_encode(b: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(b)
 }
-
-/// Wraps an already-encoded object body in the full
-/// `application/vnd.kubernetes.protobuf` wire payload: the 4-byte `k8s\0`
-/// magic, then a length-delimited (implicit — this is the top-level
-/// message, so no outer tag) `runtime.Unknown` whose `raw` field holds
-/// `object_bytes` and whose `typeMeta` names `api_version`/`kind`.

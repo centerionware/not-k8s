@@ -13,7 +13,6 @@ struct AdmissionMetadata {
     warnings: Vec<String>,
     audit_failures: Vec<Value>,
 }
-
 type SharedAdmissionMetadata = Arc<Mutex<AdmissionMetadata>>;
 
 #[derive(Clone)]
@@ -867,9 +866,3 @@ fn watch_response_body_with_initial_events(
     };
     StreamBody::new(stream).boxed()
 }
-
-/// Runs the listener forever (until the process exits). Best-effort on
-/// bind/TLS failure — logs and returns rather than panicking, matching
-/// every other background loop's degrade-and-continue posture in this
-/// workspace (see `crates/nodelet/src/server/mod.rs::run`'s own doc
-/// comment for the precedent).

@@ -1,3 +1,8 @@
+/// Runs the listener forever (until the process exits). Best-effort on
+/// bind/TLS failure — logs and returns rather than panicking, matching
+/// every other background loop's degrade-and-continue posture in this
+/// workspace (see `crates/nodelet/src/server/mod.rs::run`'s own doc
+/// comment for the precedent).
 pub async fn run(cfg: Config) {
     let cert_result = match (&cfg.tls_cert_file, &cfg.tls_key_file) {
         (Some(cert), Some(key)) => super::tls::load_from_pem(cert, key),
@@ -434,12 +439,3 @@ pub async fn run(cfg: Config) {
         });
     }
 }
-
-/// Outcome of trying to route a path as one of the five non-resource
-/// discovery endpoints. Kept distinct from a plain `Option<Value>` so the
-/// caller can tell "not a discovery-shaped path at all, fall through to
-/// resource handling" apart from "was discovery-shaped, but this build
-/// serves no such group/version" — the latter is a real `404`, not a
-/// silent fallthrough into the resource-request handler, which would
-/// otherwise mis-describe a `/apis/totally.made.up/v1` request as some
-/// kind of resource request.

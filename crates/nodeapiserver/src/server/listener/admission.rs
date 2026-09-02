@@ -1,3 +1,14 @@
+/// Group M: wraps every request with a real `audit::event::build_event`
+/// call, logged rather than delegated back into `handle` itself. The
+/// wrapper keeps the audit context at the request boundary and explicitly
+/// records responses that finish before `handle` runs, while the normal
+/// response path is audited after `handle` returns. The sink is this crate's
+/// own `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
+/// request) and, when configured, an append-only file selected by
+/// `NODEAPISERVER_AUDIT_LOG_PATH` or a bounded asynchronous webhook selected
+/// by `NODEAPISERVER_AUDIT_WEBHOOK_URL`. See
+/// `audit::event`'s own doc comment for exactly which real `Event`
+/// fields are populated and which stages/levels this uses.
 async fn handle_with_audit(
     req: Request<Incoming>,
     storage: Option<StorageClient>,
@@ -395,7 +406,6 @@ async fn handle_with_audit(
     }
     response
 }
-
 fn is_mutating_request(info: &path::RequestInfo) -> bool {
     matches!(
         info.verb.as_str(),

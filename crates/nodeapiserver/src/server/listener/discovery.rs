@@ -1,3 +1,11 @@
+/// Outcome of trying to route a path as one of the five non-resource
+/// discovery endpoints. Kept distinct from a plain `Option<Value>` so the
+/// caller can tell "not a discovery-shaped path at all, fall through to
+/// resource handling" apart from "was discovery-shaped, but this build
+/// serves no such group/version" — the latter is a real `404`, not a
+/// silent fallthrough into the resource-request handler, which would
+/// otherwise mis-describe a `/apis/totally.made.up/v1` request as some
+/// kind of resource request.
 enum DiscoveryRoute {
     NotApplicable,
     Found(serde_json::Value),
@@ -9,7 +17,6 @@ enum DiscoveryRoute {
     FoundRaw(&'static [u8]),
     NotFound,
 }
-
 /// `true` if `accept_header` asks for aggregated discovery v2
 /// (`as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io`) via
 /// `codec::negotiation` — the same header real client-go's aggregated
@@ -406,15 +413,3 @@ async fn persist_quota_usage_updates(client: &mut StorageClient, namespace: &str
         }
     }
 }
-
-/// Group M: wraps every request with a real `audit::event::build_event`
-/// call, logged rather than delegated back into `handle` itself. The
-/// wrapper keeps the audit context at the request boundary and explicitly
-/// records responses that finish before `handle` runs, while the normal
-/// response path is audited after `handle` returns. The sink is this crate's
-/// own `tracing` output (`target: "nodeapiserver::audit"`, one JSON line per
-/// request) and, when configured, an append-only file selected by
-/// `NODEAPISERVER_AUDIT_LOG_PATH` or a bounded asynchronous webhook selected
-/// by `NODEAPISERVER_AUDIT_WEBHOOK_URL`. See
-/// `audit::event`'s own doc comment for exactly which real `Event`
-/// fields are populated and which stages/levels this uses.

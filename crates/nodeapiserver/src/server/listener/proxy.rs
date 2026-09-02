@@ -1,3 +1,8 @@
+/// Request headers this build never forwards to an aggregated backend —
+/// hop-by-hop headers (`Connection`'s own listed value plus the fixed
+/// standard set, RFC 7230 §6.1) and `Host` (rebuilt from the resolved
+/// target instead, same as `proxy::http_client::fetch`'s own posture for
+/// nodelet).
 const HOP_BY_HOP_HEADERS: &[&str] = &["host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade"];
 
 /// Group L Phase 4's dispatch glue for one already-matched, non-local
@@ -121,7 +126,6 @@ async fn aggregate_proxy(
         }
     }
 }
-
 fn is_auth_proxy_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("x-remote-user")
         || name.eq_ignore_ascii_case("x-remote-group")

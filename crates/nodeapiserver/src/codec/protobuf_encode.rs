@@ -36,7 +36,6 @@ pub fn encode_message(message: &str, value: &Value) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
-
 /// Real upstream Go struct embedding: a field declared as `Foo \`json:",inline"\``
 /// has every one of `Foo`'s own fields flattened directly into the
 /// *enclosing* JSON object with no wrapper key at all, while the
@@ -194,6 +193,3 @@ fn encode_map_field(message: &str, field: &ProtoField, value: &Value, out: &mut 
     }
     Ok(())
 }
-
-/// Decode a raw protobuf message body (no envelope) into a JSON object
-/// shaped like `message`'s fields.
