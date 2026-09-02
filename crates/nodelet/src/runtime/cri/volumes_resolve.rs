@@ -95,6 +95,7 @@ impl CriRuntime {
             } else if let Some(projected) = &v.projected {
                 if let Err(e) = self.write_projected_volume(&vol_dir, pod, id, projected).await {
                     warn!(volume = %v.name, error = ?e, "failed to materialize projected volume");
+                    out.insert(v.name.clone(), ResolvedVolume::Invalid(e.to_string()));
                     continue;
                 }
                 out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
@@ -349,11 +350,11 @@ impl CriRuntime {
                         }
                         std::fs::write(target, token)?;
                     }
-                    Err(e) => warn!(
-                        pod = %format!("{}/{}", id.namespace, id.name),
-                        service_account, error = ?e,
-                        "projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token)"
-                    ),
+                    Err(e) => {
+                        return Err(e).context(
+                            "projected volume: serviceAccountToken TokenRequest failed",
+                        );
+                    }
                 }
             } else if source.cluster_trust_bundle.is_some() {
                 warn!(
