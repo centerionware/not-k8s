@@ -414,6 +414,13 @@ pub(super) async fn headless_service_does_not_break_other_services(
     let probe = "headless-probe";
     create_backend(context, probe).await?;
     create_service(context, probe, "ClusterIP", 18095, None).await?;
+    let probe_slices = slices.clone();
+    context
+        .wait_until("normal Service EndpointSlice beside headless Service", Duration::from_secs(60), || {
+            let probe_slices = probe_slices.clone();
+            async move { Ok(ready_endpoint_count_from_api(&probe_slices, probe).await? > 0) }
+        })
+        .await?;
     context
         .wait_until("normal Service beside headless Service", Duration::from_secs(90), || {
             let services = services.clone();
