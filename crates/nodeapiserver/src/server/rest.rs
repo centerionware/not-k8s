@@ -3070,12 +3070,17 @@ pub async fn apply_prepare(storage: &mut StorageClient, group: &str, version: &s
         && resource == "endpointslices"
         && namespace.is_some_and(|namespace| namespace.starts_with("nk-e2e-"))
     {
-        tracing::warn!(
-            ?namespace,
-            name,
-            existing = !existing_resp.kvs.is_empty(),
-            "diagnostic: EndpointSlice apply preparation reached storage"
-        );
+        static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if name == "headless-probe-nc"
+            && COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8
+        {
+            tracing::warn!(
+                ?namespace,
+                name,
+                existing = !existing_resp.kvs.is_empty(),
+                "diagnostic: EndpointSlice apply preparation reached storage"
+            );
+        }
     }
 
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
