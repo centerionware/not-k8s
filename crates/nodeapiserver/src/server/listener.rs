@@ -3072,7 +3072,8 @@ async fn handle(
                         admission::namespace_lifecycle::Decision::Forbidden(msg) => {
                             return Ok(json_response(StatusCode::FORBIDDEN, &admission_forbidden_status(&path_str, &msg)));
                         }
-                        admission::namespace_lifecycle::Decision::NamespaceNotFound(_) => {
+                        admission::namespace_lifecycle::Decision::NamespaceNotFound(message) => {
+                            warn!(path = %path_str, namespace = %info.namespace, reason = %message, "server-side apply namespace admission rejected request");
                             return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
                         }
                     }
@@ -3081,7 +3082,10 @@ async fn handle(
 
             let (mut candidate, apply_context) = match rest::apply_prepare(&mut client, &info.api_group, &info.api_version, &info.resource, namespace, &info.name, &manager, force, &config).await {
                 Ok(rest::ApplyPrepareOutcome::Ready(candidate, context)) => (candidate, context),
-                Ok(rest::ApplyPrepareOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str))),
+                Ok(rest::ApplyPrepareOutcome::UnknownResource) => {
+                    warn!(path = %path_str, api_group = %info.api_group, api_version = %info.api_version, resource = %info.resource, "server-side apply resource resolution returned unknown resource");
+                    return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&path_str)));
+                }
                 Ok(rest::ApplyPrepareOutcome::UnsupportedForCrd) => {
                     return Ok(json_response(StatusCode::NOT_IMPLEMENTED, &bad_request_status(&path_str, "Server-Side Apply requires a usable structural schema")));
                 }
