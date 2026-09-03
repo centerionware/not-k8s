@@ -228,6 +228,43 @@ fn scheduler_owned_pod_scheduled_condition_does_not_force_a_patch() {
     assert!(!status_patch_changes(Some(&previous), &desired), "an unchanged, carried-forward PodScheduled must not force a patch");
 }
 
+#[test]
+fn conditions_in_a_different_order_do_not_force_a_patch() {
+    // Issue #544, the regression #538 actually introduced: build_pod_status()
+    // always builds `desired.conditions` as [the 4 owned types...,
+    // foreign_conditions...] -- PodScheduled (a foreign condition) always
+    // lands *last*. But the real stored order (what a previous write, or the
+    // scheduler's own original write, actually produced) commonly has
+    // PodScheduled *first* -- it's usually the very first condition a pod
+    // ever gets, before nodelet has reconciled it even once. Live-traced:
+    // that permanent ordering mismatch made status_patch_changes() report a
+    // "change" on every single reconcile, forever, for any pod with a
+    // foreign condition (i.e. essentially every pod) -- the same unbounded
+    // self-feedback loop #538 was supposed to close, reopened by a
+    // different mechanism (order, not content) this time.
+    let runtime = running_status();
+    let first_pass = bps("10.0.0.1", &runtime, None);
+    let scheduled = PodCondition {
+        type_: "PodScheduled".to_string(),
+        status: "True".to_string(),
+        reason: Some("Scheduled".to_string()),
+        message: Some("Successfully assigned default/app to a-node".to_string()),
+        last_transition_time: Some(fixed_time(120)),
+        ..Default::default()
+    };
+    // PodScheduled *first* -- the realistic order (the scheduler wrote it
+    // before nodelet ever touched this pod), not the `desired`-shaped order
+    // the sibling test above uses.
+    let mut previous = first_pass.clone();
+    let mut conditions = vec![scheduled];
+    conditions.extend(first_pass.conditions.unwrap());
+    previous.conditions = Some(conditions);
+
+    let desired = bps("10.0.0.1", &runtime, Some(&previous));
+
+    assert!(!status_patch_changes(Some(&previous), &desired), "conditions differing only in order must not force a patch");
+}
+
 #[tokio::test]
 async fn changed_status_still_sends_the_http_patch() {
     let patches = Arc::new(AtomicUsize::new(0));

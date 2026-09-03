@@ -1058,11 +1058,47 @@ fn strategic_status_patch(status: &PodStatus) -> Value {
 /// Checking this before the HTTP call matters because an identical PATCH can
 /// still produce a new resourceVersion and feed the same Pod back into our
 /// watch.
+///
+/// `conditions` is checked separately, by `type` (issue #544): the real
+/// wire patch is a Strategic Merge Patch, whose `patchMergeKey` semantics
+/// for this field are order-independent — it matches list entries by
+/// `type`, not position. `desired.conditions` is *always* built as
+/// `[the 4 nodelet-owned types..., foreign_conditions...]` (see
+/// `build_pod_status()`), but the real stored order (`prev.conditions`)
+/// reflects whatever a previous write actually produced -- commonly
+/// `PodScheduled` first, from the scheduler's own original write. A plain
+/// JSON array `!=` on two arrays with the same conditions in a different
+/// order reports a change that was never real, and does so forever (the
+/// two orderings can never converge) -- live-traced hammering the
+/// apiserver at several patches/second on an otherwise fully-settled pod.
 fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
     let Some(prev) = prev else { return true };
-    let prev = serde_json::to_value(prev).expect("PodStatus must serialize");
-    let desired = serde_json::to_value(desired).expect("PodStatus must serialize");
-    merge_patch_changes(Some(&prev), &desired)
+    if conditions_changed(prev.conditions.as_deref(), desired.conditions.as_deref()) {
+        return true;
+    }
+    let mut prev_v = serde_json::to_value(prev).expect("PodStatus must serialize");
+    let mut desired_v = serde_json::to_value(desired).expect("PodStatus must serialize");
+    // Already checked above, order-independently -- remove before the
+    // generic pass so it isn't also compared positionally here.
+    if let Value::Object(obj) = &mut prev_v {
+        obj.remove("conditions");
+    }
+    if let Value::Object(obj) = &mut desired_v {
+        obj.remove("conditions");
+    }
+    merge_patch_changes(Some(&prev_v), &desired_v)
+}
+
+/// Whether `desired`'s conditions differ from `prev`'s, ignoring order --
+/// keyed by `type`, the same key a real Strategic Merge Patch matches list
+/// entries by. A condition type present in one side and not the other is a
+/// real change; two lists with the same set of `(type, condition)` pairs,
+/// in any order, are not.
+fn conditions_changed(prev: Option<&[PodCondition]>, desired: Option<&[PodCondition]>) -> bool {
+    let by_type = |conditions: Option<&[PodCondition]>| -> std::collections::HashMap<&str, &PodCondition> {
+        conditions.into_iter().flatten().map(|c| (c.type_.as_str(), c)).collect()
+    };
+    by_type(prev) != by_type(desired)
 }
 
 fn merge_patch_changes(current: Option<&Value>, patch: &Value) -> bool {
