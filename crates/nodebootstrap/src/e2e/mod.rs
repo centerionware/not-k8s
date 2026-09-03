@@ -1356,7 +1356,11 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_termination_grace_period_is_honored_not_instant",
+        name: "test_termination_grace_period_clean_exit_is_not_instant",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_termination_grace_period_force_kills_term_ignoring_pod",
         group: TestGroup::General,
     },
     TestCase {
@@ -2671,8 +2675,11 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_prestop_hook_runs_before_termination" => {
             hooks::prestop_hook_runs_before_termination(context).await
         }
-        "test_termination_grace_period_is_honored_not_instant" => {
-            hooks::termination_grace_period_is_honored_not_instant(context).await
+        "test_termination_grace_period_clean_exit_is_not_instant" => {
+            hooks::termination_grace_period_clean_exit_is_not_instant(context).await
+        }
+        "test_termination_grace_period_force_kills_term_ignoring_pod" => {
+            hooks::termination_grace_period_force_kills_term_ignoring_pod(context).await
         }
         "test_clusterip_service_routes_to_its_backend_pod" => {
             service_proxy::clusterip_service_routes_to_its_backend_pod(context).await

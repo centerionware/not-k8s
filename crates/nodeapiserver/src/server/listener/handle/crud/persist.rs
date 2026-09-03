@@ -128,7 +128,21 @@ macro_rules! handle_crud_persist {
                     Ok(value) => value,
                     Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, detail))),
                 };
-                match rest::delete_with_options(&mut $client, &$info.api_group, &$info.api_version, &$info.resource, $namespace, &$info.name, preconditions.as_ref(), $dry_run).await {
+                let grace_period_seconds = match delete_grace_period($delete_options.as_ref(), &$query) {
+                    Ok(value) => value,
+                    Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, detail))),
+                };
+                match rest::delete_with_options(
+                    &mut $client,
+                    &$info.api_group,
+                    &$info.api_version,
+                    &$info.resource,
+                    $namespace,
+                    &$info.name,
+                    preconditions.as_ref(),
+                    grace_period_seconds,
+                    $dry_run,
+                ).await {
                     Ok(rest::DeleteOutcome::Deleted(object)) => return Ok(json_response(StatusCode::OK, &object)),
                     Ok(rest::DeleteOutcome::ObjectNotFound) | Ok(rest::DeleteOutcome::UnknownResource) => {
                         return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str)));
