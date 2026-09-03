@@ -302,6 +302,23 @@ mod tests {
         assert_eq!(status["code"], 409);
     }
 
+    /// A create-only-if-absent race and an ordinary UPDATE/PATCH losing
+    /// optimistic concurrency are two different real upstream `Status`
+    /// shapes (docs/APISERVER_E2E_FIX.md, "Pure admission not re-applied
+    /// on PATCH" -- the actual bug this test guards is upstream of that
+    /// finding's own root cause: nodeapiserver mislabeled every
+    /// UpdateOutcome::Conflict site with reason "AlreadyExists" instead
+    /// of "Conflict", which real client-go's own IsConflict() would never
+    /// match). Confirm the two builders stay distinguishable.
+    #[test]
+    fn update_conflict_status_uses_the_real_conflict_shape_not_already_exists() {
+        let status = update_conflict_status("/api/v1/namespaces/default/pods/web");
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Conflict");
+        assert_eq!(status["code"], 409);
+        assert_ne!(status["reason"], conflict_status("x")["reason"]);
+    }
+
     #[test]
     fn dry_run_query_accepts_only_all() {
         assert_eq!(dry_run_query("dryRun=All").unwrap(), true);

@@ -323,6 +323,30 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         .expect("decoding the headless created Service");
     assert_eq!(headless_service["spec"]["clusterIP"], "None");
 
+    // A PUT with a stale resourceVersion loses real optimistic concurrency
+    // -- and must come back as upstream's real `Conflict` shape, not the
+    // `AlreadyExists` shape a CREATE race uses (docs/APISERVER_E2E_FIX.md,
+    // "give UPDATE/PATCH optimistic-concurrency conflicts the real Conflict
+    // reason" -- real client-go's own IsConflict() checks this exact
+    // field to decide whether a caller should retry).
+    let mut stale_service = created_service.clone();
+    stale_service["metadata"]["resourceVersion"] = json!("1");
+    let conflict_response = client
+        .put(format!(
+            "{endpoint}/api/v1/namespaces/{name}/services/{service_name}"
+        ))
+        .header("content-type", "application/json")
+        .json(&stale_service)
+        .send()
+        .await
+        .expect("issuing the stale-resourceVersion Service update");
+    assert_eq!(conflict_response.status(), reqwest::StatusCode::CONFLICT);
+    let conflict_status = conflict_response
+        .json::<serde_json::Value>()
+        .await
+        .expect("decoding the Conflict Status");
+    assert_eq!(conflict_status["reason"], "Conflict");
+
     let template_name = format!("{name}-template");
     let template_path =
         format!("{endpoint}/apis/resource.k8s.io/v1/namespaces/{name}/resourceclaimtemplates");
