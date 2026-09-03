@@ -665,7 +665,29 @@ impl PodController {
         // restartPolicy: Always pod and recreate them right back.
         // Also doubles as this pod's probe-supervisor cleanup, which
         // teardown() would otherwise have been the only path to.
-        if matches!(pod.status.as_ref().and_then(|s| s.phase.as_deref()), Some("Failed") | Some("Succeeded")) {
+        //
+        // Issue #539: `phase` alone isn't a reliable terminal signal for
+        // an evicted pod whose CSI volumes can never attach (their
+        // owning objects are already gone). evict_pod()'s patch sets
+        // `phase: Failed` in the same call that sets `reason`, but this
+        // reconcile()'s own later write_status() unconditionally
+        // recomputes `phase` fresh from the live runtime state (which,
+        // containers already removed, genuinely looks like "Pending" —
+        // build_pod_status() has no way to know the pod was evicted) and
+        // sends it via the same watch-triggering patch path, silently
+        // reverting `phase` back to non-terminal. `reason` survives that
+        // revert (build_pod_status() never sets it, so a Strategic Merge
+        // Patch that omits it leaves the stored value alone) even though
+        // `phase` doesn't -- live-traced hammering the apiserver at
+        // ~9-11 req/s, forever, on exactly this race: give-up-on-CSI-
+        // attach resets phase -> fresh Apply event -> reconcile() again
+        // -> another give-up -> repeat. Checking `reason` here closes
+        // that gap without depending on which of the two fields a given
+        // watch event happens to reflect.
+        let status = pod.status.as_ref();
+        let phase_terminal = matches!(status.and_then(|s| s.phase.as_deref()), Some("Failed") | Some("Succeeded"));
+        let reason_terminal = matches!(status.and_then(|s| s.reason.as_deref()), Some("Evicted") | Some("DeadlineExceeded"));
+        if phase_terminal || reason_terminal {
             self.stop_probe_supervisor(&ns, &name);
             self.pod_refs.lock().unwrap().remove(&pod_key(&ns, &name));
             return;
