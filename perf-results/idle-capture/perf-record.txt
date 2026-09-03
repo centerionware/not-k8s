@@ -1,0 +1,2 @@
+[ perf record: Woken up 332 times to write data ]
+[ perf record: Captured and wrote 83.725 MB /home/droid/perf-nodeapiserver-idle/perf.data (10199 samples) ]

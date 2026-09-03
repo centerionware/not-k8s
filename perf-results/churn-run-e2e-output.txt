@@ -1,0 +1,49 @@
+bootstrap e2e: 11 test(s)
+▶ test_scheduler_does_not_preempt_when_policy_forbids_it ... PASS (25758ms)
+▶ test_scheduler_honours_pod_anti_affinity ... FAIL (69723ms)
+    timed out waiting for pod anti-affinity second Pod to be scheduled
+▶ test_restart_policy_never_exit_zero_is_succeeded ... PASS (6299ms)
+▶ test_pod_exceeding_its_active_deadline_is_terminated ... PASS (14072ms)
+▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip ... PASS (99851ms)
+▶ test_liveness_probe_failure_restarts_the_container ... FAIL (93164ms)
+    timed out waiting for liveness probe restartCount to increase
+▶ test_http_get_readiness_probe_against_a_real_server ... FAIL (93253ms)
+    timed out waiting for HTTP readiness probe to report Ready
+▶ test_downward_api_volume_writes_pod_metadata ... FAIL (93069ms)
+    timed out waiting for Downward API volume content
+▶ test_empty_dir_medium_memory_is_backed_by_tmpfs ... FAIL (93394ms)
+    timed out waiting for memory emptyDir mount
+▶ test_host_path_directory_or_create_creates_a_missing_directory ... FAIL (92789ms)
+    timed out waiting for DirectoryOrCreate hostPath Pod
+▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... FAIL (93496ms)
+    timed out waiting for recursiveReadOnly nested Pod
+Error: bootstrap e2e failed: 7 test(s): test_scheduler_honours_pod_anti_affinity, test_liveness_probe_failure_restarts_the_container, test_http_get_readiness_probe_against_a_real_server, test_downward_api_volume_writes_pod_metadata, test_empty_dir_medium_memory_is_backed_by_tmpfs, test_host_path_directory_or_create_creates_a_missing_directory, test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
+bootstrap e2e: 11 test(s)
+▶ test_scheduler_does_not_preempt_when_policy_forbids_it ... PASS (25882ms)
+▶ test_scheduler_honours_pod_anti_affinity ... FAIL (70678ms)
+    timed out waiting for pod anti-affinity second Pod to be scheduled
+▶ test_restart_policy_never_exit_zero_is_succeeded ... FAIL (92306ms)
+    timed out waiting for successful Never Pod
+▶ test_pod_exceeding_its_active_deadline_is_terminated ... FAIL (93438ms)
+    timed out waiting for activeDeadlineSeconds termination
+▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip ... FAIL (92792ms)
+    timed out waiting for IfNotPresent Pod to complete
+▶ test_liveness_probe_failure_restarts_the_container ... FAIL (93662ms)
+    timed out waiting for liveness probe restartCount to increase
+▶ test_http_get_readiness_probe_against_a_real_server ... FAIL (93314ms)
+    timed out waiting for HTTP readiness probe to report Ready
+▶ test_downward_api_volume_writes_pod_metadata ... FAIL (93494ms)
+    timed out waiting for Downward API volume content
+▶ test_empty_dir_medium_memory_is_backed_by_tmpfs ... FAIL (92262ms)
+    timed out waiting for memory emptyDir mount
+▶ test_host_path_directory_or_create_creates_a_missing_directory ... FAIL (92887ms)
+    timed out waiting for DirectoryOrCreate hostPath Pod
+▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... FAIL (93370ms)
+    timed out waiting for recursiveReadOnly nested Pod
+Error: bootstrap e2e failed: 10 test(s): test_scheduler_honours_pod_anti_affinity, test_restart_policy_never_exit_zero_is_succeeded, test_pod_exceeding_its_active_deadline_is_terminated, test_image_pull_policy_if_not_present_skips_the_registry_round_trip, test_liveness_probe_failure_restarts_the_container, test_http_get_readiness_probe_against_a_real_server, test_downward_api_volume_writes_pod_metadata, test_empty_dir_medium_memory_is_backed_by_tmpfs, test_host_path_directory_or_create_creates_a_missing_directory, test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too
+bootstrap e2e: 11 test(s)
+▶ test_scheduler_does_not_preempt_when_policy_forbids_it ... FAIL (93205ms)
+    timed out waiting for low-priority Pod to be scheduled
+▶ test_scheduler_honours_pod_anti_affinity ... FAIL (71195ms)
+    timed out waiting for pod anti-affinity second Pod to be scheduled
+▶ test_restart_policy_never_exit_zero_is_succeeded ... FA
