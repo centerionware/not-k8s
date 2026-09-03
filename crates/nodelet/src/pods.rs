@@ -1072,8 +1072,12 @@ fn strategic_status_patch(status: &PodStatus) -> Value {
 /// two orderings can never converge) -- live-traced hammering the
 /// apiserver at several patches/second on an otherwise fully-settled pod.
 fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
-    let Some(prev) = prev else { return true };
+    let Some(prev) = prev else {
+        tracing::warn!("DIAGDEBUG3 prev is None, forcing true");
+        return true;
+    };
     if conditions_changed(prev.conditions.as_deref(), desired.conditions.as_deref()) {
+        tracing::warn!(prev_conditions = ?prev.conditions, desired_conditions = ?desired.conditions, "DIAGDEBUG3 conditions_changed returned true");
         return true;
     }
     let mut prev_v = serde_json::to_value(prev).expect("PodStatus must serialize");
@@ -1086,7 +1090,34 @@ fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
     if let Value::Object(obj) = &mut desired_v {
         obj.remove("conditions");
     }
-    merge_patch_changes(Some(&prev_v), &desired_v)
+    let changed = merge_patch_changes_diag3(Some(&prev_v), &desired_v, "status");
+    changed
+}
+
+fn merge_patch_changes_diag3(current: Option<&Value>, patch: &Value, path: &str) -> bool {
+    match patch {
+        Value::Object(patch) => {
+            let current = current.and_then(Value::as_object);
+            patch.iter().fold(false, |acc, (key, value)| {
+                let sub_path = format!("{path}.{key}");
+                let this_changed = match value {
+                    Value::Null => current.and_then(|obj| obj.get(key)).is_some(),
+                    value => merge_patch_changes_diag3(current.and_then(|obj| obj.get(key)), value, &sub_path),
+                };
+                if this_changed {
+                    tracing::warn!(path = %sub_path, "DIAGDEBUG3 field differs");
+                }
+                acc || this_changed
+            })
+        }
+        value => {
+            let differs = current != Some(value);
+            if differs {
+                tracing::warn!(path = %path, current = ?current, desired = ?value, "DIAGDEBUG3 leaf differs");
+            }
+            differs
+        }
+    }
 }
 
 /// Whether `desired`'s conditions differ from `prev`'s, ignoring order --
