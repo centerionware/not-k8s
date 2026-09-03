@@ -332,7 +332,11 @@ pub(super) async fn termination_grace_period_force_kills_term_ignoring_pod(
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", "trap '' TERM; exec sleep 300"]
+                "command": [
+                    "sh",
+                    "-c",
+                    "trap 'while true; do sleep 1; done' TERM; while true; do sleep 1; done"
+                ]
             }]
         }),
     )
