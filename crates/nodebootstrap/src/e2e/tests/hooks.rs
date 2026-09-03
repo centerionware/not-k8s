@@ -18,6 +18,44 @@ async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -
     Ok(())
 }
 
+async fn delete_pod_with_conflict_retry(
+    context: &E2eContext,
+    pods: &Api<Pod>,
+    name: &str,
+    params: DeleteParams,
+    description: &str,
+) -> Result<()> {
+    context
+        .wait_until(description, Duration::from_secs(30), || {
+            let pods = pods.clone();
+            let params = params.clone();
+            async move {
+                match pods.delete(name, &params).await {
+                    Ok(_) => Ok(true),
+                    Err(kube::Error::Api(error)) if error.code == 409 => Ok(false),
+                    Err(error) => Err(error.into()),
+                }
+            }
+        })
+        .await
+}
+
+fn app_container_is_running(pod: &Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|status| status.container_statuses.as_ref())
+        .is_some_and(|statuses| {
+            statuses.iter().any(|status| {
+                status.name == "app"
+                    && status
+                        .state
+                        .as_ref()
+                        .and_then(|state| state.running.as_ref())
+                        .is_some()
+            })
+        })
+}
+
 async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods
@@ -237,49 +275,156 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
     result
 }
 
-pub(super) async fn termination_grace_period_is_honored_not_instant(
+pub(super) async fn termination_grace_period_clean_exit_is_not_instant(
     context: &E2eContext,
 ) -> Result<()> {
-    let name = "grace-period";
+    let name = "grace-period-clean";
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     create_pod(
         context,
         name,
         json!({
+            "restartPolicy": "Never",
             "terminationGracePeriodSeconds": 8,
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", "trap 'echo trapped' TERM; while true; do sleep 1; done"]
+                "command": [
+                    "sh",
+                    "-c",
+                    "trap 'sleep 2; exit 0' TERM; while true; do sleep 1; done"
+                ]
             }]
         }),
     )
     .await?;
     context
-        .wait_until("grace-period Pod Running", Duration::from_secs(90), || {
-            let pods = pods.clone();
-            async move {
-                Ok(pods
-                    .get(name)
-                    .await?
-                    .status
-                    .and_then(|status| status.phase)
-                    .as_deref()
-                    == Some("Running"))
-            }
-        })
+        .wait_until(
+            "clean grace-period Pod Running",
+            Duration::from_secs(90),
+            || {
+                let pods = pods.clone();
+                async move {
+                    Ok(app_container_is_running(&pods.get(name).await?))
+                }
+            },
+        )
         .await?;
+    delete_pod_with_conflict_retry(
+        context,
+        &pods,
+        name,
+        DeleteParams {
+            grace_period_seconds: Some(8),
+            ..Default::default()
+        },
+        "clean grace-period Pod deletion request",
+    )
+    .await?;
     let started = Instant::now();
-    pods.delete(name, &DeleteParams::default()).await?;
     context
-        .wait_until("grace-period Pod deletion", Duration::from_secs(60), || {
-            let pods = pods.clone();
-            async move { Ok(pods.get_opt(name).await?.is_none()) }
-        })
+        .wait_until(
+            "clean grace-period Pod remains after TERM",
+            Duration::from_secs(3),
+            || {
+                let pods = pods.clone();
+                async move {
+                    Ok(pods
+                        .get_opt(name)
+                        .await?
+                        .is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()))
+                }
+            },
+        )
+        .await?;
+    context
+        .wait_until(
+            "clean grace-period Pod deletion",
+            Duration::from_secs(60),
+            || {
+                let pods = pods.clone();
+                async move { Ok(pods.get_opt(name).await?.is_none()) }
+            },
+        )
         .await?;
     anyhow::ensure!(
-        started.elapsed() >= Duration::from_secs(5),
-        "Pod disappeared after {:?}; terminationGracePeriodSeconds was not honored",
+        started.elapsed() >= Duration::from_secs(1),
+        "Pod disappeared after {:?}; TERM was not given time for clean shutdown",
+        started.elapsed()
+    );
+    anyhow::ensure!(
+        started.elapsed() < Duration::from_secs(8),
+        "Pod took {:?} to exit cleanly, beyond its termination grace period",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+pub(super) async fn termination_grace_period_force_kills_term_ignoring_pod(
+    context: &E2eContext,
+) -> Result<()> {
+    let name = "grace-period-force";
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    create_pod(
+        context,
+        name,
+        json!({
+            "restartPolicy": "Never",
+            "terminationGracePeriodSeconds": 5,
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": [
+                    "sh",
+                    "-c",
+                    "trap '' TERM; while :; do :; done"
+                ]
+            }]
+        }),
+    )
+    .await?;
+    context
+        .wait_until(
+            "force grace-period Pod Running",
+            Duration::from_secs(90),
+            || {
+                let pods = pods.clone();
+                async move {
+                    Ok(app_container_is_running(&pods.get(name).await?))
+                }
+            },
+        )
+        .await?;
+    delete_pod_with_conflict_retry(
+        context,
+        &pods,
+        name,
+        DeleteParams {
+            grace_period_seconds: Some(5),
+            ..Default::default()
+        },
+        "force grace-period Pod deletion request",
+    )
+    .await?;
+    let started = Instant::now();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    anyhow::ensure!(
+        pods.get_opt(name).await?.is_some(),
+        "TERM-ignoring Pod disappeared before its grace period expired"
+    );
+    context
+        .wait_until(
+            "force grace-period Pod deletion",
+            Duration::from_secs(30),
+            || {
+                let pods = pods.clone();
+                async move { Ok(pods.get_opt(name).await?.is_none()) }
+            },
+        )
+        .await?;
+    anyhow::ensure!(
+        started.elapsed() >= Duration::from_secs(4),
+        "TERM-ignoring Pod disappeared after {:?}; it was not held for its grace period",
         started.elapsed()
     );
     Ok(())

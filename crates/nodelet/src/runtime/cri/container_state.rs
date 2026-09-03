@@ -337,10 +337,15 @@ pub(crate) fn clear_last_terminated_in(table: &mut HashMap<String, crate::runtim
 
 /// Real kubelet default when `terminationGracePeriodSeconds` is unset (or
 /// explicitly negative, which the API otherwise allows through): 30s.
+/// `metadata.deletionGracePeriodSeconds`, when present, is the apiserver's
+/// effective per-delete override and takes precedence over the Pod spec.
 pub(crate) fn termination_grace_seconds(pod: &Pod) -> i64 {
-    match pod.spec.as_ref().and_then(|s| s.termination_grace_period_seconds) {
-        Some(s) if s >= 0 => s,
-        _ => 30,
+    match pod.metadata.deletion_grace_period_seconds {
+        Some(seconds) if seconds >= 0 => seconds,
+        _ => match pod.spec.as_ref().and_then(|s| s.termination_grace_period_seconds) {
+            Some(seconds) if seconds >= 0 => seconds,
+            _ => 30,
+        },
     }
 }
 

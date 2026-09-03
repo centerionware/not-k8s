@@ -23,7 +23,7 @@ pub async fn delete(
     name: &str,
 ) -> Result<DeleteOutcome, Error> {
     delete_with_options(
-        storage, group, version, resource, namespace, name, None, false,
+        storage, group, version, resource, namespace, name, None, None, false,
     )
     .await
 }
@@ -48,6 +48,7 @@ pub async fn delete_with_options(
     namespace: Option<&str>,
     name: &str,
     preconditions: Option<&DeletePreconditions>,
+    grace_period_seconds: Option<i64>,
     dry_run: bool,
 ) -> Result<DeleteOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
@@ -91,13 +92,17 @@ pub async fn delete_with_options(
         }
     }
     let kind = object["kind"].as_str().unwrap_or("Unknown").to_string();
+    let is_pod = group.is_empty() && resource == "pods";
+    let pod_grace_period_seconds =
+        is_pod.then(|| effective_pod_grace_period(&object, grace_period_seconds));
 
-    // A delete request against an object with finalizers is a graceful
-    // deletion request, not an immediate storage delete. This is the
-    // generic registry behavior that lets controllers observe the
-    // deletionTimestamp and remove their own finalizer before the object is
-    // physically removed.
-    if has_finalizers(&object) {
+    // Pods use the same two-phase deletion contract as upstream: preserve
+    // the object while the node agent stops its containers, then let the
+    // node agent issue a second grace=0 delete. Other resources only defer
+    // deletion when they have finalizers.
+    let defer_delete =
+        has_finalizers(&object) || pod_grace_period_seconds.is_some_and(|seconds| seconds > 0);
+    if defer_delete {
         if has_deletion_timestamp(&object) {
             let object = convert_to_requested_version(
                 storage,
@@ -115,6 +120,13 @@ pub async fn delete_with_options(
             "deletionTimestamp",
             Value::String(now_rfc3339()),
         );
+        if let Some(seconds) = pod_grace_period_seconds {
+            set_metadata_field(
+                &mut object,
+                "deletionGracePeriodSeconds",
+                Value::Number(seconds.into()),
+            );
+        }
         if dry_run {
             let object = convert_to_requested_version(
                 storage,
@@ -234,6 +246,24 @@ pub async fn delete_with_options(
     )
     .await?;
     Ok(DeleteOutcome::Deleted(object))
+}
+
+/// Resolve the effective grace period for a Pod delete. A repeated delete
+/// without an explicit override keeps the already-persisted value; an
+/// explicit value may shorten, but never lengthen, the Pod's current grace.
+fn effective_pod_grace_period(object: &Value, requested: Option<i64>) -> i64 {
+    let current = object
+        .pointer("/metadata/deletionGracePeriodSeconds")
+        .and_then(Value::as_i64)
+        .filter(|seconds| *seconds >= 0)
+        .or_else(|| {
+            object
+                .pointer("/spec/terminationGracePeriodSeconds")
+                .and_then(Value::as_i64)
+                .filter(|seconds| *seconds >= 0)
+        })
+        .unwrap_or(30);
+    requested.map_or(current, |seconds| current.min(seconds.max(0)))
 }
 
 #[derive(Debug, PartialEq)]
