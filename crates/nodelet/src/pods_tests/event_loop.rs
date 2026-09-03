@@ -137,6 +137,49 @@ async fn deleted_referenced_objects_refresh_matching_pods() {
     assert_eq!(patches.load(Ordering::SeqCst), 2, "both delete events must reconcile the matching pod");
 }
 
+#[tokio::test]
+async fn an_evicted_pod_stays_terminal_even_if_phase_reverted() {
+    // Issue #539: evict_pod() patches phase: Failed *and* reason: Evicted
+    // in the same call, but a later reconcile() (racing against, or just
+    // running after, that patch) can recompute `phase` fresh from live
+    // runtime state and revert it to non-terminal -- `reason` survives
+    // that revert (build_pod_status() never sets it, so a merge patch
+    // omitting it leaves the stored value alone). A watch event carrying
+    // that reverted phase must still be recognized as terminal via
+    // `reason`, or reconcile() re-runs the full ensure_pod()/write_status()
+    // cycle forever: live-traced hammering the apiserver at ~9-11 req/s.
+    let pod: Pod = serde_json::from_value(serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "app", "namespace": "default"},
+        "spec": {"nodeName": "node", "containers": [{"name": "app", "image": "busybox"}]},
+        "status": {"phase": "Pending", "reason": "Evicted"}
+    }))
+    .unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let service = {
+        let requests = requests.clone();
+        service_fn(move |_request: Request<Body>| {
+            let requests = requests.clone();
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Infallible>(Response::new(Body::from(Vec::new())))
+            }
+        })
+    };
+    let client = Client::new(service, "default");
+    let runtime = Arc::new(MockRuntime::new());
+    let controller = PodController::new(client, runtime, "node".to_string());
+
+    controller.reconcile(pod).await;
+
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "a pod already evicted (by reason, regardless of what phase this watch event carries) must not be re-reconciled at all"
+    );
+}
+
 fn refs(namespace: &str, name: &str, configmaps: &[&str], secrets: &[&str]) -> PodRefs {
     PodRefs {
         namespace: namespace.to_string(),
