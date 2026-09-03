@@ -978,3 +978,44 @@ fn build_pod_status_surfaces_allocated_resources_status_into_container_statuses(
     let ars = cs.allocated_resources_status.as_ref().expect("expected allocatedResourcesStatus");
     assert_eq!(ars[0].name, "nvidia.com/gpu");
 }
+
+fn no_containers_status() -> RuntimeStatus {
+    RuntimeStatus {
+        phase: Phase::Pending,
+        message: None,
+        started_at: None,
+        pod_ip: None,
+        containers: Vec::new(),
+        init_containers: Vec::new(),
+        ephemeral_containers: Vec::new(),
+        initialized: true,
+    }
+}
+
+#[test]
+fn a_pod_with_no_real_containers_gets_no_container_statuses_field() {
+    // Issue #546: init_container_statuses/ephemeral_container_statuses already
+    // collapse an empty Vec to None; container_statuses used `Some(vec![])`
+    // instead, which is not what the real API object (field simply absent)
+    // ever stores -- see the next test for the patch-loop consequence.
+    let status = bps("10.0.0.1", &no_containers_status(), None);
+    assert!(status.container_statuses.is_none(), "an empty containerStatuses must be omitted, not Some([])");
+}
+
+#[test]
+fn empty_container_statuses_does_not_force_a_patch_against_an_absent_field() {
+    // Issue #546: a stored object with containerStatuses absent (the real
+    // API's own representation for "nothing to report yet") must not look
+    // different from a freshly recomputed status that used to send
+    // Some([]) here -- that mismatch was a real diff on every reconcile,
+    // re-triggering the pod's own watch, which re-triggered reconcile()
+    // forever: the same self-feedback loop class as #537/#539/#544.
+    let runtime = no_containers_status();
+    let previous = PodStatus {
+        container_statuses: None,
+        ..bps("10.0.0.1", &runtime, None)
+    };
+    let desired = bps("10.0.0.1", &runtime, Some(&previous));
+
+    assert!(!status_patch_changes(Some(&previous), &desired));
+}

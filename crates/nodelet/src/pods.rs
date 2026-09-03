@@ -1484,7 +1484,14 @@ fn build_pod_status(
     PodStatus {
         phase: Some(rt.phase.as_str().to_string()),
         conditions: Some(conditions),
-        container_statuses: Some(container_statuses),
+        // Issue #546: a real kubelet omits `containerStatuses` entirely
+        // (rather than sending `[]`) when there's nothing to report yet --
+        // matches the `init_container_statuses`/`ephemeral_container_statuses`
+        // pattern right below. Sending `Some([])` where the API's stored
+        // object has the field absent made every reconcile of such a pod a
+        // real JSON-merge-patch diff, re-triggering the watch that re-runs
+        // reconcile(): the same self-feedback loop class as #537/#539/#544.
+        container_statuses: (!container_statuses.is_empty()).then_some(container_statuses),
         init_container_statuses: (!init_container_statuses.is_empty()).then_some(init_container_statuses),
         ephemeral_container_statuses: (!ephemeral_container_statuses.is_empty()).then_some(ephemeral_container_statuses),
         host_ip: Some(host_ip.to_string()),
