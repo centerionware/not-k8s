@@ -250,7 +250,7 @@ pub(super) async fn termination_grace_period_is_honored_not_instant(
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", "trap '' TERM; while true; do sleep 1; done"]
+                "command": ["sh", "-c", "trap '' TERM; exec tail -f /dev/null"]
             }]
         }),
     )
