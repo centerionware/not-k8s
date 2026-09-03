@@ -1082,8 +1082,25 @@ pub(crate) fn readiness_gate_types(pod: &Pod) -> Vec<String> {
 /// The condition types `build_pod_status()` computes and owns itself —
 /// used to decide which conditions from `prev` (see `build_pod_status()`)
 /// are foreign and must be copied forward rather than dropped.
-const OWNED_CONDITION_TYPES: [&str; 5] =
-    ["Initialized", "PodScheduled", "ContainersReady", "Ready", "PodResizeInProgress"];
+///
+/// `PodScheduled` deliberately is NOT one of these, even though nodelet
+/// used to rebuild it here too (issue #536/#537). It's the scheduler's
+/// condition, set once at binding time with a real `message`/`reason`
+/// (nodelet has neither to offer) -- nodelet only ever sees a pod after
+/// it's already scheduled, so `foreign_conditions` below always finds it
+/// in `prev` and carries it forward unchanged, the same as any other
+/// condition nodelet doesn't own. Rebuilding a minimal, always-true
+/// version here (stripped of message/reason) meant nodelet's own
+/// reconstruction could never equal what real upstream's Strategic Merge
+/// Patch actually leaves stored, so `status_patch_changes()` never
+/// converged: every reconcile proposed a "different" PodScheduled,
+/// patched, which triggered the pod's own watch, which re-triggered
+/// reconcile() -- an unbounded self-feedback loop, live-traced hammering
+/// both nodeapiserver and this pod's watch stream indefinitely once
+/// anything (the real scheduler write, most commonly) left message/reason
+/// populated in storage.
+const OWNED_CONDITION_TYPES: [&str; 4] =
+    ["Initialized", "ContainersReady", "Ready", "PodResizeInProgress"];
 
 /// Whether `condition_type` is currently reported `True` in `conditions` —
 /// pure, what a `readinessGates` entry needs to check against an external
@@ -1397,11 +1414,13 @@ fn build_pod_status(
 
     let mut conditions = vec![
         cond("Initialized", rt.initialized),
-        cond("PodScheduled", true),
         cond("ContainersReady", all_ready),
         cond("Ready", all_ready && gates_ready),
         cond("PodResizeInProgress", resize_in_progress),
     ];
+    // `PodScheduled` comes entirely from `foreign_conditions` now -- see
+    // `OWNED_CONDITION_TYPES`'s own doc comment for why nodelet doesn't
+    // rebuild it.
     conditions.extend(foreign_conditions);
 
     PodStatus {
