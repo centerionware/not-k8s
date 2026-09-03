@@ -155,6 +155,7 @@ async fn handle(
                     // comment covers why this is group-level only.
                     let aggregated = match aggregator::route::discoverable_group_versions(
                         &mut client,
+                        Some(&cache_registry),
                     )
                     .await
                     {
@@ -209,7 +210,7 @@ async fn handle(
                 {
                     if let Some(mut client) = storage.clone() {
                         if let Ok(Some(api_service)) =
-                            aggregator::route::resolve(&mut client, group, version).await
+                            aggregator::route::resolve(&mut client, group, version, Some(&cache_registry)).await
                         {
                             return Ok(aggregate_proxy(
                                 req,

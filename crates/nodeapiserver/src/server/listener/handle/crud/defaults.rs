@@ -3,7 +3,8 @@ macro_rules! handle_crud_defaults {
         $client:ident, $body_value:ident, $namespace:ident,
         $info:ident, $path_str:ident,
         $is_create:ident, $is_update:ident, $is_delete:ident,
-        $identity:ident, $dry_run:ident, $pod_node_selector_config:ident
+        $identity:ident, $dry_run:ident, $pod_node_selector_config:ident,
+        $cache_registry:ident
     ) => {{
             // Group J: `DefaultStorageClass` — mutating, `CREATE` only
             // (see `admission::default_storage_class`'s own doc comment).
@@ -393,6 +394,7 @@ macro_rules! handle_crud_defaults {
                         old_object.as_ref(),
                         $dry_run,
                         $identity.as_ref(),
+                        Some(&$cache_registry),
                     )
                     .await
                     {
