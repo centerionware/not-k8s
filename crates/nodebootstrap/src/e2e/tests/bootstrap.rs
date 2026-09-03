@@ -1652,6 +1652,19 @@ pub(super) async fn nodeapiserver_applies_pure_admission_to_apply(
                 "namespace": context.namespace
             },
             "spec": {
+                // Deliberately unschedulable: this test only cares about
+                // admission mutation, not scheduling, and a real
+                // schedulerName here races the scheduler's own bind
+                // against the merge-patch below (docs/APISERVER_E2E_FIX.md,
+                // "Pure admission (mutating defaults) not re-applied on
+                // PATCH") — nodescheduler only reconciles a Pod whose
+                // spec.schedulerName matches one of its own configured
+                // profile names, so an unmatched one keeps this Pod
+                // Pending and untouched by any other controller for the
+                // rest of the test, the same pattern
+                // `nodeapiserver_binds_a_pod_through_binding_subresource`
+                // already uses for the identical reason.
+                "schedulerName": "nodeapiserver-admission-test",
                 "containers": [{
                     "name": "app",
                     "image": "example.invalid/not-k8s-apply-admission"
