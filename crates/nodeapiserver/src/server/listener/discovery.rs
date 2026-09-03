@@ -356,6 +356,32 @@ fn precondition_failed_status(path_str: &str) -> serde_json::Value {
     })
 }
 
+/// Real upstream's own `Conflict` shape for an `UPDATE`/`PATCH` (including
+/// the scale/status/pod-resize/other subresource writes that reuse the
+/// same `persist_update` tail) that lost the optimistic-concurrency
+/// `ModRevision` compare — `reason: "Conflict"`, `code: 409`
+/// (`apierrors.NewConflict`). This is a **different** real status from
+/// [`conflict_status`]'s `AlreadyExists`: upstream reserves that reason
+/// for a `CREATE` that lost the create-only-if-absent race specifically,
+/// and real client-go code branches on the two differently
+/// (`apierrors.IsConflict()` is what a controller's own read-modify-write
+/// retry loop checks — it does not match `AlreadyExists`). Every
+/// `UpdateOutcome::Conflict`/`ScaleOutcome::Conflict` call site should use
+/// this, not [`conflict_status`], even though both currently produce
+/// HTTP 409.
+fn update_conflict_status(path_str: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: the object has been modified; please apply your changes to the latest version and try again"),
+        "reason": "Conflict",
+        "details": {},
+        "code": 409,
+    })
+}
+
 /// Real upstream's own `Invalid` shape for a write that failed validation —
 /// `reason: "Invalid"`, `code: 422`. Keep both the human-readable aggregate
 /// message and one `StatusCause` per violation: kubectl and controller

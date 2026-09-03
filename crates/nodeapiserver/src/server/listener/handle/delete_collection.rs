@@ -104,7 +104,7 @@ macro_rules! handle_delete_collection {
             match rest::delete_with_options(&mut client, &$info.api_group, &$info.api_version, &$info.resource, namespace, name, None, dry_run).await {
                 Ok(rest::DeleteOutcome::Deleted(_)) | Ok(rest::DeleteOutcome::ObjectNotFound) => {}
                 Ok(rest::DeleteOutcome::UnknownResource) => return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str))),
-                Ok(rest::DeleteOutcome::PreconditionFailed) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&$path_str))),
+                Ok(rest::DeleteOutcome::PreconditionFailed) => return Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&$path_str))),
                 Err(error) => {
                     warn!(path = %$path_str, error = ?error, name, "rest::delete failed for deletecollection");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));

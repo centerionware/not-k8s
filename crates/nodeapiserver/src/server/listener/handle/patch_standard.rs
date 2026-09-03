@@ -282,7 +282,7 @@ macro_rules! handle_patch_standard {
         return match rest::patch_persist_with_manager(&mut client, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name, context, candidate, dry_run, $request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str))),
-            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&$path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
             Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations))),
             // `rest::patch_persist` never itself returns these two -- a
             // submitted resourceVersion/namespace are `update`-only

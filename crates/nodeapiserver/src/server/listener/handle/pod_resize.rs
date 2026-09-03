@@ -119,7 +119,7 @@ macro_rules! handle_pod_resize {
                 Ok(rest::UpdateOutcome::MissingResourceVersion) => {
                     Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "metadata.resourceVersion is required")))
                 }
-                Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&$path_str))),
+                Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
                 Ok(rest::UpdateOutcome::NamespaceMismatch) => {
                     Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "metadata.namespace does not match the request URL")))
                 }
