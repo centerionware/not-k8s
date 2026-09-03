@@ -40,6 +40,22 @@ async fn delete_pod_with_conflict_retry(
         .await
 }
 
+fn app_container_is_running(pod: &Pod) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|status| status.container_statuses.as_ref())
+        .is_some_and(|statuses| {
+            statuses.iter().any(|status| {
+                status.name == "app"
+                    && status
+                        .state
+                        .as_ref()
+                        .and_then(|state| state.running.as_ref())
+                        .is_some()
+            })
+        })
+}
+
 async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods
@@ -289,13 +305,7 @@ pub(super) async fn termination_grace_period_clean_exit_is_not_instant(
             || {
                 let pods = pods.clone();
                 async move {
-                    Ok(pods
-                        .get(name)
-                        .await?
-                        .status
-                        .and_then(|status| status.phase)
-                        .as_deref()
-                        == Some("Running"))
+                    Ok(app_container_is_running(&pods.get(name).await?))
                 }
             },
         )
@@ -380,13 +390,7 @@ pub(super) async fn termination_grace_period_force_kills_term_ignoring_pod(
             || {
                 let pods = pods.clone();
                 async move {
-                    Ok(pods
-                        .get(name)
-                        .await?
-                        .status
-                        .and_then(|status| status.phase)
-                        .as_deref()
-                        == Some("Running"))
+                    Ok(app_container_is_running(&pods.get(name).await?))
                 }
             },
         )
