@@ -243,6 +243,86 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
     // "Pod Ready condition missing observedGeneration").
     assert_eq!(fetched["metadata"]["generation"], 1);
 
+    // A plain Service create with no `spec.clusterIP` of its own must come
+    // back with a real, allocated address — nothing upstream calls
+    // "defaulting" can do this (it's stateless), so it's the create path's
+    // own job (docs/APISERVER_E2E_FIX.md, "ClusterIP Service never gets a
+    // routable IP").
+    let service_name = format!("{name}-svc");
+    let created_service = client
+        .post(format!("{endpoint}/api/v1/namespaces/{name}/services"))
+        .header("content-type", "application/json")
+        .json(&json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": service_name},
+            "spec": {"ports": [{"port": 80, "targetPort": 8080}]},
+        }))
+        .send()
+        .await
+        .expect("creating a Service through the listener")
+        .error_for_status()
+        .expect("Service create should succeed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("decoding the created Service");
+    let cluster_ip = created_service["spec"]["clusterIP"]
+        .as_str()
+        .expect("created Service should have an allocated spec.clusterIP")
+        .to_string();
+    assert_ne!(cluster_ip, "None");
+    assert!(cluster_ip.starts_with("10.43."));
+    assert_eq!(
+        created_service["spec"]["clusterIPs"],
+        json!([cluster_ip.clone()])
+    );
+
+    // A second Service must not collide with the first one's address.
+    let second_service_name = format!("{name}-svc-2");
+    let second_service = client
+        .post(format!("{endpoint}/api/v1/namespaces/{name}/services"))
+        .header("content-type", "application/json")
+        .json(&json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": second_service_name},
+            "spec": {"ports": [{"port": 81, "targetPort": 8081}]},
+        }))
+        .send()
+        .await
+        .expect("creating a second Service through the listener")
+        .error_for_status()
+        .expect("second Service create should succeed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("decoding the second created Service");
+    let second_cluster_ip = second_service["spec"]["clusterIP"]
+        .as_str()
+        .expect("second Service should also have an allocated clusterIP");
+    assert_ne!(second_cluster_ip, cluster_ip);
+
+    // A headless Service must keep `clusterIP: "None"` rather than have one
+    // allocated for it.
+    let headless_service_name = format!("{name}-svc-headless");
+    let headless_service = client
+        .post(format!("{endpoint}/api/v1/namespaces/{name}/services"))
+        .header("content-type", "application/json")
+        .json(&json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": headless_service_name},
+            "spec": {"clusterIP": "None", "ports": [{"port": 82, "targetPort": 8082}]},
+        }))
+        .send()
+        .await
+        .expect("creating a headless Service through the listener")
+        .error_for_status()
+        .expect("headless Service create should succeed")
+        .json::<serde_json::Value>()
+        .await
+        .expect("decoding the headless created Service");
+    assert_eq!(headless_service["spec"]["clusterIP"], "None");
+
     let template_name = format!("{name}-template");
     let template_path =
         format!("{endpoint}/apis/resource.k8s.io/v1/namespaces/{name}/resourceclaimtemplates");

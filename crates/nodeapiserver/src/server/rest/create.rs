@@ -198,6 +198,9 @@ pub async fn create_with_options_and_manager(
     };
     object = defaulting::apply_builtin_defaults(group, version, kind, object);
     object = crate::scheme::conversion::to_version(group, version, kind, object);
+    if group.is_empty() && resource == "services" {
+        object = allocate_cluster_ip(storage, object).await?;
+    }
 
     // CEL Phase 4: real x-kubernetes-validations rule evaluation against
     // this actual custom resource instance — runs against the
@@ -369,4 +372,172 @@ pub async fn create_with_options_and_manager(
     )
     .await?;
     Ok(CreateOutcome::Created(object))
+}
+
+/// The env var real upstream's own `--service-cluster-ip-range` flag maps
+/// to. Read directly here rather than threaded through [`Config`] — every
+/// `create` call site (`server::listener`'s dispatch table, every direct
+/// REST test) would otherwise need a new parameter just to plumb one
+/// string a handful of call sites deep, and this crate already has
+/// precedent elsewhere for a narrowly-scoped env read (`config.rs`'s own
+/// `from_env` is itself just this, generalized). Matches
+/// `nodebootstrap::config::DEFAULT_SERVICE_CIDR` and
+/// `deploy/lib/upstream-kube-apiserver.sh`'s own `SERVICE_CIDR` default —
+/// this crate has no way to import that constant (`nodebootstrap` depends
+/// on `nodeapiserver`, not the reverse), so the literal is duplicated
+/// rather than shared.
+///
+/// [`Config`]: crate::config::Config
+fn service_cluster_ip_range() -> String {
+    std::env::var("NODEAPISERVER_SERVICE_CLUSTER_IP_RANGE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "10.43.0.0/16".to_string())
+}
+
+/// Assigns `spec.clusterIP`/`spec.clusterIPs` on a Service create — the one
+/// piece of real upstream's REST create path this build never implemented
+/// at all. `scheme::defaulting` is pure and stateless (no storage access),
+/// but ClusterIP assignment is inherently stateful: it must not hand out an
+/// address any other live Service already holds, so it cannot live there.
+/// Real upstream tracks this with a persistent `ipallocator.Interface` (a
+/// bitmap, itself a real object in etcd); this build instead does a
+/// linear scan of every already-stored Service's own
+/// `spec.clusterIP`/`spec.clusterIPs` for the next free address in
+/// [`service_cluster_ip_range`] — correct, if not O(1), and there is no
+/// other persistent "allocator" object in this build's storage a Service
+/// create could consult instead. `default/kubernetes` (nodebootstrap's
+/// `service_reconciler.rs`) is always created with its own explicit
+/// `spec.clusterIP` before any ordinary Service create happens, so this
+/// function's "respect an explicitly requested clusterIP" branch — the
+/// same branch a `kubectl create -f` for an already-known IP, or a
+/// disaster-recovery restore, needs — never collides with it: that
+/// address is already among the ones scanned as "used" for every create
+/// after that first one.
+async fn allocate_cluster_ip(
+    storage: &mut StorageClient,
+    mut object: Value,
+) -> Result<Value, Error> {
+    // Owned copies only: `spec`'s borrow of `object` must not outlive this
+    // block, since every branch below either returns `object` by value or
+    // mutates it through a fresh `as_object_mut()` borrow.
+    let Some(spec) = object.get("spec").and_then(Value::as_object) else {
+        return Ok(object);
+    };
+    let service_type = spec
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("ClusterIP")
+        .to_string();
+    let requested = spec
+        .get("clusterIP")
+        .and_then(Value::as_str)
+        .filter(|ip| !ip.is_empty())
+        .map(str::to_string);
+    if service_type == "ExternalName" {
+        return Ok(object);
+    }
+    // Headless (`clusterIP: "None"`) never gets a real address.
+    if requested.as_deref() == Some("None") {
+        return Ok(object);
+    }
+    let ip = match requested {
+        Some(ip) => ip,
+        None => {
+            let cidr = service_cluster_ip_range();
+            let used = collect_used_cluster_ips(storage).await?;
+            match next_free_cluster_ip(&cidr, &used) {
+                Some(ip) => ip,
+                // The range is exhausted (or misconfigured). Real
+                // upstream would reject the create outright
+                // (`ServerTimeoutError: rangeIsFull`); this build leaves
+                // clusterIP unset rather than invent a new
+                // `CreateOutcome` variant no caller maps to a real status
+                // yet — a real, named gap, not a silent success.
+                None => return Ok(object),
+            }
+        }
+    };
+    if let Some(map) = object.as_object_mut() {
+        if let Some(spec) = map.get_mut("spec").and_then(Value::as_object_mut) {
+            spec.insert("clusterIP".to_string(), Value::String(ip.clone()));
+            let has_ips = spec
+                .get("clusterIPs")
+                .and_then(Value::as_array)
+                .is_some_and(|ips| !ips.is_empty());
+            if !has_ips {
+                spec.insert("clusterIPs".to_string(), json!([ip]));
+            }
+        }
+    }
+    Ok(object)
+}
+
+/// Every already-stored Service's own `spec.clusterIP`/`spec.clusterIPs`,
+/// across every namespace — ClusterIP allocation is cluster-scoped, the
+/// same way real upstream's own allocator is a single cluster-wide bitmap
+/// regardless of which namespace a Service lives in.
+async fn collect_used_cluster_ips(
+    storage: &mut StorageClient,
+) -> Result<std::collections::HashSet<std::net::Ipv4Addr>, Error> {
+    let prefix = keys::list_prefix("", "services", None).into_bytes();
+    let range_end = prefix_range_end(&prefix);
+    let resp = storage
+        .range(RangeRequest {
+            key: prefix,
+            range_end,
+            ..Default::default()
+        })
+        .await?;
+    let mut used = std::collections::HashSet::new();
+    for kv in resp.kvs {
+        let object = decrypt_and_decode_with_rotation(
+            storage,
+            "",
+            "services",
+            &kv.key,
+            &kv.value,
+            kv.mod_revision,
+        )
+        .await?;
+        let mut record_ip = |ip: &str| {
+            if let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() {
+                used.insert(addr);
+            }
+        };
+        if let Some(ip) = object.pointer("/spec/clusterIP").and_then(Value::as_str) {
+            record_ip(ip);
+        }
+        if let Some(ips) = object.pointer("/spec/clusterIPs").and_then(Value::as_array) {
+            for ip in ips.iter().filter_map(Value::as_str) {
+                record_ip(ip);
+            }
+        }
+    }
+    Ok(used)
+}
+
+/// The first IPv4 address in `cidr` (`"10.43.0.0/16"`-shaped) not present
+/// in `used`, skipping the network and broadcast addresses. `None` means
+/// the CIDR failed to parse or the whole range is already allocated.
+fn next_free_cluster_ip(cidr: &str, used: &std::collections::HashSet<std::net::Ipv4Addr>) -> Option<String> {
+    let (base, prefix_len) = cidr.split_once('/')?;
+    let base: std::net::Ipv4Addr = base.parse().ok()?;
+    let prefix_len: u32 = prefix_len.parse().ok()?;
+    if prefix_len == 0 || prefix_len > 32 {
+        return None;
+    }
+    let mask = if prefix_len == 32 { u32::MAX } else { !0u32 << (32 - prefix_len) };
+    let network = u32::from(base) & mask;
+    let broadcast = network | !mask;
+    if broadcast <= network + 1 {
+        return None;
+    }
+    for candidate in (network + 1)..broadcast {
+        let addr = std::net::Ipv4Addr::from(candidate);
+        if !used.contains(&addr) {
+            return Some(addr.to_string());
+        }
+    }
+    None
 }
