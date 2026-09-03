@@ -137,10 +137,20 @@ fn object_name(object: &Value) -> &str {
 /// `user_groups` in `namespace` (`""` for none — only `ClusterRoleBinding`s
 /// are consulted then, matching upstream's own `if len(namespace) > 0`
 /// guard around the `RoleBinding` half).
-pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups: &[String], namespace: &str) -> Resolved {
+///
+/// `cache_registry`, when given, is consulted for the `clusterrolebindings`/
+/// `rolebindings` watch caches so this — called on every authorized
+/// request via `authz::request_allowed` — reads nodeapiserver's own
+/// in-process cache instead of paying a real nodestore round trip on every
+/// single request. `None` (the admission-time `signer_request_allowed`
+/// caller, which has no registry handle in scope) falls back to the
+/// uncached path exactly as before; `rest::list` itself already tolerates
+/// `cache: None` or a cache that hasn't finished its first sync.
+pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups: &[String], namespace: &str, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Resolved {
     let mut resolved = Resolved::default();
+    let crb_cache = cache_registry.and_then(|registry| registry.get(GROUP, VERSION, "clusterrolebindings"));
 
-    match rest::list(storage, None, GROUP, VERSION, "clusterrolebindings", None, "", "", 0, "").await {
+    match rest::list(storage, crb_cache.as_ref(), GROUP, VERSION, "clusterrolebindings", None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => {
             for item in list["items"].as_array().cloned().unwrap_or_default() {
                 accumulate_binding(storage, &item, user_name, user_groups, "", &mut resolved).await;
@@ -151,7 +161,8 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
     }
 
     if !namespace.is_empty() {
-        match rest::list(storage, None, GROUP, VERSION, "rolebindings", Some(namespace), "", "", 0, "").await {
+        let rb_cache = cache_registry.and_then(|registry| registry.get(GROUP, VERSION, "rolebindings"));
+        match rest::list(storage, rb_cache.as_ref(), GROUP, VERSION, "rolebindings", Some(namespace), "", "", 0, "").await {
             Ok(ListOutcome::Found(list)) => {
                 for item in list["items"].as_array().cloned().unwrap_or_default() {
                     accumulate_binding(storage, &item, user_name, user_groups, namespace, &mut resolved).await;

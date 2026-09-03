@@ -57,7 +57,7 @@ async fn handle(
                 &internal_error_status(&path_str),
             ));
         };
-        let allowed = match authz::request_allowed(client, identity.as_ref(), &info).await {
+        let allowed = match authz::request_allowed(client, identity.as_ref(), &info, Some(&cache_registry)).await {
             Ok(allowed) => allowed,
             Err(error) => {
                 warn!(path = %path_str, error = %error, "node/RBAC authorization failed");
