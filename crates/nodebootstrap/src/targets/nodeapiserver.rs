@@ -121,6 +121,10 @@ fn install_service(
         ("NODEAPISERVER_BIND_ADDR", "0.0.0.0:6443".to_string()),
         ("NODEAPISERVER_NODESTORE_ENDPOINT", etcd_servers.to_string()),
         (
+            "NODEAPISERVER_SERVICE_CLUSTER_IP_RANGE",
+            cfg.service_cidr(),
+        ),
+        (
             "NODEAPISERVER_NODESTORE_CA_FILE",
             etcd_ca.to_string_lossy().into_owned(),
         ),
