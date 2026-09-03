@@ -267,6 +267,12 @@ pub async fn serve(cfg: config::Config) -> Result<()> {
     }
     .with_client_tls(client_tls.clone());
 
+    // Debugging counters for #562 (nodestore's residual CPU cost is
+    // request-frequency-driven, per profiling that found no single expensive
+    // call). Logs a Range-call tally by resource every 30s so a live cluster
+    // can be watched for which caller is generating the volume.
+    api.spawn_range_counter_logger(std::time::Duration::from_secs(30));
+
     // The peer server carries raft traffic and nothing else, on its own port.
     // A raft message is trusted absolutely by whoever receives it, so this is
     // never merged into the client listener.
