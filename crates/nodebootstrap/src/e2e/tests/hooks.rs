@@ -367,7 +367,7 @@ pub(super) async fn termination_grace_period_force_kills_term_ignoring_pod(
                 "command": [
                     "sh",
                     "-c",
-                    "trap 'while true; do sleep 1; done' TERM; while true; do sleep 1; done"
+                    "trap '' TERM; while :; do :; done"
                 ]
             }]
         }),
