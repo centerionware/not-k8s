@@ -493,6 +493,18 @@ mod tests {
     }
 
     #[test]
+    fn delete_grace_period_decodes_non_negative_integer_values() {
+        assert_eq!(delete_grace_period(None).unwrap(), None);
+        assert_eq!(delete_grace_period(Some(&serde_json::json!({}))).unwrap(), None);
+        assert_eq!(
+            delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": 3}))).unwrap(),
+            Some(3)
+        );
+        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": -1}))).is_err());
+        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": "3"}))).is_err());
+    }
+
+    #[test]
     fn invalid_status_joins_every_violation_into_the_message() {
         let status = invalid_status(
             "/api/v1/pods",

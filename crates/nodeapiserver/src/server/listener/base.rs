@@ -543,6 +543,22 @@ fn delete_preconditions(
     }))
 }
 
+fn delete_grace_period(value: Option<&serde_json::Value>) -> Result<Option<i64>, &'static str> {
+    let Some(value) = value.and_then(|value| value.get("gracePeriodSeconds")) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(seconds) = value.as_i64() else {
+        return Err("gracePeriodSeconds must be an integer");
+    };
+    if seconds < 0 {
+        return Err("gracePeriodSeconds must be non-negative");
+    }
+    Ok(Some(seconds))
+}
+
 /// Real upstream's own `Conflict` shape for a Server-Side Apply
 /// ownership conflict — `reason: "Conflict"`, `code: 409`. Same "real
 /// subset, not the full type" posture every other `Status` builder in
