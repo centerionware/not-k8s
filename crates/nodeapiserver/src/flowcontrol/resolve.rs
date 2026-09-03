@@ -56,13 +56,37 @@ const DEFAULT_QUEUE_LENGTH_LIMIT: usize = 50;
 /// Lists every real `FlowSchema`, selects the one that governs this
 /// request (`flow_schema::select_flow_schema`'s own real precedence/
 /// tie-break order), then fetches its referenced
-/// `PriorityLevelConfiguration` by name. `None` on any resolution failure
-/// (unknown resource, list/get error, no matching `FlowSchema`, missing
-/// `uid`) — deliberately fails open (no header gets set) rather than
-/// blocking the request, since the finite gate can still apply its safe
-/// default budget when APF bookkeeping fails.
-pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDigest<'_>) -> Option<Selected> {
-    let flow_schemas = match rest::list(storage, None, GROUP, VERSION, "flowschemas", None, "", "", 0, "").await {
+/// `PriorityLevelConfiguration` by name. When `cache_registry` is supplied,
+/// the two configuration lists and the selected object use their existing
+/// synchronized watch caches, avoiding a nodestore round trip on every
+/// request. A cache miss still falls through to storage, preserving the
+/// normal startup/unsynced behavior of `rest::list`/`rest::get`.
+///
+/// `None` on any resolution failure (unknown resource, list/get error, no
+/// matching `FlowSchema`, missing `uid`) — deliberately fails open (no
+/// header gets set) rather than blocking the request, since the finite gate
+/// can still apply its safe default budget when APF bookkeeping fails.
+pub async fn select_for_request(
+    storage: &mut StorageClient,
+    digest: &RequestDigest<'_>,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
+) -> Option<Selected> {
+    let flow_schema_cache =
+        cache_registry.and_then(|registry| registry.get(GROUP, VERSION, "flowschemas"));
+    let flow_schemas = match rest::list(
+        storage,
+        flow_schema_cache.as_ref(),
+        GROUP,
+        VERSION,
+        "flowschemas",
+        None,
+        "",
+        "",
+        0,
+        "",
+    )
+    .await
+    {
         Ok(ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
         _ => return None,
     };
@@ -71,7 +95,22 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
     let flow_distinguisher = flow_distinguisher(selected, digest);
     let pl_name = selected["spec"]["priorityLevelConfiguration"]["name"].as_str()?;
 
-    let priority_level_objects = match rest::list(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, "", "", 0, "").await {
+    let priority_level_cache = cache_registry
+        .and_then(|registry| registry.get(GROUP, VERSION, "prioritylevelconfigurations"));
+    let priority_level_objects = match rest::list(
+        storage,
+        priority_level_cache.as_ref(),
+        GROUP,
+        VERSION,
+        "prioritylevelconfigurations",
+        None,
+        "",
+        "",
+        0,
+        "",
+    )
+    .await
+    {
         Ok(ListOutcome::Found(list)) => list["items"].as_array().cloned().unwrap_or_default(),
         _ => return None,
     };
@@ -81,27 +120,61 @@ pub async fn select_for_request(storage: &mut StorageClient, digest: &RequestDig
         .map(nominal_concurrency_shares)
         .sum::<usize>()
         .max(1);
-    let priority_level = match rest::get(storage, None, GROUP, VERSION, "prioritylevelconfigurations", None, pl_name).await {
-        Ok(GetOutcome::Found(obj)) => obj,
-        _ => return None,
+    let priority_level = match priority_level_objects
+        .iter()
+        .find(|object| object["metadata"]["name"].as_str() == Some(pl_name))
+    {
+        Some(object) => (*object).clone(),
+        None => match rest::get(
+            storage,
+            priority_level_cache.as_ref(),
+            GROUP,
+            VERSION,
+            "prioritylevelconfigurations",
+            None,
+            pl_name,
+        )
+        .await
+        {
+            Ok(GetOutcome::Found(object)) => object,
+            _ => return None,
+        },
     };
     let priority_level_uid = priority_level["metadata"]["uid"].as_str()?.to_string();
 
-    let priority_level = priority_level_config(&priority_level, priority_level_uid.clone(), total_nominal_concurrency_shares);
+    let priority_level = priority_level_config(
+        &priority_level,
+        priority_level_uid.clone(),
+        total_nominal_concurrency_shares,
+    );
     let exempt = priority_level.exempt;
     let mut priority_levels = priority_level_objects
         .iter()
         .filter_map(|object| {
             let uid = object["metadata"]["uid"].as_str()?.to_string();
-            Some(priority_level_config(object, uid, total_nominal_concurrency_shares))
+            Some(priority_level_config(
+                object,
+                uid,
+                total_nominal_concurrency_shares,
+            ))
         })
         .collect::<Vec<_>>();
-    if let Some(level) = priority_levels.iter_mut().find(|level| level.uid == priority_level.uid) {
+    if let Some(level) = priority_levels
+        .iter_mut()
+        .find(|level| level.uid == priority_level.uid)
+    {
         *level = priority_level.clone();
     } else {
         priority_levels.push(priority_level.clone());
     }
-    Some(Selected { flow_schema_uid, priority_level_uid, flow_distinguisher, exempt, priority_level, priority_levels })
+    Some(Selected {
+        flow_schema_uid,
+        priority_level_uid,
+        flow_distinguisher,
+        exempt,
+        priority_level,
+        priority_levels,
+    })
 }
 
 fn priority_level_config(priority_level: &Value, uid: String, total_nominal_concurrency_shares: usize) -> PriorityLevelConfig {
