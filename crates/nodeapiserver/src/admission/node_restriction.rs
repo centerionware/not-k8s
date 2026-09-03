@@ -214,7 +214,7 @@ async fn validate_pod(
     namespace: &str,
     name: &str,
     object: Option<&Value>,
-    _old_object: Option<&Value>,
+    old_object: Option<&Value>,
 ) -> Result<(), Error> {
     match operation {
         Operation::Create => {
@@ -264,7 +264,14 @@ async fn validate_pod(
             Ok(())
         }
         Operation::Delete => {
-            let pod = get_required(storage, "", "v1", "pods", Some(namespace), name).await?;
+            // The caller already fetched the pre-delete object (it has to,
+            // to know whether this is a create/update/delete in the first
+            // place) and hands it to us as `old_object`. Re-fetching from
+            // storage here instead races the delete itself: by the time
+            // this lookup runs the object can already be gone, turning a
+            // legitimate self-delete into a spurious 403. Use the object
+            // the caller already has.
+            let pod = required_object(old_object)?;
             if pod.pointer("/spec/nodeName").and_then(Value::as_str) == Some(node_name) {
                 Ok(())
             } else {
