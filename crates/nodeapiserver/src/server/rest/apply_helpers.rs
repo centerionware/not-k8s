@@ -535,11 +535,29 @@ fn reconcile_runtime_managed_fields(
     object
 }
 
+/// Live bug found verifying #541's fix: `Namespace` is the one core type
+/// whose finalizers live at `spec.finalizers`, not the standard
+/// `metadata.finalizers` every other resource uses -- real upstream's own
+/// `NamespaceSpec.Finalizers` field, ported faithfully by `scheme/
+/// defaulting.rs`'s `default_namespace()`, which stamps exactly that path.
+/// Checking only `metadata/finalizers` meant a Namespace's own finalizer
+/// was never recognized here at all: `delete_with_options()` deleted it
+/// immediately regardless, defeating #541's fix even though the finalizer
+/// really was present on the object -- confirmed live, a DELETE response
+/// for a Namespace with `spec.finalizers: ["kubernetes"]` came back with
+/// no `deletionTimestamp` and `status.phase` still `"Active"`, deleted
+/// outright. Checking `spec/finalizers` unconditionally for every kind is
+/// safe: no other built-in type defines that path, so it's simply absent
+/// (and this check already treats absent as "no finalizers") for
+/// everything but Namespace.
 fn has_finalizers(object: &Value) -> bool {
-    object
-        .pointer("/metadata/finalizers")
-        .and_then(Value::as_array)
-        .is_some_and(|finalizers| !finalizers.is_empty())
+    let list_has_entries = |pointer: &str| {
+        object
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .is_some_and(|finalizers| !finalizers.is_empty())
+    };
+    list_has_entries("/metadata/finalizers") || list_has_entries("/spec/finalizers")
 }
 
 fn has_deletion_timestamp(object: &Value) -> bool {
@@ -570,4 +588,38 @@ fn set_type_metadata(object: &mut Value, kind: &str, api_version: &str) {
 /// carries sub-second precision.
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(test)]
+mod has_finalizers_tests {
+    use super::has_finalizers;
+    use serde_json::json;
+
+    #[test]
+    fn an_object_with_no_finalizers_anywhere_has_none() {
+        assert!(!has_finalizers(&json!({"metadata": {}, "spec": {}})));
+    }
+
+    #[test]
+    fn metadata_finalizers_is_recognized_for_ordinary_resources() {
+        assert!(has_finalizers(&json!({"metadata": {"finalizers": ["kubernetes.io/pv-protection"]}})));
+    }
+
+    #[test]
+    fn an_empty_metadata_finalizers_list_is_not_a_finalizer() {
+        assert!(!has_finalizers(&json!({"metadata": {"finalizers": []}})));
+    }
+
+    #[test]
+    fn namespace_spec_finalizers_is_recognized() {
+        // Live bug found verifying #541: Namespace stores its finalizer at
+        // spec.finalizers, not metadata.finalizers -- a DELETE for a
+        // Namespace with only this field set must still defer.
+        assert!(has_finalizers(&json!({"metadata": {}, "spec": {"finalizers": ["kubernetes"]}})));
+    }
+
+    #[test]
+    fn an_empty_spec_finalizers_list_is_not_a_finalizer() {
+        assert!(!has_finalizers(&json!({"metadata": {}, "spec": {"finalizers": []}})));
+    }
 }
