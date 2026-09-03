@@ -357,6 +357,30 @@ fn default_namespace(value: &mut Value) {
     if let Some(status) = object.get_mut("status").and_then(Value::as_object_mut) {
         default_string(status, "phase", "Active");
     }
+    // Issue #541: real kube-apiserver's namespace strategy
+    // (`PrepareForCreate`) unconditionally stamps `spec.finalizers =
+    // ["kubernetes"]` on every Namespace. Without it, `server/rest/
+    // delete.rs`'s `has_finalizers()` check sees an empty list on a
+    // just-created namespace and deletes it immediately instead of
+    // deferring for namespace-controller's two-phase
+    // delete-contents-then-finalize flow -- live-reproduced as a
+    // Namespace deleted right after creation racing (and losing to) this
+    // missing default: the object vanished from storage before
+    // namespace-controller's watch ever saw a `deletionTimestamp`, so its
+    // contents (a ConfigMap in the failing test) were never cleaned up at
+    // all, and a concurrent default-ServiceAccount creation hit a genuine
+    // 404 against the already-gone namespace.
+    if object.get("spec").is_none_or(Value::is_null) {
+        object.insert("spec".to_string(), Value::Object(serde_json::Map::new()));
+    }
+    if let Some(spec) = object.get_mut("spec").and_then(Value::as_object_mut) {
+        if spec.get("finalizers").is_none_or(Value::is_null) {
+            spec.insert(
+                "finalizers".to_string(),
+                Value::Array(vec![Value::String("kubernetes".to_string())]),
+            );
+        }
+    }
 }
 
 fn default_replication_controller(value: &mut Value) {
@@ -529,6 +553,26 @@ mod tests {
         assert_eq!(defaulted["spec"]["ports"][0]["targetPort"], json!(80));
         assert_eq!(defaulted["spec"]["ports"][1]["targetPort"], json!("https"));
         assert_eq!(defaulted["spec"]["ports"][1]["protocol"], json!("UDP"));
+    }
+
+    #[test]
+    fn a_new_namespace_gets_the_kubernetes_finalizer_defaulted_onto_it() {
+        // Issue #541: without this, server/rest/delete.rs's has_finalizers()
+        // sees an empty list on a just-created Namespace and deletes it
+        // immediately instead of deferring for namespace-controller's real
+        // delete-contents-then-finalize flow -- so its contents are never
+        // cleaned up at all. Real kube-apiserver's namespace strategy
+        // stamps this unconditionally on create.
+        let value = json!({"metadata": {"name": "example"}});
+        let defaulted = apply_builtin_defaults("", "v1", "Namespace", value);
+        assert_eq!(defaulted["spec"]["finalizers"], json!(["kubernetes"]));
+    }
+
+    #[test]
+    fn an_explicit_namespace_finalizers_list_is_left_alone() {
+        let value = json!({"metadata": {"name": "example"}, "spec": {"finalizers": []}});
+        let defaulted = apply_builtin_defaults("", "v1", "Namespace", value);
+        assert_eq!(defaulted["spec"]["finalizers"], json!([]), "an explicit (even empty) finalizers list must not be overwritten");
     }
 
     #[test]

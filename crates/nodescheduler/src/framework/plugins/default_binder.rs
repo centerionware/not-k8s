@@ -154,12 +154,20 @@ mod tests {
         assert_eq!(NAME, "DefaultBinder");
     }
 
-    // Binding itself is not unit tested: it is one apiserver call with no
-    // branching to exercise, and a mock of the apiserver would only assert
-    // that this file calls the function it visibly calls. What actually needs
-    // proving — that a bound pod ends up running on the node the scheduler
-    // chose — is a property of the real cluster, and it is covered by
-    // deploy/lib/test/cases/scheduler.sh. That split is the house rule from
-    // CLAUDE.md: unit tests for logic, e2e against real infrastructure for
-    // anything that talks to it.
+    // Binding itself is not unit tested: introducing a mock apiserver here
+    // for the one branch that now exists (issue #555's 409-is-success case)
+    // would only assert that this file calls the function it visibly calls,
+    // and this codebase has no established pattern yet for constructing a
+    // raw `kube::Error::Api` in a test. What actually needs proving — that
+    // a duplicate/lagging bind attempt for an already-bound pod does not
+    // requeue and retry it forever — is a property of the real cluster:
+    // live-captured via a real audit-log 409 storm this session (see
+    // issue #555), and re-verified live (not via this crate's own test
+    // suite) that the storm stops once this fix is deployed. It's covered
+    // in the Rust e2e suite's own scheduler tests
+    // (crates/nodebootstrap/src/e2e/tests/scheduler.rs), not a bash
+    // deploy/lib/test/cases/ file — that whole suite has since migrated
+    // there. That split is still the house rule from CLAUDE.md: unit tests
+    // for logic, e2e against real infrastructure for anything that talks
+    // to it.
 }

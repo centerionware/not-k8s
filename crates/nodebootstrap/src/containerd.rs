@@ -502,6 +502,7 @@ fn ensure_running(cfg: &Config, needs_restart: bool) -> Result<()> {
                     exec_cmd: &format!("{containerd_bin} --config {CONFIG_PATH}"),
                     after: None,
                     env: &[],
+                    limit_stack: None,
                 },
             )?;
         }

@@ -1370,7 +1370,6 @@ diagnosis.
 **Severity: high — found while bringing the reference DRA driver up against
 the replacement apiserver.**
 
-<<<<<<< HEAD
 The DRA setup deliberately deletes and recreates its DaemonSet Pod so the
 fresh registrar socket is exercised. The replacement Pod received a new UID,
 but nodelet could still process an older watch object for the deleted UID.
