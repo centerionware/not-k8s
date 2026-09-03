@@ -258,21 +258,30 @@ pub async fn update_with_options_and_manager(
 /// same "not modeled per-type yet" scope this crate's own discovery
 /// already has for built-in subresources generally.
 /// `dry_run` validates and returns the status candidate without persisting it.
-/// Real upstream's `NamespaceFinalize` subresource: replaces
-/// `spec.finalizers` only, exactly the way [`update_status`] replaces
-/// `.status` only -- namespace-controller's own `finalize_namespace()`
-/// is the intended (only, in practice) caller, removing the
-/// `"kubernetes"` finalizer once a namespace's contents are fully
-/// deleted. Issue #541/#559/#560's own follow-up: those fixes correctly
-/// got a Namespace's deletion to defer and its contents to actually get
+/// Real upstream's `NamespaceFinalize` subresource. Its real strategy
+/// (`namespaceFinalizeStrategy` embedding the base `namespaceStrategy`,
+/// `pkg/registry/core/namespace/strategy.go`) is the *inverse* of
+/// [`update_status`]'s: `PrepareForUpdate` pins only `status` to the
+/// existing stored value (`newNamespace.Status = oldNamespace.Status`)
+/// and otherwise accepts the submitted object as-is -- not a narrow
+/// "replace just spec.finalizers" cherry-pick. An earlier version of
+/// this function did exactly that narrow cherry-pick; it happened to
+/// produce the same result for this codebase's only real caller
+/// (`nodecontroller`'s own `finalize_namespace()`, which always submits
+/// the object's current `metadata.finalizers` unchanged alongside its
+/// new `spec.finalizers`) but silently discarded any other field --
+/// including `metadata.finalizers` -- a real client legitimately sent
+/// through this subresource. Matching upstream's actual contract instead:
+/// accept the submitted object, then force `status` back to the existing
+/// stored value right before persisting.
+///
+/// Issue #541/#559/#560's own follow-up: those fixes correctly got a
+/// Namespace's deletion to defer and its contents to actually get
 /// cleaned up, but this subresource had no handler wired to it at all
 /// (`server/path.rs`'s `NAMESPACE_SUBRESOURCES` already listed
 /// `"finalize"`, so requests routed here, they just all 404'd) -- so the
 /// finalizer could never actually be removed and the namespace sat
-/// "Terminating" forever. No CRD/status-schema validation here (unlike
-/// `update_status`): `spec.finalizers` is a plain string array with
-/// nothing upstream ever validates against a schema for this
-/// subresource specifically.
+/// "Terminating" forever.
 pub async fn update_finalize(
     storage: &mut StorageClient,
     group: &str,
@@ -306,16 +315,6 @@ pub async fn update_finalize(
         existing_kv.mod_revision,
     )
     .await?;
-    let existing_object_for_request = convert_to_requested_version(
-        storage,
-        group,
-        version,
-        &kind,
-        resolved.conversion_webhook.as_ref(),
-        existing_object.clone(),
-    )
-    .await?;
-
     let Some(submitted_rv) = body
         .pointer("/metadata/resourceVersion")
         .and_then(Value::as_str)
@@ -327,13 +326,19 @@ pub async fn update_finalize(
         return Ok(UpdateOutcome::Conflict);
     }
 
-    let mut object = existing_object_for_request;
-    let finalizers = body
-        .pointer("/spec/finalizers")
-        .cloned()
-        .unwrap_or_else(|| Value::Array(Vec::new()));
-    if let Some(spec) = object.get_mut("spec").and_then(Value::as_object_mut) {
-        spec.insert("finalizers".to_string(), finalizers);
+    // Matches namespaceFinalizeStrategy.PrepareForUpdate: accept the
+    // submitted object as the new one, then pin status back to whatever
+    // is actually stored -- this subresource is not a status write, and
+    // a client (namespace-controller included) has no business changing
+    // it through here.
+    let mut object = body.clone();
+    match existing_object.get("status") {
+        Some(status) => object["status"] = status.clone(),
+        None => {
+            if let Some(map) = object.as_object_mut() {
+                map.remove("status");
+            }
+        }
     }
 
     persist_update(
