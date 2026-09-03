@@ -622,7 +622,15 @@ async fn persist_update(
     // completes the deletion. This mirrors the generic registry's
     // ShouldDeleteDuringUpdate path: the update is accepted, but the object
     // is removed atomically instead of being written back as a live object.
-    if managed_subresource.is_empty()
+    //
+    // `"finalize"` is included alongside the plain-update case (empty
+    // subresource) deliberately: it is the *only* subresource whose entire
+    // purpose is clearing finalizers, so this is the one place a Namespace's
+    // deletion can actually complete. Excluding it here (an earlier version
+    // did, matching every other subresource) left a namespace stuck in
+    // Terminating forever once its finalizer list emptied: the finalize call
+    // itself succeeded, but nothing ever removed the object.
+    if (managed_subresource.is_empty() || managed_subresource == "finalize")
         && has_deletion_timestamp(existing_object)
         && !has_finalizers(&object)
     {
