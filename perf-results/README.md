@@ -150,3 +150,60 @@ perl flamegraph.pl out.folded > flamegraph.svg
 for convenience — regenerate only if you want a different view, e.g. with
 inline frames resolved on a box with more memory headroom than this one
 had.)
+
+## `idle-orphan-cleanup-2026-09-03/`
+
+Captured 2026-09-03 investigating why nodestore and nodeapiserver were
+both idling at massively more CPU than upstream kube-apiserver+nodestore
+(user-reported live during a session working through #541/#548/#549/#550/
+#551). Two independent 30s `perf record` captures (`nodestore/`,
+`nodeapiserver/`), taken back to back, on the same box, at genuine idle:
+zero client traffic, all e2e test debris (29 orphaned pods left behind by
+#541's missing namespace finalizer — see #557) manually cleaned up
+immediately beforehand. Debug build of `main` commit `c52bb701` (#544/#545/
+#546/#547 all merged), deployed via `nodebootstrap` with
+`NOTK8S_NODELET_PREBUILT`-style prebuilt seam.
+
+Real (not `ps`'s lifetime-average) CPU, measured via `/proc/<pid>/stat`
+`utime+stime` deltas across these capture windows:
+
+| process | before orphan cleanup | after orphan cleanup, before this fix |
+|---|---|---|
+| nodestore | ~60-70% | ~20-29% |
+| nodeapiserver | ~44-60% | ~15-30% |
+
+### `nodestore/`
+
+`top-functions.txt` is dominated by `sqlite3VdbeExec` (16.87%) and
+`vdbeSorterSort` (0.67%) — genuine SQL execution and sort cost, not raft
+or networking overhead. `perf.script`'s Rust call stacks (grep for
+`nodestore5store8range_in`) trace essentially all of it through
+`EtcdApi::range` -> `Store::range` -> `range_in()`.
+
+Root cause found by reading `range_in()` in `crates/nodestore/src/
+store.rs` alongside this: the query answering a non-`count_only` `Range`
+call ran the same windowed `ROW_NUMBER() OVER (PARTITION BY key ORDER BY
+revision DESC, sub DESC)` subquery **twice** — once wrapped in
+`COUNT(*)` for the response's `count` field, once more for the actual
+page — and that subquery sorts/partitions every historical MVCC revision
+of every key in the requested range, not just the live ones.
+`sqlite3 state.db "SELECT COUNT(*) FROM kv"` on this box: **10502** total
+rows behind only **489** live keys (`SELECT COUNT(DISTINCT key)`) — over
+2 hours of accumulated e2e-test churn, none of it ever compacted away.
+
+Fixed in #558 (targets `main`, independent of the `nodeapiserver`
+integration branch): compute `count` in the same single pass as the page,
+via a second window function (`COUNT(*) OVER ()`) alongside the existing
+`ROW_NUMBER()` one.
+
+### `nodeapiserver/`
+
+Flatter profile — no single function above ~4.3% (`alloc_slot`), the rest
+spread across `memcpy`/`malloc`/`free`, protobuf decode, base64 encode/
+decode, TLS (`rustls` SipHash), and `serde_json::Value`'s btree traversal.
+Reads as real per-connection/per-request overhead (this build's
+still-transitional identity/audit-logging/watch-cache machinery), not one
+dominant bug the way nodestore's `range_in()` was — consistent with the
+user's own expectation that nodeapiserver running noticeably hotter than
+upstream kube-apiserver here (roughly 16-30%) is plausible for this stage
+of the project, unlike nodestore's confirmed-fixable 20-29%.

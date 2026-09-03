@@ -1,0 +1,29 @@
+nodeapiserver CPU profile
+==================
+pid: 243027
+started: 2026-09-03T19:24:02+00:00
+ended: 2026-09-03T19:24:38+00:00
+duration_seconds: 30
+profile_method: perf
+executable: /var/lib/nodebootstrap/toolchain/bin/notk8s
+cmdline: /var/lib/nodebootstrap/toolchain/bin/nodeapiserver 
+
+journal (nodeapiserver) warnings: 0   errors: 0
+
+files:
+  SUMMARY.txt
+  flamegraph.err
+  flamegraph.svg
+  nodeapiserver-journal.txt
+  out.folded
+  perf-record.txt
+  perf-report.txt
+  perf-script.txt
+  perf-self-report.txt
+  perf.data
+  perf.script
+  process.txt
+  stackcollapse.err
+  threads-after.txt
+  threads-before.txt
+  top-functions.txt
