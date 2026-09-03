@@ -4594,7 +4594,15 @@ pub(super) async fn nodeapiserver_enforces_service_account_mountable_secrets(
         }
     }))?;
     match pods.create(&PostParams::default(), &denied).await {
-        Err(KubeError::Api(error)) if error.code == 422 => {}
+        // Real upstream's `LimitSecretReferences`/`enforceMountableSecrets`
+        // check (`plugin/pkg/admission/serviceaccount/admission.go`)
+        // returns `apierrors.NewForbidden`, which is HTTP 403 -- not a
+        // validation-shaped 422. `crates/nodeapiserver/src/admission/
+        // service_account.rs`'s own doc comment names this a faithful
+        // port, and every call site that turns its `Decision::Forbidden`
+        // into an HTTP response (`crud/early_admission.rs`,
+        // `patch_apply.rs`) maps it to `StatusCode::FORBIDDEN`.
+        Err(KubeError::Api(error)) if error.code == 403 => {}
         Err(error) => anyhow::bail!(
             "an unlisted mountable secret returned the wrong API error: {error}"
         ),
