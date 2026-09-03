@@ -4,10 +4,14 @@
 //! terminationGracePeriodSeconds or a defined preStop hook.
 use super::*;
 use k8s_openapi::api::core::v1::PodSpec;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 fn pod_with_grace(seconds: Option<i64>) -> Pod {
     Pod {
-        spec: Some(PodSpec { termination_grace_period_seconds: seconds, ..Default::default() }),
+        spec: Some(PodSpec {
+            termination_grace_period_seconds: seconds,
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -35,4 +39,36 @@ fn negative_falls_back_to_the_default() {
 #[test]
 fn no_spec_at_all_defaults_to_thirty_seconds() {
     assert_eq!(termination_grace_seconds(&Pod::default()), 30);
+}
+
+#[test]
+fn deletion_grace_period_override_wins_over_the_pod_spec() {
+    let pod = Pod {
+        metadata: ObjectMeta {
+            deletion_grace_period_seconds: Some(3),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            termination_grace_period_seconds: Some(30),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(termination_grace_seconds(&pod), 3);
+}
+
+#[test]
+fn deletion_grace_period_zero_is_honored() {
+    let pod = Pod {
+        metadata: ObjectMeta {
+            deletion_grace_period_seconds: Some(0),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            termination_grace_period_seconds: Some(30),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(termination_grace_seconds(&pod), 0);
 }

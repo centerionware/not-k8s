@@ -515,7 +515,10 @@ async fn persist_update(
     // completes the deletion. This mirrors the generic registry's
     // ShouldDeleteDuringUpdate path: the update is accepted, but the object
     // is removed atomically instead of being written back as a live object.
-    if has_deletion_timestamp(existing_object) && !has_finalizers(&object) {
+    if managed_subresource.is_empty()
+        && has_deletion_timestamp(existing_object)
+        && !has_finalizers(&object)
+    {
         if dry_run {
             let object = convert_to_requested_version(
                 storage,
