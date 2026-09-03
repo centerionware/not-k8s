@@ -1,7 +1,7 @@
 /// Decode a raw protobuf message body (no envelope) into a JSON object
 /// shaped like `message`'s fields.
 pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
-    if !codegen::proto_fields::PROTO_MESSAGES.contains(&message) {
+    if !codegen::proto_message_set().contains(message) {
         return Err(Error::UnknownMessage(message.to_string()));
     }
     let by_number = codegen::proto_field_index_by_number();
