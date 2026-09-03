@@ -20,7 +20,7 @@ pub mod openapi_v3_docs {
     include!(concat!(env!("OUT_DIR"), "/openapi_v3_docs.rs"));
 }
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// `(message, json_field_name) -> &ProtoField`, built once from
@@ -56,6 +56,20 @@ pub fn proto_field_index_by_number() -> &'static HashMap<(&'static str, u32), &'
             .map(|f| ((f.message, f.number), f))
             .collect()
     })
+}
+
+/// The set of `proto_fields::PROTO_MESSAGES`, built once. Same story as
+/// [`proto_field_index_by_number`]: `codec::protobuf_decode::decode_message`
+/// used to check `PROTO_MESSAGES.contains(&message)` — a linear scan over
+/// the *entire* table of every message this build knows about (hundreds
+/// of entries) — on every single call. A fresh perf capture taken after
+/// fixing `proto_field_index_by_number` (issue #526's follow-up) showed
+/// this was the next-largest cost once that one was gone: ~16.5% of all
+/// samples inside `slice::contains` under `decode_message` (issue #534).
+/// Built once, like every other index here.
+pub fn proto_message_set() -> &'static HashSet<&'static str> {
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| proto_fields::PROTO_MESSAGES.iter().copied().collect())
 }
 
 /// `schema -> Vec<&GvkEntry>`, built once from `openapi_meta::DISCOVERY_GVKS`.
