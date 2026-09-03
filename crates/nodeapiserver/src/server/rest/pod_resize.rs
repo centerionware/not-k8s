@@ -1,9 +1,9 @@
-//! The core Pod `resize` subresource.
-//!
-//! Kubernetes treats Pod resource changes as a narrow update: only each
-//! container's `resources` and `resizePolicy` fields may change. The request
-//! still returns the complete Pod, and the ordinary MVCC/validation/storage
-//! path remains responsible for the final write.
+// The core Pod `resize` subresource.
+//
+// Kubernetes treats Pod resource changes as a narrow update: only each
+// container's `resources` and `resizePolicy` fields may change. The request
+// still returns the complete Pod, and the ordinary MVCC/validation/storage
+// path remains responsible for the final write.
 
 /// Reads the complete Pod through the `resize` subresource. The subresource
 /// has a distinct route, but its response is the same Pod object returned by
@@ -285,7 +285,7 @@ fn restrict_resize_update(existing: &Value, candidate: &Value) -> Result<Value, 
 }
 
 #[cfg(test)]
-mod tests {
+mod pod_resize_tests {
     use super::restrict_resize_update;
     use serde_json::json;
 
