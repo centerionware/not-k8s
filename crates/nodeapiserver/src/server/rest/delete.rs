@@ -120,6 +120,22 @@ pub async fn delete_with_options(
             "deletionTimestamp",
             Value::String(now_rfc3339()),
         );
+        // Live bug found verifying #541/#559's fixes: real upstream's
+        // Namespace REST strategy also flips status.phase to "Terminating"
+        // as part of this same deferred-delete write. Without it,
+        // service-account-controller/root-ca-cert-publisher-controller's
+        // own is_terminating() checks (which read status.phase, matching
+        // upstream's own NamespaceLifecycle admission behavior) never see
+        // the namespace as terminating at all -- they keep recreating the
+        // default ServiceAccount and kube-root-ca.crt ConfigMap the instant
+        // namespace-controller deletes them, forever, so the namespace can
+        // never actually finish emptying out and finalize. Confirmed live:
+        // "created the default ServiceAccount" / "published kube-root-ca.crt"
+        // repeating every ~5s for a namespace that had a real
+        // deletionTimestamp the whole time.
+        if kind == "Namespace" {
+            set_status_field(&mut object, "phase", Value::String("Terminating".to_string()));
+        }
         if let Some(seconds) = pod_grace_period_seconds {
             set_metadata_field(
                 &mut object,
