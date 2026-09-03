@@ -84,6 +84,9 @@
 //! required authn -> authz -> APF -> admission -> REST order in
 //! `listener::handle_with_audit`; they remain explicit branches rather
 //! than being hidden behind a second callback abstraction.
+//! The core Pod `resize` subresource is served as a narrow
+//! `GET`/`PUT`/`PATCH` update that preserves every Pod field except
+//! container resources and resize policies.
 
 pub mod path;
 pub mod tls;

@@ -55,6 +55,8 @@
 //! (`update_status`/`patch_status`), as is the core Pod
 //! `ephemeralcontainers` subresource (`get_ephemeral_containers`,
 //! `update_ephemeral_containers`, and `patch_ephemeral_containers`);
+//! the core Pod `resize` subresource is also real (`GET`/`PUT`/`PATCH`),
+//! restricting writes to container resources and resize policies;
 //! built-in workload `scale` subresources are translated to the parent's
 //! `spec.replicas`; every other subresource (`pods/log`, ...) still isn't,
 //! except for the scheduler's `pods/binding` subresource — the discovery
@@ -265,6 +267,7 @@ include!("rest/scale.rs");
 include!("rest/subresources.rs");
 include!("rest/update.rs");
 include!("rest/patch.rs");
+include!("rest/pod_resize.rs");
 include!("rest/apply.rs");
 include!("rest/apply_helpers.rs");
 include!("rest/delete.rs");

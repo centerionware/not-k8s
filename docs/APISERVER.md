@@ -807,6 +807,13 @@ ephemeral-container e2e test exercises the real container startup path; a
 nodeapiserver-only check also verifies that unrelated Pod changes sent to this
 subresource are reset.
 
+The core Pod `resize` subresource is live too. `GET` returns the complete Pod,
+while `PUT` and JSON/merge/strategic `PATCH` retain only regular and init
+containers' `resources` and `resizePolicy` fields. Container names, order,
+count, and every other Pod field are preserved by the subresource strategy;
+the existing in-place-resize e2e check now exercises this route and fails if
+the apiserver returns the previously observed 404.
+
 `GET` and `LIST` also honor a positive `resourceVersion` by reading a
 consistent nodestore MVCC snapshot. These requests bypass the live watch
 cache, matching the snapshot semantics clients need when relisting after a
