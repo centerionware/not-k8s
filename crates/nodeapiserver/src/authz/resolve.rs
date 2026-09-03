@@ -139,12 +139,14 @@ fn object_name(object: &Value) -> &str {
 /// guard around the `RoleBinding` half).
 ///
 /// `cache_registry`, when given, is consulted for the `clusterrolebindings`/
-/// `rolebindings` watch caches so this — called on every authorized
-/// request via `authz::request_allowed` — reads nodeapiserver's own
-/// in-process cache instead of paying a real nodestore round trip on every
-/// single request. `None` (the admission-time `signer_request_allowed`
-/// caller, which has no registry handle in scope) falls back to the
-/// uncached path exactly as before; `rest::list` itself already tolerates
+/// `rolebindings` watch caches, *and* (threaded down into
+/// [`accumulate_binding`]) the `clusterroles`/`roles` caches each binding
+/// resolves against — so this, called on every authorized request via
+/// `authz::request_allowed`, reads nodeapiserver's own in-process cache
+/// instead of paying a real nodestore round trip on every single request.
+/// `None` (the admission-time `signer_request_allowed` caller, which has
+/// no registry handle in scope) falls back to the uncached path exactly
+/// as before; `rest::list`/`rest::get` themselves already tolerate
 /// `cache: None` or a cache that hasn't finished its first sync.
 pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups: &[String], namespace: &str, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Resolved {
     let mut resolved = Resolved::default();
@@ -153,7 +155,7 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
     match rest::list(storage, crb_cache.as_ref(), GROUP, VERSION, "clusterrolebindings", None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => {
             for item in list["items"].as_array().cloned().unwrap_or_default() {
-                accumulate_binding(storage, &item, user_name, user_groups, "", &mut resolved).await;
+                accumulate_binding(storage, cache_registry, &item, user_name, user_groups, "", &mut resolved).await;
             }
         }
         Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("clusterrolebindings is unknown to this build".to_string()),
@@ -165,7 +167,7 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
         match rest::list(storage, rb_cache.as_ref(), GROUP, VERSION, "rolebindings", Some(namespace), "", "", 0, "").await {
             Ok(ListOutcome::Found(list)) => {
                 for item in list["items"].as_array().cloned().unwrap_or_default() {
-                    accumulate_binding(storage, &item, user_name, user_groups, namespace, &mut resolved).await;
+                    accumulate_binding(storage, cache_registry, &item, user_name, user_groups, namespace, &mut resolved).await;
                 }
             }
             Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("rolebindings is unknown to this build".to_string()),
@@ -180,7 +182,16 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
 /// else resolve its `RoleRef` (`Role`, only meaningful with a real
 /// `binding_namespace`, or `ClusterRole`) and extend `resolved.rules`
 /// with the referenced role's own `Rules`.
-async fn accumulate_binding(storage: &mut StorageClient, binding: &Value, user_name: &str, user_groups: &[String], binding_namespace: &str, resolved: &mut Resolved) {
+///
+/// `cache_registry`, threaded down from [`rules_for`], is consulted here
+/// too (#562): the bindings list above already reads from the watch
+/// cache, but each binding's *referenced* Role/ClusterRole was still an
+/// uncached `rest::get` -- one uncached Range call to nodestore per
+/// binding, on every single authorized request. Found live: nodestore's
+/// Range-call tally showed `clusterroles` dominating call volume by a
+/// wide margin over every other resource, including the cached
+/// `clusterrolebindings` themselves.
+async fn accumulate_binding(storage: &mut StorageClient, cache_registry: Option<&crate::cacher::CacheRegistry>, binding: &Value, user_name: &str, user_groups: &[String], binding_namespace: &str, resolved: &mut Resolved) {
     let subjects = parse_subjects(binding);
     if first_applicable_subject(user_name, user_groups, &subjects, binding_namespace).is_none() {
         return;
@@ -194,8 +205,14 @@ async fn accumulate_binding(storage: &mut StorageClient, binding: &Value, user_n
     let name = role_ref.get("name").and_then(Value::as_str).unwrap_or("");
 
     let role_object = match kind {
-        "Role" => rest::get(storage, None, GROUP, VERSION, "roles", Some(binding_namespace), name).await,
-        "ClusterRole" => rest::get(storage, None, GROUP, VERSION, "clusterroles", None, name).await,
+        "Role" => {
+            let cache = cache_registry.and_then(|registry| registry.get(GROUP, VERSION, "roles"));
+            rest::get(storage, cache.as_ref(), GROUP, VERSION, "roles", Some(binding_namespace), name).await
+        }
+        "ClusterRole" => {
+            let cache = cache_registry.and_then(|registry| registry.get(GROUP, VERSION, "clusterroles"));
+            rest::get(storage, cache.as_ref(), GROUP, VERSION, "clusterroles", None, name).await
+        }
         other => {
             resolved.errors.push(format!("unsupported roleRef kind {other:?}"));
             return;
