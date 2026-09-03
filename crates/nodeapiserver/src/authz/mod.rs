@@ -77,7 +77,7 @@ pub async fn request_allowed(
     info: &RequestInfo,
     cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<bool, String> {
-    match node::authorize(storage, identity, info).await? {
+    match node::authorize(storage, identity, info, cache_registry).await? {
         node::Decision::Allow => return Ok(true),
         node::Decision::Deny => return Ok(false),
         node::Decision::NoOpinion => {}
