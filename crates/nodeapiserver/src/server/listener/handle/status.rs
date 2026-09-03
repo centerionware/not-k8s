@@ -204,6 +204,35 @@ macro_rules! handle_status {
         };
         let namespace = storage_namespace(&$info);
         if $is_certificate_status_subresource {
+            // `validate_signer_update` needs the *merged* candidate object
+            // to tell whether `.status.certificate`/`.status.conditions`
+            // actually changed -- a PATCH request's body is a patch
+            // document, not the whole object, so it cannot be passed
+            // directly the way the `verb == "update"` branch above passes
+            // its full-object body. Real callers (nodecontroller's
+            // certificatesigningrequest-signing-controller) sign via a
+            // `application/merge-patch+json` PATCH to `/status`, so
+            // passing `None` here made every real signing PATCH forbidden
+            // unconditionally (docs/APISERVER_E2E_FIX.md, "TLS bootstrap
+            // client certificate kubeconfig"). `rest::patch_prepare`
+            // already does exactly the read-and-apply-patch this needs
+            // (its own doc comment: "the patch document can reference any
+            // path, only the final write is restricted to `.status`") --
+            // reuse it here for admission purposes; `patch_status_with_manager`
+            // below independently redoes the same read+patch to persist,
+            // the same two-phase precheck-then-persist shape the apply
+            // and NodeRestriction paths in this file already use.
+            let candidate = match rest::patch_prepare(&mut client, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name, kind_of_patch, &patch_doc).await {
+                Ok(rest::PatchPrepareOutcome::Ready(candidate, _context)) => Some(candidate),
+                Ok(rest::PatchPrepareOutcome::UnknownResource) | Ok(rest::PatchPrepareOutcome::ObjectNotFound) => None,
+                Ok(rest::PatchPrepareOutcome::Invalid(violations)) => {
+                    return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations)));
+                }
+                Err(e) => {
+                    warn!(path = %$path_str, error = ?e, "admission: preparing the CSR status patch for certificate signer authorization failed");
+                    return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
+                }
+            };
             let old_object = match rest::get(&mut client, None, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name).await {
                 Ok(rest::GetOutcome::Found(object)) => Some(object),
                 Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
@@ -219,7 +248,7 @@ macro_rules! handle_status {
                 $identity.as_ref(),
                 action,
                 old_object.as_ref(),
-                None,
+                candidate.as_ref(),
                 &$info.subresource,
             )
             .await

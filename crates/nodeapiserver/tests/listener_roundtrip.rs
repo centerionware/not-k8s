@@ -279,6 +279,56 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         .expect("deleting the ResourceClaimTemplate through the listener");
     assert_eq!(template_deleted.status(), reqwest::StatusCode::OK);
 
+    // Regression for docs/APISERVER_E2E_FIX.md's "TLS bootstrap client
+    // certificate kubeconfig" finding: nodecontroller's
+    // certificatesigningrequest-signing-controller issues a certificate by
+    // sending an `application/merge-patch+json` PATCH to a CSR's `/status`
+    // subresource -- the admission check there was unconditionally passing
+    // `None` as the candidate object for a PATCH (only the `verb ==
+    // "update"` full-object-replace path had a real candidate), so every
+    // real signing PATCH was rejected 403 regardless of RBAC, and
+    // nodelet's bootstrap flow (crates/nodelet/src/bootstrap.rs) timed out
+    // waiting for a certificate that could never be issued.
+    let csr_name = format!("{name}-csr");
+    let csr_path = format!("{endpoint}/apis/certificates.k8s.io/v1/certificatesigningrequests");
+    let csr_request_pem = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(
+            b"-----BEGIN CERTIFICATE REQUEST-----\nMA0=\n-----END CERTIFICATE REQUEST-----\n",
+        )
+    };
+    let created_csr = client
+        .post(&csr_path)
+        .header("content-type", "application/json")
+        .json(&json!({
+            "apiVersion": "certificates.k8s.io/v1",
+            "kind": "CertificateSigningRequest",
+            "metadata": {"name": &csr_name},
+            "spec": {
+                "request": csr_request_pem,
+                "signerName": "kubernetes.io/kube-apiserver-client-kubelet",
+                "usages": ["digital signature", "key encipherment", "client auth"],
+            }
+        }))
+        .send()
+        .await
+        .expect("creating a CertificateSigningRequest through the listener");
+    assert_eq!(created_csr.status(), reqwest::StatusCode::CREATED);
+
+    let status_patch = client
+        .patch(format!("{csr_path}/{csr_name}/status"))
+        .header("content-type", "application/merge-patch+json")
+        .body(r#"{"status":{"certificate":"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1BMD0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo="}}"#)
+        .send()
+        .await
+        .expect("PATCHing a CSR /status subresource through the listener");
+    assert_eq!(
+        status_patch.status(),
+        reqwest::StatusCode::OK,
+        "signing a CSR via a merge-patch PATCH to /status must not be rejected: {}",
+        status_patch.text().await.unwrap_or_default()
+    );
+
     let deleted = client
         .delete(format!("{endpoint}/api/v1/namespaces/{name}"))
         .send()
