@@ -1059,12 +1059,46 @@ fn strategic_status_patch(status: &PodStatus) -> Value {
 /// still produce a new resourceVersion and feed the same Pod back into our
 /// watch.
 fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
-    let Some(prev) = prev else { return true };
-    let prev = serde_json::to_value(prev).expect("PodStatus must serialize");
-    let desired = serde_json::to_value(desired).expect("PodStatus must serialize");
-    merge_patch_changes(Some(&prev), &desired)
+    let Some(prev) = prev else {
+        tracing::warn!("DIAGDEBUG2 status_patch_changes: prev is None, forcing true");
+        return true;
+    };
+    let prev_v = serde_json::to_value(prev).expect("PodStatus must serialize");
+    let desired_v = serde_json::to_value(desired).expect("PodStatus must serialize");
+    let changed = merge_patch_changes_diag2(Some(&prev_v), &desired_v, "status");
+    if changed {
+        tracing::warn!(prev = ?prev, desired = ?desired, "DIAGDEBUG2 full prev/desired PodStatus on a real change");
+    }
+    changed
 }
 
+fn merge_patch_changes_diag2(current: Option<&Value>, patch: &Value, path: &str) -> bool {
+    match patch {
+        Value::Object(patch) => {
+            let current = current.and_then(Value::as_object);
+            patch.iter().fold(false, |acc, (key, value)| {
+                let sub_path = format!("{path}.{key}");
+                let this_changed = match value {
+                    Value::Null => current.and_then(|obj| obj.get(key)).is_some(),
+                    value => merge_patch_changes_diag2(current.and_then(|obj| obj.get(key)), value, &sub_path),
+                };
+                if this_changed {
+                    tracing::warn!(path = %sub_path, "DIAGDEBUG2 field differs");
+                }
+                acc || this_changed
+            })
+        }
+        value => {
+            let differs = current != Some(value);
+            if differs {
+                tracing::warn!(path = %path, current = ?current, desired = ?value, "DIAGDEBUG2 leaf differs");
+            }
+            differs
+        }
+    }
+}
+
+#[allow(dead_code)]
 fn merge_patch_changes(current: Option<&Value>, patch: &Value) -> bool {
     match patch {
         Value::Object(patch) => {
