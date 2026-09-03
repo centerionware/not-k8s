@@ -104,9 +104,9 @@ macro_rules! handle_crud {
             };
 
             handle_crud_early!(client, body_value, namespace, $info, $path_str, $is_create, $is_update, $is_delete, $identity, $pure_admission);
-            handle_crud_defaults!(client, body_value, namespace, $info, $path_str, $is_create, $is_update, $is_delete, $identity, dry_run, $pod_node_selector_config);
+            handle_crud_defaults!(client, body_value, namespace, $info, $path_str, $is_create, $is_update, $is_delete, $identity, dry_run, $pod_node_selector_config, $cache_registry);
             let mut quota_usage_updates: Vec<(String, std::collections::BTreeMap<String, crate::scheme::quantity::Quantity>)> = Vec::new();
-            handle_crud_late_admission!(client, body_value, namespace, $info, $path_str, $is_create, $is_update, $is_delete, $identity, dry_run, $admission_metadata, quota_usage_updates);
+            handle_crud_late_admission!(client, body_value, namespace, $info, $path_str, $is_create, $is_update, $is_delete, $identity, dry_run, $admission_metadata, quota_usage_updates, $cache_registry);
             handle_crud_persist!(client, body_value, delete_options, namespace, $info, $path_str, $cache_registry, wants_table, $wants_partial_metadata, crd_printer_columns, dry_run, $request_field_manager, $is_get, $is_list, $is_create, $is_update, $query, quota_usage_updates);
         }
         }

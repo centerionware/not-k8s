@@ -155,7 +155,8 @@ macro_rules! handle_patch_standard {
             }
         }
 
-        let old_object = match rest::get(&mut client, None, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name).await {
+        let resource_cache = $cache_registry.get(&$info.api_group, &$info.api_version, &$info.resource);
+        let old_object = match rest::get(&mut client, resource_cache.as_ref(), &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name).await {
             Ok(rest::GetOutcome::Found(object)) => Some(object),
             Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
             Err(e) => {
@@ -183,6 +184,7 @@ macro_rules! handle_patch_standard {
             old_object.as_ref(),
             dry_run,
             $identity.as_ref(),
+            Some(&$cache_registry),
         )
         .await
         {
@@ -208,6 +210,7 @@ macro_rules! handle_patch_standard {
             old_object.as_ref(),
             dry_run,
             $identity.as_ref(),
+            Some(&$cache_registry),
         )
         .await
         {
@@ -266,6 +269,7 @@ macro_rules! handle_patch_standard {
             old_object,
             $identity.as_ref(),
             dry_run,
+            Some(&$cache_registry),
         )
         .await
         {

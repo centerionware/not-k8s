@@ -44,13 +44,14 @@ pub async fn validate(
     old_object: Option<&Value>,
     dry_run: bool,
     identity: Option<&crate::authn::x509::Identity>,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<ValidationOutcome, String> {
     let mut result = ValidationOutcome::default();
-    let policies = list_items(storage, "validatingadmissionpolicies", None).await?;
+    let policies = list_items(storage, "validatingadmissionpolicies", None, cache_registry).await?;
     if policies.is_empty() {
         return Ok(result);
     }
-    let bindings = list_items(storage, "validatingadmissionpolicybindings", None).await?;
+    let bindings = list_items(storage, "validatingadmissionpolicybindings", None, cache_registry).await?;
     if bindings.is_empty() {
         return Ok(result);
     }
@@ -83,7 +84,8 @@ pub async fn validate(
     let (namespace_object, namespace_labels) = if namespace.is_empty() {
         (None, BTreeMap::new())
     } else {
-        match rest::get(storage, None, "", "v1", "namespaces", None, namespace).await {
+        let cache = cache_registry.and_then(|registry| registry.get("", "v1", "namespaces"));
+        match rest::get(storage, cache.as_ref(), "", "v1", "namespaces", None, namespace).await {
             Ok(rest::GetOutcome::Found(object)) => {
                 let labels = crate::cacher::selector::object_labels(&object);
                 (Some(object), labels)
@@ -219,12 +221,13 @@ fn record_failure(result: &mut ValidationOutcome, policy_name: &str, binding: &V
     }
 }
 
-async fn list_items(storage: &mut StorageClient, resource: &str, namespace: Option<&str>) -> Result<Vec<Value>, String> {
-    list_resource_items(storage, GROUP, VERSION, resource, namespace).await
+async fn list_items(storage: &mut StorageClient, resource: &str, namespace: Option<&str>, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Vec<Value>, String> {
+    let cache = cache_registry.and_then(|registry| registry.get(GROUP, VERSION, resource));
+    list_resource_items(storage, cache.as_ref(), GROUP, VERSION, resource, namespace).await
 }
 
-async fn list_resource_items(storage: &mut StorageClient, group: &str, version: &str, resource: &str, namespace: Option<&str>) -> Result<Vec<Value>, String> {
-    match rest::list(storage, None, group, version, resource, namespace, "", "", 0, "").await {
+async fn list_resource_items(storage: &mut StorageClient, cache: Option<&crate::cacher::store::SharedCache>, group: &str, version: &str, resource: &str, namespace: Option<&str>) -> Result<Vec<Value>, String> {
+    match rest::list(storage, cache, group, version, resource, namespace, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => Ok(list.get("items").and_then(Value::as_array).cloned().unwrap_or_default()),
         Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => Ok(Vec::new()),
         Err(error) => Err(format!("listing {group}/{version}/{resource} for admission: {error}")),
@@ -263,9 +266,15 @@ async fn binding_parameters(storage: &mut StorageClient, policy: &Value, binding
         return Err(format!("cluster-scoped ValidatingAdmissionPolicy parameter kind {resolved_group}/{kind} cannot use paramRef.namespace"));
     }
     let namespace = if namespaced { requested_namespace } else { None };
+    // Not threaded to a cache: `resolved_group`/`resource` here is whatever
+    // arbitrary kind a policy names as its parameter, so unlike the fixed
+    // built-in lookups elsewhere in this module there's no single
+    // (group, version, resource) known ahead of time to cache against --
+    // and it's not a hot path in nodestore's Range-call tally (#562) the
+    // way the fixed lookups were.
     let selected = if let Some(name) = param_ref.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) {
         if namespaced && namespace.is_none() {
-            list_resource_items(storage, &resolved_group, &version, &resource, None).await?.into_iter().filter(|object| object.pointer("/metadata/name").and_then(Value::as_str) == Some(name)).collect()
+            list_resource_items(storage, None, &resolved_group, &version, &resource, None).await?.into_iter().filter(|object| object.pointer("/metadata/name").and_then(Value::as_str) == Some(name)).collect()
         } else {
             match rest::get(storage, None, &resolved_group, &version, &resource, namespace, name).await {
                 Ok(rest::GetOutcome::Found(object)) => vec![object],
@@ -274,7 +283,7 @@ async fn binding_parameters(storage: &mut StorageClient, policy: &Value, binding
             }
         }
     } else if let Some(selector) = param_ref.get("selector") {
-        list_resource_items(storage, &resolved_group, &version, &resource, namespace)
+        list_resource_items(storage, None, &resolved_group, &version, &resource, namespace)
             .await?
             .into_iter()
             .filter(|object| policy_matching::matches_label_selector(Some(selector), &crate::cacher::selector::object_labels(object)))

@@ -266,14 +266,14 @@ async fn an_aggregated_apiservice_resolves_and_relays_through_a_real_tls_backend
     // own `(group, version)` -- the exact lookup `server::listener`'s own
     // dispatch branch performs before ever considering this a local
     // request.
-    let resolved = route::resolve(&mut storage, "metrics.k8s.io", "v1beta1").await.expect("resolving the APIService").expect("a matching, non-local APIService must be found");
+    let resolved = route::resolve(&mut storage, "metrics.k8s.io", "v1beta1", None).await.expect("resolving the APIService").expect("a matching, non-local APIService must be found");
     assert_eq!(resolved["spec"]["service"]["name"], "metrics-server");
-    assert!(route::resolve(&mut storage, "metrics.k8s.io", "v1").await.expect("resolving a non-matching version").is_none(), "a different version must not match");
+    assert!(route::resolve(&mut storage, "metrics.k8s.io", "v1", None).await.expect("resolving a non-matching version").is_none(), "a different version must not match");
 
     // Group L Phase 3: discovery's own third merge input -- the same
     // real object this test just created, seen through the live
     // pre-flight-gated discovery path rather than the per-request one.
-    let discoverable = route::discoverable_group_versions(&mut storage).await.expect("listing discoverable aggregated group-versions");
+    let discoverable = route::discoverable_group_versions(&mut storage, None).await.expect("listing discoverable aggregated group-versions");
     assert!(discoverable.contains(&("metrics.k8s.io".to_string(), "v1beta1".to_string())), "expected the real, available APIService to be discoverable, got {discoverable:?}");
 
     // Step 2: the real pre-flight chain against the real Service/

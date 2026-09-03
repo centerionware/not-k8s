@@ -2,7 +2,8 @@ macro_rules! handle_patch_apply_admission {
     (
         $client:ident, $candidate:ident, $apply_context:ident, $dry_run:ident,
         $old_object:ident, $operation:ident, $info:ident, $path_str:ident,
-        $identity:ident, $admission_metadata:ident, $namespace:ident
+        $identity:ident, $admission_metadata:ident, $namespace:ident,
+        $cache_registry:ident
     ) => {{
             // MutatingAdmissionPolicy is part of the same $candidate-based
             // admission chain as ordinary CREATE/UPDATE. Apply must not
@@ -26,6 +27,7 @@ macro_rules! handle_patch_apply_admission {
                 $old_object.as_ref(),
                 $dry_run,
                 $identity.as_ref(),
+                Some(&$cache_registry),
             )
             .await
             {
@@ -239,6 +241,7 @@ macro_rules! handle_patch_apply_admission {
                 $old_object.as_ref(),
                 $dry_run,
                 $identity.as_ref(),
+                Some(&$cache_registry),
             )
             .await
             {
@@ -272,6 +275,7 @@ macro_rules! handle_patch_apply_admission {
                 $old_object,
                 $identity.as_ref(),
                 $dry_run,
+                Some(&$cache_registry),
             )
             .await
             {
