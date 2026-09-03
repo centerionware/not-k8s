@@ -543,15 +543,29 @@ fn delete_preconditions(
     }))
 }
 
-fn delete_grace_period(value: Option<&serde_json::Value>) -> Result<Option<i64>, &'static str> {
-    let Some(value) = value.and_then(|value| value.get("gracePeriodSeconds")) else {
+fn delete_grace_period(
+    value: Option<&serde_json::Value>,
+    query: &str,
+) -> Result<Option<i64>, &'static str> {
+    let body_value = value.and_then(|value| value.get("gracePeriodSeconds"));
+    let query_value = path::parse_query(query)
+        .into_iter()
+        .find(|(key, _)| key == "gracePeriodSeconds")
+        .map(|(_, value)| serde_json::Value::String(value));
+    let Some(value) = body_value.or(query_value.as_ref()) else {
         return Ok(None);
     };
     if value.is_null() {
         return Ok(None);
     }
-    let Some(seconds) = value.as_i64() else {
-        return Err("gracePeriodSeconds must be an integer");
+    let seconds = match value {
+        serde_json::Value::Number(value) => value
+            .as_i64()
+            .ok_or("gracePeriodSeconds must be an integer")?,
+        serde_json::Value::String(value) => value
+            .parse::<i64>()
+            .map_err(|_| "gracePeriodSeconds must be an integer")?,
+        _ => return Err("gracePeriodSeconds must be an integer"),
     };
     if seconds < 0 {
         return Err("gracePeriodSeconds must be non-negative");

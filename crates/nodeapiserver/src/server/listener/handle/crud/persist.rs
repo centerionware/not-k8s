@@ -128,7 +128,7 @@ macro_rules! handle_crud_persist {
                     Ok(value) => value,
                     Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, detail))),
                 };
-                let grace_period_seconds = match delete_grace_period($delete_options.as_ref()) {
+                let grace_period_seconds = match delete_grace_period($delete_options.as_ref(), &$query) {
                     Ok(value) => value,
                     Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, detail))),
                 };

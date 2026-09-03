@@ -63,6 +63,48 @@ async fn pod_delete_preserves_the_object_until_a_force_delete() {
     .expect("get must not error");
     assert!(matches!(still_present, rest::GetOutcome::Found(_)));
 
+    let resource_version = deleting["metadata"]["resourceVersion"]
+        .as_str()
+        .expect("delete response must include a resourceVersion");
+    assert!(matches!(
+        rest::update_status(
+            &mut storage,
+            "",
+            "v1",
+            "pods",
+            Some("default"),
+            "graceful-delete",
+            &json!({
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {
+                    "name": "graceful-delete",
+                    "namespace": "default",
+                    "resourceVersion": resource_version
+                },
+                "status": {"phase": "Terminating"}
+            }),
+            false,
+        )
+        .await
+        .expect("status update must not error"),
+        rest::UpdateOutcome::Updated(_)
+    ));
+    assert!(matches!(
+        rest::get(
+            &mut storage,
+            None,
+            "",
+            "v1",
+            "pods",
+            Some("default"),
+            "graceful-delete",
+        )
+        .await
+        .expect("get after status update must not error"),
+        rest::GetOutcome::Found(_)
+    ));
+
     let deleted = rest::delete_with_options(
         &mut storage,
         "",

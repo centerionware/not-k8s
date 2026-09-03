@@ -494,14 +494,17 @@ mod tests {
 
     #[test]
     fn delete_grace_period_decodes_non_negative_integer_values() {
-        assert_eq!(delete_grace_period(None).unwrap(), None);
-        assert_eq!(delete_grace_period(Some(&serde_json::json!({}))).unwrap(), None);
+        assert_eq!(delete_grace_period(None, "").unwrap(), None);
+        assert_eq!(delete_grace_period(Some(&serde_json::json!({})), "").unwrap(), None);
         assert_eq!(
-            delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": 3}))).unwrap(),
+            delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": 3})), "")
+                .unwrap(),
             Some(3)
         );
-        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": -1}))).is_err());
-        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": "3"}))).is_err());
+        assert_eq!(delete_grace_period(None, "gracePeriodSeconds=0").unwrap(), Some(0));
+        assert_eq!(delete_grace_period(None, "gracePeriodSeconds=3").unwrap(), Some(3));
+        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": -1})), "").is_err());
+        assert!(delete_grace_period(Some(&serde_json::json!({"gracePeriodSeconds": "3"})), "").is_err());
     }
 
     #[test]
