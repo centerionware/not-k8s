@@ -1,0 +1,17 @@
+bootstrap e2e: 11 test(s)
+▶ test_scheduler_does_not_preempt_when_policy_forbids_it ... PASS (23466ms)
+▶ test_scheduler_honours_pod_anti_affinity ... PASS (66430ms)
+▶ test_restart_policy_never_exit_zero_is_succeeded ... PASS (4640ms)
+▶ test_pod_exceeding_its_active_deadline_is_terminated ... PASS (14068ms)
+▶ test_image_pull_policy_if_not_present_skips_the_registry_round_trip ... PASS (57246ms)
+▶ test_liveness_probe_failure_restarts_the_container ... PASS (66681ms)
+▶ test_http_get_readiness_probe_against_a_real_server ... PASS (64640ms)
+▶ test_downward_api_volume_writes_pod_metadata ... FAIL (91586ms)
+    timed out waiting for Downward API volume content
+▶ test_empty_dir_medium_memory_is_backed_by_tmpfs ... FAIL (91988ms)
+    timed out waiting for memory emptyDir mount
+▶ test_host_path_directory_or_create_creates_a_missing_directory ... FAIL (92143ms)
+    timed out waiting for DirectoryOrCreate hostPath Pod
+▶ test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... FAIL (92078ms)
+    timed out waiting for recursiveReadOnly nested Pod
+Error: bootstrap e2e failed: 4 test(s): test_downward_api_volume_writes_pod_metadata, test_empty_dir_medium_memory_is_backed_by_tmpfs, test_host_path_directory_or_create_creates_a_missing_directory, test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too

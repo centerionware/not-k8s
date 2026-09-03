@@ -90,6 +90,55 @@ debug-build-only nodecontroller stack overflow hit getting the cluster up
 to capture this) which blocked deployment until worked around with a
 `LimitSTACK=infinity` systemd override.
 
+## `postfix-capture/` + `postfix-e2e-output.txt` — after #527/#532/#533
+
+Same box, same 11-test set, single pass (not looped this time), captured
+against a fresh debug build of `nodeapiserver` commit `4fc1d08` — the
+first commit after #527 (RBAC cache + protobuf field-index memoization),
+#532 (Node authorizer field selector + watch cache), and #533 (Codex's
+APF configuration-lookup cache, landed independently during this same
+investigation) all merged.
+
+**Results, same test set, comparable single-pass baseline:**
+
+| | pre-fix (churn iteration 1) | post-fix (single pass) |
+|---|---|---|
+| failed | 7 / 11 | 4 / 11 |
+| elapsed | 775s | 665s |
+| `decode_message` (with children) | ~48.8% of samples | ~26.1% |
+| dominated by | `fields_by_number` rebuilding a `HashMap` per call (~38.5%) | (fixed) |
+
+Real, measured improvement — not eliminated. `postfix-e2e-output.txt`
+still shows 4 of the original 11 failing, so whatever's left is a real,
+separate problem, not noise.
+
+**What's now on top** (`postfix-capture/top-functions.txt`,
+`SUMMARY.txt`): with the old dominant cost gone, `decode_message` itself
+dropped to ~7.3% self-time, but a *second* linear scan over a generated
+static table surfaced right behind it — `PROTO_MESSAGES.contains(&message)`
+(the same class of bug as `fields_by_number`, just a different table:
+membership-checking against every message name this build knows about,
+on every decode call), ~16.5% of all samples. Filed and fixed:
+[#534](https://github.com/centerionware/not-k8s/issues/534) /
+[PR #535](https://github.com/centerionware/not-k8s/pull/535) — same
+`OnceLock`-memoized-once pattern as before, this time a `HashSet`. **Not
+yet re-profiled with that fix in place** — natural next step once #535
+lands, to see whether the remaining 4 failures close out or whether a
+third thing surfaces once this one's gone too.
+
+Below that: `malloc`/`free`/`memcpy`/`memcmp` and kernel spin-lock
+contention (`queued_spin_lock_slowpath`, `_raw_spin_unlock_irqrestore`)
+remain, similar proportions to the very first idle capture — still not
+individually root-caused. Everything else in the top 20 is generic
+overhead (TLS/crypto, JSON value handling, tokio scheduler bookkeeping),
+not an obvious bug.
+
+This capture's raw sample data is `postfix-capture/perf.data.zst`, not
+plain `perf.data` — the real recording was 250MB, over GitHub's 100MB
+hard file-size limit, so it's `zstd -19 --long=27`-compressed (8.4% of
+original size). Decompress with `zstd -d perf.data.zst` before pointing
+`perf report`/`perf script` at it.
+
 ## Regenerating a flamegraph elsewhere
 
 ```

@@ -1,0 +1,69 @@
+label=nodeapiserver
+pid=90633
+started=2026-09-03T14:08:00+00:00
+duration_seconds=1200
+executable=/var/lib/nodebootstrap/toolchain/bin/notk8s
+cmdline=/var/lib/nodebootstrap/toolchain/bin/nodeapiserver 
+
+=== executable ===
+/var/lib/nodebootstrap/toolchain/bin/notk8s: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped
+
+=== status ===
+Name:	nodeapiserver
+Umask:	0022
+State:	S (sleeping)
+Tgid:	90633
+Ngid:	0
+Pid:	90633
+PPid:	90625
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	128
+Groups:	 
+NStgid:	90633
+NSpid:	90633
+NSpgid:	90625
+NSsid:	90625
+Kthread:	0
+VmPeak:	  265464 kB
+VmSize:	  253588 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  138704 kB
+VmRSS:	  130908 kB
+RssAnon:	   96456 kB
+RssFile:	   34452 kB
+RssShmem:	       0 kB
+VmData:	  115520 kB
+VmStk:	    3860 kB
+VmExe:	  134088 kB
+VmLib:	       8 kB
+VmPTE:	     420 kB
+VmSwap:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffff
+Threads:	9
+SigQ:	2/7630
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000001000
+SigCgt:	0000000000000440
+CapInh:	0000000000000000
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	thread vulnerable
+SpeculationIndirectBranch:	unknown
+Cpus_allowed:	ff
+Cpus_allowed_list:	0-7
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	165
+nonvoluntary_ctxt_switches:	20
