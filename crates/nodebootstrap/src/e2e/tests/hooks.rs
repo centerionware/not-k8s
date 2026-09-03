@@ -18,6 +18,28 @@ async fn create_pod(context: &E2eContext, name: &str, spec: serde_json::Value) -
     Ok(())
 }
 
+async fn delete_pod_with_conflict_retry(
+    context: &E2eContext,
+    pods: &Api<Pod>,
+    name: &str,
+    params: DeleteParams,
+    description: &str,
+) -> Result<()> {
+    context
+        .wait_until(description, Duration::from_secs(30), || {
+            let pods = pods.clone();
+            let params = params.clone();
+            async move {
+                match pods.delete(name, &params).await {
+                    Ok(_) => Ok(true),
+                    Err(kube::Error::Api(error)) if error.code == 409 => Ok(false),
+                    Err(error) => Err(error.into()),
+                }
+            }
+        })
+        .await
+}
+
 async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<String>> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods
@@ -278,8 +300,18 @@ pub(super) async fn termination_grace_period_clean_exit_is_not_instant(
             },
         )
         .await?;
+    delete_pod_with_conflict_retry(
+        context,
+        &pods,
+        name,
+        DeleteParams {
+            grace_period_seconds: Some(8),
+            ..Default::default()
+        },
+        "clean grace-period Pod deletion request",
+    )
+    .await?;
     let started = Instant::now();
-    pods.delete(name, &DeleteParams::default()).await?;
     context
         .wait_until(
             "clean grace-period Pod remains after TERM",
@@ -359,8 +391,18 @@ pub(super) async fn termination_grace_period_force_kills_term_ignoring_pod(
             },
         )
         .await?;
+    delete_pod_with_conflict_retry(
+        context,
+        &pods,
+        name,
+        DeleteParams {
+            grace_period_seconds: Some(5),
+            ..Default::default()
+        },
+        "force grace-period Pod deletion request",
+    )
+    .await?;
     let started = Instant::now();
-    pods.delete(name, &DeleteParams::default()).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
     anyhow::ensure!(
         pods.get_opt(name).await?.is_some(),
