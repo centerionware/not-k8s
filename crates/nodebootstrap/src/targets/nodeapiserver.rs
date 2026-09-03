@@ -206,6 +206,7 @@ fn install_service(
             exec_cmd: &exec_cmd,
             after: Some("nodestore.service"),
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodeapiserver as a supervised service")?;

@@ -224,6 +224,12 @@ fn build_pod(rs: &ReplicaSet, name: &str) -> Option<Pod> {
     })
 }
 
+/// Issue #454: a transient Pod-create/-delete failure (the incident this
+/// closes: a webhook temporarily unavailable) used to be logged and
+/// forgotten -- nothing about the ReplicaSet object itself changes when a
+/// create attempt fails, so in this watch-driven, no-resync architecture
+/// nothing would ever produce a future event to retry it. `true` here
+/// means the caller should schedule a real retry.
 async fn reconcile_replica_set(
     client: &Client,
     rs: &ReplicaSet,
@@ -334,8 +340,21 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
     obj.namespace().unwrap_or_default()
 }
 
+/// How long to wait before retrying a ReplicaSet whose reconcile hit a
+/// transient failure (issue #454) -- long enough that a truly transient
+/// blip (a webhook briefly unavailable, an apiserver hiccup) has almost
+/// certainly cleared, short enough that a real incident does not leave
+/// replicas under- or over-provisioned for long. Fixed, not exponential:
+/// this queue has no per-key backoff state to grow, and a bounded fixed
+/// retry is a large improvement over the previous "never" on its own —
+/// matching `namespace.rs`'s own `RETRY_PERIOD` precedent for the same
+/// "honest, low-frequency, not a real resync loop" shape.
 const RETRY_DELAY: Duration = Duration::from_secs(15);
 
+/// Re-enqueue `key` after `RETRY_DELAY`, detached from the reconcile loop
+/// so a slow retry can never block processing any other ReplicaSet or Pod
+/// event in the meantime -- same reasoning nodelet's own `schedule_retry()`
+/// documents for the identical shape.
 fn schedule_retry(queue: &std::sync::Arc<KeyedWorkQueue<String>>, key: String) {
     let queue = queue.clone();
     tokio::spawn(async move {
@@ -348,8 +367,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
     let mut expectations: Expectations = HashMap::new();
-    let queue: std::sync::Arc<KeyedWorkQueue<String>> =
-        std::sync::Arc::new(KeyedWorkQueue::default());
+    // Arc so a delayed retry (issue #454) can hold its own cheap clone from
+    // a detached task, the same "outlive the failure" shape pods.rs's own
+    // schedule_retry() already established for exactly this class of gap:
+    // a transient failure (a webhook temporarily unavailable, live-observed
+    // this session) whose object never changes, so nothing else would ever
+    // produce a future watch event to retry it.
+    let queue: std::sync::Arc<KeyedWorkQueue<String>> = std::sync::Arc::new(KeyedWorkQueue::default());
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut rs_stream = crate::watch::watch_replica_sets(&client);

@@ -24,12 +24,25 @@ use kube::api::{Api, DeleteParams, DynamicObject, ListParams, PostParams};
 use kube::discovery::{verbs, ApiCapabilities, ApiResource, Discovery, Scope};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
-use k8s_openapi::api::core::v1::{Namespace, NamespaceSpec};
+use k8s_openapi::api::core::v1::{Namespace, NamespaceSpec, Pod};
 use std::collections::HashMap;
 use std::time::Duration;
 
 const NAMESPACE_FINALIZER: &str = "kubernetes";
 const RETRY_PERIOD: Duration = Duration::from_secs(5);
+/// Issue #557: a backstop, not the primary mechanism -- normal namespace
+/// deletion is finalizer-gated (#541) and cleans up contents before the
+/// Namespace object itself goes away, so this should almost never find
+/// anything. It exists for whatever *does* slip through that (a bug
+/// elsewhere, a race, a hand-edited store) — real Kubernetes' garbage
+/// collector controller plays the same backstop role behind normal
+/// owner-reference/finalizer-driven deletion, not a replacement for it.
+/// Low frequency on purpose: a cluster-wide Pod list is real, non-trivial
+/// work, and this project's whole point is that idle cost stays close to
+/// zero — matching the "permanently broken pod settles at one wakeup
+/// every 5 minutes" cost model `pods.rs`'s own `schedule_retry()` already
+/// established for its own backstop retry.
+const ORPHAN_SWEEP_PERIOD: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 struct CleanupResource {
@@ -167,6 +180,52 @@ async fn finalize_namespace(client: &Client, namespace: &Namespace) {
     }
 }
 
+/// Delete any Pod whose namespace isn't in `namespaces` — issue #557's
+/// backstop. Scoped to Pods only, not every namespaced kind `resources`
+/// covers: Pods are both the highest-volume object namespace deletion
+/// ever orphans in practice (a workload's own contents dwarf everything
+/// else in a namespace) and, live-measured this session, the ones that
+/// actually cost real CPU sitting around reconciled forever -- a
+/// still-running container, a node agent still writing its status,
+/// re-minting tokens, retrying CSI attaches. Broadening this to every
+/// discovered kind is a real possible future generalization, not done
+/// here to keep this backstop's blast radius and cost narrow and
+/// well-understood.
+/// Pure predicate behind `sweep_orphaned_pods()` — pulled out so the
+/// decision itself ("is this pod's namespace known to still exist") is
+/// unit-testable without a real client, the same pure/impure split every
+/// other helper in this file already keeps.
+fn is_orphaned(pod_namespace: &str, namespaces: &HashMap<String, Namespace>) -> bool {
+    !namespaces.contains_key(pod_namespace)
+}
+
+async fn sweep_orphaned_pods(client: &Client, namespaces: &HashMap<String, Namespace>) {
+    let api: Api<Pod> = Api::all(client.clone());
+    let pods = match api.list(&ListParams::default()).await {
+        Ok(pods) => pods,
+        Err(error) => {
+            tracing::warn!(error = ?error, "namespace-controller: orphan sweep failed to list Pods");
+            return;
+        }
+    };
+    let delete_params = DeleteParams {
+        grace_period_seconds: Some(0),
+        ..Default::default()
+    };
+    for pod in pods.items {
+        let Some(namespace) = pod.metadata.namespace.as_deref() else { continue };
+        if !is_orphaned(namespace, namespaces) {
+            continue;
+        }
+        let name = pod.name_any();
+        match Api::<Pod>::namespaced(client.clone(), namespace).delete(&name, &delete_params).await {
+            Ok(_) => tracing::info!(namespace, name = %name, "namespace-controller: orphan sweep deleted a Pod whose namespace no longer exists"),
+            Err(kube::Error::Api(status)) if status.is_not_found() => {}
+            Err(error) => tracing::warn!(namespace, name = %name, error = ?error, "namespace-controller: orphan sweep failed to delete a Pod"),
+        }
+    }
+}
+
 async fn reconcile_namespace(
     client: &Client,
     namespace: &Namespace,
@@ -206,6 +265,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         RETRY_PERIOD,
     );
     retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut orphan_sweep = tokio::time::interval_at(
+        tokio::time::Instant::now() + ORPHAN_SWEEP_PERIOD,
+        ORPHAN_SWEEP_PERIOD,
+    );
+    orphan_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -287,6 +351,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     }
                 }
             }
+            _ = orphan_sweep.tick() => {
+                sweep_orphaned_pods(&client, &namespaces).await;
+            }
         }
     }
 }
@@ -306,6 +373,23 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_pod_in_a_known_namespace_is_not_orphaned() {
+        let mut namespaces = HashMap::new();
+        namespaces.insert("real-ns".to_string(), namespace(Some(vec![NAMESPACE_FINALIZER]), false));
+        assert!(!is_orphaned("real-ns", &namespaces));
+    }
+
+    #[test]
+    fn a_pod_in_an_unknown_namespace_is_orphaned() {
+        // Issue #557: this is the state a namespace deletion that skipped
+        // proper finalization (#541) leaves behind -- the Namespace object
+        // is gone, but its contents (a Pod, live-observed still running
+        // and reconciled forever) are not.
+        let namespaces: HashMap<String, Namespace> = HashMap::new();
+        assert!(is_orphaned("gone-ns", &namespaces));
     }
 
     #[test]
