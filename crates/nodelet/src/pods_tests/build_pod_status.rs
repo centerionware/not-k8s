@@ -197,6 +197,37 @@ fn server_owned_status_fields_do_not_force_a_patch() {
     assert!(!status_patch_changes(Some(&previous), &desired));
 }
 
+#[test]
+fn scheduler_owned_pod_scheduled_condition_does_not_force_a_patch() {
+    // Issue #536/#537: PodScheduled is the scheduler's condition, set once
+    // at binding time with a real message/reason nodelet has neither the
+    // information nor the business rebuilding. Treating it as one of
+    // nodelet's own (OWNED_CONDITION_TYPES) meant every reconcile proposed
+    // a minimal, always-true PodScheduled stripped of those fields --
+    // never equal to what the scheduler's real condition (still present in
+    // `prev`) carries, so this never converged: every write_status() call
+    // saw a "change", patched, which re-triggered the pod's own watch,
+    // which re-triggered reconcile() -- forever, live-traced hammering
+    // both nodeapiserver and this pod's own watch stream.
+    let runtime = running_status();
+    let mut previous = bps("10.0.0.1", &runtime, None);
+    let scheduled = PodCondition {
+        type_: "PodScheduled".to_string(),
+        status: "True".to_string(),
+        reason: Some("Scheduled".to_string()),
+        message: Some("Successfully assigned default/app to a-node".to_string()),
+        last_transition_time: Some(fixed_time(120)),
+        ..Default::default()
+    };
+    previous.conditions.as_mut().expect("bps() always sets conditions").push(scheduled.clone());
+
+    let desired = bps("10.0.0.1", &runtime, Some(&previous));
+
+    let carried = desired.conditions.as_ref().unwrap().iter().find(|c| c.type_ == "PodScheduled").expect("PodScheduled must be carried forward, not dropped");
+    assert_eq!(carried, &scheduled, "the scheduler's condition must round-trip unchanged, message/reason included");
+    assert!(!status_patch_changes(Some(&previous), &desired), "an unchanged, carried-forward PodScheduled must not force a patch");
+}
+
 #[tokio::test]
 async fn changed_status_still_sends_the_http_patch() {
     let patches = Arc::new(AtomicUsize::new(0));
