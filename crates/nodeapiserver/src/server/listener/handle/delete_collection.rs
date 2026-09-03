@@ -60,6 +60,7 @@ macro_rules! handle_delete_collection {
                 Some(item),
                 dry_run,
                 $identity.as_ref(),
+                Some(&$cache_registry),
             )
             .await
             {
@@ -88,6 +89,7 @@ macro_rules! handle_delete_collection {
                 Some(item.clone()),
                 $identity.as_ref(),
                 dry_run,
+                Some(&$cache_registry),
             )
             .await
             {

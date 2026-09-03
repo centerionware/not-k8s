@@ -42,13 +42,14 @@ pub async fn mutate(
     old_object: Option<&Value>,
     dry_run: bool,
     identity: Option<&Identity>,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Value, String> {
     if is_exempt(group, resource) {
         return Ok(object);
     }
 
-    let mut policies = list_items(storage, "mutatingadmissionpolicies").await?;
-    let mut bindings = list_items(storage, "mutatingadmissionpolicybindings").await?;
+    let mut policies = list_items(storage, "mutatingadmissionpolicies", cache_registry).await?;
+    let mut bindings = list_items(storage, "mutatingadmissionpolicybindings", cache_registry).await?;
     policies.sort_by(|left, right| object_name(left).cmp(&object_name(right)));
     bindings.sort_by(|left, right| object_name(left).cmp(&object_name(right)));
     if policies.is_empty() || bindings.is_empty() {
@@ -97,7 +98,8 @@ pub async fn mutate(
     let namespace_labels = if namespace.is_empty() {
         BTreeMap::new()
     } else {
-        match rest::get(storage, None, "", "v1", "namespaces", None, namespace).await {
+        let cache = cache_registry.and_then(|registry| registry.get("", "v1", "namespaces"));
+        match rest::get(storage, cache.as_ref(), "", "v1", "namespaces", None, namespace).await {
             Ok(rest::GetOutcome::Found(value)) => crate::cacher::selector::object_labels(&value),
             Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                 BTreeMap::new()
@@ -382,8 +384,9 @@ async fn apply_mutation(
     }
 }
 
-async fn list_items(storage: &mut StorageClient, resource: &str) -> Result<Vec<Value>, String> {
-    match rest::list(storage, None, GROUP, VERSION, resource, None, "", "", 0, "").await {
+async fn list_items(storage: &mut StorageClient, resource: &str, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Vec<Value>, String> {
+    let cache = cache_registry.and_then(|registry| registry.get(GROUP, VERSION, resource));
+    match rest::list(storage, cache.as_ref(), GROUP, VERSION, resource, None, "", "", 0, "").await {
         Ok(ListOutcome::Found(list)) => Ok(list
             .get("items")
             .and_then(Value::as_array)

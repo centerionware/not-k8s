@@ -4,7 +4,7 @@ macro_rules! handle_crud_late_admission {
         $info:ident, $path_str:ident,
         $is_create:ident, $is_update:ident, $is_delete:ident,
         $identity:ident, $dry_run:ident, $admission_metadata:ident,
-        $quota_usage_updates:ident
+        $quota_usage_updates:ident, $cache_registry:ident
     ) => {{
             // Group J: `ResourceQuota` — validating, `CREATE` only, pods/
             // PVCs/services only (see `admission::resource_quota`'s own
@@ -114,7 +114,8 @@ macro_rules! handle_crud_late_admission {
                     "DELETE"
                 };
                 let old_object = if $is_update || $is_delete {
-                    match rest::get(&mut $client, None, &$info.api_group, &$info.api_version, &$info.resource, $namespace, &$info.name).await {
+                    let resource_cache = $cache_registry.get(&$info.api_group, &$info.api_version, &$info.resource);
+                    match rest::get(&mut $client, resource_cache.as_ref(), &$info.api_group, &$info.api_version, &$info.resource, $namespace, &$info.name).await {
                         Ok(rest::GetOutcome::Found(object)) => Some(object),
                         Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                         Err(error) => {
@@ -125,7 +126,7 @@ macro_rules! handle_crud_late_admission {
                 } else {
                     None
                 };
-                match admission::policy_enforcement::validate(&mut $client, operation, &$info.api_group, &$info.api_version, &$info.resource, &$info.subresource, &$info.$namespace, &$info.name, $body_value.as_ref(), old_object.as_ref(), $dry_run, $identity.as_ref()).await {
+                match admission::policy_enforcement::validate(&mut $client, operation, &$info.api_group, &$info.api_version, &$info.resource, &$info.subresource, &$info.$namespace, &$info.name, $body_value.as_ref(), old_object.as_ref(), $dry_run, $identity.as_ref(), Some(&$cache_registry)).await {
                     Ok(outcome) => {
                         record_admission_outcome($admission_metadata.as_ref(), &outcome);
                         if let Some(message) = outcome.denial {
@@ -195,7 +196,8 @@ macro_rules! handle_crud_late_admission {
             // object); a missing object is left to REST to report NotFound.
             if $is_create || $is_update || $is_delete {
                 let old_object = if $is_update || $is_delete {
-                    match rest::get(&mut $client, None, &$info.api_group, &$info.api_version, &$info.resource, $namespace, &$info.name).await {
+                    let resource_cache = $cache_registry.get(&$info.api_group, &$info.api_version, &$info.resource);
+                    match rest::get(&mut $client, resource_cache.as_ref(), &$info.api_group, &$info.api_version, &$info.resource, $namespace, &$info.name).await {
                         Ok(rest::GetOutcome::Found(object)) => Some(object),
                         Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                         Err(e) => {
@@ -228,6 +230,7 @@ macro_rules! handle_crud_late_admission {
                         old_object,
                         $identity.as_ref(),
                         $dry_run,
+                        Some(&$cache_registry),
                     )
                     .await
                     {

@@ -72,13 +72,15 @@ pub async fn admit(
     old_object: Option<Value>,
     identity: Option<&Identity>,
     dry_run: bool,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Outcome, Error> {
-    let mutating = list_configurations(storage, "mutatingwebhookconfigurations").await?;
-    let validating = list_configurations(storage, "validatingwebhookconfigurations").await?;
+    let mutating = list_configurations(storage, "mutatingwebhookconfigurations", cache_registry).await?;
+    let validating = list_configurations(storage, "validatingwebhookconfigurations", cache_registry).await?;
     let namespace_object = if namespace.is_empty() {
         None
     } else {
-        match rest::get(storage, None, "", "v1", "namespaces", None, namespace).await? {
+        let cache = cache_registry.and_then(|registry| registry.get("", "v1", "namespaces"));
+        match rest::get(storage, cache.as_ref(), "", "v1", "namespaces", None, namespace).await? {
             rest::GetOutcome::Found(value) => Some(value),
             rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource => None,
         }
@@ -194,10 +196,12 @@ pub async fn admit(
 async fn list_configurations(
     storage: &mut StorageClient,
     resource: &str,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Vec<Value>, Error> {
+    let cache = cache_registry.and_then(|registry| registry.get(ADMISSION_GROUP, ADMISSION_VERSION, resource));
     let result = rest::list(
         storage,
-        None,
+        cache.as_ref(),
         ADMISSION_GROUP,
         ADMISSION_VERSION,
         resource,

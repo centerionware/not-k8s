@@ -38,13 +38,14 @@ pub enum Error {
 /// doesn't attempt to detect, same "not our job to police" posture
 /// `apiextensions::registry::resolve_in`'s own doc comment already takes
 /// for a CRD naming collision.
-pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str) -> Result<Option<Value>, Error> {
+pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Option<Value>, Error> {
     if group.is_empty() {
         // The core group is never aggregated -- real upstream's own rule,
         // and this build has no `APIService` bootstrap for it anyway.
         return Ok(None);
     }
-    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+    let cache = cache_registry.and_then(|registry| registry.get("apiregistration.k8s.io", "v1", "apiservices"));
+    let list = match rest::list(storage, cache.as_ref(), "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(None),
     };
@@ -75,8 +76,9 @@ pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str) ->
 /// `EndpointSlice` LIST, bounded by the same small real-world
 /// cardinality `resolve`'s own doc comment already assumes) only for an
 /// `APIService` the reconciliation loop hasn't reached yet.
-pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<Vec<(String, String)>, Error> {
-    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+pub async fn discoverable_group_versions(storage: &mut StorageClient, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Vec<(String, String)>, Error> {
+    let cache = cache_registry.and_then(|registry| registry.get("apiregistration.k8s.io", "v1", "apiservices"));
+    let list = match rest::list(storage, cache.as_ref(), "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(Vec::new()),
     };

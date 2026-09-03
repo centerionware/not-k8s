@@ -32,7 +32,7 @@ macro_rules! handle_aggregate {
     // "resource requests only" scope for its aggregation proxy handler.
     if $info.is_resource_request && !$info.api_group.is_empty() {
         if let Some(mut client) = $storage.clone() {
-            match aggregator::route::resolve(&mut client, &$info.api_group, &$info.api_version).await {
+            match aggregator::route::resolve(&mut client, &$info.api_group, &$info.api_version, Some(&$cache_registry)).await {
                 Ok(Some(api_service)) => return Ok(aggregate_proxy($req, &$method, &api_service, client, &$path_str, &$query, $identity.as_ref(), $aggregation_proxy_identity.as_deref()).await),
                 Ok(None) => {}
                 Err(e) => warn!(path = %$path_str, error = ?e, "aggregation: looking up a matching APIService failed"),

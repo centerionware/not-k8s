@@ -736,7 +736,7 @@ macro_rules! handle_patch_apply {
             handle_patch_apply_admission!(
                 client, candidate, apply_context, dry_run, old_object,
                 operation, $info, $path_str, $identity, $admission_metadata,
-                $namespace
+                $namespace, $cache_registry
             );
         }
     }};
