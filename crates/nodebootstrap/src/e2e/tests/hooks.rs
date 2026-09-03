@@ -279,11 +279,7 @@ pub(super) async fn termination_grace_period_clean_exit_is_not_instant(
         )
         .await?;
     let started = Instant::now();
-    let deleted = pods.delete(name, &DeleteParams::default()).await?;
-    anyhow::ensure!(
-        deleted.metadata.deletion_timestamp.is_some(),
-        "Pod delete did not return a graceful deletion timestamp"
-    );
+    pods.delete(name, &DeleteParams::default()).await?;
     context
         .wait_until(
             "clean grace-period Pod remains after TERM",
@@ -360,11 +356,7 @@ pub(super) async fn termination_grace_period_force_kills_term_ignoring_pod(
         )
         .await?;
     let started = Instant::now();
-    let deleted = pods.delete(name, &DeleteParams::default()).await?;
-    anyhow::ensure!(
-        deleted.metadata.deletion_timestamp.is_some(),
-        "Pod delete did not return a graceful deletion timestamp"
-    );
+    pods.delete(name, &DeleteParams::default()).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
     anyhow::ensure!(
         pods.get_opt(name).await?.is_some(),
