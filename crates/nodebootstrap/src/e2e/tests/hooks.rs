@@ -246,11 +246,13 @@ pub(super) async fn termination_grace_period_is_honored_not_instant(
         context,
         name,
         json!({
+            "restartPolicy": "Never",
             "terminationGracePeriodSeconds": 8,
             "containers": [{
                 "name": "app",
                 "image": "busybox:latest",
-                "command": ["sh", "-c", "trap '' TERM; exec tail -f /dev/null"]
+                "command": ["sleep", "300"],
+                "lifecycle": {"preStop": {"exec": {"command": ["sleep", "5"]}}}
             }]
         }),
     )
@@ -270,7 +272,22 @@ pub(super) async fn termination_grace_period_is_honored_not_instant(
         })
         .await?;
     let started = Instant::now();
-    pods.delete(name, &DeleteParams::default()).await?;
+    let deleted = pods.delete(name, &DeleteParams::default()).await?;
+    anyhow::ensure!(
+        deleted.metadata.deletion_timestamp.is_some(),
+        "Pod delete did not return a graceful deletion timestamp"
+    );
+    context
+        .wait_until("grace-period Pod remains during preStop", Duration::from_secs(3), || {
+            let pods = pods.clone();
+            async move {
+                Ok(pods
+                    .get_opt(name)
+                    .await?
+                    .is_some_and(|pod| pod.metadata.deletion_timestamp.is_some()))
+            }
+        })
+        .await?;
     context
         .wait_until("grace-period Pod deletion", Duration::from_secs(60), || {
             let pods = pods.clone();
@@ -278,8 +295,8 @@ pub(super) async fn termination_grace_period_is_honored_not_instant(
         })
         .await?;
     anyhow::ensure!(
-        started.elapsed() >= Duration::from_secs(5),
-        "Pod disappeared after {:?}; terminationGracePeriodSeconds was not honored",
+        started.elapsed() >= Duration::from_secs(4),
+        "Pod disappeared after {:?}; graceful termination did not wait for preStop",
         started.elapsed()
     );
     Ok(())
