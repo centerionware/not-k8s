@@ -1007,6 +1007,17 @@ pub(super) async fn recursive_read_only_enabled_blocks_writes_in_a_nested_mount_
     if !privileged_available() {
         return Err(skip_test("nested recursive read-only checks require root or passwordless sudo"));
     }
+    // Issue #550: this test asserts real kernel/runtime enforcement
+    // (mount_setattr(2) with AT_RECURSIVE | MOUNT_ATTR_RDONLY, Linux
+    // 5.12+, plumbed through by the OCI runtime) without checking whether
+    // this node's runtime handler advertises that capability at all --
+    // its sibling test (recursive_read_only_if_possible) already gates on
+    // this and skips cleanly when absent. The capability-check factoring
+    // landed, but wiring it into *this* function did not (found live
+    // re-verifying this session's other fixes) -- applying it now.
+    if recursive_read_only_mounts_capability(context).await?.is_none() {
+        return Err(skip_test("runtime handler did not advertise a boolean recursiveReadOnlyMounts capability"));
+    }
     let host_path = host_path_test_dir("recursive-readonly-nested");
     let source_path = host_path_test_dir("recursive-readonly-nested-source");
     let nested_path = format!("{host_path}/nested");
