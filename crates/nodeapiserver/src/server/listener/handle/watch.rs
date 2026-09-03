@@ -197,7 +197,13 @@ macro_rules! handle_watch {
                     return Ok(Response::builder().status(StatusCode::OK).header("Content-Type", "application/json").body(body).unwrap());
                 }
                 Err(crate::cacher::store::Error::TooOld { .. }) => {
-                    return Ok(json_response(StatusCode::GONE, &resource_expired_status(&$path_str)));
+                    // Once authentication/authorization and the resource
+                    // version have been accepted, upstream keeps the watch
+                    // at HTTP 200 and reports an expired version as an
+                    // in-band ERROR event. kube-rs uses that event to reset
+                    // its watcher to a fresh LIST; returning HTTP 410 here
+                    // leaves a resumed watcher retrying the same stale RV.
+                    return Ok(watch_resource_expired_response(&$path_str));
                 }
             }
         }

@@ -180,3 +180,22 @@ async fn watch_response_body_sends_streaming_list_initial_events_end_bookmark() 
         "true"
     );
 }
+
+#[tokio::test]
+async fn expired_watch_is_an_in_band_error_event_in_an_http_success_response() {
+    use http_body_util::BodyExt;
+
+    let response = watch_resource_expired_response("/api/v1/watch/namespaces");
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/json"
+    );
+
+    let (_, body) = response.into_parts();
+    let bytes = body.collect().await.unwrap().to_bytes();
+    let event: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(event["type"], "ERROR");
+    assert_eq!(event["object"]["reason"], "Gone");
+    assert_eq!(event["object"]["code"], 410);
+}

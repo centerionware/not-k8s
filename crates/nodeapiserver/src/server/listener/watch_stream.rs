@@ -285,3 +285,23 @@ fn watch_response_body_with_initial_events(
     };
     StreamBody::new(stream).boxed()
 }
+
+/// Return the upstream-compatible response for a watch that started below
+/// the cache's retained history. The HTTP request has already passed the
+/// normal watch admission/authentication path, so the expiration is a watch
+/// event (`type: ERROR`, `Status.code: 410`) inside an HTTP 200 response,
+/// not an HTTP-level error. Clients such as kube-rs reset their watcher and
+/// relist when they receive that in-band event.
+fn watch_resource_expired_response(path: &str) -> Response<BoxedBody> {
+    let event = serde_json::json!({
+        "type": "ERROR",
+        "object": resource_expired_status(path),
+    });
+    let mut bytes = serde_json::to_vec(&event).unwrap_or_else(|_| b"{}".to_vec());
+    bytes.push(b'\n');
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(body_from_bytes(bytes))
+        .unwrap()
+}
