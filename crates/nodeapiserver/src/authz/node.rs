@@ -37,6 +37,7 @@ pub async fn authorize(
     storage: &mut StorageClient,
     identity: Option<&Identity>,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     let Some(node_name) = node_name(identity) else {
         return Ok(Decision::NoOpinion);
@@ -48,23 +49,27 @@ pub async fn authorize(
 
     let decision = match (info.api_group.as_str(), info.resource.as_str()) {
         ("", "nodes") => node_access(node_name, info),
-        ("", "pods") => pod_access(storage, node_name, info).await?,
+        ("", "pods") => pod_access(storage, node_name, info, cache_registry).await?,
         ("", "secrets" | "configmaps") => {
-            named_pod_reference_access(storage, node_name, info).await?
+            named_pod_reference_access(storage, node_name, info, cache_registry).await?
         }
-        ("", "persistentvolumeclaims") => pvc_access(storage, node_name, info).await?,
-        ("", "persistentvolumes") => pv_access(storage, node_name, info).await?,
-        ("", "serviceaccounts") => service_account_access(storage, node_name, info).await?,
+        ("", "persistentvolumeclaims") => {
+            pvc_access(storage, node_name, info, cache_registry).await?
+        }
+        ("", "persistentvolumes") => pv_access(storage, node_name, info, cache_registry).await?,
+        ("", "serviceaccounts") => {
+            service_account_access(storage, node_name, info, cache_registry).await?
+        }
         ("coordination.k8s.io", "leases") => lease_access(node_name, info),
         ("storage.k8s.io", "csinodes") => csi_node_access(node_name, info),
         ("storage.k8s.io", "volumeattachments") => {
-            volume_attachment_access(storage, node_name, info).await?
+            volume_attachment_access(storage, node_name, info, cache_registry).await?
         }
         ("resource.k8s.io", "resourceslices") => {
-            resource_slice_access(storage, node_name, info).await?
+            resource_slice_access(storage, node_name, info, cache_registry).await?
         }
         ("resource.k8s.io", "resourceclaims") => {
-            resource_claim_access(storage, node_name, info).await?
+            resource_claim_access(storage, node_name, info, cache_registry).await?
         }
         ("authentication.k8s.io", "tokenreviews")
             if info.verb == "create" && info.subresource.is_empty() =>
@@ -107,6 +112,7 @@ async fn pod_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if info.subresource == "status" {
         return if matches!(info.verb.as_str(), "update" | "patch") && !info.name.is_empty() {
@@ -115,6 +121,7 @@ async fn pod_access(
                 node_name,
                 info.namespace.as_str(),
                 info.name.as_str(),
+                cache_registry,
             )
             .await
             .map(|related| {
@@ -145,6 +152,7 @@ async fn pod_access(
             node_name,
             info.namespace.as_str(),
             info.name.as_str(),
+            cache_registry,
         )
         .await
         .map(|related| {
@@ -165,6 +173,7 @@ async fn named_pod_reference_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if !matches!(info.verb.as_str(), "get" | "list" | "watch")
         || !info.subresource.is_empty()
@@ -173,7 +182,7 @@ async fn named_pod_reference_access(
     {
         return Ok(Decision::Deny);
     }
-    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str())).await?;
+    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str()), cache_registry).await?;
     let related = pods
         .iter()
         .any(|pod| pod_references(pod, info.resource.as_str(), info.name.as_str()));
@@ -188,6 +197,7 @@ async fn pvc_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if info.namespace.is_empty() || info.name.is_empty() {
         return Ok(Decision::Deny);
@@ -201,7 +211,7 @@ async fn pvc_access(
     } else {
         return Ok(Decision::Deny);
     }
-    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str())).await?;
+    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str()), cache_registry).await?;
     Ok(
         if pods
             .iter()
@@ -218,17 +228,19 @@ async fn pv_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if info.verb != "get" || !info.subresource.is_empty() || info.name.is_empty() {
         return Ok(Decision::Deny);
     }
-    let pods = pods_on_node(storage, node_name, None).await?;
+    let pods = pods_on_node(storage, node_name, None, cache_registry).await?;
+    let pvc_cache = cache_registry.and_then(|r| r.get("", "v1", "persistentvolumeclaims"));
     for pod in pods {
         let namespace = pod_namespace(&pod);
         for pvc_name in referenced_names(&pod, "persistentvolumeclaims") {
             let pvc = match rest::get(
                 storage,
-                None,
+                pvc_cache.as_ref(),
                 "",
                 "v1",
                 "persistentvolumeclaims",
@@ -259,6 +271,7 @@ async fn service_account_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if info.subresource != "token"
         || info.verb != "create"
@@ -267,7 +280,7 @@ async fn service_account_access(
     {
         return Ok(Decision::Deny);
     }
-    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str())).await?;
+    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str()), cache_registry).await?;
     let related = pods.iter().any(|pod| pod_service_account(pod) == info.name);
     Ok(if related {
         Decision::Allow
@@ -314,6 +327,7 @@ async fn volume_attachment_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if info.verb != "get" || !info.subresource.is_empty() || info.name.is_empty() {
         return Ok(Decision::Deny);
@@ -324,6 +338,7 @@ async fn volume_attachment_access(
         "v1",
         "volumeattachments",
         info.name.as_str(),
+        cache_registry,
     )
     .await
     .map(|name| {
@@ -339,6 +354,7 @@ async fn resource_slice_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if !info.subresource.is_empty() {
         return Ok(Decision::Deny);
@@ -357,6 +373,7 @@ async fn resource_slice_access(
             "v1",
             "resourceslices",
             info.name.as_str(),
+            cache_registry,
         )
         .await
         .map(|name| {
@@ -376,6 +393,7 @@ async fn resource_claim_access(
     storage: &mut StorageClient,
     node_name: &str,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Decision, String> {
     if info.verb != "get"
         || !info.subresource.is_empty()
@@ -384,7 +402,7 @@ async fn resource_claim_access(
     {
         return Ok(Decision::Deny);
     }
-    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str())).await?;
+    let pods = pods_on_node(storage, node_name, Some(info.namespace.as_str()), cache_registry).await?;
     Ok(
         if pods
             .iter()
@@ -402,8 +420,10 @@ async fn related_pod(
     node_name: &str,
     namespace: &str,
     name: &str,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<bool, String> {
-    let pod = match rest::get(storage, None, "", "v1", "pods", Some(namespace), name).await {
+    let cache = cache_registry.and_then(|r| r.get("", "v1", "pods"));
+    let pod = match rest::get(storage, cache.as_ref(), "", "v1", "pods", Some(namespace), name).await {
         Ok(rest::GetOutcome::Found(pod)) => pod,
         Ok(rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource) => {
             return Ok(false)
@@ -421,8 +441,20 @@ async fn pods_on_node(
     storage: &mut StorageClient,
     node_name: &str,
     namespace: Option<&str>,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Vec<Value>, String> {
-    let list = match rest::list(storage, None, "", "v1", "pods", namespace, "", "", 0, "").await {
+    // `spec.nodeName` is one of the built-in selectable fields real
+    // upstream (and `cacher::selector::selectable_fields`) declares for
+    // pods, so ask storage to filter server-side instead of decoding
+    // every Pod in scope (every Pod in the namespace, or -- from
+    // `pv_access` -- the whole cluster) just to throw most of them away
+    // client-side. The `.filter()` below stays as a cheap defense in
+    // depth (this authorizer is security-relevant; a selector-plumbing
+    // bug should fail closed, not silently widen access), not as the
+    // real filtering step anymore.
+    let field_selector = format!("spec.nodeName={node_name}");
+    let cache = cache_registry.and_then(|r| r.get("", "v1", "pods"));
+    let list = match rest::list(storage, cache.as_ref(), "", "v1", "pods", namespace, "", &field_selector, 0, "").await {
         Ok(rest::ListOutcome::Found(list)) => list,
         Ok(rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken) => {
             return Ok(Vec::new())
@@ -445,8 +477,10 @@ async fn object_node_name(
     version: &str,
     resource: &str,
     name: &str,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<Option<String>, String> {
-    match rest::get(storage, None, group, version, resource, None, name).await {
+    let cache = cache_registry.and_then(|r| r.get(group, version, resource));
+    match rest::get(storage, cache.as_ref(), group, version, resource, None, name).await {
         Ok(rest::GetOutcome::Found(object)) => Ok(object
             .pointer("/spec/nodeName")
             .and_then(Value::as_str)
