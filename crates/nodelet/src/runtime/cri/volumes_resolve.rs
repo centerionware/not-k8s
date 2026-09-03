@@ -336,6 +336,22 @@ impl CriRuntime {
             } else if let Some(da) = &source.downward_api {
                 write_downward_api_volume(dir, pod, da.items.as_deref().unwrap_or(&[]))?;
             } else if let Some(sat) = &source.service_account_token {
+                let target = dir.join(&sat.path);
+                // Issue #554: this used to call TokenRequest unconditionally
+                // on every single materialization -- including a routine
+                // reconcile that's only reusing an already-running sandbox,
+                // not creating anything new. Real kubelet caches a projected
+                // token and only refreshes it near actual expiry (~80% of
+                // its TTL); a pod that reconciles often for an unrelated
+                // reason (a flapping liveness probe, live-observed this
+                // session restarting one every 30s for hours) otherwise pays
+                // a full TokenRequest round trip -- real nodeapiserver
+                // admission/authn/authz work and a real nodestore write --
+                // on every reconcile, not just when the token actually needs
+                // refreshing.
+                if !token_needs_refresh(std::fs::metadata(&target).and_then(|m| m.modified()).ok(), std::time::SystemTime::now(), sat.expiration_seconds) {
+                    continue;
+                }
                 let service_account = pod_service_account_name(pod);
                 let audiences = token_audiences(sat.audience.as_deref());
                 match self
@@ -343,7 +359,6 @@ impl CriRuntime {
                     .await
                 {
                     Ok(token) => {
-                        let target = dir.join(&sat.path);
                         if let Some(parent) = target.parent() {
                             std::fs::create_dir_all(parent)?;
                         }

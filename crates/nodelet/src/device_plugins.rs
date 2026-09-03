@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tonic::transport::{Channel, Endpoint, Uri};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub mod v1beta1 {
     tonic::include_proto!("v1beta1");
@@ -467,6 +467,17 @@ impl DevicePlugins {
             (state.endpoint.clone(), available_ids, state.get_preferred_allocation_available, state.pre_start_required)
         };
 
+        // Issue #548: this branch used to be entirely silent when the
+        // plugin's options simply hadn't been fetched yet (a real,
+        // observed race against `watch_once()`'s own `GetDevicePluginOptions`
+        // call) -- indistinguishable from "this plugin genuinely doesn't
+        // support GetPreferredAllocation" with nothing in the log to tell
+        // the two apart. Log which case this actually is; the fallback
+        // behavior is unchanged.
+        if !get_preferred_allocation_available {
+            debug!(resource = %resource_name, "device plugin does not (yet, or ever) advertise GetPreferredAllocation support; using nodelet's own selection");
+        }
+
         let preferred_ids = if get_preferred_allocation_available {
             match self.get_preferred_allocation_call(&endpoint, &available_ids, count).await {
                 Ok(ids) => Some(ids),
@@ -484,7 +495,15 @@ impl DevicePlugins {
             let state = plugins.get_mut(resource_name).with_context(|| format!("no device plugin registered for '{resource_name}'"))?;
             let picked = match &preferred_ids {
                 Some(ids) if is_valid_preferred_allocation(ids, &state.devices, &state.allocated, count) => ids.clone(),
-                _ => pick_devices_preferring(&state.devices, &state.allocated, count, preferred_numa_node)
+                Some(ids) => {
+                    warn!(
+                        resource = %resource_name, preferred = ?ids, count,
+                        "device plugin GetPreferredAllocation response was not usable (wrong count, duplicate, unhealthy, or already allocated); falling back to nodelet's own selection"
+                    );
+                    pick_devices_preferring(&state.devices, &state.allocated, count, preferred_numa_node)
+                        .with_context(|| format!("not enough healthy devices available for '{resource_name}'"))?
+                }
+                None => pick_devices_preferring(&state.devices, &state.allocated, count, preferred_numa_node)
                     .with_context(|| format!("not enough healthy devices available for '{resource_name}'"))?,
             };
             for id in &picked {
