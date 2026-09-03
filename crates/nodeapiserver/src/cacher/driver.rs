@@ -138,14 +138,42 @@ pub async fn reflect(
                                 // A compacted/canceled watch is no longer a
                                 // trustworthy continuation. Start over with
                                 // a fresh LIST, as an upstream reflector does.
-                                tracing::info!("cacher: watch canceled; relisting");
+                                //
+                                // This must back off exactly like the Err(e)
+                                // arm below: a relist's own LIST response
+                                // hands the reflector a `list_revision` that
+                                // can already be stale again by the time it
+                                // opens the following WATCH — a nodestore
+                                // whose compaction races the reflector's own
+                                // relists, or any other real reason to
+                                // cancel that recurs, previously spun this
+                                // list-watch-cancel cycle as fast as a
+                                // round trip allowed (~100-150ms observed
+                                // live), discarding this cache's entire
+                                // watch history on every single iteration.
+                                // Every *external* watcher resuming through
+                                // this cache during that window loses the
+                                // race and gets a real 410 too, which is
+                                // what actually surfaced this
+                                // (docs/APISERVER_E2E_FIX.md, tracing a
+                                // full e2e run's widespread post-restart
+                                // timeouts back to this exact asymmetry).
+                                tracing::info!("cacher: watch canceled; relisting after backoff");
+                                if wait_or_stop(&mut stop, backoff).await {
+                                    return;
+                                }
                                 break;
                             }
                         }
                         Ok(None) => {
                             // Stream ended cleanly (server closed it) — same
-                            // response as an error: relist, don't just stop.
-                            tracing::info!("cacher: watch stream ended, relisting");
+                            // response as an error, and the same unbounded-
+                            // relist-loop risk as the `canceled` arm above if
+                            // this recurs without a backoff.
+                            tracing::info!("cacher: watch stream ended, relisting after backoff");
+                            if wait_or_stop(&mut stop, backoff).await {
+                                return;
+                            }
                             break;
                         }
                         Err(e) => {
