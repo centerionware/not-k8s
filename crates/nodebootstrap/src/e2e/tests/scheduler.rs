@@ -2,7 +2,9 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Event, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::core::v1::{
+    Event, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service, ServiceAccount,
+};
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -809,6 +811,18 @@ pub(super) async fn scheduler_resolves_a_namespace_selector_against_real_labels(
         "metadata": {"name": helper_namespace, "labels": {"nodebootstrap-e2e-selector": "other"}}
     }))?;
     namespaces.create(&PostParams::default(), &namespace).await?;
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), helper_namespace);
+    context
+        .wait_until(
+            "namespace-selector helper's default ServiceAccount",
+            Duration::from_secs(30),
+            || {
+                let service_accounts = service_accounts.clone();
+                async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+            },
+        )
+        .await?;
     let other_pods: Api<Pod> = Api::namespaced(context.client.clone(), helper_namespace);
     let blocker: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
