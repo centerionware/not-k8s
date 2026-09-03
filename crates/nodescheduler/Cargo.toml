@@ -61,7 +61,7 @@ futures = { workspace = true }
 rustls = { workspace = true }
 async-trait = { workspace = true }
 http = "1"
-cel = "0.14"
+cel = "0.14.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 rayon = "1"
 num-bigint = "0.4"
