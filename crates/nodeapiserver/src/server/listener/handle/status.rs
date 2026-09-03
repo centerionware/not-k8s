@@ -153,6 +153,61 @@ macro_rules! handle_status {
             }
         };
     }
+    // `PUT .../namespaces/{name}/finalize` — real upstream's own
+    // `NamespaceFinalize` subresource: the *only* sanctioned way to
+    // remove `spec.finalizers` (namespace-controller's own
+    // `finalize_namespace()` calls exactly this). Recognized by
+    // `server::path.rs`'s `NAMESPACE_SUBRESOURCES` for a while before
+    // this branch existed to actually serve it -- every request routed
+    // here 404'd, so a Namespace's `kubernetes` finalizer could never
+    // actually be removed once #541/#559/#560 started correctly
+    // deferring its deletion: content got cleaned up, but the namespace
+    // itself sat "Terminating" forever. Live-captured:
+    // "namespace-controller failed to remove the kubernetes finalizer
+    // ... 404 ... /namespaces/<ns>/finalize". Same no-admission posture
+    // as the `status` branch above; `rest::update_finalize` only ever
+    // replaces `spec.finalizers`, nothing else in the object.
+    if $info.is_resource_request
+        && $info.verb == "update"
+        && !$info.name.is_empty()
+        && $info.subresource == "finalize"
+    {
+        let Some(mut client) = $storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
+        };
+        let dry_run = match dry_run_query(&$query) {
+            Ok(value) => value,
+            Err(detail) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, detail))),
+        };
+        let body_bytes = match read_body_bytes($req).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(path = %$path_str, error = ?e, "reading the request body failed");
+                return Ok(body_read_error_response(&$path_str, &e));
+            }
+        };
+        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
+        };
+        let namespace = storage_namespace(&$info);
+        return match rest::update_finalize(&mut client, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name, &body_value, dry_run).await {
+            Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str))),
+            Ok(rest::UpdateOutcome::MissingResourceVersion) => {
+                Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "metadata.resourceVersion is required for an update")))
+            }
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
+            Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations))),
+            Ok(rest::UpdateOutcome::NamespaceMismatch) | Ok(rest::UpdateOutcome::UnsupportedPatchType) => {
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
+            }
+            Err(e) => {
+                warn!(path = %$path_str, error = ?e, "rest::update_finalize failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
+            }
+        };
+    }
     // `PATCH .../status` — the patch counterpart to the `PUT` branch just
     // above, closing the "PUT-only" gap that branch's own doc comment
     // named. Same no-admission posture as the `PUT` branch (nothing
