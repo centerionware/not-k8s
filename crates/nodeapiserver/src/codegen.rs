@@ -36,6 +36,28 @@ pub fn proto_field_index() -> &'static HashMap<(&'static str, &'static str), &'s
     })
 }
 
+/// `(message, wire_field_number) -> &ProtoField`, built once from
+/// `proto_fields::PROTO_FIELDS` — the wire-decode counterpart of
+/// [`proto_field_index`] (that one's keyed by JSON field name for
+/// encoding; this one's keyed by the field's protobuf wire number for
+/// decoding). `codec::protobuf_decode::decode_message` is this index's
+/// only intended reader: it used to rebuild an equivalent per-message
+/// `HashMap` by filtering the *entire* `PROTO_FIELDS` table (every field
+/// of every message this build knows about) on every single call, which a
+/// live perf capture showed dominating nodeapiserver's CPU under
+/// sustained watch/decode traffic (~40-48% of total samples inside
+/// `decode_message`/`fields_by_number` building that transient map) — see
+/// issue #526's perf follow-up. Built once, like `proto_field_index`.
+pub fn proto_field_index_by_number() -> &'static HashMap<(&'static str, u32), &'static proto_fields::ProtoField> {
+    static INDEX: OnceLock<HashMap<(&'static str, u32), &'static proto_fields::ProtoField>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        proto_fields::PROTO_FIELDS
+            .iter()
+            .map(|f| ((f.message, f.number), f))
+            .collect()
+    })
+}
+
 /// `schema -> Vec<&GvkEntry>`, built once from `openapi_meta::DISCOVERY_GVKS`.
 /// A schema can carry more than one GVK (shared internal/external types).
 pub fn gvk_index() -> &'static HashMap<&'static str, Vec<&'static openapi_meta::GvkEntry>> {

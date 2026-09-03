@@ -187,7 +187,10 @@ async fn signer_request_allowed(
         name: signer_name.to_string(),
         ..Default::default()
     };
-    authz::request_allowed(storage, identity, &info)
+    // No CacheRegistry handle reaches this admission-time call site; falls
+    // back to the uncached storage path exactly as before this change —
+    // see `authz::resolve::rules_for`'s own doc comment.
+    authz::request_allowed(storage, identity, &info, None)
         .await
         .map_err(Error::Lookup)
 }
