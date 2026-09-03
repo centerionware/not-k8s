@@ -1,4 +1,5 @@
 include!("handle/subresources.rs");
+include!("handle/pod_resize.rs");
 include!("handle/patch_apply_admission.rs");
 include!("handle/patch_apply.rs");
 include!("handle/patch_standard.rs");
@@ -330,6 +331,7 @@ async fn handle(
         .is_some_and(|accepted| accepted.wants_partial_object_metadata());
     let has_body = is_create || is_update;
 
+    handle_pod_resize!(req, storage, path_str, query, info, request_field_manager);
     handle_subresources!(
         req,
         storage,
