@@ -236,6 +236,12 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         .await
         .expect("decoding Namespace GET");
     assert_eq!(fetched["metadata"]["name"], name);
+    // Real upstream's `rest.BeforeCreate` stamps every created object's
+    // `metadata.generation` to 1 unconditionally — without it, nothing
+    // that keys off generation (e.g. `PodCondition.observedGeneration`)
+    // ever has a real value to observe (docs/APISERVER_E2E_FIX.md,
+    // "Pod Ready condition missing observedGeneration").
+    assert_eq!(fetched["metadata"]["generation"], 1);
 
     let template_name = format!("{name}-template");
     let template_path =
