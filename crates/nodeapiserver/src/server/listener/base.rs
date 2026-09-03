@@ -347,7 +347,7 @@ fn scale_outcome_response(path: &str, outcome: rest::ScaleOutcome) -> Response<B
             StatusCode::BAD_REQUEST,
             &bad_request_status(path, "metadata.resourceVersion is required"),
         ),
-        rest::ScaleOutcome::Conflict => json_response(StatusCode::CONFLICT, &conflict_status(path)),
+        rest::ScaleOutcome::Conflict => json_response(StatusCode::CONFLICT, &update_conflict_status(path)),
         rest::ScaleOutcome::Invalid(violations) => json_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             &invalid_status(path, &violations),

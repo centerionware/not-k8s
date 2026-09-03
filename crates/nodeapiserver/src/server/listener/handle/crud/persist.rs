@@ -110,7 +110,7 @@ macro_rules! handle_crud_persist {
                     Ok(rest::UpdateOutcome::NamespaceMismatch) => {
                         return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "metadata.$namespace does not match the request URL")));
                     }
-                    Ok(rest::UpdateOutcome::Conflict) => return Ok(json_response(StatusCode::CONFLICT, &conflict_status(&$path_str))),
+                    Ok(rest::UpdateOutcome::Conflict) => return Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
                     Ok(rest::UpdateOutcome::Invalid(violations)) => return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations))),
                     // `rest::update` never itself returns this -- it's
                     // `rest::patch`-only, checked before `rest::patch` is

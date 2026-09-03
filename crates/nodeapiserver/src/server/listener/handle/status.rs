@@ -138,7 +138,7 @@ macro_rules! handle_status {
             Ok(rest::UpdateOutcome::MissingResourceVersion) => {
                 Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "metadata.resourceVersion is required for an update")))
             }
-            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&$path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
             Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations))),
             // `rest::update_status` never itself returns these two -- it
             // does not check a body namespace, and `UnsupportedPatchType`
@@ -266,7 +266,7 @@ macro_rules! handle_status {
         return match rest::patch_status_with_manager(&mut client, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name, kind_of_patch, &patch_doc, dry_run, $request_field_manager.as_deref()).await {
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str))),
-            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &conflict_status(&$path_str))),
+            Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
             Ok(rest::UpdateOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations))),
             // `rest::patch_status` never itself returns these three --
             // no client-submitted `resourceVersion` is required (the
