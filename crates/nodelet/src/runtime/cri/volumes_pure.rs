@@ -883,3 +883,31 @@ pub(crate) fn apply_fs_group(dir: &std::path::Path, gid: u32) -> std::io::Result
     }
     Ok(())
 }
+
+/// Default TokenRequest lifetime when a pod's `serviceAccountToken`
+/// projection doesn't specify `expirationSeconds` — matches the
+/// `TokenRequestSpec` API's own default.
+const DEFAULT_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
+
+/// The fraction of a token's lifetime elapsed before it's worth refreshing
+/// early — matches real kubelet's own token manager, which rotates a
+/// projected token well before it actually expires rather than waiting
+/// for the last moment.
+const TOKEN_REFRESH_FRACTION: f64 = 0.8;
+
+/// Whether a projected `serviceAccountToken` volume needs a fresh
+/// `TokenRequest` call, or whether the file already on disk is still
+/// good enough to leave alone (issue #554). `existing_mtime` is the
+/// already-materialized token file's last-modified time, if the file
+/// exists at all; `None` (missing, or its metadata couldn't be read)
+/// always needs a mint. Otherwise this refreshes once
+/// `TOKEN_REFRESH_FRACTION` of `expiration_seconds` (or the API's own
+/// default) has elapsed since it was last written — the same margin real
+/// kubelet's token manager uses, so a long-lived pod's token still gets
+/// rotated well before it would actually expire.
+pub(crate) fn token_needs_refresh(existing_mtime: Option<std::time::SystemTime>, now: std::time::SystemTime, expiration_seconds: Option<i64>) -> bool {
+    let Some(mtime) = existing_mtime else { return true };
+    let Ok(age) = now.duration_since(mtime) else { return true }; // clock went backwards -- treat as stale
+    let ttl_seconds = expiration_seconds.filter(|s| *s > 0).unwrap_or(DEFAULT_TOKEN_EXPIRATION_SECONDS) as f64;
+    age.as_secs_f64() >= ttl_seconds * TOKEN_REFRESH_FRACTION
+}

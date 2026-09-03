@@ -869,3 +869,6 @@ mod tests_volume_mount_status_tuples;
 #[cfg(test)]
 #[path = "cri_tests/pending_csi_volume_names.rs"]
 mod tests_pending_csi_volume_names;
+#[cfg(test)]
+#[path = "cri_tests/token_needs_refresh.rs"]
+mod tests_token_needs_refresh;
