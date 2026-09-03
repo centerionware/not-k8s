@@ -1095,9 +1095,9 @@ fn status_patch_changes(prev: Option<&PodStatus>, desired: &PodStatus) -> bool {
 /// real change; two lists with the same set of `(type, condition)` pairs,
 /// in any order, are not.
 fn conditions_changed(prev: Option<&[PodCondition]>, desired: Option<&[PodCondition]>) -> bool {
-    let by_type = |conditions: Option<&[PodCondition]>| -> std::collections::HashMap<&str, &PodCondition> {
+    fn by_type(conditions: Option<&[PodCondition]>) -> std::collections::HashMap<&str, &PodCondition> {
         conditions.into_iter().flatten().map(|c| (c.type_.as_str(), c)).collect()
-    };
+    }
     by_type(prev) != by_type(desired)
 }
 
