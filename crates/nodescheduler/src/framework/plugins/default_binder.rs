@@ -117,28 +117,38 @@ impl BindPlugin for DefaultBinder {
             // different real causes -- a UID mismatch (pod deleted and
             // recreated), a stale resourceVersion precondition, the pod
             // already being deleted, and (this module's own doc comment
-            // above) `spec.nodeName` already set. Only the last of those
-            // means "this specific bind attempt's goal is already achieved";
-            // the other three are genuine failures that must still requeue.
-            // Blindly treating every 409 as success would silently drop a
-            // real conflict (recreated pod, stale write) as if it had
-            // succeeded. So: re-fetch the pod and check its actual
-            // `spec.nodeName` against the node this call was trying to bind
-            // it to -- only that specific, verified case is idempotent
-            // success. Anything else (still unbound, bound to some other
-            // node, or the re-fetch itself failing) falls through to the
-            // ordinary error path, unchanged from before.
+            // above) `spec.nodeName` already set.
+            //
+            // Re-fetch the pod and check `spec.nodeName`. If it's already
+            // set to *any* node -- not just the one this call intended --
+            // this bind attempt is moot and must be treated as done, not
+            // retried: `spec.nodeName` is immutable in real Kubernetes,
+            // there is no "move a bound pod to a different node" operation,
+            // so a pod bound to some other node than this stale scheduling
+            // decision assumed can never be reconciled by rebinding it here
+            // -- retrying forever would be actively harmful (it would just
+            // keep 409ing forever, exactly the bug this fix closes), and
+            // "fix" by force-moving it would silently orphan whatever state
+            // (volumes, running containers) already exists on its real
+            // node. The correct outcome is the same one a real kube-scheduler
+            // reaches when its own informer cache shows a queued pod is
+            // already bound: drop it, nothing left to do. Any other 409
+            // cause (still unbound, or the re-fetch itself failing) falls
+            // through to the ordinary error path, unchanged from before --
+            // those causes are transient and self-heal via a fresh watch
+            // event on requeue (a recreated pod's new UID, or its Delete
+            // event removing it from the scheduling queue entirely).
             //
             // Without this, a lagging/duplicate bind attempt for a pod
-            // that's already correctly bound got classified as a generic
-            // `Failed` by `classify_failure()`, which requeues the pod and
-            // releases its reservation -- so the very next cycle
-            // re-schedules and re-binds it, hits the identical 409, forever.
-            // Live-captured hammering the apiserver at a sustained high
-            // frequency with no backoff.
+            // that's already bound got classified as a generic `Failed` by
+            // `classify_failure()`, which requeues the pod and releases its
+            // reservation -- so the very next cycle re-schedules and
+            // re-binds it, hits the identical 409, forever. Live-captured
+            // hammering the apiserver at a sustained high frequency with no
+            // backoff.
             Ok(Err(kube::Error::Api(e))) if e.code == 409 => {
                 match Api::<Pod>::namespaced(self.client.clone(), &pod.namespace).get(&pod.name).await {
-                    Ok(current) if current.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(node) => {
+                    Ok(current) if current.spec.as_ref().and_then(|s| s.node_name.as_deref()).is_some_and(|n| !n.is_empty()) => {
                         Status::success()
                     }
                     _ => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
