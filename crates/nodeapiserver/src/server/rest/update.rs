@@ -258,6 +258,108 @@ pub async fn update_with_options_and_manager(
 /// same "not modeled per-type yet" scope this crate's own discovery
 /// already has for built-in subresources generally.
 /// `dry_run` validates and returns the status candidate without persisting it.
+/// Real upstream's `NamespaceFinalize` subresource: replaces
+/// `spec.finalizers` only, exactly the way [`update_status`] replaces
+/// `.status` only -- namespace-controller's own `finalize_namespace()`
+/// is the intended (only, in practice) caller, removing the
+/// `"kubernetes"` finalizer once a namespace's contents are fully
+/// deleted. Issue #541/#559/#560's own follow-up: those fixes correctly
+/// got a Namespace's deletion to defer and its contents to actually get
+/// cleaned up, but this subresource had no handler wired to it at all
+/// (`server/path.rs`'s `NAMESPACE_SUBRESOURCES` already listed
+/// `"finalize"`, so requests routed here, they just all 404'd) -- so the
+/// finalizer could never actually be removed and the namespace sat
+/// "Terminating" forever. No CRD/status-schema validation here (unlike
+/// `update_status`): `spec.finalizers` is a plain string array with
+/// nothing upstream ever validates against a schema for this
+/// subresource specifically.
+pub async fn update_finalize(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    body: &Value,
+    dry_run: bool,
+) -> Result<UpdateOutcome, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Ok(UpdateOutcome::UnknownResource);
+    };
+    let kind = resolved.kind.clone();
+    let key = keys::object_key(group, resource, namespace, name);
+    let existing_resp = storage
+        .range(RangeRequest {
+            key: key.clone().into_bytes(),
+            ..Default::default()
+        })
+        .await?;
+    let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
+        return Ok(UpdateOutcome::ObjectNotFound);
+    };
+    let existing_object = decrypt_and_decode_with_rotation(
+        storage,
+        group,
+        resource,
+        &existing_kv.key,
+        &existing_kv.value,
+        existing_kv.mod_revision,
+    )
+    .await?;
+    let existing_object_for_request = convert_to_requested_version(
+        storage,
+        group,
+        version,
+        &kind,
+        resolved.conversion_webhook.as_ref(),
+        existing_object.clone(),
+    )
+    .await?;
+
+    let Some(submitted_rv) = body
+        .pointer("/metadata/resourceVersion")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<i64>().ok())
+    else {
+        return Ok(UpdateOutcome::MissingResourceVersion);
+    };
+    if submitted_rv != existing_kv.mod_revision {
+        return Ok(UpdateOutcome::Conflict);
+    }
+
+    let mut object = existing_object_for_request;
+    let finalizers = body
+        .pointer("/spec/finalizers")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    if let Some(spec) = object.get_mut("spec").and_then(Value::as_object_mut) {
+        spec.insert("finalizers".to_string(), finalizers);
+    }
+
+    persist_update(
+        storage,
+        resolved.schema,
+        resolved.open_api_schema.as_ref(),
+        resolved.storage_open_api_schema.as_ref(),
+        &kind,
+        group,
+        version,
+        resource,
+        key,
+        &existing_kv,
+        &existing_object,
+        namespace,
+        object,
+        dry_run,
+        resolved.conversion_webhook.clone(),
+        None,
+        "finalize",
+        false,
+        false,
+    )
+    .await
+}
+
 pub async fn update_status(
     storage: &mut StorageClient,
     group: &str,
