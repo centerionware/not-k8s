@@ -75,6 +75,7 @@ pub async fn request_allowed(
     storage: &mut StorageClient,
     identity: Option<&Identity>,
     info: &RequestInfo,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
 ) -> Result<bool, String> {
     match node::authorize(storage, identity, info).await? {
         node::Decision::Allow => return Ok(true),
@@ -89,7 +90,7 @@ pub async fn request_allowed(
             vec!["system:unauthenticated".to_string()],
         ),
     };
-    let resolved = resolve::rules_for(storage, user_name, &user_groups, &info.namespace).await;
+    let resolved = resolve::rules_for(storage, user_name, &user_groups, &info.namespace, cache_registry).await;
     let attrs = rbac::RequestAttributes {
         is_resource_request: info.is_resource_request,
         verb: &info.verb,

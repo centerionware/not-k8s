@@ -4,12 +4,12 @@ pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
     if !codegen::proto_fields::PROTO_MESSAGES.contains(&message) {
         return Err(Error::UnknownMessage(message.to_string()));
     }
-    let by_number = fields_by_number(message);
+    let by_number = codegen::proto_field_index_by_number();
     let mut obj = Map::new();
     let mut pos = 0;
     while pos < bytes.len() {
         let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
-        let Some(field) = by_number.get(&field_number) else {
+        let Some(field) = by_number.get(&(message, field_number)) else {
             // Unknown field number for this message — same
             // forward-compatibility posture as the encoder: skip rather
             // than fail, we've already consumed exactly its bytes via
@@ -51,14 +51,6 @@ pub fn decode_message(message: &str, bytes: &[u8]) -> Result<Value> {
     }
     Ok(Value::Object(obj))
 }
-fn fields_by_number(message: &str) -> std::collections::HashMap<u32, &'static ProtoField> {
-    codegen::proto_fields::PROTO_FIELDS
-        .iter()
-        .filter(|f| f.message == message)
-        .map(|f| (f.number, f))
-        .collect()
-}
-
 fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value> {
     if field.map {
         return decode_map_entry(message, field, raw);
