@@ -941,19 +941,30 @@ fn range_in(conn: &Connection, range: &KeyRange, at: i64, q: &RangeQuery) -> Res
         pred = pred,
         n = args.len()
     );
-    let count: i64 = {
-        let sql = format!("SELECT COUNT(*) FROM ({base})");
-        conn.query_row(&sql, params_from_iter(args.iter()), |r| r.get(0))?
-    };
     if q.count_only {
+        let sql = format!("SELECT COUNT(*) FROM ({base})");
+        let count: i64 = conn.query_row(&sql, params_from_iter(args.iter()), |r| r.get(0))?;
         return Ok(RangeResult { kvs: Vec::new(), count, more: false });
     }
-    let mut sql = format!("{base} ORDER BY {}", order_by(q.sort));
+    // Issue #556: `count` and the returned page used to be two independent
+    // executions of the same windowed (ROW_NUMBER() PARTITION BY key)
+    // subquery above -- real, measured cost against a store carrying any
+    // meaningful amount of uncompacted MVCC history (a live perf capture
+    // found `sqlite3VdbeExec`/`vdbeSorterSort` dominating nodestore's idle
+    // CPU with 10502 total kv rows behind only 489 live keys). Every
+    // historical revision of every key in the range got sorted and
+    // partitioned, twice, on every single Range call. A second window
+    // function, `COUNT(*) OVER ()`, computed in the same single pass, gets
+    // both in one: it's the size of the full result set before `ORDER BY`/
+    // `LIMIT` trims it, on every row that pass already produced.
+    let mut sql = format!("SELECT *, COUNT(*) OVER () AS total_count FROM ({base}) ORDER BY {}", order_by(q.sort));
     if q.limit > 0 {
         sql.push_str(&format!(" LIMIT {}", q.limit + 1));
     }
     let mut stmt = conn.prepare(&sql)?;
+    let mut count = 0i64;
     let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
+        count = row.get(7)?;
         Ok(KeyValue {
             key: row.get(0)?,
             value: if q.keys_only {
@@ -1409,6 +1420,21 @@ mod tests {
         let r = s.range(&q).unwrap();
         assert_eq!(r.count, 2);
         assert!(r.kvs.is_empty());
+    }
+
+    #[test]
+    fn a_range_matching_nothing_reports_zero_count_not_a_missing_column() {
+        // Issue #556: count is now read out of a COUNT(*) OVER() column on
+        // the same query that returns rows, rather than a separate COUNT(*)
+        // query -- when zero rows match, that column is never read (the
+        // row-mapping closure never runs), so this pins down that `count`
+        // still comes back 0 rather than some stale/uninitialized value.
+        let mut s = store();
+        put(&mut s, "/a", "x");
+        let r = s.range(&RangeQuery::current(KeyRange::Single(b"/nonexistent".to_vec()))).unwrap();
+        assert_eq!(r.count, 0);
+        assert!(r.kvs.is_empty());
+        assert!(!r.more);
     }
 
     #[test]
