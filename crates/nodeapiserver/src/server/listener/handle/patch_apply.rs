@@ -168,7 +168,7 @@ macro_rules! handle_patch_apply {
                 match rest::list(
                     &mut client,
                     None,
-                    "$storage.k8s.io",
+                    "storage.k8s.io",
                     "v1",
                     "storageclasses",
                     None,
@@ -686,7 +686,7 @@ macro_rules! handle_patch_apply {
                     match rest::list(
                         &mut client,
                         None,
-                        "$storage.k8s.io",
+                        "storage.k8s.io",
                         "v1",
                         "storageclasses",
                         None,

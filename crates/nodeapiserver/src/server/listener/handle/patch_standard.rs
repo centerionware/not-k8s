@@ -136,7 +136,7 @@ macro_rules! handle_patch_standard {
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
                 }
             };
-            match rest::list(&mut client, None, "$storage.k8s.io", "v1", "storageclasses", None, "", "", 0, "").await {
+            match rest::list(&mut client, None, "storage.k8s.io", "v1", "storageclasses", None, "", "", 0, "").await {
                 Ok(rest::ListOutcome::Found(list)) => {
                     let classes = list["items"].as_array().cloned().unwrap_or_default();
                     if let Err(error) = admission::pvc_resize::validate_resize(&candidate, &old_pvc, &classes) {
