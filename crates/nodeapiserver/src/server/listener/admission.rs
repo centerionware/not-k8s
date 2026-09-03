@@ -236,7 +236,7 @@ async fn handle_with_audit(
             namespace: &request_info.namespace,
             path: &request_info.path,
         };
-        flowcontrol::resolve::select_for_request(&mut client, &digest).await
+        flowcontrol::resolve::select_for_request(&mut client, &digest, Some(&cache_registry)).await
     } else {
         None
     };
