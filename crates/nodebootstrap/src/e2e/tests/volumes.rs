@@ -914,14 +914,13 @@ pub(super) async fn recursive_read_only_enabled_blocks_writes_in_a_nested_mount_
     result
 }
 
-async fn recursive_read_only_if_possible(
-    context: &E2eContext,
-    name: &str,
-    require_capability_match: bool,
-) -> Result<()> {
-    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
-        return Err(skip_test("recursive read-only checks require the CRI runtime"));
-    }
+/// Whether this node's runtime handler advertises a boolean
+/// `recursiveReadOnlyMounts` feature -- `None` means it didn't advertise
+/// any runtime handler capability at all (e.g. `Node.status.runtimeHandlers`
+/// absent), which real recursive-read-only enforcement (`mount_setattr(2)`
+/// with `AT_RECURSIVE | MOUNT_ATTR_RDONLY`, Linux 5.12+, plumbed through by
+/// the OCI runtime) cannot be assumed to work without.
+async fn recursive_read_only_mounts_capability(context: &E2eContext) -> Result<Option<bool>> {
     let nodes: Api<Node> = Api::all(context.client.clone());
     let node = nodes
         .list(&Default::default())
@@ -931,9 +930,20 @@ async fn recursive_read_only_if_possible(
         .next()
         .context("cluster has no Node")?;
     let node_value = serde_json::to_value(node)?;
-    let capability = node_value
+    Ok(node_value
         .pointer("/status/runtimeHandlers/0/features/recursiveReadOnlyMounts")
-        .and_then(serde_json::Value::as_bool);
+        .and_then(serde_json::Value::as_bool))
+}
+
+async fn recursive_read_only_if_possible(
+    context: &E2eContext,
+    name: &str,
+    require_capability_match: bool,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("recursive read-only checks require the CRI runtime"));
+    }
+    let capability = recursive_read_only_mounts_capability(context).await?;
     if require_capability_match && capability.is_none() {
         return Err(skip_test("runtime handler did not advertise a boolean recursiveReadOnlyMounts capability"));
     }
