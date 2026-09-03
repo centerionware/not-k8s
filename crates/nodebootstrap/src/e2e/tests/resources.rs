@@ -197,18 +197,13 @@ pub(super) async fn in_place_resize_updates_memory_limit_without_restarting(
         "initial memory.max was {:?}, expected 134217728",
         before.trim()
     );
-    if let Err(error) = pods
-        .patch_resize(
-            name,
-            &PatchParams::default(),
-            &Patch::Merge(json!({"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"268435456"}}}]}})),
-        )
-        .await
-    {
-        return Err(skip_test(format!(
-            "the apiserver does not support the Pod resize subresource: {error}"
-        )));
-    }
+    pods.patch_resize(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(json!({"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"268435456"}}}]}})),
+    )
+    .await
+    .context("the apiserver must support the Pod resize subresource")?;
     context
         .wait_until("container memory.max to reflect the in-place resize", Duration::from_secs(60), || {
             let context = context.clone();
