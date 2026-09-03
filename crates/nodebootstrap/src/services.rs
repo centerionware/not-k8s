@@ -377,13 +377,15 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
             exec_cmd: &bin.to_string_lossy(),
             after: Some(cfg.apiserver_service()),
             env: &env,
-            // Issue #528: an unoptimized debug build reliably segfaults on
-            // startup ("starting all controllers" spawns many tokio tasks
-            // at once) under the system default stack limit (typically
-            // 8MB) on a memory-constrained host -- confirmed live, and
-            // confirmed running cleanly with an unlimited stack. See
-            // SupervisedService::limit_stack's own doc comment.
-            limit_stack: Some("infinity"),
+            // Issue #528 no longer needs this: the actual root cause was
+            // try_join! combining all 21 controllers' futures into one
+            // state machine on a single task's stack (fixed by switching
+            // to tokio::task::JoinSet -- see lib.rs's own run()). The
+            // LimitSTACK=infinity workaround this field briefly carried
+            // is no longer necessary now that the real fix is in;
+            // SupervisedService::limit_stack itself stays available for
+            // any future component that genuinely needs it.
+            limit_stack: None,
         },
     )
     .context("installing nodecontroller as a supervised service")
