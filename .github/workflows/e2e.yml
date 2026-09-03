@@ -369,6 +369,9 @@ jobs:
             sudo journalctl -u "$api_service.service" --no-pager -n 800 \
               | grep -iE '429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed' || true
           done
+          echo "── nodeapiserver panic/restart signals (unbounded, survives audit-log volume) ──"
+          sudo journalctl -u nodeapiserver.service --no-pager \
+            | grep -iE 'panic|SIGABRT|SIGSEGV|core dump|Main process exited|Started .*nodeapiserver|Stopped .*nodeapiserver' || true
           echo "── nodecontroller volume/attach signals ──"
           sudo journalctl -u nodecontroller.service --no-pager -n 1200 \
             | grep -iE 'attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat' || true

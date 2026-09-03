@@ -1767,6 +1767,7 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_scheduler_schedules_a_pod_an_http_extender_approves"
             | "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart"
             | "test_nodeapiserver_authentication_modes"
+            | "test_nodeapiserver_authorizes_before_special_handlers"
             | "test_nodeapiserver_writes_audit_log"
             | "test_nodeapiserver_audits_rejected_requests"
             | "test_nodeapiserver_rotates_audit_log"
@@ -2857,6 +2858,39 @@ mod tests {
             None
         )
         .unwrap());
+    }
+
+    /// Regression for docs/APISERVER_E2E_FIX.md's "nodeapiserver
+    /// crash/restart after Binding subresource" finding (run
+    /// `33674376893`): the real cause was
+    /// `test_nodeapiserver_authorizes_before_special_handlers` restarting
+    /// nodeapiserver.service twice (once via `install_rbac()`, once more
+    /// fire-and-forget when its guard drops) without being classified as
+    /// environment-reconfiguring, so an ordinary test could land right
+    /// after it in shard order and race the in-flight restart. Every test
+    /// that restarts nodeapiserver.service through one of the
+    /// `Nodeapiserver*Override` fixtures in `tests/bootstrap.rs` must be
+    /// listed here, or it can land next to an ordinary test the same way.
+    #[test]
+    fn every_nodeapiserver_restarting_fixture_test_is_environment_reconfiguring() {
+        for name in [
+            "test_nodeapiserver_authentication_modes",
+            "test_nodeapiserver_authorizes_before_special_handlers",
+            "test_nodeapiserver_honors_always_pull_images",
+            "test_nodeapiserver_applies_configured_node_selector",
+            "test_nodeapiserver_writes_audit_log",
+            "test_nodeapiserver_audits_rejected_requests",
+            "test_nodeapiserver_rotates_audit_log",
+            "test_nodeapiserver_delivers_audit_webhook",
+            "test_nodeapiserver_audits_request_and_response_objects",
+            "test_nodeapiserver_honors_authorization_webhook_decisions",
+        ] {
+            assert!(
+                is_environment_reconfiguring_test(name),
+                "{name} restarts nodeapiserver.service via a Nodeapiserver*Override fixture \
+                 but is missing from is_environment_reconfiguring_test()"
+            );
+        }
     }
 
     #[test]
