@@ -363,6 +363,21 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
     metadata[field] = value;
 }
 
+/// Same shape as [`set_metadata_field`], for `status` instead --
+/// `delete_with_options()`'s own use (stamping a Namespace's
+/// `status.phase: "Terminating"` alongside its `deletionTimestamp`) is
+/// the only caller so far.
+fn set_status_field(object: &mut Value, field: &str, value: Value) {
+    let Some(map) = object.as_object_mut() else {
+        return;
+    };
+    let status = map.entry("status").or_insert_with(|| json!({}));
+    if !status.is_object() {
+        *status = json!({});
+    }
+    status[field] = value;
+}
+
 fn preserve_managed_fields(existing: &Value, object: &mut Value) {
     if let Some(fields) = existing.pointer("/metadata/managedFields").cloned() {
         set_metadata_field(object, "managedFields", fields);
@@ -621,5 +636,25 @@ mod has_finalizers_tests {
     #[test]
     fn an_empty_spec_finalizers_list_is_not_a_finalizer() {
         assert!(!has_finalizers(&json!({"metadata": {}, "spec": {"finalizers": []}})));
+    }
+}
+
+#[cfg(test)]
+mod set_status_field_tests {
+    use super::set_status_field;
+    use serde_json::json;
+
+    #[test]
+    fn sets_the_field_on_an_existing_status_object() {
+        let mut object = json!({"status": {"phase": "Active"}});
+        set_status_field(&mut object, "phase", json!("Terminating"));
+        assert_eq!(object["status"]["phase"], json!("Terminating"));
+    }
+
+    #[test]
+    fn materializes_a_missing_status_object() {
+        let mut object = json!({"metadata": {}});
+        set_status_field(&mut object, "phase", json!("Terminating"));
+        assert_eq!(object["status"]["phase"], json!("Terminating"));
     }
 }
