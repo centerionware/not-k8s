@@ -121,6 +121,7 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
             exec_cmd: &bin.to_string_lossy(),
             after: None, // nodestore is what other units order *after*, not the reverse
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodestore as a supervised service")
@@ -187,6 +188,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
             exec_cmd: &bin.to_string_lossy(),
             after: (!cfg.worker).then_some(cfg.apiserver_service()),
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodelet as a supervised service")
@@ -236,6 +238,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
                 ("NOTK8S_COMPONENT", "nodeproxy"),
                 ("NOTK8S_COMPONENT_BINARY", binary.as_str()),
             ],
+            limit_stack: None,
         },
     )
     .context("installing nodeproxy as a supervised service")
@@ -322,6 +325,7 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
             exec_cmd: &bin.to_string_lossy(),
             after: Some(cfg.apiserver_service()),
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodescheduler as a supervised service")
@@ -373,6 +377,13 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
             exec_cmd: &bin.to_string_lossy(),
             after: Some(cfg.apiserver_service()),
             env: &env,
+            // Issue #528: an unoptimized debug build reliably segfaults on
+            // startup ("starting all controllers" spawns many tokio tasks
+            // at once) under the system default stack limit (typically
+            // 8MB) on a memory-constrained host -- confirmed live, and
+            // confirmed running cleanly with an unlimited stack. See
+            // SupervisedService::limit_stack's own doc comment.
+            limit_stack: Some("infinity"),
         },
     )
     .context("installing nodecontroller as a supervised service")
