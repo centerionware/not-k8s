@@ -422,7 +422,17 @@ async fn pods_on_node(
     node_name: &str,
     namespace: Option<&str>,
 ) -> Result<Vec<Value>, String> {
-    let list = match rest::list(storage, None, "", "v1", "pods", namespace, "", "", 0, "").await {
+    // `spec.nodeName` is one of the built-in selectable fields real
+    // upstream (and `cacher::selector::selectable_fields`) declares for
+    // pods, so ask storage to filter server-side instead of decoding
+    // every Pod in scope (every Pod in the namespace, or -- from
+    // `pv_access` -- the whole cluster) just to throw most of them away
+    // client-side. The `.filter()` below stays as a cheap defense in
+    // depth (this authorizer is security-relevant; a selector-plumbing
+    // bug should fail closed, not silently widen access), not as the
+    // real filtering step anymore.
+    let field_selector = format!("spec.nodeName={node_name}");
+    let list = match rest::list(storage, None, "", "v1", "pods", namespace, "", &field_selector, 0, "").await {
         Ok(rest::ListOutcome::Found(list)) => list,
         Ok(rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken) => {
             return Ok(Vec::new())
