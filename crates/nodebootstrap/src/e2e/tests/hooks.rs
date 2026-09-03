@@ -71,24 +71,56 @@ async fn termination_message(context: &E2eContext, name: &str) -> Result<Option<
         .and_then(|terminated| terminated.message))
 }
 
-async fn release_deletion_finalizer(pods: &Api<Pod>, name: &str) -> Result<()> {
-    pods.patch(
-        name,
-        &PatchParams::default(),
-        &Patch::Merge(&json!({"metadata": {"finalizers": []}})),
-    )
-    .await?;
-    Ok(())
+/// Merge-patch `name` with `body`, retrying on a 409 Conflict rather than
+/// treating one as fatal. Issue #551: a plain merge patch to
+/// `metadata.finalizers` can lose a real optimistic-concurrency race
+/// against nodelet's own concurrent `status` writes during pod
+/// termination -- the same conflict a real finalizer-owning controller is
+/// always expected to retry on, and `kube-rs`'s `Api::patch()` does not do
+/// that automatically. Same shape as `delete_pod_with_conflict_retry()`
+/// above.
+async fn patch_with_conflict_retry(
+    context: &E2eContext,
+    pods: &Api<Pod>,
+    name: &str,
+    body: serde_json::Value,
+    description: &str,
+) -> Result<()> {
+    context
+        .wait_until(description, Duration::from_secs(30), || {
+            let pods = pods.clone();
+            let body = body.clone();
+            async move {
+                match pods.patch(name, &PatchParams::default(), &Patch::Merge(&body)).await {
+                    Ok(_) => Ok(true),
+                    Err(kube::Error::Api(error)) if error.code == 409 => Ok(false),
+                    Err(error) => Err(error.into()),
+                }
+            }
+        })
+        .await
 }
 
-async fn add_deletion_finalizer(pods: &Api<Pod>, name: &str) -> Result<()> {
-    pods.patch(
+async fn release_deletion_finalizer(context: &E2eContext, pods: &Api<Pod>, name: &str) -> Result<()> {
+    patch_with_conflict_retry(
+        context,
+        pods,
         name,
-        &PatchParams::default(),
-        &Patch::Merge(&json!({"metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]}})),
+        json!({"metadata": {"finalizers": []}}),
+        "release deletion finalizer",
     )
-    .await?;
-    Ok(())
+    .await
+}
+
+async fn add_deletion_finalizer(context: &E2eContext, pods: &Api<Pod>, name: &str) -> Result<()> {
+    patch_with_conflict_retry(
+        context,
+        pods,
+        name,
+        json!({"metadata": {"finalizers": ["nodebootstrap.e2e/observe-termination"]}}),
+        "add deletion finalizer",
+    )
+    .await
 }
 
 pub(super) async fn poststart_hook_runs_before_container_exit(
@@ -259,7 +291,7 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
     let marker = PathBuf::from("/var/lib/nodelet/pods")
         .join(pod_uid)
         .join("volumes/shared/prestop.txt");
-    add_deletion_finalizer(&pods, name).await?;
+    add_deletion_finalizer(context, &pods, name).await?;
     pods.delete(name, &DeleteParams::default()).await?;
     let result = context
         .wait_until("preStop marker", Duration::from_secs(30), || {
@@ -270,7 +302,7 @@ pub(super) async fn prestop_hook_runs_before_termination(context: &E2eContext) -
             }
         })
         .await;
-    release_deletion_finalizer(&pods, name).await?;
+    release_deletion_finalizer(context, &pods, name).await?;
     let _ = std::fs::remove_file(marker);
     result
 }

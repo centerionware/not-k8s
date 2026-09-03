@@ -83,6 +83,7 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
                 ("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", &ipv4_cidr),
                 ("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", &ipv6_cidr),
             ],
+            limit_stack: None,
         },
     )
     .context("installing flanneld as a supervised service")

@@ -51,12 +51,31 @@ where
 
     pub async fn pop(&self) -> K {
         loop {
-            let mut state = self.state.lock().expect("work queue mutex poisoned");
-            if let Some(key) = state.pending.pop_front() {
-                state.queued.remove(&key);
+            // Issue #528's JoinSet refactor needs every controller's run()
+            // to be Send (tokio::task::JoinSet::spawn's own bound) --
+            // try_join! never required that, since it polls every future
+            // on one task rather than moving them to spawned ones. A
+            // std::sync::MutexGuard isn't Send, and an explicit drop()
+            // right before the .await below (this function's previous
+            // shape) still left rustc's async-fn state-machine transform
+            // conservatively including it in the generator's layout for
+            // the whole loop iteration in this shape -- a real, known
+            // limitation, not a logic bug in the previous code. A block
+            // that lexically ends the guard's scope, rather than a
+            // runtime drop() call, is the reliable fix: the compiler can
+            // then prove `state` is not live across the suspend point
+            // from scoping alone.
+            let popped = {
+                let mut state = self.state.lock().expect("work queue mutex poisoned");
+                let key = state.pending.pop_front();
+                if let Some(key) = &key {
+                    state.queued.remove(key);
+                }
+                key
+            };
+            if let Some(key) = popped {
                 return key;
             }
-            drop(state);
             self.notify.notified().await;
         }
     }

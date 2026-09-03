@@ -224,17 +224,24 @@ fn build_pod(rs: &ReplicaSet, name: &str) -> Option<Pod> {
     })
 }
 
+/// Issue #454: a transient Pod-create/-delete failure (the incident this
+/// closes: a webhook temporarily unavailable) used to be logged and
+/// forgotten -- nothing about the ReplicaSet object itself changes when a
+/// create attempt fails, so in this watch-driven, no-resync architecture
+/// nothing would ever produce a future event to retry it. `true` here
+/// means the caller should schedule a real retry.
 async fn reconcile_replica_set(
     client: &Client,
     rs: &ReplicaSet,
     pod_cache: &HashMap<String, Pod>,
     expectations: &mut Expectations,
-) {
+) -> bool {
+    let mut needs_retry = false;
     let namespace = ns_of(rs);
     let name = rs.name_any();
     let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), &namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
-    let Some(rs_uid) = rs.uid() else { return };
+    let Some(rs_uid) = rs.uid() else { return needs_retry };
     let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
 
     let owned: Vec<&Pod> = pod_cache
@@ -283,7 +290,8 @@ async fn reconcile_replica_set(
                 pending.names.insert(pod_name);
             }
             Err(e) => {
-                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to create Pod for ReplicaSet");
+                needs_retry = true;
+                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to create Pod for ReplicaSet; will retry");
             }
         }
     }
@@ -299,7 +307,8 @@ async fn reconcile_replica_set(
             .collect();
         for pod_name in pods_to_delete(candidates, to_delete) {
             if let Err(e) = pod_api.delete(&pod_name, &Default::default()).await {
-                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to delete excess Pod for ReplicaSet");
+                needs_retry = true;
+                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to delete excess Pod for ReplicaSet; will retry");
             }
         }
     }
@@ -317,20 +326,51 @@ async fn reconcile_replica_set(
             .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
         {
-            tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status");
+            needs_retry = true;
+            tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status; will retry");
         }
     }
+    needs_retry
 }
 
 fn ns_of<K: ResourceExt>(obj: &K) -> String {
     obj.namespace().unwrap_or_default()
 }
 
+/// How long to wait before retrying a ReplicaSet whose reconcile hit a
+/// transient failure (issue #454) -- long enough that a truly transient
+/// blip (a webhook briefly unavailable, an apiserver hiccup) has almost
+/// certainly cleared, short enough that a real incident does not leave
+/// replicas under- or over-provisioned for long. Fixed, not exponential:
+/// this queue has no per-key backoff state to grow, and a bounded fixed
+/// retry is a large improvement over the previous "never" on its own —
+/// matching `namespace.rs`'s own `RETRY_PERIOD` precedent for the same
+/// "honest, low-frequency, not a real resync loop" shape.
+const RETRY_DELAY: Duration = Duration::from_secs(15);
+
+/// Re-enqueue `key` after `RETRY_DELAY`, detached from the reconcile loop
+/// so a slow retry can never block processing any other ReplicaSet or Pod
+/// event in the meantime -- same reasoning nodelet's own `schedule_retry()`
+/// documents for the identical shape.
+fn schedule_retry(queue: &std::sync::Arc<KeyedWorkQueue<String>>, key: String) {
+    let queue = queue.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RETRY_DELAY).await;
+        queue.enqueue(key);
+    });
+}
+
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
     let mut expectations: Expectations = HashMap::new();
-    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
+    // Arc so a delayed retry (issue #454) can hold its own cheap clone from
+    // a detached task, the same "outlive the failure" shape pods.rs's own
+    // schedule_retry() already established for exactly this class of gap:
+    // a transient failure (a webhook temporarily unavailable, live-observed
+    // this session) whose object never changes, so nothing else would ever
+    // produce a future watch event to retry it.
+    let queue: std::sync::Arc<KeyedWorkQueue<String>> = std::sync::Arc::new(KeyedWorkQueue::default());
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut rs_stream = crate::watch::watch_replica_sets(&client);
@@ -382,7 +422,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(rs) = replica_sets.get(&key).cloned() {
-                    reconcile_replica_set(&client, &rs, &pods, &mut expectations).await;
+                    if reconcile_replica_set(&client, &rs, &pods, &mut expectations).await {
+                        schedule_retry(&queue, key);
+                    }
                 }
             }
         }

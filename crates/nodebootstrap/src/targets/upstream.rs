@@ -277,6 +277,7 @@ fn install_apiserver(
             exec_cmd: &apiserver_exec,
             after: Some("nodestore.service"),
             env: &[],
+            limit_stack: None,
         },
     )
     .context("installing kube-apiserver as a supervised service")
