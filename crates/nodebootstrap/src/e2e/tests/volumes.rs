@@ -1,7 +1,7 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::{ConfigMap, Node, Pod, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Node, Pod, Secret, ServiceAccount};
 use kube::api::{Api, AttachParams, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use std::os::unix::fs::MetadataExt;
@@ -223,6 +223,102 @@ pub(super) async fn service_account_token_projected_volume_mints_a_token(
             }
         })
         .await
+}
+
+/// A required projected token must keep the Pod Pending until its
+/// ServiceAccount exists. The ServiceAccount can appear after the Pod's first
+/// reconcile, so this also proves the nodelet retries an unchanged Pod rather
+/// than starting it once without the token and waiting forever for a Pod
+/// watch event that will never arrive.
+pub(super) async fn projected_service_account_token_waits_for_service_account(
+    context: &E2eContext,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test(
+            "projected ServiceAccount token retry requires the CRI runtime",
+        ));
+    }
+    let suffix = std::process::id();
+    let service_account_name = format!("delayed-token-sa-{suffix}");
+    let pod_name = format!("delayed-token-pod-{suffix}");
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+
+    create_pod(
+        context,
+        &pod_name,
+        json!({
+            "serviceAccountName": service_account_name,
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sh", "-c", "test -s /var/run/secrets/tokens/api-token && sleep 3600"]
+            }],
+            "volumes": [{
+                "name": "api-token",
+                "projected": {"sources": [{
+                    "serviceAccountToken": {"path": "api-token", "expirationSeconds": 600}
+                }]}
+            }]
+        }),
+    )
+    .await?;
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let stalled = pods
+        .get(&pod_name)
+        .await
+        .context("reading delayed-token Pod before creating its ServiceAccount")?;
+    anyhow::ensure!(
+        stalled
+            .status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref())
+            != Some("Running"),
+        "Pod started before its referenced ServiceAccount existed"
+    );
+
+    service_accounts
+        .create(
+            &PostParams::default(),
+            &ServiceAccount {
+                metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                    name: Some(service_account_name),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await?;
+    context
+        .wait_until("Pod to start after its ServiceAccount appears", Duration::from_secs(60), || {
+            let pods = pods.clone();
+            let pod_name = pod_name.clone();
+            async move {
+                Ok(pods
+                    .get(&pod_name)
+                    .await?
+                    .status
+                    .and_then(|status| status.phase)
+                    .as_deref()
+                    == Some("Running"))
+            }
+        })
+        .await?;
+    let (succeeded, token) = exec_in_pod(
+        context,
+        &pod_name,
+        &["cat", "/var/run/secrets/tokens/api-token"],
+    )
+    .await
+    .context("reading the projected ServiceAccount token")?;
+    anyhow::ensure!(
+        succeeded && !token.trim().is_empty(),
+        "Pod started without a projected ServiceAccount token"
+    );
+    Ok(())
 }
 
 pub(super) async fn host_aliases_are_written_to_etc_hosts(context: &E2eContext) -> Result<()> {

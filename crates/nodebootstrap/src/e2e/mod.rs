@@ -915,6 +915,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_projected_service_account_token_waits_for_service_account",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_host_aliases_are_written_to_etc_hosts",
         group: TestGroup::General,
     },
@@ -2029,6 +2033,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_service_account_token_projected_volume_mints_a_real_token" => {
             volumes::service_account_token_projected_volume_mints_a_token(context).await
+        }
+        "test_projected_service_account_token_waits_for_service_account" => {
+            volumes::projected_service_account_token_waits_for_service_account(context).await
         }
         "test_host_aliases_are_written_to_etc_hosts" => {
             volumes::host_aliases_are_written_to_etc_hosts(context).await

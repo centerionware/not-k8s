@@ -111,6 +111,22 @@ impl PodRuntime for CriRuntime {
             .unwrap_or_default();
 
         let volumes = self.resolve_volumes(pod, &id, &pull_secrets).await;
+        let pending_projected_tokens = pending_projected_token_volume_names(pod, &volumes);
+        if !pending_projected_tokens.is_empty() {
+            return Ok(RuntimeStatus {
+                phase: Phase::Pending,
+                message: Some(format!(
+                    "waiting for projected ServiceAccount token(s) to be materialized: {}",
+                    pending_projected_tokens.join(", ")
+                )),
+                started_at: None,
+                pod_ip: None,
+                containers: Vec::new(),
+                init_containers: Vec::new(),
+                ephemeral_containers: Vec::new(),
+                initialized: false,
+            });
+        }
         // Round 124 (found live in CI): don't let any container start
         // (not even an init container) while a declared PVC/generic-
         // ephemeral volume is still waiting on its CSI attach/mount —

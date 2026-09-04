@@ -749,7 +749,7 @@ impl PodController {
 
     /// A delayed retry for a pod whose first ensure_pod failed, OR (round
     /// 124) is waiting on a still-pending CSI volume attach or device
-    /// plugin resource (`is_waiting_for_external_resource()`). Runs detached from the reconcile
+    /// plugin resource or projected ServiceAccount token (`is_waiting_for_external_resource()`). Runs detached from the reconcile
     /// loop (needs to outlive this call), so it re-fetches the Pod rather
     /// than reusing the possibly-stale one — if it's gone or being deleted
     /// by the time a retry fires, there's nothing to do.
@@ -1541,7 +1541,9 @@ fn is_waiting_for_external_resource(status: &RuntimeStatus) -> bool {
         return false;
     }
     if status.message.as_deref().is_some_and(|m| {
-        m.starts_with("waiting for CSI volume(s) to be mounted") || m.starts_with("waiting for device plugin resource(s) to be available")
+        m.starts_with("waiting for CSI volume(s) to be mounted")
+            || m.starts_with("waiting for device plugin resource(s) to be available")
+            || m.starts_with("waiting for projected ServiceAccount token(s) to be materialized")
     }) {
         return true;
     }

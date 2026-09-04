@@ -48,3 +48,21 @@ fn reaches_the_ceiling_in_a_bounded_number_of_steps() {
     }
     assert_eq!(steps, 6);
 }
+
+#[test]
+fn projected_service_account_token_waits_are_retried() {
+    let status = RuntimeStatus {
+        phase: Phase::Pending,
+        message: Some(
+            "waiting for projected ServiceAccount token(s) to be materialized: api-token"
+                .to_string(),
+        ),
+        started_at: None,
+        pod_ip: None,
+        containers: Vec::new(),
+        init_containers: Vec::new(),
+        ephemeral_containers: Vec::new(),
+        initialized: false,
+    };
+    assert!(is_waiting_for_external_resource(&status));
+}

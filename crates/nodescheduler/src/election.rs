@@ -115,55 +115,78 @@ impl LeaderLease {
                 }
             }
             Some(existing) => {
-                let spec = existing.spec.clone().unwrap_or_default();
-                let holder = spec.holder_identity.clone();
-                let renewed = spec.renew_time.as_ref().map(|t| t.0);
-
-                if !may_acquire(
-                    holder.as_deref(),
-                    renewed,
-                    self.lease_duration,
-                    now,
-                    &self.identity,
-                ) {
-                    return Ok(false);
-                }
-
-                // A transition is a change of holder, not a renewal by the
-                // same one — it is the field an operator reads to see whether
-                // leadership has been flapping.
-                let transitions = spec.lease_transitions.unwrap_or(0)
-                    + i32::from(holder.as_deref() != Some(self.identity.as_str()));
-
-                // A renewal by the same holder must keep the original
-                // acquireTime — it records when *this* leadership term
-                // started, and operators read it together with
-                // leaseTransitions to see how long the current holder has
-                // held it. Only a genuine change of holder gets a fresh one.
-                let acquired_at = if holder.as_deref() == Some(self.identity.as_str()) {
-                    spec.acquire_time.map(|t| t.0).unwrap_or(now)
-                } else {
-                    now
-                };
-
-                let mut lease = self.lease_object(
-                    existing.metadata.resource_version.clone(),
-                    now,
-                    acquired_at,
-                    transitions,
-                );
-                lease.metadata.name = Some(self.name.clone());
-
-                // The optimistic-concurrency write: carrying the
-                // resourceVersion we read is what turns a lost race into a
-                // 409 instead of a silent double-leader.
-                match self.api.replace(&self.name, &PostParams::default(), &lease).await {
-                    Ok(_) => Ok(true),
-                    Err(kube::Error::Api(e)) if e.code == 409 => Ok(false),
-                    Err(e) => Err(e).context("acquiring the scheduler lease"),
-                }
+                self.replace_with_retry(existing).await
             }
         }
+    }
+
+    /// Retry an optimistic lease update only after re-reading the object. A
+    /// status writer can legitimately advance the Lease between our GET and
+    /// replace; abandoning leadership on that first 409 makes a healthy
+    /// scheduler flap out of an ordinary concurrent write. Re-evaluating the
+    /// fresh holder on every attempt preserves the safety rule: if another
+    /// identity now owns a live lease, return `Ok(false)` and stop scheduling.
+    async fn replace_with_retry(&self, mut existing: Lease) -> Result<bool> {
+        const MAX_CONFLICT_RETRIES: usize = 3;
+        const CONFLICT_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+        for attempt in 0..=MAX_CONFLICT_RETRIES {
+            let now = Timestamp::now();
+            let spec = existing.spec.clone().unwrap_or_default();
+            let holder = spec.holder_identity.clone();
+            let renewed = spec.renew_time.as_ref().map(|t| t.0);
+            if !may_acquire(
+                holder.as_deref(),
+                renewed,
+                self.lease_duration,
+                now,
+                &self.identity,
+            ) {
+                return Ok(false);
+            }
+
+            // A transition is a change of holder, not a renewal by the same
+            // one. A renewal keeps acquireTime so operators can distinguish
+            // a long-held term from leadership flapping.
+            let transitions = spec.lease_transitions.unwrap_or(0)
+                + i32::from(holder.as_deref() != Some(self.identity.as_str()));
+            let acquired_at = if holder.as_deref() == Some(self.identity.as_str()) {
+                spec.acquire_time.map(|t| t.0).unwrap_or(now)
+            } else {
+                now
+            };
+            let lease = self.lease_object(
+                existing.metadata.resource_version.clone(),
+                now,
+                acquired_at,
+                transitions,
+            );
+
+            // Carrying the resourceVersion we read is what turns a lost race
+            // into a 409 instead of a silent double-leader. A 409 is
+            // recoverable only by obtaining a fresh resourceVersion and
+            // checking the holder again.
+            match self.api.replace(&self.name, &PostParams::default(), &lease).await {
+                Ok(_) => return Ok(true),
+                Err(kube::Error::Api(e)) if e.code == 409 => {
+                    if attempt == MAX_CONFLICT_RETRIES {
+                        return Err(anyhow::anyhow!(
+                            "scheduler lease update conflicted after {} attempts",
+                            attempt + 1
+                        ));
+                    }
+                    tokio::time::sleep(CONFLICT_RETRY_DELAY).await;
+                    existing = self
+                        .api
+                        .get_opt(&self.name)
+                        .await
+                        .context("re-reading the scheduler lease after a conflict")?
+                        .ok_or_else(|| anyhow::anyhow!("scheduler lease disappeared during renewal"))?;
+                }
+                Err(e) => return Err(e).context("acquiring the scheduler lease"),
+            }
+        }
+        unreachable!("lease conflict retry loop always returns")
     }
 
     fn lease_object(
