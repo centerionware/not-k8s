@@ -300,28 +300,14 @@ pub async fn apply_prepare(
 
     let candidate = match applied.object {
         Some(candidate) => candidate,
-        None if managers
-            .get(manager)
-            .is_some_and(|state| state.api_version != api_version && !state.fields.is_empty()) =>
-        {
-            // A request-version no-op can still be a real cross-version
-            // Apply: the manager may have stopped claiming a field whose
-            // representation only exists in its previous API version.
-            // Keep the live candidate so the versioned prune/reconciliation
-            // phase can remove that field and refresh the manager entry.
-            live_for_request.clone()
-        }
         None => {
-            let live = convert_to_requested_version(
-                storage,
-                group,
-                version,
-                &resolved.kind,
-                resolved.conversion_webhook.as_ref(),
-                live,
-            )
-            .await?;
-            return Ok(ApplyPrepareOutcome::NoOp(live));
+            // A request-version no-op can still be a real Apply: the
+            // applying manager may be claiming these fields for the first
+            // time, or may be changing ownership without changing any
+            // values. Keep the live candidate so the versioned
+            // prune/reconciliation phase can decide whether the managed
+            // fields bookkeeping itself needs to be persisted.
+            live_for_request.clone()
         }
     };
 
@@ -385,8 +371,15 @@ pub async fn apply_prepare(
         Ok(applied) => applied,
         Err(conflicts) => return Ok(ApplyPrepareOutcome::Conflict(conflicts)),
     };
-    let Some(mut object) = applied.object else {
-        return Ok(ApplyPrepareOutcome::NoOp(live_for_request));
+    let mut object = match applied.object {
+        Some(object) => object,
+        None if applied.managers == managers => {
+            // Neither the object nor its ownership changed. This is the
+            // genuine no-op case; an unchanged object with changed manager
+            // state must continue through managedFields persistence below.
+            return Ok(ApplyPrepareOutcome::NoOp(live_for_request));
+        }
+        None => live_for_request.clone(),
     };
 
     let rebuilt = crate::patch::managed_fields::rebuild_versioned_managed_fields(
