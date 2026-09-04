@@ -32,7 +32,7 @@ jobs:
 
       - name: Clear the e2e-results branch for this release run
         env:
-          RESULTS_BRANCH: e2e-results-${{ github.run_id }}
+          RESULTS_BRANCH: e2e-results
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -315,7 +315,7 @@ jobs:
       - name: Publish this shard's release e2e results
         if: always()
         env:
-          RESULTS_BRANCH: e2e-results-${{ github.run_id }}
+          RESULTS_BRANCH: e2e-results
           RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
           SHARD: ${{ matrix.shard }}
         run: |
