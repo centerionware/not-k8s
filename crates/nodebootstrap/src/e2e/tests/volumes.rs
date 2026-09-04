@@ -268,7 +268,8 @@ pub(super) async fn projected_service_account_token_waits_for_service_account(
                 "containers": [{
                     "name": "app",
                     "image": "busybox:latest",
-                    "command": ["sh", "-c", "test -s /var/run/secrets/tokens/api-token && sleep 3600"]
+                    "command": ["sh", "-c", "test -s /var/run/secrets/tokens/api-token && sleep 3600"],
+                    "volumeMounts": [{"name": "api-token", "mountPath": "/var/run/secrets/tokens"}]
                 }],
                 "volumes": [{
                     "name": "api-token",
