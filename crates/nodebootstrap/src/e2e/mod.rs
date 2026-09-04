@@ -803,6 +803,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
+        name: "test_scheduler_retries_a_pod_through_late_pvc_and_pv_events",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_scheduler_enforces_read_write_once_pod_exclusivity",
         group: TestGroup::CsiDra,
     },
@@ -1951,6 +1955,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_claims_a_static_wait_for_first_consumer_volume" => {
             scheduler::scheduler_claims_a_static_wait_for_first_consumer_volume(context).await
+        }
+        "test_scheduler_retries_a_pod_through_late_pvc_and_pv_events" => {
+            scheduler::scheduler_retries_a_pod_through_late_pvc_and_pv_events(context).await
         }
         "test_scheduler_enforces_read_write_once_pod_exclusivity" => {
             scheduler::scheduler_enforces_read_write_once_pod_exclusivity(context).await

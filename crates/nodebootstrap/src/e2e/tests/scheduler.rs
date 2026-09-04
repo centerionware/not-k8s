@@ -1080,6 +1080,180 @@ pub(super) async fn scheduler_claims_a_static_wait_for_first_consumer_volume(
     result
 }
 
+/// Exercise the event order that a watch-driven scheduler and nodelet must
+/// tolerate: the Pod arrives first, its PVC arrives second, and the matching
+/// PV arrives last. Each intermediate assertion is deliberately made before
+/// creating the next object, so a test that only succeeds through a later
+/// relist or timeout cannot pass this case.
+pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
+    context: &E2eContext,
+) -> Result<()> {
+    require_nodescheduler()?;
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("late PVC/PV ordering checks require the CRI runtime"));
+    }
+    let suffix = std::process::id();
+    let class_name = format!("late-wfc-{suffix}");
+    let pvc_name = format!("late-pvc-{suffix}");
+    let pv_name = format!("late-pv-{suffix}");
+    let pod_name = format!("late-pod-{suffix}");
+    let host_path = format!("/tmp/nodebootstrap-e2e-{pv_name}");
+    let classes: Api<StorageClass> = Api::all(context.client.clone());
+    let pvcs: Api<PersistentVolumeClaim> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    let pvs: Api<PersistentVolume> = Api::all(context.client.clone());
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+
+    let class: StorageClass = serde_json::from_value(json!({
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "StorageClass",
+        "metadata": {"name": class_name},
+        "provisioner": "kubernetes.io/no-provisioner",
+        "volumeBindingMode": "WaitForFirstConsumer"
+    }))?;
+    classes.create(&PostParams::default(), &class).await?;
+    context
+        .wait_until("late StorageClass to be visible", Duration::from_secs(30), || {
+            let classes = classes.clone();
+            let class_name = class_name.clone();
+            async move { Ok(classes.get(&class_name).await.is_ok()) }
+        })
+        .await?;
+
+    let pod: Pod = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": pod_name},
+        "spec": {
+            "restartPolicy": "Never",
+            "containers": [{
+                "name": "app",
+                "image": "busybox:latest",
+                "command": ["sleep", "300"],
+                "volumeMounts": [{"name": "data", "mountPath": "/data"}]
+            }],
+            "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}]
+        }
+    }))?;
+    pods.create(&PostParams::default(), &pod).await?;
+
+    let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": pvc_name},
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": class_name,
+            "resources": {"requests": {"storage": "32Mi"}}
+        }
+    }))?;
+    let pv: PersistentVolume = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": pv_name},
+        "spec": {
+            "capacity": {"storage": "64Mi"},
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": class_name,
+            "persistentVolumeReclaimPolicy": "Retain",
+            "hostPath": {"path": host_path, "type": "DirectoryOrCreate"}
+        }
+    }))?;
+
+    let result = async {
+        // The scheduler must reject the Pod, but leave it unscheduled, while
+        // the referenced PVC is genuinely absent.
+        context
+            .wait_until("late PVC Pod to report its missing claim", Duration::from_secs(60), || {
+                let pods = pods.clone();
+                let pod_name = pod_name.clone();
+                let pvc_name = pvc_name.clone();
+                async move {
+                    let pod = pods.get(&pod_name).await?;
+                    Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
+                        && pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Pending")
+                        && pod.status.as_ref().and_then(|status| status.conditions.as_ref()).is_some_and(|conditions| {
+                            conditions.iter().any(|condition| {
+                                condition.type_ == "PodScheduled"
+                                    && condition.status == "False"
+                                    && condition.reason.as_deref() == Some("Unschedulable")
+                                    && condition.message.as_deref().is_some_and(|message| message.contains(&pvc_name))
+                            })
+                        }))
+                }
+            })
+            .await?;
+
+        // Deliver only the PVC. It is still impossible to start: no PV exists
+        // yet, and this assertion catches a scheduler that loses the parked
+        // Pod when the PVC ADD event updates its cache.
+        pvcs.create(&PostParams::default(), &pvc).await?;
+        context
+            .wait_until("late PVC Pod to remain Pending before its PV exists", Duration::from_secs(60), || {
+                let pods = pods.clone();
+                let pvcs = pvcs.clone();
+                let pod_name = pod_name.clone();
+                let pvc_name = pvc_name.clone();
+                async move {
+                    let pod = pods.get(&pod_name).await?;
+                    let claim = pvcs.get(&pvc_name).await?;
+                    Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
+                        && pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Pending")
+                        && claim.status.as_ref().and_then(|status| status.phase.as_deref()) != Some("Bound"))
+                }
+            })
+            .await?;
+
+        // Only now make the PV available. The PV ADD event must wake the same
+        // parked scheduling attempt, the binder must complete the claim, and
+        // nodelet must then reconcile the already-existing Pod to Running.
+        pvs.create(&PostParams::default(), &pv).await?;
+        context
+            .wait_until("late PVC to bind after its PV appears", Duration::from_secs(90), || {
+                let pvcs = pvcs.clone();
+                let pvc_name = pvc_name.clone();
+                async move {
+                    Ok(pvcs
+                        .get(&pvc_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Bound"))
+                }
+            })
+            .await?;
+        context
+            .wait_until("late PVC Pod to be scheduled after its PV binds", Duration::from_secs(90), || {
+                pod_is_scheduled(context, &pod_name)
+            })
+            .await?;
+        context
+            .wait_until("late PVC Pod to reach Running", Duration::from_secs(120), || {
+                let pods = pods.clone();
+                let pod_name = pod_name.clone();
+                async move {
+                    Ok(pods
+                        .get(&pod_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = pvcs.delete(&pvc_name, &DeleteParams::default()).await;
+    let _ = pvs.delete(&pv_name, &DeleteParams::default()).await;
+    let _ = classes.delete(&class_name, &DeleteParams::default()).await;
+    let _ = std::fs::remove_dir_all(&host_path);
+    result
+}
+
 pub(super) async fn scheduler_enforces_read_write_once_pod_exclusivity(
     context: &E2eContext,
 ) -> Result<()> {
