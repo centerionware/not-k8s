@@ -1837,11 +1837,6 @@ pub(super) async fn nodeapiserver_applies_storage_admission_to_apply(
             "labels": {"pod-security.kubernetes.io/enforce": "baseline"}
         }
     }))?;
-    let service_account: ServiceAccount = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "ServiceAccount",
-        "metadata": {"name": "default", "namespace": &namespace_name}
-    }))?;
     let limit_range: LimitRange = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "LimitRange",
@@ -1888,10 +1883,21 @@ pub(super) async fn nodeapiserver_applies_storage_admission_to_apply(
             .create(&PostParams::default(), &namespace)
             .await
             .context("creating the storage-admission Apply namespace")?;
-        service_accounts
-            .create(&PostParams::default(), &service_account)
-            .await
-            .context("creating the storage-admission Apply ServiceAccount")?;
+        // The nodecontroller owns this object and creates it asynchronously
+        // for every new Namespace. Creating `default` here races that
+        // controller and makes the fixture fail with an incidental 409 when
+        // the controller wins. Wait for the controller-owned object, as the
+        // shared E2E namespace setup and the namespace-selector fixture do.
+        context
+            .wait_until(
+                "the storage-admission Apply ServiceAccount",
+                Duration::from_secs(30),
+                || {
+                    let service_accounts = service_accounts.clone();
+                    async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+                },
+            )
+            .await?;
         limit_ranges
             .create(&PostParams::default(), &limit_range)
             .await
