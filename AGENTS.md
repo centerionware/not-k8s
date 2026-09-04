@@ -60,6 +60,11 @@ line, including type, scope, punctuation, and spaces, must be **under 100
 characters** (99 maximum), or the automated commit-convention check fails.
 Put additional explanation in the body after a blank line. Apply the same
 convention to squash-merge subjects and PR titles used as commit subjects.
+Use a specific description of at least 10 characters, starting in lowercase
+(acronyms are allowed), with no repeated whitespace or trailing period.
+Check locally with `python3 .github/scripts/commit_subjects.py --subject
+'fix(gc): preserve owner edges during relists'`; the same validator checks
+both PR titles and commits in CI.
 
 ## Find the implementation
 
