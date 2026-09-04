@@ -1449,3 +1449,18 @@ controller read client, retries failed reads/status writes, and periodically
 requeues known budgets as an informer safety-net. The e2e test now creates the
 PDB before the Deployment so the empty-before-Pods ordering is exercised
 directly, then requires the status to converge through all four numeric fields.
+
+### 30. Fixed: concurrent e2e runs could clobber each other's result branch
+
+**Severity: CI validation race — found while validating findings #28 and #29.**
+
+Manual e2e runs were independent at the cluster level, but every run force-pushed
+the same `e2e-results` branch during setup. When two targeted runs were
+dispatched together, one run could reset that branch while the other was
+preparing or publishing its shard, causing a failure before the Rust test
+runner started. This was a harness failure, not a product failure, but it
+made concurrent investigation unreliable.
+
+**Fixed**: e2e and release workflows now use a run-scoped results branch,
+`e2e-results-$GITHUB_RUN_ID`, so setup and shard publication are isolated per
+workflow run.
