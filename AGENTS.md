@@ -52,6 +52,15 @@ Do not ask again for permission already given. Do not infer authority to merge,
 publish a release, restart an unrelated host, or send a message from a request
 to investigate a failure.
 
+## Commit messages
+
+Use Conventional Commits: `type(scope): description` (scope is optional),
+for example `fix(gc): preserve owner edges during relists`. The entire subject
+line, including type, scope, punctuation, and spaces, must be **under 100
+characters** (99 maximum), or the automated commit-convention check fails.
+Put additional explanation in the body after a blank line. Apply the same
+convention to squash-merge subjects and PR titles used as commit subjects.
+
 ## Find the implementation
 
 | Concern | Start here |
