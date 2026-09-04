@@ -1,0 +1,9 @@
+commit: 245f67359d87aa88af3af9e45dc1d0869439645a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/33846429092
+timestamp (UTC): 2026-09-04T07:11:06Z
+shard: 1/5
+exit code: 0
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 1/5
+▶ test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion ... PASS (7038ms)
+Results: 1 passed, 0 skipped, 0 failed
