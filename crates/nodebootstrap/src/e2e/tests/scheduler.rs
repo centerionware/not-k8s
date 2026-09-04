@@ -1080,11 +1080,12 @@ pub(super) async fn scheduler_claims_a_static_wait_for_first_consumer_volume(
     result
 }
 
-/// Exercise the event order that a watch-driven scheduler and nodelet must
-/// tolerate: the Pod arrives first, its PVC arrives second, and the matching
-/// PV arrives last. Each intermediate assertion is deliberately made before
-/// creating the next object, so a test that only succeeds through a later
-/// relist or timeout cannot pass this case.
+/// Exercise an intentionally incomplete manifest graph. Kubernetes objects
+/// arrive through independent watches, so the Pod, PVC, PV, and StorageClass
+/// must each be able to land in a different order. Each intermediate
+/// assertion is deliberately made before the next dependency arrives, so a
+/// test that only succeeds through a later relist or timeout cannot pass this
+/// case.
 pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
     context: &E2eContext,
 ) -> Result<()> {
@@ -1111,14 +1112,6 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
         "provisioner": "kubernetes.io/no-provisioner",
         "volumeBindingMode": "WaitForFirstConsumer"
     }))?;
-    classes.create(&PostParams::default(), &class).await?;
-    context
-        .wait_until("late StorageClass to be visible", Duration::from_secs(30), || {
-            let classes = classes.clone();
-            let class_name = class_name.clone();
-            async move { Ok(classes.get(&class_name).await.is_ok()) }
-        })
-        .await?;
 
     let pod: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
@@ -1135,8 +1128,6 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
             "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}]
         }
     }))?;
-    pods.create(&PostParams::default(), &pod).await?;
-
     let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -1161,8 +1152,15 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
     }))?;
 
     let result = async {
-        // The scheduler must reject the Pod, but leave it unscheduled, while
-        // the referenced PVC is genuinely absent.
+        // Deliberately apply the objects in dependency order's reverse: the
+        // Pod names a missing PVC, the PVC names a missing class, and the PV
+        // names that same class. The API accepts each incomplete manifest;
+        // the controllers must retain enough state to converge as the rest
+        // of the graph arrives.
+        pods.create(&PostParams::default(), &pod).await?;
+
+        // First dependency: the scheduler must reject the Pod, but leave it
+        // unscheduled while the referenced PVC is genuinely absent.
         context
             .wait_until("late PVC Pod to report its missing claim", Duration::from_secs(60), || {
                 let pods = pods.clone();
@@ -1184,9 +1182,9 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
             })
             .await?;
 
-        // Deliver only the PVC. It is still impossible to start: no PV exists
-        // yet, and this assertion catches a scheduler that loses the parked
-        // Pod when the PVC ADD event updates its cache.
+        // Second dependency: deliver only the PVC. It is still impossible to
+        // start because its static PV has not arrived, and this assertion
+        // catches a scheduler that loses the parked Pod on a PVC ADD event.
         pvcs.create(&PostParams::default(), &pvc).await?;
         context
             .wait_until("late PVC Pod to remain Pending before its PV exists", Duration::from_secs(60), || {
@@ -1204,12 +1202,40 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
             })
             .await?;
 
-        // Only now make the PV available. The PV ADD event must wake the same
-        // parked scheduling attempt, the binder must complete the claim, and
-        // nodelet must then reconcile the already-existing Pod to Running.
+        // Third dependency: deliver the PV while the StorageClass is still
+        // absent. The binder must not treat an unknown named class as
+        // Immediate and claim this static volume before the scheduler has a
+        // chance to choose a node.
         pvs.create(&PostParams::default(), &pv).await?;
         context
-            .wait_until("late PVC to bind after its PV appears", Duration::from_secs(90), || {
+            .wait_until("late manifest graph to remain unresolved before its class exists", Duration::from_secs(60), || {
+                let pods = pods.clone();
+                let pvcs = pvcs.clone();
+                let pod_name = pod_name.clone();
+                let pvc_name = pvc_name.clone();
+                async move {
+                    let pod = pods.get(&pod_name).await?;
+                    let claim = pvcs.get(&pvc_name).await?;
+                    Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
+                        && claim.status.as_ref().and_then(|status| status.phase.as_deref()) != Some("Bound"))
+                }
+            })
+            .await?;
+
+        // Final dependency: the class ADD and the earlier PVC/PV events must
+        // wake the same parked scheduling attempt. The binder completes the
+        // claim, and nodelet reconciles the already-existing Pod to Running.
+        classes.create(&PostParams::default(), &class).await?;
+        context
+            .wait_until("late StorageClass to be visible", Duration::from_secs(30), || {
+                let classes = classes.clone();
+                let class_name = class_name.clone();
+                async move { Ok(classes.get(&class_name).await.is_ok()) }
+            })
+            .await?;
+
+        context
+            .wait_until("late PVC to bind after its StorageClass appears", Duration::from_secs(90), || {
                 let pvcs = pvcs.clone();
                 let pvc_name = pvc_name.clone();
                 async move {
