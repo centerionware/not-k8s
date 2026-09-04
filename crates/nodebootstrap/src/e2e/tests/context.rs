@@ -38,7 +38,6 @@ impl E2eContext {
                     },
                     ..Default::default()
                 },
-            )
             .await
             .with_context(|| format!("creating e2e namespace {namespace}"))?;
 
