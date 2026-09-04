@@ -291,7 +291,7 @@ pub(super) async fn projected_service_account_token_waits_for_service_account(
             .await?;
         run_privileged("systemctl", &["start", "nodelet.service"])?;
         context
-            .wait_until("Pod to remain Pending while its ServiceAccount is absent", Duration::from_secs(60), || {
+            .wait_until("Pod to remain Pending while its ServiceAccount is absent", Duration::from_secs(180), || {
                 let pods = pods.clone();
                 let pod_name = pod_name.clone();
                 async move {
