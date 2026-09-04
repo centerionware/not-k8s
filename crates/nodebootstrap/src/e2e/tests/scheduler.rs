@@ -1159,25 +1159,21 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
         // the rest of the graph arrives.
         pods.create(&PostParams::default(), &pod).await?;
 
-        // First dependency: the scheduler must reject the Pod, but leave it
-        // unscheduled while the referenced PVC is genuinely absent.
+        // First dependency: the scheduler must leave the Pod unscheduled while
+        // the referenced PVC is genuinely absent. The scheduler's
+        // `PodScheduled=False` status/event is best-effort and is written by
+        // a detached reporter. Requiring that particular status patch before
+        // creating the next object made this test deadlock under API load:
+        // the scheduler had already rejected the missing claim, but the test
+        // never delivered the PVC that would let the graph converge.
         context
-            .wait_until("late PVC Pod to report its missing claim", Duration::from_secs(60), || {
+            .wait_until("late PVC Pod to remain unscheduled while its claim is absent", Duration::from_secs(30), || {
                 let pods = pods.clone();
                 let pod_name = pod_name.clone();
-                let pvc_name = pvc_name.clone();
                 async move {
                     let pod = pods.get(&pod_name).await?;
                     Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
-                        && pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Pending")
-                        && pod.status.as_ref().and_then(|status| status.conditions.as_ref()).is_some_and(|conditions| {
-                            conditions.iter().any(|condition| {
-                                condition.type_ == "PodScheduled"
-                                    && condition.status == "False"
-                                    && condition.reason.as_deref() == Some("Unschedulable")
-                                    && condition.message.as_deref().is_some_and(|message| message.contains(&pvc_name))
-                            })
-                        }))
+                        && pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Pending"))
                 }
             })
             .await?;

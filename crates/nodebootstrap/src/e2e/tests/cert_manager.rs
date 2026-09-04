@@ -2,7 +2,7 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Secret};
 use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, PostParams};
 use kube::core::{GroupVersionKind, ObjectMeta};
 use kube::discovery::ApiResource;
@@ -155,10 +155,81 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
     );
     let deployments: Api<Deployment> =
         Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let cert_manager_configmaps: Api<ConfigMap> =
+        Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
     let secrets: Api<Secret> = Api::namespaced(context.client.clone(), &context.namespace);
     let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
 
     let result = async {
+        // This test uses cert-manager's upstream fixed namespace because the
+        // manifest and its admission webhooks refer to it by name. A prior
+        // interrupted run can leave that Namespace Active or Terminating;
+        // applying into it then mixes old Deployments and ServiceAccounts with
+        // this run and makes readiness failures look like CRD-discovery bugs.
+        if namespaces
+            .get_opt(CERT_MANAGER_NAMESPACE)
+            .await?
+            .is_some()
+        {
+            match namespaces
+                .delete(CERT_MANAGER_NAMESPACE, &DeleteParams::default())
+                .await
+            {
+                Ok(_) => {}
+                Err(kube::Error::Api(error)) if error.is_not_found() => {}
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "deleting the stale cert-manager Namespace: {error}"
+                    ));
+                }
+            }
+            context
+                .wait_until(
+                    "the stale cert-manager Namespace to disappear",
+                    Duration::from_secs(120),
+                    || {
+                        let namespaces = namespaces.clone();
+                        async move {
+                            Ok(namespaces.get_opt(CERT_MANAGER_NAMESPACE).await?.is_none())
+                        }
+                    },
+                )
+                .await?;
+        }
+        namespaces
+            .create(
+                &PostParams::default(),
+                &Namespace {
+                    metadata: ObjectMeta {
+                        name: Some(CERT_MANAGER_NAMESPACE.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the cert-manager Namespace before its workloads")?;
+        // cert-manager Pods use the namespace's projected service-account
+        // volume. Applying the Deployments before the root-CA publisher has
+        // materialized this ConfigMap races nodelet's first sandbox setup;
+        // the containers can then fail before their normal readiness checks
+        // ever have a chance to run.
+        context
+            .wait_until(
+                "cert-manager Namespace to receive kube-root-ca.crt",
+                Duration::from_secs(60),
+                || {
+                    let cert_manager_configmaps = cert_manager_configmaps.clone();
+                    async move {
+                        Ok(cert_manager_configmaps
+                            .get_opt("kube-root-ca.crt")
+                            .await?
+                            .is_some())
+                    }
+                },
+            )
+            .await?;
         run_kubectl(["apply", "-f", manifest_url.as_str()].as_slice())
             .context("installing cert-manager and its CRDs")?;
 

@@ -2543,11 +2543,6 @@ pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
         "metadata": {"name": "one-pod", "namespace": &namespace_name},
         "spec": {"hard": {"pods": "1"}}
     }))?;
-    let service_account: ServiceAccount = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "ServiceAccount",
-        "metadata": {"name": "default", "namespace": &namespace_name}
-    }))?;
     let pod = |name: &str| -> Result<Pod> {
         Ok(serde_json::from_value(json!({
             "apiVersion": "v1",
@@ -2567,10 +2562,19 @@ pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
             .create(&PostParams::default(), &namespace)
             .await
             .context("creating the ResourceQuota namespace")?;
-        service_accounts
-            .create(&PostParams::default(), &service_account)
-            .await
-            .context("creating the ResourceQuota ServiceAccount")?;
+        // `default` is created asynchronously by nodecontroller. Creating it
+        // in this fixture races the controller and fails with an incidental
+        // AlreadyExists when the controller wins the race.
+        context
+            .wait_until(
+                "the ResourceQuota namespace's default ServiceAccount",
+                Duration::from_secs(30),
+                || {
+                    let service_accounts = service_accounts.clone();
+                    async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+                },
+            )
+            .await?;
         quotas
             .create(&PostParams::default(), &quota)
             .await
@@ -2591,9 +2595,6 @@ pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
     let _ = pods.delete("quota-first", &DeleteParams::default()).await;
     let _ = pods.delete("quota-second", &DeleteParams::default()).await;
     let _ = quotas.delete("one-pod", &DeleteParams::default()).await;
-    let _ = service_accounts
-        .delete("default", &DeleteParams::default())
-        .await;
     let _ = namespaces
         .delete(&namespace_name, &DeleteParams::default())
         .await;

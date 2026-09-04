@@ -1753,7 +1753,7 @@ fn reorder_environment_reconfiguring_tests(selected: Vec<&'static str>) -> Vec<&
 fn is_environment_reconfiguring_test(name: &str) -> bool {
     matches!(
         name,
-        "test_pending_pod_recovers_after_the_node_failure_is_fixed"
+        "test_a_pending_pod_recovers_after_the_node_failure_is_fixed"
             | "test_config_file_sets_a_value_env_did_not_override"
             | "test_config_file_precedence_a_real_env_var_still_wins"
             | "test_config_dir_merges_files_in_filename_order"
@@ -2898,6 +2898,13 @@ mod tests {
                  but is missing from is_environment_reconfiguring_test()"
             );
         }
+    }
+
+    #[test]
+    fn node_recovery_fixture_is_deferred_with_other_environment_changes() {
+        assert!(is_environment_reconfiguring_test(
+            "test_a_pending_pod_recovers_after_the_node_failure_is_fixed"
+        ));
     }
 
     #[test]

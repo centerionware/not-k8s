@@ -45,7 +45,7 @@ impl E2eContext {
         let service_accounts: Api<ServiceAccount> =
             Api::namespaced(client.clone(), &namespace);
         let context = Self { client, namespace };
-        context
+        if let Err(error) = context
             .wait_until(
                 "the e2e namespace's default ServiceAccount",
                 Duration::from_secs(30),
@@ -54,7 +54,16 @@ impl E2eContext {
                     async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
                 },
             )
-            .await?;
+            )
+            .await
+        {
+            // A failed context setup used to leak its Namespace. Every
+            // subsequent setup then added more terminating objects while the
+            // namespace controller was already behind, turning one missed
+            // ServiceAccount into a shard-wide cascade of timeouts.
+            context.cleanup().await;
+            return Err(error);
+        }
 
         Ok(context)
     }
