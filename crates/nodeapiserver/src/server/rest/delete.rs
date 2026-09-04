@@ -51,6 +51,62 @@ pub async fn delete_with_options(
     grace_period_seconds: Option<i64>,
     dry_run: bool,
 ) -> Result<DeleteOutcome, Error> {
+    // A plain delete is allowed to race status writers. The read/compare
+    // transaction is still the safety boundary, but surfacing its first
+    // failed compare as a user-visible 409 leaves the object stuck in the
+    // exact state the caller asked us to tear down. Re-read and retry only
+    // when the caller did not supply an explicit identity or resourceVersion
+    // precondition; those conflicts are intentional and must remain 409s.
+    let retries = if may_retry_delete_conflict(preconditions, dry_run) {
+        DELETE_CONFLICT_RETRIES
+    } else {
+        0
+    };
+    for attempt in 0..=retries {
+        let outcome = delete_once(
+            storage,
+            group,
+            version,
+            resource,
+            namespace,
+            name,
+            preconditions,
+            grace_period_seconds,
+            dry_run,
+        )
+        .await?;
+        if !matches!(&outcome, DeleteOutcome::PreconditionFailed) || attempt == retries {
+            return Ok(outcome);
+        }
+        tokio::time::sleep(DELETE_CONFLICT_RETRY_DELAY).await;
+    }
+    unreachable!("delete retry loop always returns an outcome")
+}
+
+const DELETE_CONFLICT_RETRIES: usize = 8;
+const DELETE_CONFLICT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
+fn may_retry_delete_conflict(
+    preconditions: Option<&DeletePreconditions>,
+    dry_run: bool,
+) -> bool {
+    !dry_run
+        && preconditions.is_none_or(|preconditions| {
+            preconditions.resource_version.is_none() && preconditions.uid.is_none()
+        })
+}
+
+async fn delete_once(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    preconditions: Option<&DeletePreconditions>,
+    grace_period_seconds: Option<i64>,
+    dry_run: bool,
+) -> Result<DeleteOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(DeleteOutcome::UnknownResource);
     };
@@ -380,4 +436,30 @@ pub async fn delete_collection(
         }
     }
     Ok(DeleteCollectionOutcome::Deleted(list_value))
+}
+
+#[cfg(test)]
+mod delete_conflict_tests {
+    use super::*;
+
+    #[test]
+    fn retries_plain_deletes_but_preserves_explicit_precondition_conflicts() {
+        assert!(may_retry_delete_conflict(None, false));
+        assert!(may_retry_delete_conflict(Some(&DeletePreconditions::default()), false));
+        assert!(!may_retry_delete_conflict(
+            Some(&DeletePreconditions {
+                resource_version: Some("17".to_string()),
+                uid: None,
+            }),
+            false,
+        ));
+        assert!(!may_retry_delete_conflict(
+            Some(&DeletePreconditions {
+                resource_version: None,
+                uid: Some("uid".to_string()),
+            }),
+            false,
+        ));
+        assert!(!may_retry_delete_conflict(None, true));
+    }
 }
