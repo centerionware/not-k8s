@@ -400,7 +400,7 @@ async fn proxy_resource(
             None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
         let resolved =
-            authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace, None).await;
+            authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
         let subresource = if info.verb == "proxy" {
             "proxy"
         } else {
