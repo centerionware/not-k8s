@@ -131,8 +131,17 @@ impl BindPlugin for DefaultBinder {
                     {
                         Status::success()
                     }
+                    Ok(current) if current.metadata.deletion_timestamp.is_some() => {
+                        Status::cancelled(NAME, format!("binding {} to {node}: pod is terminating", pod.key()))
+                    }
+                    Err(kube::Error::Api(status)) if status.code == 404 || status.code == 410 => {
+                        Status::cancelled(NAME, format!("binding {} to {node}: pod is gone", pod.key()))
+                    }
                     _ => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
                 }
+            }
+            Ok(Err(kube::Error::Api(e))) if e.code == 404 || e.code == 410 => {
+                Status::cancelled(NAME, format!("binding {} to {node}: pod is gone", pod.key()))
             }
             Ok(Err(e)) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
             Err(_) => Status::error(
