@@ -5,9 +5,8 @@
 //! they exercise so each file remains focused as the shell suite is migrated.
 
 use anyhow::{bail, Context, Result};
-use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node, ServiceAccount};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::api::{Api, DeleteParams, ListParams, PostParams};
+use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
+use kube::api::{Api, ListParams};
 use kube::{Client, Config as KubeConfig};
 use std::error::Error;
 use std::fmt;

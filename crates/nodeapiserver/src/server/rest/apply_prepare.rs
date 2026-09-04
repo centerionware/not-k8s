@@ -1,3 +1,7 @@
+/// The "prepare" half of [`server_side_apply`]: resolves the resource,
+/// reads the current object, applies ownership, and validates/defaults the
+/// candidate without persisting it. The listener runs admission against
+/// this candidate before the transaction, as with [`patch_prepare`].
 pub async fn apply_prepare(
     storage: &mut StorageClient,
     group: &str,

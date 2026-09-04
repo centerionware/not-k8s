@@ -23,9 +23,8 @@
 //!
 //! Also handles the "owner was already gone before the child was ever
 //! observed" case (a relist redelivering a child as `InitApply` after its
-//! dead owner has long since been swept elsewhere): once every discovered
-//! kind's *own* initial list has completed at least once (tracked per
-//! kind, all-or-nothing before this controller acts on anything), any
+//! dead owner has long since been swept elsewhere): once the child's owner
+//! kinds have completed their initial lists, any
 //! object whose owners are *all* already known-dead is deleted right away
 //! instead of only reacting to a live Delete event.
 //!
@@ -138,6 +137,7 @@ struct ObjRecord {
     namespace: String,
     name: String,
     owner_uids: Vec<String>,
+    owner_kinds: Vec<String>,
     deleting: bool,
 }
 
@@ -207,8 +207,10 @@ struct State {
 }
 
 impl State {
-    fn ready(&self) -> bool {
-        self.pending_init.is_empty()
+    fn owners_initialized(&self, record: &ObjRecord) -> bool {
+        record.owner_kinds.iter().all(|kind| {
+            self.resources.contains_key(kind) && !self.pending_init.contains(kind)
+        })
     }
 
     fn store_record(&mut self, record: ObjRecord) {
@@ -253,6 +255,10 @@ impl State {
             namespace: obj.namespace().unwrap_or_default(),
             name: obj.name_any(),
             owner_uids: owner_uids.clone(),
+            owner_kinds: obj.metadata.owner_references.as_ref().into_iter().flatten()
+                .filter(|owner| !owner.uid.is_empty())
+                .map(|owner| format!("{}/{}", owner.api_version, owner.kind))
+                .collect(),
             deleting: obj.metadata.deletion_timestamp.is_some(),
         };
         if staged {
@@ -263,7 +269,7 @@ impl State {
             return;
         }
         self.store_record(record.clone());
-        if should_delete_orphan(&record, self.ready(), &self.exists) {
+        if should_delete_orphan(&record, self.owners_initialized(&record), &self.exists) {
             delete_object(client, &self.resources, &record).await;
         }
     }
@@ -306,15 +312,18 @@ impl State {
             self.store_record(record.clone());
         }
         self.pending_init.remove(kind_key);
+        tracing::info!(kind = kind_key, pending = ?self.pending_init,
+            "garbage-collector-controller installed resource snapshot");
 
         // Only after the complete per-kind snapshot is installed may an
         // orphan decision be made. This also lets owners from another kind
         // that finished relisting in the meantime be considered correctly.
-        // The last initial list can unblock orphan decisions for ANY kind,
-        // including a child whose owner disappeared during another relist.
+        // An owner's completed snapshot can unblock children of ANY kind.
+        // Unrelated initial lists must not block a known Deployment -> RS
+        // chain. Unknown/uninitialized owner kinds remain protected.
         self.objects_with_owners
             .values()
-            .filter(|record| should_delete_orphan(record, self.ready(), &self.exists))
+            .filter(|record| should_delete_orphan(record, self.owners_initialized(record), &self.exists))
             .cloned()
             .collect()
     }
@@ -338,8 +347,7 @@ impl State {
             let Some(record) = self.objects_with_owners.get(&child_uid).cloned() else {
                 continue;
             };
-            let any_owner_alive = record.owner_uids.iter().any(|o| self.exists.contains(o));
-            if !record.deleting && !any_owner_alive {
+            if should_delete_orphan(&record, self.owners_initialized(&record), &self.exists) {
                 delete_object(client, &self.resources, &record).await;
             }
         }
@@ -352,7 +360,12 @@ mod tests {
 
     fn empty_state() -> State {
         State {
-            resources: HashMap::new(),
+            resources: HashMap::from([(
+                "apps/v1/Deployment".into(),
+                kube::discovery::ApiResource::from_gvk(
+                    &kube::core::GroupVersionKind::gvk("apps", "v1", "Deployment"),
+                ),
+            )]),
             exists: HashSet::new(),
             objects_with_owners: HashMap::new(),
             children_of: HashMap::new(),
@@ -369,6 +382,7 @@ mod tests {
             namespace: "default".into(),
             name: uid.into(),
             owner_uids: owners.iter().map(|owner| (*owner).into()).collect(),
+            owner_kinds: owners.iter().map(|_| "apps/v1/Deployment".into()).collect(),
             deleting: false,
         }
     }
@@ -411,6 +425,29 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_initial_list_does_not_block_a_known_orphan() {
+        let mut state = empty_state();
+        state.begin_relist("resource.k8s.io/v1/ResourceClaim");
+        state.begin_relist("apps/v1/Deployment");
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["gone"]));
+        let orphans = state.install_snapshot("apps/v1/Deployment");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "replicaset");
+        assert!(!state.pending_init.is_empty());
+    }
+
+    #[test]
+    fn unknown_or_uninitialized_owner_kinds_are_not_assumed_dead() {
+        let mut state = empty_state();
+        let child = record("replicaset", "apps/v1/ReplicaSet", &["owner"]);
+        state.begin_relist("apps/v1/Deployment");
+        assert!(!state.owners_initialized(&child));
+        state.pending_init.clear();
+        state.resources.clear();
+        assert!(!state.owners_initialized(&child));
+    }
+
+    #[test]
     fn an_object_without_owner_references_is_not_an_orphan() {
         assert!(!all_owners_dead(&[], &HashSet::new()));
     }
@@ -434,6 +471,7 @@ mod tests {
             namespace: "default".to_string(),
             name: "child".to_string(),
             owner_uids: vec!["dead-owner".to_string()],
+            owner_kinds: vec!["apps/v1/Deployment".to_string()],
             deleting: true,
         };
         assert!(!should_delete_orphan(&record, true, &HashSet::new()));

@@ -445,10 +445,6 @@ struct NodeapiserverAuditWebhookOverride {
 }
 
 impl NodeapiserverAuditWebhookOverride {
-    fn install(url: &str) -> Result<Self> {
-        Self::install_with_policy(url, None)
-    }
-
     fn install_with_policy(url: &str, policy: Option<&str>) -> Result<Self> {
         if !systemd_service_available("nodeapiserver.service") {
             return Err(skip_test(
