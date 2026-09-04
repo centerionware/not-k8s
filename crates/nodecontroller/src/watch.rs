@@ -502,6 +502,21 @@ pub fn watch_resource_claim_templates(
     watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
+/// Watch a discovered resource through its metadata representation. Discovery
+/// can expose many CRD kinds, so these streams must use the same start-failure
+/// backoff as the shared typed informers. Without it, an apiserver restart or
+/// a relist after HTTP 410 makes every GC stream immediately retry its LIST,
+/// creating a request storm that starves the ordinary controllers.
+pub fn watch_dynamic_metadata_resource(
+    client: &Client,
+    resource: &ApiResource,
+) -> BoxStream<'static, watcher::Result<Event<PartialObjectMeta<DynamicObject>>>> {
+    let api: Api<PartialObjectMeta<DynamicObject>> = Api::all_with(client.clone(), resource);
+    watcher(api, watch_config())
+        .backoff(WatchBackoffPolicy::default())
+        .boxed()
+}
+
 /// Return the shared typed watch for a built-in namespaced resource in the
 /// shape the generic garbage collector consumes. Keeping this conversion
 /// here lets GC reuse the same underlying watch as the typed controllers

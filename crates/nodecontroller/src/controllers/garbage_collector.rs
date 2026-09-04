@@ -456,13 +456,11 @@ async fn run_generation(
                 // `.metadata` off these events (see `from_partial_metadata`'s
                 // own comment for why, and issue #40 for the profiling data
                 // that found the full-body path expensive).
-                let api: Api<PartialObjectMeta<DynamicObject>> =
-                    Api::all_with((*client).clone(), &ar);
                 // Discovery can yield dozens of resource kinds. Admit one
                 // ordinary LIST+WATCH at a time below; keeping the initial
                 // LIST short avoids holding a long-running watch-list request
                 // while CSI sidecars are trying to establish their own.
-                watcher(api, watcher::Config::default())
+                crate::watch::watch_dynamic_metadata_resource(client, &ar)
                     .map(|ev| ev.map(map_partial_metadata_event))
                     .boxed()
             };
