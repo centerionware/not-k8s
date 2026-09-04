@@ -1385,3 +1385,26 @@ UID-scoped teardown when the matching sandbox belongs to another Pod
 incarnation. The DRA e2e coverage now directly waits for a published
 ResourceSlice, and failure diagnostics include the DRA Pod's description and
 current/previous container logs.
+
+### 27. Fixed: independent informer order could bind a static WaitForFirstConsumer volume too early
+
+**Severity: high — found in full e2e run 33835282561 and reproduced with a
+deliberately incomplete manifest graph.**
+
+The API can accept a Pod that names a PVC, a PVC that names a StorageClass,
+and a PV that names the same class before any of those dependencies has
+reached every controller's local cache. The persistent-volume binder received
+the matching PV/PVC before its StorageClass informer had delivered the class,
+treated the cache miss like an Immediate class, and bound a static PV before
+the scheduler had selected a node. The scheduler had the same class-cache
+ordering gap: a Pod rejected while its named class was absent was reported as
+an internal error and could only be rescued by blind backoff, despite the
+StorageClass ADD/UPDATE event already being registered as a useful wakeup.
+
+The binder now defers an unclaimed static PV whenever a named class is not yet
+cached, and the scheduler parks a missing-class Pod as a pending dependency so
+the class event wakes it directly. The e2e regression creates the Pod, PVC,
+and PV before creating the StorageClass, asserts that the graph remains
+unresolved at each stage, then requires the existing objects to converge to a
+Bound, Running Pod. The companion static-WFC case covers the opposite order,
+where the class is created before the volume objects.
