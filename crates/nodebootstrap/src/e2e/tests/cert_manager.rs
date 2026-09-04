@@ -70,6 +70,45 @@ fn run_kubectl(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn print_cert_manager_diagnostics() {
+    for args in [
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "get",
+            "pods,deployments,replicasets",
+            "-o",
+            "wide",
+        ][..],
+        &["-n", CERT_MANAGER_NAMESPACE, "describe", "pods"][..],
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "logs",
+            "--all-containers",
+            "--prefix",
+            "--tail=200",
+            "-l",
+            "app.kubernetes.io/instance=cert-manager",
+        ][..],
+    ] {
+        let output = Command::new("kubectl").args(args).output();
+        match output {
+            Ok(output) => {
+                eprintln!("cert-manager diagnostics: kubectl {}", args.join(" "));
+                eprint!("{}", String::from_utf8_lossy(&output.stdout));
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            Err(error) => {
+                eprintln!(
+                    "cert-manager diagnostics: kubectl {} could not run: {error}",
+                    args.join(" ")
+                );
+            }
+        }
+    }
+}
+
 fn cert_manager_manifest_url() -> String {
     let version = std::env::var("TEST_CERT_MANAGER_VERSION")
         .unwrap_or_else(|_| CERT_MANAGER_VERSION.to_string());
@@ -438,6 +477,10 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
         Ok::<(), anyhow::Error>(())
     }
     .await;
+
+    if result.is_err() {
+        print_cert_manager_diagnostics();
+    }
 
     let _ = issuers.delete(&issuer_name, &DeleteParams::default()).await;
     let _ = configmaps
