@@ -150,7 +150,10 @@ Control iteration cost: reuse matching SHA/target results, specify changed
 crates, use the test host's architecture, and avoid release builds while
 debugging correctness. Do not launch duplicate runs, read remote logs repeatedly,
 or load entire historical documents to answer a narrow code question. Cost
-savings must not remove the final full-suite gate.
+savings must not remove the final full-suite gate. The current e2e workflow
+deliberately uses stripped release binaries to keep artifacts small; do not
+switch it to debug just to shorten compilation without measuring artifact size
+and checking the user's storage budget. Quick-check remains the debug loop.
 
 Do not merge automatically during stabilization. If merging is authorized,
 require the applicable gates, squash-merge, then rebase other authorized open
