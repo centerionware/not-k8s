@@ -1521,7 +1521,9 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     let mut skipped = 0;
     for name in selected {
         let started = Instant::now();
-        print!("▶ {name} ... ");
+        let started_at = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        print!("▶ {started_at} {name} ... ");
         let _ = std::io::stdout().flush();
         // The shell harness gave every test a fresh namespace and removed it
         // before the next test started. Reusing one namespace here left every
