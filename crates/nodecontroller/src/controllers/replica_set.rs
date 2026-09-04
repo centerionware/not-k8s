@@ -229,12 +229,16 @@ async fn reconcile_replica_set(
     rs: &ReplicaSet,
     pod_cache: &HashMap<String, Pod>,
     expectations: &mut Expectations,
-) {
+) -> bool {
+    // A failed create/delete/status write does not itself mutate the
+    // ReplicaSet, so a watch-driven controller would otherwise have no event
+    // that can ever retry the desired state.
+    let mut needs_retry = false;
     let namespace = ns_of(rs);
     let name = rs.name_any();
     let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), &namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
-    let Some(rs_uid) = rs.uid() else { return };
+    let Some(rs_uid) = rs.uid() else { return needs_retry };
     let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
 
     let owned: Vec<&Pod> = pod_cache
@@ -283,7 +287,8 @@ async fn reconcile_replica_set(
                 pending.names.insert(pod_name);
             }
             Err(e) => {
-                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to create Pod for ReplicaSet");
+                needs_retry = true;
+                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to create Pod for ReplicaSet; will retry");
             }
         }
     }
@@ -299,7 +304,8 @@ async fn reconcile_replica_set(
             .collect();
         for pod_name in pods_to_delete(candidates, to_delete) {
             if let Err(e) = pod_api.delete(&pod_name, &Default::default()).await {
-                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to delete excess Pod for ReplicaSet");
+                needs_retry = true;
+                tracing::warn!(namespace = %namespace, replicaset = %name, pod = %pod_name, error = ?e, "failed to delete excess Pod for ReplicaSet; will retry");
             }
         }
     }
@@ -317,20 +323,33 @@ async fn reconcile_replica_set(
             .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
         {
-            tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status");
+            needs_retry = true;
+            tracing::warn!(namespace = %namespace, replicaset = %name, error = ?e, "failed to patch ReplicaSet status; will retry");
         }
     }
+    needs_retry
 }
 
 fn ns_of<K: ResourceExt>(obj: &K) -> String {
     obj.namespace().unwrap_or_default()
 }
 
+const RETRY_DELAY: Duration = Duration::from_secs(15);
+
+fn schedule_retry(queue: &std::sync::Arc<KeyedWorkQueue<String>>, key: String) {
+    let queue = queue.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RETRY_DELAY).await;
+        queue.enqueue(key);
+    });
+}
+
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
     let mut expectations: Expectations = HashMap::new();
-    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
+    let queue: std::sync::Arc<KeyedWorkQueue<String>> =
+        std::sync::Arc::new(KeyedWorkQueue::default());
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut rs_stream = crate::watch::watch_replica_sets(&client);
@@ -382,7 +401,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(rs) = replica_sets.get(&key).cloned() {
-                    reconcile_replica_set(&client, &rs, &pods, &mut expectations).await;
+                    if reconcile_replica_set(&client, &rs, &pods, &mut expectations).await {
+                        schedule_retry(&queue, key);
+                    }
                 }
             }
         }

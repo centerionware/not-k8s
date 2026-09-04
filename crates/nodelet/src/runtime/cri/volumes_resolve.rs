@@ -95,6 +95,16 @@ impl CriRuntime {
             } else if let Some(projected) = &v.projected {
                 if let Err(e) = self.write_projected_volume(&vol_dir, pod, id, projected).await {
                     warn!(volume = %v.name, error = ?e, "failed to materialize projected volume");
+                    // A required projected source is part of container
+                    // configuration, not an optional best-effort file. Mark
+                    // it invalid so pod_runtime_impl reports
+                    // CreateContainerConfigError and the normal pod retry
+                    // path runs after the referenced ServiceAccount or
+                    // TokenRequest becomes available. Starting the container
+                    // without its token makes in-cluster clients exit and
+                    // leaves the Pod permanently unhealthy because creating
+                    // the ServiceAccount itself does not mutate the Pod.
+                    out.insert(v.name.clone(), ResolvedVolume::Invalid(e.to_string()));
                     continue;
                 }
                 out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
@@ -321,7 +331,12 @@ impl CriRuntime {
                         write_projected_keys(dir, obj.data, bin, cm.items.as_deref())?;
                     }
                     Err(_) if optional => {}
-                    Err(e) => warn!(configmap = %cm.name, error = ?e, "projected volume: failed to fetch ConfigMap source"),
+                    Err(e) => {
+                        return Err(e).context(format!(
+                            "projected volume: failed to fetch required ConfigMap source {}",
+                            cm.name
+                        ));
+                    }
                 }
             } else if let Some(sec) = &source.secret {
                 let optional = sec.optional.unwrap_or(false);
@@ -331,7 +346,12 @@ impl CriRuntime {
                         write_projected_keys(dir, obj.string_data, bin, sec.items.as_deref())?;
                     }
                     Err(_) if optional => {}
-                    Err(e) => warn!(secret = %sec.name, error = ?e, "projected volume: failed to fetch Secret source"),
+                    Err(e) => {
+                        return Err(e).context(format!(
+                            "projected volume: failed to fetch required Secret source {}",
+                            sec.name
+                        ));
+                    }
                 }
             } else if let Some(da) = &source.downward_api {
                 write_downward_api_volume(dir, pod, da.items.as_deref().unwrap_or(&[]))?;
@@ -364,11 +384,11 @@ impl CriRuntime {
                         }
                         std::fs::write(target, token)?;
                     }
-                    Err(e) => warn!(
-                        pod = %format!("{}/{}", id.namespace, id.name),
-                        service_account, error = ?e,
-                        "projected volume: serviceAccountToken TokenRequest failed (RBAC needs `create` on serviceaccounts/token)"
-                    ),
+                    Err(e) => {
+                        return Err(e).context(
+                            "projected volume: serviceAccountToken TokenRequest failed",
+                        );
+                    }
                 }
             } else if source.cluster_trust_bundle.is_some() {
                 warn!(

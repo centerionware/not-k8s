@@ -44,6 +44,10 @@ use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::HashMap;
+use std::time::Duration;
+
+const RESYNC_INTERVAL: Duration = Duration::from_secs(10);
+const RETRY_DELAY: Duration = Duration::from_secs(5);
 
 fn pod_ready(pod: &Pod) -> bool {
     pod.status
@@ -76,14 +80,36 @@ pub fn compute_status(
     (desired_healthy, disruptions_allowed, expected)
 }
 
-async fn reconcile_pdb(client: &Client, pdb: &PodDisruptionBudget, pods: &HashMap<String, Pod>) {
+async fn reconcile_pdb(client: &Client, pdb: &PodDisruptionBudget) -> bool {
     let namespace = pdb.namespace().unwrap_or_default();
     let name = pdb.name_any();
     let api: Api<PodDisruptionBudget> = Api::namespaced(client.clone(), &namespace);
     let Some(selector) = pdb.spec.as_ref().and_then(|s| s.selector.as_ref()) else {
-        return;
+        return false;
     };
     let spec = pdb.spec.clone().unwrap_or_default();
+
+    // The Pod and PDB informers are independent streams. Refresh from the
+    // shared controller read client at reconcile time so a PDB that was
+    // observed before its Deployment's Pods does not permanently publish an
+    // empty status when the later Pod events were lost during a watch relist.
+    let pods_api: Api<Pod> = Api::all(crate::watch::base_client());
+    let pods = match pods_api.list(&Default::default()).await {
+        Ok(list) => list
+            .items
+            .into_iter()
+            .map(|pod| (format!("{}/{}", ns_of(&pod), pod.name_any()), pod))
+            .collect::<HashMap<_, _>>(),
+        Err(e) => {
+            tracing::warn!(
+                namespace = %namespace,
+                pdb = %name,
+                error = ?e,
+                "failed to refresh Pods for PodDisruptionBudget; will retry"
+            );
+            return true;
+        }
+    };
 
     let matching: Vec<&Pod> = pods
         .values()
@@ -115,7 +141,7 @@ async fn reconcile_pdb(client: &Client, pdb: &PodDisruptionBudget, pods: &HashMa
         ..pdb.status.clone().unwrap_or_default()
     };
     if pdb.status.as_ref() == Some(&status) {
-        return;
+        return false;
     }
     let patch = serde_json::json!({ "status": status });
     if let Err(e) = api
@@ -123,7 +149,9 @@ async fn reconcile_pdb(client: &Client, pdb: &PodDisruptionBudget, pods: &HashMa
         .await
     {
         tracing::warn!(namespace = %namespace, pdb = %name, error = ?e, "failed to patch PodDisruptionBudget status");
+        return true;
     }
+    false
 }
 
 fn ns_of<K: ResourceExt>(obj: &K) -> String {
@@ -131,12 +159,13 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let mut pods: HashMap<String, Pod> = HashMap::new();
     let mut pdbs: HashMap<String, PodDisruptionBudget> = HashMap::new();
-    let queue = KeyedWorkQueue::default();
+    let queue = std::sync::Arc::new(KeyedWorkQueue::default());
 
     let mut pod_stream = crate::watch::watch_pods(&client);
     let mut pdb_stream = crate::watch::watch_pod_disruption_budgets(&client);
+    let mut resync = tokio::time::interval(RESYNC_INTERVAL);
+    resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -144,14 +173,12 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 match ev {
                     Some(Ok(Event::Apply(pod))) | Some(Ok(Event::InitApply(pod))) => {
                         let ns = ns_of(&pod);
-                        pods.insert(format!("{ns}/{}", pod.name_any()), pod);
                         for (key, _pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
                             queue.enqueue(key.clone());
                         }
                     }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
-                        pods.remove(&format!("{ns}/{}", pod.name_any()));
                         for (key, _pdb) in pdbs.iter().filter(|(_, pdb)| ns_of(*pdb) == ns) {
                             queue.enqueue(key.clone());
                         }
@@ -159,6 +186,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pod watch error in disruption-controller"),
                     None => return Ok(()),
+                }
+            }
+            _ = resync.tick() => {
+                for key in pdbs.keys() {
+                    queue.enqueue(key.clone());
                 }
             }
             ev = pdb_stream.next() => {
@@ -177,7 +209,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(pdb) = pdbs.get(&key).cloned() {
-                    reconcile_pdb(&client, &pdb, &pods).await;
+                    if reconcile_pdb(&client, &pdb).await {
+                        let queue = queue.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            queue.enqueue(key);
+                        });
+                    }
                 }
             }
         }

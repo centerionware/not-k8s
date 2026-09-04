@@ -502,8 +502,14 @@ fn pre_filter_impl(
                 );
             };
             let Some(sc) = snapshot.storage_class(sc_name) else {
+                // The StorageClass and PVC are independent informer streams.
+                // A Pod can therefore reach this point while the named class
+                // already exists in the API but has not reached this cache.
+                // This is a waiting dependency, not a scheduler failure:
+                // keep the Pod parked and let the StorageClass ADD/UPDATE
+                // subscription wake it as soon as the missing object lands.
                 return (
-                    Status::error(NAME, format!("storageclass {sc_name:?} not found")),
+                    Status::pending(NAME, format!("storageclass {sc_name:?} not found yet")),
                     None,
                 );
             };

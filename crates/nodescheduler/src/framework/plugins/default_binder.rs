@@ -24,8 +24,9 @@
 use crate::cache::PodInfo;
 use crate::framework::status::Status;
 use crate::framework::{BindPlugin, Plugin};
-use k8s_openapi::api::core::v1::{Binding, ObjectReference};
+use k8s_openapi::api::core::v1::{Binding, ObjectReference, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::Api;
 
 pub const NAME: &str = "DefaultBinder";
 
@@ -111,6 +112,28 @@ impl BindPlugin for DefaultBinder {
         // successful bind.
         match tokio::time::timeout(BIND_TIMEOUT, self.client.request::<serde_json::Value>(req)).await {
             Ok(Ok(_)) => Status::success(),
+            // The binding endpoint also returns 409 when another writer won
+            // the race, including when this pod is already bound. Requeueing
+            // the latter forever just repeats the same rejected bind and
+            // hammers the apiserver. Re-read before classifying the conflict:
+            // a pod with any non-empty nodeName is already irrevocably placed
+            // (nodeName is immutable), so this stale scheduling decision is
+            // complete. UID/deletion/still-unbound conflicts remain errors.
+            Ok(Err(kube::Error::Api(e))) if e.code == 409 => {
+                let pods: Api<Pod> = Api::namespaced(self.client.clone(), &pod.namespace);
+                match pods.get(&pod.name).await {
+                    Ok(current)
+                        if current
+                            .spec
+                            .as_ref()
+                            .and_then(|spec| spec.node_name.as_deref())
+                            .is_some_and(|node| !node.is_empty()) =>
+                    {
+                        Status::success()
+                    }
+                    _ => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
+                }
+            }
             Ok(Err(e)) => Status::error(NAME, format!("binding {} to {node}: {e}", pod.key())),
             Err(_) => Status::error(
                 NAME,

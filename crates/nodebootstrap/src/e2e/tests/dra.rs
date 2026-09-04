@@ -71,6 +71,35 @@ pub(super) async fn plugin_registry_watches_for_dra_drivers_too(
     Ok(())
 }
 
+pub(super) async fn dra_resource_slices_are_published(context: &E2eContext) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("DRA ResourceSlice checks require the CRI runtime"));
+    }
+    if std::env::var_os("TEST_DRA_DEVICE_CLASS").is_none() {
+        return Err(skip_test(
+            "TEST_DRA_DEVICE_CLASS is not set; the reference DRA driver is unavailable",
+        ));
+    }
+
+    let client = context.client.clone();
+    context
+        .wait_until("the DRA driver to publish a ResourceSlice", Duration::from_secs(60), || {
+            let client = client.clone();
+            async move {
+                let request = http::Request::builder()
+                    .method("GET")
+                    .uri("/apis/resource.k8s.io/v1/resourceslices")
+                    .body(Vec::new())?;
+                let response: serde_json::Value = client.request(request).await?;
+                Ok(response
+                    .pointer("/items")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|items| !items.is_empty()))
+            }
+        })
+        .await
+}
+
 pub(super) async fn dra_claim_is_allocated_and_reserved_for_the_pod(
     context: &E2eContext,
 ) -> Result<()> {

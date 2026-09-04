@@ -24,6 +24,9 @@ const LEASE_NS: &str = "kube-node-lease";
 const FIELD_MANAGER: &str = "nodelet";
 const LEASE_DURATION_SECS: i32 = 40;
 const CLOUDPROVIDER_TAINT_KEY: &str = "node.cloudprovider.kubernetes.io/uninitialized";
+const NODE_STATUS_CONFLICT_RETRIES: usize = 5;
+const NODE_STATUS_CONFLICT_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(50);
 
 fn now_time() -> Time {
     Time(Timestamp::now())
@@ -507,6 +510,44 @@ pub async fn push_status(
     mounted_csi_volumes: &[(String, String)],
     runtime_handlers: &[crate::runtime::RuntimeHandlerInfo],
 ) -> Result<()> {
+    for attempt in 0..=NODE_STATUS_CONFLICT_RETRIES {
+        match push_status_once(
+            client,
+            cfg,
+            ready,
+            extra_capacity,
+            images.clone(),
+            mounted_csi_volumes,
+            runtime_handlers,
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(kube::Error::Api(error))
+                if error.code == 409 && attempt < NODE_STATUS_CONFLICT_RETRIES =>
+            {
+                tracing::debug!(
+                    node = %cfg.node_name,
+                    attempt = attempt + 1,
+                    "node status update conflicted; retrying with fresh state"
+                );
+                tokio::time::sleep(NODE_STATUS_CONFLICT_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("node status conflict retry loop always returns")
+}
+
+async fn push_status_once(
+    client: &Client,
+    cfg: &Config,
+    ready: bool,
+    extra_capacity: &BTreeMap<String, u64>,
+    images: Vec<crate::runtime::NodeImage>,
+    mounted_csi_volumes: &[(String, String)],
+    runtime_handlers: &[crate::runtime::RuntimeHandlerInfo],
+) -> std::result::Result<(), kube::Error> {
     let api: Api<Node> = Api::all(client.clone());
     let status = build_status(cfg, ready, extra_capacity, images, mounted_csi_volumes, runtime_handlers);
     let current_keys: std::collections::BTreeSet<String> = status.capacity.iter().flatten().map(|(k, _)| k.clone()).collect();

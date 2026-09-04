@@ -2,7 +2,8 @@
 //! start before its declared PVC-backed volume actually resolved.
 use super::*;
 use k8s_openapi::api::core::v1::{
-    EphemeralVolumeSource, PersistentVolumeClaimVolumeSource, PodSpec, Volume,
+    EphemeralVolumeSource, PersistentVolumeClaimVolumeSource, PodSpec, ProjectedVolumeSource,
+    ServiceAccountTokenProjection, Volume, VolumeProjection,
 };
 
 fn pvc_volume(name: &str) -> Volume {
@@ -22,6 +23,23 @@ fn ephemeral_volume(name: &str) -> Volume {
 
 fn csi_inline_volume(name: &str) -> Volume {
     Volume { name: name.to_string(), csi: Some(Default::default()), ..Default::default() }
+}
+
+fn projected_token_volume(name: &str) -> Volume {
+    Volume {
+        name: name.to_string(),
+        projected: Some(ProjectedVolumeSource {
+            sources: Some(vec![VolumeProjection {
+                service_account_token: Some(ServiceAccountTokenProjection {
+                    path: "token".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 fn pod_with_volumes(volumes: Vec<Volume>) -> Pod {
@@ -81,4 +99,29 @@ fn mix_of_resolved_and_unresolved_reports_only_the_unresolved_names() {
     let mut resolved = HashMap::new();
     resolved.insert("data".to_string(), ResolvedVolume::HostPath(PathBuf::from("/x")));
     assert_eq!(pending_csi_volume_names(&pod, &resolved), vec!["logs".to_string()]);
+}
+
+#[test]
+fn failed_projected_service_account_token_is_pending() {
+    let pod = pod_with_volumes(vec![projected_token_volume("api-token")]);
+    let mut resolved = HashMap::new();
+    resolved.insert(
+        "api-token".to_string(),
+        ResolvedVolume::Invalid("TokenRequest returned 404".to_string()),
+    );
+    assert_eq!(
+        pending_projected_token_volume_names(&pod, &resolved),
+        vec!["api-token".to_string()]
+    );
+}
+
+#[test]
+fn resolved_projected_service_account_token_is_not_pending() {
+    let pod = pod_with_volumes(vec![projected_token_volume("api-token")]);
+    let mut resolved = HashMap::new();
+    resolved.insert(
+        "api-token".to_string(),
+        ResolvedVolume::HostPath(PathBuf::from("/var/lib/nodelet/pods/x/volumes/api-token")),
+    );
+    assert!(pending_projected_token_volume_names(&pod, &resolved).is_empty());
 }

@@ -138,6 +138,28 @@ fn an_unbound_pvc_on_an_immediate_storage_class_blocks_the_pod_outright() {
 }
 
 #[test]
+fn a_pvc_waits_for_a_storage_class_that_has_not_reached_the_cache_yet() {
+    let mut cache = Cache::new();
+    cache.upsert_node(&api_node("n1", &[]));
+    cache.upsert_pvc(
+        "ns/claim".to_string(),
+        PvcInfo {
+            namespace: "ns".to_string(),
+            name: "claim".to_string(),
+            storage_class_name: Some("late-class".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let mut state = CycleState::default();
+    let (status, _) =
+        pre_filter_impl(&mut state, &pod_with_pvc("ns", "claim"), &cache.snapshot(), &no_excluded());
+    assert_eq!(status.code, crate::framework::status::Code::Pending);
+    assert_eq!(status.plugin, NAME);
+    assert!(status.reasons[0].contains("late-class"));
+}
+
+#[test]
 fn a_wait_for_first_consumer_pvc_with_no_topology_restriction_fits_any_node() {
     let mut cache = Cache::new();
     cache.upsert_node(&api_node("n1", &[]));

@@ -71,14 +71,22 @@ pub async fn report_unschedulable(
     nominated_node: Option<&str>,
     scheduler_name: &str,
 ) {
-    if let Err(e) = write_condition(client, pod, reason, nominated_node).await {
+    // These requests are independent. In particular, a slow or temporarily
+    // blocked status patch must not prevent the FailedScheduling event from
+    // reaching the apiserver: humans and the e2e scheduler contract observe
+    // the latter, while autoscalers consume the former.
+    let (condition_result, event_result) = tokio::join!(
+        write_condition(client, pod, reason, nominated_node),
+        emit_event(client, pod, reason, scheduler_name),
+    );
+    if let Err(e) = condition_result {
         tracing::warn!(
             pod = %pod.key(), error = %e,
             "couldn't write the PodScheduled condition; the pod is still correctly parked, \
              but nothing will explain why it is Pending until the next attempt"
         );
     }
-    if let Err(e) = emit_event(client, pod, reason, scheduler_name).await {
+    if let Err(e) = event_result {
         tracing::warn!(pod = %pod.key(), error = %e, "couldn't emit the FailedScheduling event");
     }
 }

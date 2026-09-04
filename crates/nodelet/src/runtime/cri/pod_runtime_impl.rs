@@ -111,6 +111,22 @@ impl PodRuntime for CriRuntime {
             .unwrap_or_default();
 
         let volumes = self.resolve_volumes(pod, &id, &pull_secrets).await;
+        let pending_projected_tokens = pending_projected_token_volume_names(pod, &volumes);
+        if !pending_projected_tokens.is_empty() {
+            return Ok(RuntimeStatus {
+                phase: Phase::Pending,
+                message: Some(format!(
+                    "waiting for projected ServiceAccount token(s) to be materialized: {}",
+                    pending_projected_tokens.join(", ")
+                )),
+                started_at: None,
+                pod_ip: None,
+                containers: Vec::new(),
+                init_containers: Vec::new(),
+                ephemeral_containers: Vec::new(),
+                initialized: false,
+            });
+        }
         // Round 124 (found live in CI): don't let any container start
         // (not even an init container) while a declared PVC/generic-
         // ephemeral volume is still waiting on its CSI attach/mount —
@@ -307,29 +323,42 @@ impl PodRuntime for CriRuntime {
         // new UID.
         let lock = self.pod_ensure_lock(&format!("{}/{}", id.namespace, id.name));
         let _remove_guard = lock.lock().await;
-        if let Some((sandbox_id, _state)) = self.find_sandbox(&id.namespace, &id.name).await? {
-            let grace = termination_grace_seconds(pod);
-            self.graceful_stop_containers(&sandbox_id, pod, grace).await;
+        if let Some((sandbox_id, _state, sandbox_uid)) = self.find_sandbox_with_uid(&id.namespace, &id.name).await? {
+            if sandbox_uid.is_empty() || sandbox_uid == id.uid {
+                let grace = termination_grace_seconds(pod);
+                self.graceful_stop_containers(&sandbox_id, pod, grace).await;
 
-            let mut rt = self.rt.clone();
-            // StopPodSandbox is idempotent; RemovePodSandbox also removes its containers.
-            let _ = rt
-                .stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
-                .await;
-            rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
-                .await
-                .context("RemovePodSandbox")?;
-            self.restart_policies.lock().unwrap().remove(&sandbox_id);
-            if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
-                self.userns.release(&pod_uid);
+                let mut rt = self.rt.clone();
+                // StopPodSandbox is idempotent; RemovePodSandbox also removes its containers.
+                let _ = rt
+                    .stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
+                    .await;
+                rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
+                    .await
+                    .context("RemovePodSandbox")?;
+                self.restart_policies.lock().unwrap().remove(&sandbox_id);
+                if let Some(pod_uid) = self.pod_uids.lock().unwrap().remove(&sandbox_id) {
+                    self.userns.release(&pod_uid);
+                }
+                self.sidecar_names.lock().unwrap().remove(&sandbox_id);
+                self.clear_restart_counts(&sandbox_id);
+                self.clear_restart_backoff(&sandbox_id);
+                self.clear_pull_backoff(&sandbox_id);
+                self.clear_config_errors(&sandbox_id);
+                self.clear_last_terminated(&sandbox_id);
+                self.release_sandbox_devices(&sandbox_id).await;
+            } else {
+                // A late delete event for an old Pod UID must not tear down
+                // the sandbox belonging to the replacement Pod with the
+                // same namespace/name. Its own delete event will clean up
+                // that sandbox when appropriate.
+                tracing::debug!(
+                    pod = %format!("{}/{}", id.namespace, id.name),
+                    pod_uid = %id.uid,
+                    sandbox_uid = %sandbox_uid,
+                    "skipping teardown for sandbox belonging to another Pod UID"
+                );
             }
-            self.sidecar_names.lock().unwrap().remove(&sandbox_id);
-            self.clear_restart_counts(&sandbox_id);
-            self.clear_restart_backoff(&sandbox_id);
-            self.clear_pull_backoff(&sandbox_id);
-            self.clear_config_errors(&sandbox_id);
-            self.clear_last_terminated(&sandbox_id);
-            self.release_sandbox_devices(&sandbox_id).await;
         }
         self.unmount_csi_volumes(pod, &id).await;
         unmount_special_medium_empty_dirs(pod, &id);

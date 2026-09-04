@@ -1364,3 +1364,88 @@ The e2e failure dump now passes the nodebootstrap kubeconfig explicitly,
 falls back to sudo when the bootstrap ran as root, and includes flanneld's
 unit status/logs; the previous dump's `/etc/rancher/k3s` errors obscured this
 diagnosis.
+
+### 26. Fixed: a late Pod watch event could destroy a same-name replacement
+
+**Severity: high — found while bringing the reference DRA driver up against
+the replacement apiserver.**
+
+The DRA setup deliberately deletes and recreates its DaemonSet Pod so the
+fresh registrar socket is exercised. The replacement Pod received a new UID,
+but nodelet could still process an older watch object for the deleted UID.
+Because runtime sandbox lookup was keyed by namespace/name, nodelet treated
+that stale object as authoritative and alternated between tearing down the
+new sandbox and recreating the old one. The driver consequently never stayed
+alive long enough to publish a `resource.k8s.io/v1` `ResourceSlice`; the API
+group itself was already discoverable and listable.
+
+Nodelet now rejects Pod watch objects older than the accepted etcd
+`resourceVersion`, retains the UID across delete events, and refuses a
+UID-scoped teardown when the matching sandbox belongs to another Pod
+incarnation. The DRA e2e coverage now directly waits for a published
+ResourceSlice, and failure diagnostics include the DRA Pod's description and
+current/previous container logs.
+
+### 27. Fixed: independent informer order could bind a static WaitForFirstConsumer volume too early
+
+**Severity: high — found in full e2e run 33835282561 and reproduced with a
+deliberately incomplete manifest graph.**
+
+The API can accept a Pod that names a PVC, a PVC that names a StorageClass,
+and a PV that names the same class before any of those dependencies has
+reached every controller's local cache. The persistent-volume binder received
+the matching PV/PVC before its StorageClass informer had delivered the class,
+treated the cache miss like an Immediate class, and bound a static PV before
+the scheduler had selected a node. The scheduler had the same class-cache
+ordering gap: a Pod rejected while its named class was absent was reported as
+an internal error and could only be rescued by blind backoff, despite the
+StorageClass ADD/UPDATE event already being registered as a useful wakeup.
+
+The binder now defers an unclaimed static PV whenever a named class is not yet
+cached, and the scheduler parks a missing-class Pod as a pending dependency so
+the class event wakes it directly. The e2e regression creates the Pod and PVC
+before creating the StorageClass, asserts that the graph remains unresolved
+while the class is absent, then lets the real hostpath CSI provisioner create
+the PV after scheduling and requires the existing objects to converge to a
+Bound, Running Pod. This keeps the final runtime assertion on a CSI volume,
+which nodelet supports; an in-tree hostPath PV would correctly remain
+unsupported. The companion static-WFC case covers the opposite order, where
+the class is created before the volume objects.
+
+### 28. Fixed: the static PV cache-order guard confused an absent class with a late class
+
+**Severity: real regression in the static binder path — found in full e2e run
+33842307349.**
+
+The fix for finding #27 correctly treated a named StorageClass missing from the
+binder's local cache as unknown, because the class might have been created but
+its informer event might not have arrived yet. That made the static-PV test
+hang: its PV and PVC intentionally used a matching class name without creating
+a StorageClass object at all. Static binding does not require a StorageClass
+object, so the binder deferred the claim forever while waiting for an event
+that could never exist.
+
+**Fixed**: on that cache-miss path, the binder now asks the authoritative
+controller read client for the StorageClass. An existing
+`WaitForFirstConsumer` class still defers until scheduling pre-binds the PV; a
+confirmed `NotFound` means there is no delayed-binding policy and the static
+PV can bind; transient lookup errors requeue the claim. The existing static
+PV e2e test remains the regression case for the absent-class order.
+
+### 29. Fixed: a PDB could publish an empty status after its Pod graph arrived
+
+**Severity: real convergence race — found in full e2e run 33842307349.**
+
+The disruption controller consumed independent Pod and PodDisruptionBudget
+informers. If the PDB was observed and reconciled before the Deployment's Pods,
+then the Pod watch was still initializing or relisting, the controller could
+publish `expectedPods=0` and lose the later wakeup. The Deployment became ready,
+but the PDB status stayed empty until the test timed out. The failure was
+intermittent because it depended on informer startup and apiserver event
+ordering.
+
+**Fixed**: PDB reconciliation refreshes the current Pods through the shared
+controller read client, retries failed reads/status writes, and periodically
+requeues known budgets as an informer safety-net. The e2e test now creates the
+PDB before the Deployment so the empty-before-Pods ordering is exercised
+directly, then requires the status to converge through all four numeric fields.

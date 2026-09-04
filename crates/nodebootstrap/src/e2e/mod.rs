@@ -687,6 +687,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::CsiDra,
     },
     TestCase {
+        name: "test_dra_resource_slices_are_published",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
         name: "test_dynamic_csi_registration_actually_registered_the_driver",
         group: TestGroup::CsiDra,
     },
@@ -796,6 +800,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_scheduler_claims_a_static_wait_for_first_consumer_volume",
+        group: TestGroup::CsiDra,
+    },
+    TestCase {
+        name: "test_scheduler_retries_a_pod_through_late_pvc_and_pv_events",
         group: TestGroup::CsiDra,
     },
     TestCase {
@@ -912,6 +920,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_service_account_token_projected_volume_mints_a_real_token",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_projected_service_account_token_waits_for_service_account",
         group: TestGroup::General,
     },
     TestCase {
@@ -1863,6 +1875,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_plugin_registry_watches_for_dra_drivers_too" => {
             dra::plugin_registry_watches_for_dra_drivers_too(context).await
         }
+        "test_dra_resource_slices_are_published" => dra::dra_resource_slices_are_published(context).await,
         "test_dynamic_csi_registration_actually_registered_the_driver" => {
             pod_resources::dynamic_csi_registration_is_visible_on_the_node(context).await
         }
@@ -1942,6 +1955,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_scheduler_claims_a_static_wait_for_first_consumer_volume" => {
             scheduler::scheduler_claims_a_static_wait_for_first_consumer_volume(context).await
+        }
+        "test_scheduler_retries_a_pod_through_late_pvc_and_pv_events" => {
+            scheduler::scheduler_retries_a_pod_through_late_pvc_and_pv_events(context).await
         }
         "test_scheduler_enforces_read_write_once_pod_exclusivity" => {
             scheduler::scheduler_enforces_read_write_once_pod_exclusivity(context).await
@@ -2029,6 +2045,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_service_account_token_projected_volume_mints_a_real_token" => {
             volumes::service_account_token_projected_volume_mints_a_token(context).await
+        }
+        "test_projected_service_account_token_waits_for_service_account" => {
+            volumes::projected_service_account_token_waits_for_service_account(context).await
         }
         "test_host_aliases_are_written_to_etc_hosts" => {
             volumes::host_aliases_are_written_to_etc_hosts(context).await

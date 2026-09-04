@@ -218,8 +218,15 @@ fn defer_unclaimed_wait_for_first_consumer_pv(
     else {
         return false;
     };
+    // The PV, PVC, and StorageClass informers are independent streams.  A
+    // newly-created PVC can therefore reach this controller before the
+    // StorageClass event that explains its binding mode.  Treat a named but
+    // not-yet-cached class as unknown, not as Immediate: claiming a matching
+    // static PV here would violate WaitForFirstConsumer before the scheduler
+    // has had a chance to choose a node.  An explicitly empty class name still
+    // means "no class" and is allowed to bind immediately.
     let Some(class) = storage_classes.get(class_name) else {
-        return false;
+        return !class_name.is_empty();
     };
     class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
         && !pvc.metadata.annotations.as_ref().is_some_and(|annotations| {
@@ -229,11 +236,25 @@ fn defer_unclaimed_wait_for_first_consumer_pv(
         })
 }
 
+/// Resolve a named StorageClass through the authoritative shared informer
+/// identity when this binder has not seen the class event yet. A static PV is
+/// allowed to bind to a PVC whose named class does not exist — the class name
+/// is still a valid matching key for the static path — but an existing
+/// WaitForFirstConsumer class must not be claimed before scheduling chooses a
+/// node. The cache alone cannot distinguish those two cases when the PVC and
+/// StorageClass streams deliver events in either order.
+async fn lookup_uncached_storage_class(
+    name: &str,
+) -> std::result::Result<Option<StorageClass>, kube::Error> {
+    let classes: Api<StorageClass> = Api::all(crate::watch::base_client());
+    classes.get_opt(name).await
+}
+
 async fn request_dynamic_provisioning(
     pvc_api: &Api<PersistentVolumeClaim>,
     pvc: &PersistentVolumeClaim,
     provisioner: &str,
-) {
+) -> bool {
     if pvc
         .metadata
         .annotations
@@ -241,7 +262,7 @@ async fn request_dynamic_provisioning(
         .and_then(|annotations| annotations.get(STORAGE_PROVISIONER_ANNOTATION))
         .is_some_and(|current| current == provisioner)
     {
-        return;
+        return false;
     }
 
     let name = pvc.name_any();
@@ -255,8 +276,14 @@ async fn request_dynamic_provisioning(
         .patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
         .await
     {
-        Ok(_) => tracing::info!(namespace = %namespace, pvc = %name, %provisioner, "persistentvolume-binder-controller requested dynamic provisioning"),
-        Err(e) => tracing::warn!(namespace = %namespace, pvc = %name, %provisioner, error = ?e, "failed to request dynamic provisioning for PersistentVolumeClaim"),
+        Ok(_) => {
+            tracing::info!(namespace = %namespace, pvc = %name, %provisioner, "persistentvolume-binder-controller requested dynamic provisioning");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(namespace = %namespace, pvc = %name, %provisioner, error = ?e, "failed to request dynamic provisioning for PersistentVolumeClaim; will retry");
+            true
+        }
     }
 }
 
@@ -265,7 +292,7 @@ async fn reconcile_claim(
     pvc: &PersistentVolumeClaim,
     pvs: &mut HashMap<String, PersistentVolume>,
     storage_classes: &HashMap<String, StorageClass>,
-) {
+) -> bool {
     let namespace = pvc.namespace().unwrap_or_default();
     let name = pvc.name_any();
     let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &namespace);
@@ -275,16 +302,58 @@ async fn reconcile_claim(
     // turn every watch event into a second GET; that was both redundant and
     // a major source of request bursts during initial synchronization.
     if is_fully_bound(pvc) {
-        return;
+        return false;
     }
     let Some(pv) = pv_for_claim(pvc, pvs).cloned() else {
         if let Some(provisioner) = provisioner_for_claim(pvc, storage_classes) {
-            request_dynamic_provisioning(&pvc_api, pvc, provisioner).await;
+            return request_dynamic_provisioning(&pvc_api, pvc, provisioner).await;
         }
-        return;
+        return false;
     };
-    if defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, storage_classes) {
-        return;
+    let uncached_named_class = is_unclaimed(&pv)
+        && pvc
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.storage_class_name.as_deref())
+            .is_some_and(|class| {
+                !class.is_empty() && !storage_classes.contains_key(class)
+            });
+    if uncached_named_class {
+        let class_name = pvc
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.storage_class_name.as_deref())
+            .expect("uncached_named_class implies a named StorageClass");
+        match lookup_uncached_storage_class(class_name).await {
+            Ok(Some(class)) => {
+                let selected = pvc
+                    .metadata
+                    .annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.get(SELECTED_NODE_ANNOTATION));
+                if class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
+                    && !selected.is_some_and(|node| !node.is_empty())
+                {
+                    return false;
+                }
+            }
+            Ok(None) => {
+                // No StorageClass means there is no delayed-binding policy
+                // to honor. Continue with the static PV match.
+            }
+            Err(e) => {
+                tracing::warn!(
+                    namespace = %namespace,
+                    pvc = %name,
+                    storage_class = %class_name,
+                    error = ?e,
+                    "failed to resolve uncached StorageClass before static binding; will retry"
+                );
+                return true;
+            }
+        }
+    } else if defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, storage_classes) {
+        return false;
     }
     let pv_name = pv.name_any();
 
@@ -319,8 +388,8 @@ async fn reconcile_claim(
                 pvs.insert(pv_name.clone(), updated);
             }
             Err(e) => {
-                tracing::warn!(pv = %pv_name, namespace = %namespace, pvc = %name, error = ?e, "failed to claim PersistentVolume for static binding");
-                return;
+                tracing::warn!(pv = %pv_name, namespace = %namespace, pvc = %name, error = ?e, "failed to claim PersistentVolume for static binding; will retry");
+                return true;
             }
         }
     }
@@ -349,8 +418,8 @@ async fn reconcile_claim(
         .patch(&name, &PatchParams::default(), &Patch::Merge(&pvc_patch))
         .await
     {
-        tracing::warn!(namespace = %namespace, pvc = %name, pv = %pv_name, error = ?e, "failed to set PersistentVolumeClaim.spec.volumeName");
-        return;
+        tracing::warn!(namespace = %namespace, pvc = %name, pv = %pv_name, error = ?e, "failed to set PersistentVolumeClaim.spec.volumeName; will retry");
+        return true;
     }
     let pvc_status = PersistentVolumeClaimStatus {
         access_modes: pv.spec.as_ref().and_then(|spec| spec.access_modes.clone()),
@@ -363,8 +432,8 @@ async fn reconcile_claim(
         .patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await
     {
-        tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to set PersistentVolumeClaim status to Bound");
-        return;
+        tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to set PersistentVolumeClaim status to Bound; will retry");
+        return true;
     }
     let pv_status = PersistentVolumeStatus {
         phase: Some("Bound".to_string()),
@@ -379,8 +448,8 @@ async fn reconcile_claim(
         )
         .await
     {
-        tracing::warn!(pv = %pv_name, error = ?e, "failed to set PersistentVolume status to Bound");
-        return;
+        tracing::warn!(pv = %pv_name, error = ?e, "failed to set PersistentVolume status to Bound; will retry");
+        return true;
     }
 
     // kube-scheduler deliberately does not treat spec.volumeName or even a
@@ -402,10 +471,11 @@ async fn reconcile_claim(
         )
         .await
     {
-        tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to publish PersistentVolumeClaim bind completion");
-        return;
+        tracing::warn!(namespace = %namespace, pvc = %name, error = ?e, "failed to publish PersistentVolumeClaim bind completion; will retry");
+        return true;
     }
     tracing::info!(namespace = %namespace, pvc = %name, pv = %pv_name, "persistentvolume-binder-controller bound a PersistentVolumeClaim");
+    false
 }
 
 fn ns_of<K: ResourceExt>(obj: &K) -> String {
@@ -416,7 +486,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
     let mut claims: HashMap<(String, String), PersistentVolumeClaim> = HashMap::new();
     let mut storage_classes: HashMap<String, StorageClass> = HashMap::new();
-    let queue = KeyedWorkQueue::default();
+    let queue = std::sync::Arc::new(KeyedWorkQueue::default());
 
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
@@ -472,11 +542,31 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(pvc) = claims.get(&key).cloned() {
-                    reconcile_claim(&client, &pvc, &mut pvs, &storage_classes).await;
+                    if reconcile_claim(&client, &pvc, &mut pvs, &storage_classes).await {
+                        schedule_retry(&queue, key);
+                    }
                 }
             }
         }
     }
+}
+
+/// A PVC binding handshake has several independent writes. If any one is
+/// rejected by a transient apiserver/watch burst, no later object mutation is
+/// guaranteed to produce another PVC event. Re-enqueue the claim explicitly
+/// so it cannot remain Pending forever after the external provisioner has
+/// already created its PV.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn schedule_retry(
+    queue: &std::sync::Arc<KeyedWorkQueue<(String, String)>>,
+    key: (String, String),
+) {
+    let queue = queue.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RETRY_DELAY).await;
+        queue.enqueue(key);
+    });
 }
 
 #[cfg(test)]
@@ -555,6 +645,33 @@ mod tests {
             ..Default::default()
         });
         assert!(!defer_unclaimed_wait_for_first_consumer_pv(&claim, &prebound, &classes));
+    }
+
+    #[test]
+    fn an_uncached_named_storage_class_must_not_be_treated_as_immediate() {
+        let claim = claim_for_class("created-just-before-the-claim");
+        let pv = pv(
+            "pv-a",
+            "created-just-before-the-claim",
+            &["ReadWriteOnce"],
+            None,
+        );
+        assert!(defer_unclaimed_wait_for_first_consumer_pv(
+            &claim,
+            &pv,
+            &HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn an_explicitly_empty_storage_class_can_bind_without_a_class_object() {
+        let claim = claim_for_class("");
+        let pv = pv("pv-a", "", &["ReadWriteOnce"], None);
+        assert!(!defer_unclaimed_wait_for_first_consumer_pv(
+            &claim,
+            &pv,
+            &HashMap::new()
+        ));
     }
 
     #[test]
