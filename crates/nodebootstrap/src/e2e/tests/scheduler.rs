@@ -1096,9 +1096,7 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
     let suffix = std::process::id();
     let class_name = format!("late-wfc-{suffix}");
     let pvc_name = format!("late-pvc-{suffix}");
-    let pv_name = format!("late-pv-{suffix}");
     let pod_name = format!("late-pod-{suffix}");
-    let host_path = format!("/tmp/nodebootstrap-e2e-{pv_name}");
     let classes: Api<StorageClass> = Api::all(context.client.clone());
     let pvcs: Api<PersistentVolumeClaim> =
         Api::namespaced(context.client.clone(), &context.namespace);
@@ -1109,7 +1107,7 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
         "apiVersion": "storage.k8s.io/v1",
         "kind": "StorageClass",
         "metadata": {"name": class_name},
-        "provisioner": "kubernetes.io/no-provisioner",
+        "provisioner": "hostpath.csi.k8s.io",
         "volumeBindingMode": "WaitForFirstConsumer"
     }))?;
 
@@ -1138,25 +1136,13 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
             "resources": {"requests": {"storage": "32Mi"}}
         }
     }))?;
-    let pv: PersistentVolume = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolume",
-        "metadata": {"name": pv_name},
-        "spec": {
-            "capacity": {"storage": "64Mi"},
-            "accessModes": ["ReadWriteOnce"],
-            "storageClassName": class_name,
-            "persistentVolumeReclaimPolicy": "Retain",
-            "hostPath": {"path": host_path, "type": "DirectoryOrCreate"}
-        }
-    }))?;
-
     let result = async {
         // Deliberately apply the objects in dependency order's reverse: the
-        // Pod names a missing PVC, the PVC names a missing class, and the PV
-        // names that same class. The API accepts each incomplete manifest;
-        // the controllers must retain enough state to converge as the rest
-        // of the graph arrives.
+        // Pod names a missing PVC and the PVC names a missing class. The
+        // external CSI provisioner creates the PV only after the class and
+        // scheduler-selected node arrive. The API accepts each incomplete
+        // manifest; the controllers must retain enough state to converge as
+        // the rest of the graph arrives.
         pods.create(&PostParams::default(), &pod).await?;
 
         // First dependency: the scheduler must reject the Pod, but leave it
@@ -1202,11 +1188,10 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
             })
             .await?;
 
-        // Third dependency: deliver the PV while the StorageClass is still
-        // absent. The binder must not treat an unknown named class as
-        // Immediate and claim this static volume before the scheduler has a
-        // chance to choose a node.
-        pvs.create(&PostParams::default(), &pv).await?;
+        // Third dependency: with the PVC present but its class still absent,
+        // no PV can be provisioned. This is the state in which a watch-driven
+        // implementation must retain the Pod rather than dropping it after
+        // the first failed scheduling attempt.
         context
             .wait_until("late manifest graph to remain unresolved before its class exists", Duration::from_secs(60), || {
                 let pods = pods.clone();
@@ -1222,9 +1207,10 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
             })
             .await?;
 
-        // Final dependency: the class ADD and the earlier PVC/PV events must
-        // wake the same parked scheduling attempt. The binder completes the
-        // claim, and nodelet reconciles the already-existing Pod to Running.
+        // Final dependency: the class ADD wakes the same parked scheduling
+        // attempt. The scheduler selects a node, the external CSI provisioner
+        // creates the PV, the binder completes the claim, and nodelet
+        // reconciles the already-existing Pod to Running.
         classes.create(&PostParams::default(), &class).await?;
         context
             .wait_until("late StorageClass to be visible", Duration::from_secs(30), || {
@@ -1249,6 +1235,15 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
                 }
             })
             .await?;
+        let claim = pvcs.get(&pvc_name).await?;
+        let bound_pv_name = claim
+            .spec
+            .and_then(|spec| spec.volume_name)
+            .context("late PVC has no bound PV name")?;
+        anyhow::ensure!(
+            pvs.get(&bound_pv_name).await?.spec.and_then(|spec| spec.csi).is_some(),
+            "late PVC was not bound to a CSI-backed PV"
+        );
         context
             .wait_until("late PVC Pod to be scheduled after its PV binds", Duration::from_secs(90), || {
                 pod_is_scheduled(context, &pod_name)
@@ -1274,9 +1269,7 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
     .await;
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
     let _ = pvcs.delete(&pvc_name, &DeleteParams::default()).await;
-    let _ = pvs.delete(&pv_name, &DeleteParams::default()).await;
     let _ = classes.delete(&class_name, &DeleteParams::default()).await;
-    let _ = std::fs::remove_dir_all(&host_path);
     result
 }
 
