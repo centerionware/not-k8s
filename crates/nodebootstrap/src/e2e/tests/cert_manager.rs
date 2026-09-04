@@ -91,6 +91,38 @@ fn print_cert_manager_diagnostics() {
             "-l",
             "app.kubernetes.io/instance=cert-manager",
         ][..],
+        &[
+            "get",
+            "clusterrole",
+            "cert-manager-cainjector",
+            "-o",
+            "yaml",
+        ][..],
+        &[
+            "get",
+            "clusterrolebinding",
+            "cert-manager-cainjector",
+            "-o",
+            "yaml",
+        ][..],
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "get",
+            "role",
+            "cert-manager-webhook:dynamic-serving",
+            "-o",
+            "yaml",
+        ][..],
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "get",
+            "rolebinding",
+            "cert-manager-webhook:dynamic-serving",
+            "-o",
+            "yaml",
+        ][..],
     ] {
         let output = Command::new("kubectl").args(args).output();
         match output {
