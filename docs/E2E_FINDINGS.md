@@ -1403,8 +1403,11 @@ StorageClass ADD/UPDATE event already being registered as a useful wakeup.
 
 The binder now defers an unclaimed static PV whenever a named class is not yet
 cached, and the scheduler parks a missing-class Pod as a pending dependency so
-the class event wakes it directly. The e2e regression creates the Pod, PVC,
-and PV before creating the StorageClass, asserts that the graph remains
-unresolved at each stage, then requires the existing objects to converge to a
-Bound, Running Pod. The companion static-WFC case covers the opposite order,
-where the class is created before the volume objects.
+the class event wakes it directly. The e2e regression creates the Pod and PVC
+before creating the StorageClass, asserts that the graph remains unresolved
+while the class is absent, then lets the real hostpath CSI provisioner create
+the PV after scheduling and requires the existing objects to converge to a
+Bound, Running Pod. This keeps the final runtime assertion on a CSI volume,
+which nodelet supports; an in-tree hostPath PV would correctly remain
+unsupported. The companion static-WFC case covers the opposite order, where
+the class is created before the volume objects.
