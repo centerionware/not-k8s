@@ -404,10 +404,10 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
             "server-side apply did not preserve the CRD-backed ClusterIssuer spec"
         );
         if nodeapiserver_target {
+            let applied_metadata = serde_json::to_value(&applied_issuer.metadata)?;
             anyhow::ensure!(
-                applied_issuer
-                    .data
-                    .pointer("/metadata/managedFields")
+                applied_metadata
+                    .pointer("/managedFields")
                     .and_then(Value::as_array)
                     .is_some_and(|entries| {
                         entries.iter().any(|entry| {
