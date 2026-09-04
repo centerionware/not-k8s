@@ -225,11 +225,12 @@ pub(super) async fn service_account_token_projected_volume_mints_a_token(
         .await
 }
 
-/// A required projected token must keep the Pod Pending until its
-/// ServiceAccount exists. The ServiceAccount can appear after the Pod's first
-/// reconcile, so this also proves the nodelet retries an unchanged Pod rather
-/// than starting it once without the token and waiting forever for a Pod
-/// watch event that will never arrive.
+/// A required projected token must keep the Pod Pending when its
+/// ServiceAccount is temporarily unavailable. The Pod is admitted while the
+/// account exists, then nodelet sees the account disappear on its first
+/// reconcile. Recreating the account and changing the Pod proves recovery
+/// from the failed TokenRequest without ever starting the container without
+/// its required token.
 pub(super) async fn projected_service_account_token_waits_for_service_account(
     context: &E2eContext,
 ) -> Result<()> {
@@ -245,68 +246,100 @@ pub(super) async fn projected_service_account_token_waits_for_service_account(
         Api::namespaced(context.client.clone(), &context.namespace);
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
 
-    create_pod(
-        context,
-        &pod_name,
-        json!({
-            "serviceAccountName": service_account_name,
-            "restartPolicy": "Never",
-            "containers": [{
-                "name": "app",
-                "image": "busybox:latest",
-                "command": ["sh", "-c", "test -s /var/run/secrets/tokens/api-token && sleep 3600"]
-            }],
-            "volumes": [{
-                "name": "api-token",
-                "projected": {"sources": [{
-                    "serviceAccountToken": {"path": "api-token", "expirationSeconds": 600}
-                }]}
-            }]
-        }),
-    )
-    .await?;
-
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    let stalled = pods
-        .get(&pod_name)
-        .await
-        .context("reading delayed-token Pod before creating its ServiceAccount")?;
-    anyhow::ensure!(
-        stalled
-            .status
-            .as_ref()
-            .and_then(|status| status.phase.as_deref())
-            != Some("Running"),
-        "Pod started before its referenced ServiceAccount existed"
-    );
-
+    let service_account = ServiceAccount {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(service_account_name.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     service_accounts
-        .create(
-            &PostParams::default(),
-            &ServiceAccount {
-                metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                    name: Some(service_account_name),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
+        .create(&PostParams::default(), &service_account)
+        .await?;
+
+    run_privileged("systemctl", &["stop", "nodelet.service"])?;
+    let result = async {
+        create_pod(
+            context,
+            &pod_name,
+            json!({
+                "serviceAccountName": service_account_name,
+                "restartPolicy": "Never",
+                "containers": [{
+                    "name": "app",
+                    "image": "busybox:latest",
+                    "command": ["sh", "-c", "test -s /var/run/secrets/tokens/api-token && sleep 3600"]
+                }],
+                "volumes": [{
+                    "name": "api-token",
+                    "projected": {"sources": [{
+                        "serviceAccountToken": {"path": "api-token", "expirationSeconds": 600}
+                    }]}
+                }]
+            }),
         )
         .await?;
-    context
-        .wait_until("Pod to start after its ServiceAccount appears", Duration::from_secs(60), || {
-            let pods = pods.clone();
-            let pod_name = pod_name.clone();
-            async move {
-                Ok(pods
-                    .get(&pod_name)
-                    .await?
-                    .status
-                    .and_then(|status| status.phase)
-                    .as_deref()
-                    == Some("Running"))
-            }
-        })
+        service_accounts
+            .delete(&service_account_name, &DeleteParams::default())
+            .await?;
+        context
+            .wait_until("temporary ServiceAccount deletion", Duration::from_secs(30), || {
+                let service_accounts = service_accounts.clone();
+                let service_account_name = service_account_name.clone();
+                async move { Ok(service_accounts.get_opt(&service_account_name).await?.is_none()) }
+            })
+            .await?;
+        run_privileged("systemctl", &["start", "nodelet.service"])?;
+        context
+            .wait_until("Pod to remain Pending while its ServiceAccount is absent", Duration::from_secs(60), || {
+                let pods = pods.clone();
+                let pod_name = pod_name.clone();
+                async move {
+                    let pod = pods.get(&pod_name).await?;
+                    Ok(pod
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.phase.as_deref())
+                        == Some("Pending")
+                        && pod.status.as_ref().and_then(|status| status.message.as_deref()).is_some_and(
+                            |message| message.starts_with("waiting for projected ServiceAccount token(s)"),
+                        ))
+                }
+            })
+            .await?;
+
+        service_accounts
+            .create(&PostParams::default(), &service_account)
+            .await?;
+        pods.patch(
+            &pod_name,
+            &PatchParams::default(),
+            &Patch::Merge(json!({
+                "metadata": {"annotations": {"e2e.not-k8s.dev/service-account-recovered": "true"}}
+            })),
+        )
         .await?;
+        context
+            .wait_until("Pod to start after its ServiceAccount is restored", Duration::from_secs(60), || {
+                let pods = pods.clone();
+                let pod_name = pod_name.clone();
+                async move {
+                    Ok(pods
+                        .get(&pod_name)
+                        .await?
+                        .status
+                        .and_then(|status| status.phase)
+                        .as_deref()
+                        == Some("Running"))
+                }
+            })
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let started = run_privileged("systemctl", &["start", "nodelet.service"]);
+    result?;
+    started?;
     let (succeeded, token) = exec_in_pod(
         context,
         &pod_name,
