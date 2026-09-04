@@ -169,6 +169,14 @@ require the applicable gates, squash-merge, then rebase other authorized open
 PRs onto the new base and rerun their gates. Honor any user-specified ordering.
 Do not force-push a shared branch without the required authority.
 
+After a successful PR merge, delete that PR's source/head branch so merged
+branches do not accumulate. Use `gh pr merge --squash --delete-branch` when
+appropriate, or delete the verified remote head branch after confirming the
+merge succeeded. Never delete the destination/base branch. Remove the local
+source branch too when it is not checked out or needed by another worktree;
+preserve uncommitted work and report any blocked cleanup rather than forcing
+worktree removal. Do not delete an open/unmerged PR's branch as cleanup.
+
 Completion reports must distinguish: changed, checked, passed, failed, skipped,
 and still unverified. Include the tested SHA/run links and any remaining gate.
 If a gate cannot run, explain why and leave the PR open. A passed filtered run
