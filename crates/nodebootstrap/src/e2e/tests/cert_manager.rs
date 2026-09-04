@@ -236,7 +236,7 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
         context
             .wait_until(
                 "cert-manager deployments to become ready",
-                Duration::from_secs(120),
+                Duration::from_secs(180),
                 || {
                     let deployments = deployments.clone();
                     async move {

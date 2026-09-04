@@ -6963,6 +6963,7 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     let roles: Api<ClusterRole> = Api::all(context.client.clone());
     let bindings: Api<ClusterRoleBinding> = Api::all(context.client.clone());
     let csrs: Api<CertificateSigningRequest> = Api::all(context.client.clone());
+    let nodes: Api<Node> = Api::all(context.client.clone());
     let service_account: ServiceAccount = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "ServiceAccount",
@@ -7126,6 +7127,24 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     .await;
     let _ = nodelet.kill();
     let _ = nodelet.wait();
+    // The temporary nodelet registers a real Node before this fixture can
+    // prove the issued kubeconfig.  Killing the process does not remove that
+    // Node, and the scheduler is allowed to place later Pods on it.  Such a
+    // stale Node has no kubelet behind it, so every later Pod assigned there
+    // remains Pending and makes unrelated tests look flaky.
+    if nodes
+        .delete(&node_name, &DeleteParams::default())
+        .await
+        .is_ok()
+    {
+        let _ = context
+            .wait_until("temporary TLS bootstrap Node to disappear", Duration::from_secs(30), || {
+                let nodes = nodes.clone();
+                let node_name = node_name.clone();
+                async move { Ok(nodes.get_opt(&node_name).await?.is_none()) }
+            })
+            .await;
+    }
     if let Some(csr_name) = csr_name_for_cleanup {
         let _ = csrs.delete(&csr_name, &DeleteParams::default()).await;
     }
