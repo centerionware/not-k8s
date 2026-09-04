@@ -141,7 +141,7 @@ async fn reconcile_pdb(client: &Client, pdb: &PodDisruptionBudget) -> bool {
         ..pdb.status.clone().unwrap_or_default()
     };
     if pdb.status.as_ref() == Some(&status) {
-        return;
+        return false;
     }
     let patch = serde_json::json!({ "status": status });
     if let Err(e) = api
