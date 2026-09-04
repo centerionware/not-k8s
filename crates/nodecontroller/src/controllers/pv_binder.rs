@@ -218,8 +218,15 @@ fn defer_unclaimed_wait_for_first_consumer_pv(
     else {
         return false;
     };
+    // The PV, PVC, and StorageClass informers are independent streams.  A
+    // newly-created PVC can therefore reach this controller before the
+    // StorageClass event that explains its binding mode.  Treat a named but
+    // not-yet-cached class as unknown, not as Immediate: claiming a matching
+    // static PV here would violate WaitForFirstConsumer before the scheduler
+    // has had a chance to choose a node.  An explicitly empty class name still
+    // means "no class" and is allowed to bind immediately.
     let Some(class) = storage_classes.get(class_name) else {
-        return false;
+        return !class_name.is_empty();
     };
     class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
         && !pvc.metadata.annotations.as_ref().is_some_and(|annotations| {
@@ -582,6 +589,33 @@ mod tests {
             ..Default::default()
         });
         assert!(!defer_unclaimed_wait_for_first_consumer_pv(&claim, &prebound, &classes));
+    }
+
+    #[test]
+    fn an_uncached_named_storage_class_must_not_be_treated_as_immediate() {
+        let claim = claim_for_class("created-just-before-the-claim");
+        let pv = pv(
+            "pv-a",
+            "created-just-before-the-claim",
+            &["ReadWriteOnce"],
+            None,
+        );
+        assert!(defer_unclaimed_wait_for_first_consumer_pv(
+            &claim,
+            &pv,
+            &HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn an_explicitly_empty_storage_class_can_bind_without_a_class_object() {
+        let claim = claim_for_class("");
+        let pv = pv("pv-a", "", &["ReadWriteOnce"], None);
+        assert!(!defer_unclaimed_wait_for_first_consumer_pv(
+            &claim,
+            &pv,
+            &HashMap::new()
+        ));
     }
 
     #[test]
