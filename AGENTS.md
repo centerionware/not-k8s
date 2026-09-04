@@ -17,6 +17,13 @@ The `nodeapiserver` integration branch is stabilizing the replacement API
 server. Upstream kube-apiserver is an explicit comparison target. Historical
 k3s bootstrap descriptions are not the intended architecture.
 
+After stabilization, the intended next target is Kubernetes 1.37 with broad
+feature compatibility and measured CPU/memory advantages. That roadmap does
+not authorize a version bump during a bug-fix task. Use the
+[upgrade skill](.agents/skills/not-k8s-upgrade/SKILL.md) for version changes and
+the [performance skill](.agents/skills/not-k8s-performance/SKILL.md) for efficiency
+work. Report verified conformance and remaining feature gaps separately.
+
 ## Start here, before changing anything
 
 1. Identify the actual checkout with `pwd`, `git status --short`,
@@ -67,6 +74,10 @@ Do not copy retired `deploy/bootstrap-source.sh`, `deploy/test-e2e.sh`,
 or `--with-cri` invocations into a Rust-bootstrap checkout.
 
 ## Invariants that must survive a fix
+
+When implementing or refactoring Rust, use the
+[Rust implementation skill](.agents/skills/not-k8s-rust/SKILL.md) for code
+structure, ownership, errors, async cancellation, bounded work, and verification.
 
 - Components are replaceable crates and independent processes. `notk8s`
   only packages and dispatches them; do not add runtime policy there.
