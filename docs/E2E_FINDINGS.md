@@ -1411,3 +1411,41 @@ Bound, Running Pod. This keeps the final runtime assertion on a CSI volume,
 which nodelet supports; an in-tree hostPath PV would correctly remain
 unsupported. The companion static-WFC case covers the opposite order, where
 the class is created before the volume objects.
+
+### 28. Fixed: the static PV cache-order guard confused an absent class with a late class
+
+**Severity: real regression in the static binder path — found in full e2e run
+33842307349.**
+
+The fix for finding #27 correctly treated a named StorageClass missing from the
+binder's local cache as unknown, because the class might have been created but
+its informer event might not have arrived yet. That made the static-PV test
+hang: its PV and PVC intentionally used a matching class name without creating
+a StorageClass object at all. Static binding does not require a StorageClass
+object, so the binder deferred the claim forever while waiting for an event
+that could never exist.
+
+**Fixed**: on that cache-miss path, the binder now asks the authoritative
+controller read client for the StorageClass. An existing
+`WaitForFirstConsumer` class still defers until scheduling pre-binds the PV; a
+confirmed `NotFound` means there is no delayed-binding policy and the static
+PV can bind; transient lookup errors requeue the claim. The existing static
+PV e2e test remains the regression case for the absent-class order.
+
+### 29. Fixed: a PDB could publish an empty status after its Pod graph arrived
+
+**Severity: real convergence race — found in full e2e run 33842307349.**
+
+The disruption controller consumed independent Pod and PodDisruptionBudget
+informers. If the PDB was observed and reconciled before the Deployment's Pods,
+then the Pod watch was still initializing or relisting, the controller could
+publish `expectedPods=0` and lose the later wakeup. The Deployment became ready,
+but the PDB status stayed empty until the test timed out. The failure was
+intermittent because it depended on informer startup and apiserver event
+ordering.
+
+**Fixed**: PDB reconciliation refreshes the current Pods through the shared
+controller read client, retries failed reads/status writes, and periodically
+requeues known budgets as an informer safety-net. The e2e test now creates the
+PDB before the Deployment so the empty-before-Pods ordering is exercised
+directly, then requires the status to converge through all four numeric fields.

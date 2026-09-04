@@ -21,10 +21,6 @@ pub(super) async fn disruption_controller_computes_pdb_status(context: &E2eConte
             "spec": {"containers": [{"name": "busybox", "image": "busybox:latest", "command": ["sleep", "3600"]}]}
         }}
     }))?;
-    deployments
-        .create(&PostParams::default(), &deployment)
-        .await
-        .context("creating PDB test Deployment")?;
     let pdb: PodDisruptionBudget = serde_json::from_value(json!({
         "apiVersion": "policy/v1",
         "kind": "PodDisruptionBudget",
@@ -34,6 +30,13 @@ pub(super) async fn disruption_controller_computes_pdb_status(context: &E2eConte
     pdbs.create(&PostParams::default(), &pdb)
         .await
         .context("creating PodDisruptionBudget")?;
+    // Deliberately publish the PDB before the Deployment. Controllers must
+    // reconcile the empty initial match and then converge when the selected
+    // Pods arrive on the independent Pod watch.
+    deployments
+        .create(&PostParams::default(), &deployment)
+        .await
+        .context("creating PDB test Deployment")?;
 
     let result = async {
         context

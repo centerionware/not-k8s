@@ -236,6 +236,20 @@ fn defer_unclaimed_wait_for_first_consumer_pv(
         })
 }
 
+/// Resolve a named StorageClass through the authoritative shared informer
+/// identity when this binder has not seen the class event yet. A static PV is
+/// allowed to bind to a PVC whose named class does not exist — the class name
+/// is still a valid matching key for the static path — but an existing
+/// WaitForFirstConsumer class must not be claimed before scheduling chooses a
+/// node. The cache alone cannot distinguish those two cases when the PVC and
+/// StorageClass streams deliver events in either order.
+async fn lookup_uncached_storage_class(
+    name: &str,
+) -> std::result::Result<Option<StorageClass>, kube::Error> {
+    let classes: Api<StorageClass> = Api::all(crate::watch::base_client());
+    classes.get_opt(name).await
+}
+
 async fn request_dynamic_provisioning(
     pvc_api: &Api<PersistentVolumeClaim>,
     pvc: &PersistentVolumeClaim,
@@ -296,7 +310,49 @@ async fn reconcile_claim(
         }
         return false;
     };
-    if defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, storage_classes) {
+    let uncached_named_class = is_unclaimed(&pv)
+        && pvc
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.storage_class_name.as_deref())
+            .is_some_and(|class| {
+                !class.is_empty() && !storage_classes.contains_key(class)
+            });
+    if uncached_named_class {
+        let class_name = pvc
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.storage_class_name.as_deref())
+            .expect("uncached_named_class implies a named StorageClass");
+        match lookup_uncached_storage_class(class_name).await {
+            Ok(Some(class)) => {
+                let selected = pvc
+                    .metadata
+                    .annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.get(SELECTED_NODE_ANNOTATION));
+                if class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
+                    && !selected.is_some_and(|node| !node.is_empty())
+                {
+                    return false;
+                }
+            }
+            Ok(None) => {
+                // No StorageClass means there is no delayed-binding policy
+                // to honor. Continue with the static PV match.
+            }
+            Err(e) => {
+                tracing::warn!(
+                    namespace = %namespace,
+                    pvc = %name,
+                    storage_class = %class_name,
+                    error = ?e,
+                    "failed to resolve uncached StorageClass before static binding; will retry"
+                );
+                return true;
+            }
+        }
+    } else if defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, storage_classes) {
         return false;
     }
     let pv_name = pv.name_any();

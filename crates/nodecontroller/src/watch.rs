@@ -339,7 +339,7 @@ pub fn set_base_client(client: Client) {
     let _ = BASE_CLIENT.set(client);
 }
 
-fn base_client() -> Client {
+pub(crate) fn base_client() -> Client {
     BASE_CLIENT.get().expect("watch::set_base_client() must be called before any watch starts").clone()
 }
 
