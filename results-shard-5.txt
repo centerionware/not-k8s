@@ -1,0 +1,9 @@
+commit: 245f67359d87aa88af3af9e45dc1d0869439645a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/33846423332
+timestamp (UTC): 2026-09-04T07:09:44Z
+shard: 5/5
+exit code: 0
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 5/5
+▶ test_disruption_controller_computes_pdb_status ... PASS (73238ms)
+Results: 1 passed, 0 skipped, 0 failed
