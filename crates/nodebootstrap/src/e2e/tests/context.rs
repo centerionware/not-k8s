@@ -38,6 +38,7 @@ impl E2eContext {
                     },
                     ..Default::default()
                 },
+            )
             .await
             .with_context(|| format!("creating e2e namespace {namespace}"))?;
 
@@ -52,7 +53,6 @@ impl E2eContext {
                     let service_accounts = service_accounts.clone();
                     async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
                 },
-            )
             )
             .await
         {
