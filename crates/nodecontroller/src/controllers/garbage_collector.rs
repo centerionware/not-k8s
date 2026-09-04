@@ -274,6 +274,12 @@ impl State {
     }
 
     async fn finish_relist(&mut self, client: &Client, kind_key: &str) {
+        for record in self.install_snapshot(kind_key) {
+            delete_object(client, &self.resources, &record).await;
+        }
+    }
+
+    fn install_snapshot(&mut self, kind_key: &str) -> Vec<ObjRecord> {
         let snapshot = self.relist.remove(kind_key).unwrap_or_default();
         let old_uids: Vec<String> = self
             .uid_to_kind
@@ -291,7 +297,8 @@ impl State {
                     }
                 }
             }
-            self.children_of.remove(&uid);
+            // This index belongs to the children, not the owner snapshot.
+            // A Deployment relist must retain ReplicaSet -> Deployment edges.
         }
         self.children_of.retain(|_, children| !children.is_empty());
         let records: Vec<ObjRecord> = snapshot.into_values().collect();
@@ -303,13 +310,13 @@ impl State {
         // Only after the complete per-kind snapshot is installed may an
         // orphan decision be made. This also lets owners from another kind
         // that finished relisting in the meantime be considered correctly.
-        if self.ready() {
-            for record in records {
-                if should_delete_orphan(&record, true, &self.exists) {
-                    delete_object(client, &self.resources, &record).await;
-                }
-            }
-        }
+        // The last initial list can unblock orphan decisions for ANY kind,
+        // including a child whose owner disappeared during another relist.
+        self.objects_with_owners
+            .values()
+            .filter(|record| should_delete_orphan(record, self.ready(), &self.exists))
+            .cloned()
+            .collect()
     }
 
     async fn handle_delete(&mut self, client: &Client, obj: DynamicObject) {
@@ -342,6 +349,66 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_state() -> State {
+        State {
+            resources: HashMap::new(),
+            exists: HashSet::new(),
+            objects_with_owners: HashMap::new(),
+            children_of: HashMap::new(),
+            pending_init: HashSet::new(),
+            uid_to_kind: HashMap::new(),
+            relist: HashMap::new(),
+        }
+    }
+
+    fn record(uid: &str, kind: &str, owners: &[&str]) -> ObjRecord {
+        ObjRecord {
+            uid: uid.into(),
+            gvk_key: kind.into(),
+            namespace: "default".into(),
+            name: uid.into(),
+            owner_uids: owners.iter().map(|owner| (*owner).into()).collect(),
+            deleting: false,
+        }
+    }
+
+    #[test]
+    fn owner_relist_preserves_children_from_other_kinds() {
+        let mut state = empty_state();
+        let owner = record("deployment", "apps/v1/Deployment", &[]);
+        state.store_record(owner.clone());
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["deployment"]));
+        state.begin_relist(&owner.gvk_key);
+        state.relist.get_mut(&owner.gvk_key).unwrap().insert(owner.uid.clone(), owner.clone());
+        assert!(state.install_snapshot(&owner.gvk_key).is_empty());
+        assert!(state.children_of["deployment"].contains("replicaset"));
+    }
+
+    #[test]
+    fn final_initial_list_checks_orphans_from_earlier_kinds() {
+        let mut state = empty_state();
+        state.begin_relist("apps/v1/ReplicaSet");
+        state.begin_relist("apps/v1/Deployment");
+        state.relist.get_mut("apps/v1/ReplicaSet").unwrap().insert(
+            "replicaset".into(), record("replicaset", "apps/v1/ReplicaSet", &["gone"]),
+        );
+        assert!(state.install_snapshot("apps/v1/ReplicaSet").is_empty());
+        let orphans = state.install_snapshot("apps/v1/Deployment");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "replicaset");
+    }
+
+    #[test]
+    fn owner_missing_from_relist_exposes_existing_child_as_orphan() {
+        let mut state = empty_state();
+        state.store_record(record("deployment", "apps/v1/Deployment", &[]));
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["deployment"]));
+        state.begin_relist("apps/v1/Deployment");
+        let orphans = state.install_snapshot("apps/v1/Deployment");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "replicaset");
+    }
 
     #[test]
     fn an_object_without_owner_references_is_not_an_orphan() {
