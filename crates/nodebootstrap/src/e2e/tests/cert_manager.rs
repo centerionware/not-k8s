@@ -386,19 +386,44 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
             )
             .await?;
 
-        let applied_issuer = issuers
-            .patch(
-                &issuer_name,
-                &PatchParams::apply("nodebootstrap-e2e"),
-                &Patch::Apply(json!({
-                    "apiVersion": "cert-manager.io/v1",
-                    "kind": "ClusterIssuer",
-                    "metadata": {"name": issuer_name},
-                    "spec": {"selfSigned": {}}
-                })),
-            )
-            .await
-            .context("applying a CRD-backed ClusterIssuer through server-side apply")?;
+        let applied_issuer = {
+            let mut applied = None;
+            for attempt in 0..30 {
+                match issuers
+                    .patch(
+                        &issuer_name,
+                        &PatchParams::apply("nodebootstrap-e2e"),
+                        &Patch::Apply(json!({
+                            "apiVersion": "cert-manager.io/v1",
+                            "kind": "ClusterIssuer",
+                            "metadata": {"name": issuer_name},
+                            "spec": {"selfSigned": {}}
+                        })),
+                    )
+                    .await
+                {
+                    Ok(value) => {
+                        applied = Some(value);
+                        break;
+                    }
+                    Err(kube::Error::Api(error))
+                        if error.code == 409 && attempt + 1 < 30 =>
+                    {
+                        // cert-manager updates the issuer status immediately
+                        // after creation. Re-run the Apply against the latest
+                        // object when that status write wins the optimistic
+                        // concurrency race, just as an informer-backed client
+                        // would retry its reconciliation.
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .context("applying a CRD-backed ClusterIssuer through server-side apply");
+                    }
+                }
+            }
+            applied.context("timed out retrying a CRD-backed ClusterIssuer server-side apply")?
+        };
         anyhow::ensure!(
             applied_issuer.data.pointer("/spec/selfSigned").is_some(),
             "server-side apply did not preserve the CRD-backed ClusterIssuer spec"
