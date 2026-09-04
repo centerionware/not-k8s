@@ -276,8 +276,8 @@ async fn handle(
     }
 
     // Group E's real resource verbs so far: single-object GET (`get`, not
-    // `list`/`watch` — `path::parse` already tells those apart by an empty
-    // `name`), LIST (`list`, no name), CREATE (`create`, no name — a POST
+    // `list`/`watch` — `path::parse` already tells those apart by the
+    // verb), LIST (`list`), CREATE (`create`, no name — a POST
     // to the collection URL), single-object DELETE (`delete`, name
     // required — no name means `deletecollection`, now real too — see its
     // own dedicated branch below), and UPDATE (`update`, name
@@ -294,7 +294,6 @@ async fn handle(
         && info.subresource.is_empty();
     let is_list = info.is_resource_request
         && info.verb == "list"
-        && info.name.is_empty()
         && info.subresource.is_empty();
     let is_create = info.is_resource_request
         && info.verb == "create"
