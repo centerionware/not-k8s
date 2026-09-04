@@ -231,9 +231,7 @@ pub fn apply_watch_response(cache: &mut WatchCache, resp: &WatchResponse) {
 /// `SharedCache` (readers need concurrent access to the same cache while
 /// this loop drives it — see `SharedCache`'s own doc comment).
 pub fn apply_watch_response_shared(cache: &crate::cacher::store::SharedCache, resp: &WatchResponse) {
-    for (kind, key, value, revision) in decode_applies(resp, cache.revision()) {
-        cache.apply(kind, key, value, revision);
-    }
+    cache.apply_batch(decode_applies(resp, cache.revision()));
 }
 
 /// The pure decision behind both appliers above: what to apply, and in
@@ -366,6 +364,18 @@ mod tests {
         apply_watch_response(&mut cache, &resp);
         assert_eq!(cache.revision(), 3);
         assert_eq!(cache.list().0.len(), 2);
+    }
+
+    #[test]
+    fn one_transaction_can_change_two_keys_at_the_same_revision() {
+        let mut cache = WatchCache::new(vec![], 1, 16, 16);
+        let response = watch_response(vec![put_event("a", "v1", 1, 2), put_event("b", "v1", 1, 2)], 2);
+        apply_watch_response(&mut cache, &response);
+        assert_eq!(cache.list().0.len(), 2);
+        assert_eq!(cache.revision(), 2);
+        // A reader subscribing after the write must observe its actual
+        // revision even if there were no revision subscribers during apply.
+        assert_eq!(*cache.revision_watch().borrow(), 2);
     }
 
     #[test]

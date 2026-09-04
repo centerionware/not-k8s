@@ -3091,18 +3091,33 @@ pub(super) async fn nodeapiserver_serves_workload_scale_subresource(context: &E2
         anyhow::ensure!(initial["spec"]["replicas"] == 1, "scale GET returned the wrong desired replica count: {initial}");
         let resource_version = initial["metadata"]["resourceVersion"].as_str().context("scale GET returned no resourceVersion")?.to_string();
 
-        let replacement = json!({
+        let mut replacement = json!({
             "apiVersion": "autoscaling/v1",
             "kind": "Scale",
             "metadata": {"name": name.clone(), "namespace": context.namespace.clone(), "resourceVersion": resource_version},
             "spec": {"replicas": 2}
         });
-        let put = Request::builder()
-            .method("PUT")
-            .uri(&scale_uri)
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_vec(&replacement)?)?;
-        let updated: Value = context.client.request(put).await.context("updating the Deployment Scale")?;
+        // Scale shares its resourceVersion with Deployment status writers.
+        // A conditional PUT must refresh that precondition after a 409.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let updated: Value = loop {
+            let put = Request::builder()
+                .method("PUT")
+                .uri(&scale_uri)
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_vec(&replacement)?)?;
+            match context.client.request::<Value>(put).await {
+                Ok(updated) => break updated,
+                Err(kube::Error::Api(status)) if status.code == 409 && tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let latest: Value = context.client.request(
+                        Request::builder().method("GET").uri(&scale_uri).body(Vec::new())?
+                    ).await.context("refreshing the Scale resourceVersion after a conflict")?;
+                    replacement["metadata"]["resourceVersion"] = latest["metadata"]["resourceVersion"].clone();
+                }
+                Err(error) => return Err(error).context("updating the Deployment Scale"),
+            }
+        };
         anyhow::ensure!(updated["spec"]["replicas"] == 2, "scale PUT returned the wrong desired replica count: {updated}");
 
         let parent: Value = context
@@ -3112,13 +3127,18 @@ pub(super) async fn nodeapiserver_serves_workload_scale_subresource(context: &E2
             .context("reading the scaled Deployment")?;
         anyhow::ensure!(parent["spec"]["replicas"] == 2, "scale PUT did not update the parent Deployment: {parent}");
 
-        let patch = Request::builder()
-            .method("PATCH")
-            .uri(&scale_uri)
-            .header("Content-Type", "application/merge-patch+json")
-            .body(br#"{"spec":{"replicas":1}}"#.to_vec())?;
-        let patched: Value = context.client.request(patch).await.context("patching the Deployment Scale")?;
-        anyhow::ensure!(patched["spec"]["replicas"] == 1, "scale PATCH returned the wrong desired replica count: {patched}");
+        // Deliberately do not retry these unconditional PATCH requests in
+        // the client. The server must merge against fresh parent state when
+        // controller status updates race its internal compare-and-swap.
+        for _ in 0..16 {
+            let patch = Request::builder()
+                .method("PATCH")
+                .uri(&scale_uri)
+                .header("Content-Type", "application/merge-patch+json")
+                .body(br#"{"spec":{"replicas":1}}"#.to_vec())?;
+            let patched: Value = context.client.request(patch).await.context("patching the Deployment Scale")?;
+            anyhow::ensure!(patched["spec"]["replicas"] == 1, "scale PATCH returned the wrong desired replica count: {patched}");
+        }
 
         let final_parent: Value = context
             .client

@@ -239,6 +239,9 @@ async fn scale_replica_set(rs_api: &Api<ReplicaSet>, name: &str, replicas: i32) 
 }
 
 async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMap<String, ReplicaSet>) -> bool {
+    if d.metadata.deletion_timestamp.is_some() {
+        return false;
+    }
     // A failed scale/delete/status write does not itself mutate the
     // Deployment, so a watch-driven controller would otherwise have no event
     // that can retry the desired state. Keep the retry decision local to one
@@ -271,6 +274,21 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
     let new_rs: &ReplicaSet = match new_rs {
         Some(rs) => rs,
         None => {
+            // The RS delete event can arrive before this controller sees
+            // its owner's deletion. Check authority only on the create
+            // path; normal reconciles remain entirely watch-driven.
+            match d_api.get(&name).await {
+                Ok(current) if current.uid() == d.uid()
+                    && current.metadata.deletion_timestamp.is_none()
+                    && current.metadata.generation == d.metadata.generation => {}
+                Ok(_) => return false,
+                Err(kube::Error::Api(status)) if status.is_not_found() => return false,
+                Err(error) => {
+                    tracing::warn!(deployment = %name, error = ?error,
+                        "failed to verify Deployment before creating ReplicaSet");
+                    return true;
+                }
+            }
             // Always created at 0 — RollingUpdate scales it up incrementally
             // below; Recreate only scales it up once old ReplicaSets are
             // drained, handled in the `is_recreate` branch further down.

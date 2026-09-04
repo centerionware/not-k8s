@@ -167,6 +167,30 @@ pub async fn patch_scale(
     patch_doc: &Value,
     dry_run: bool,
 ) -> Result<ScaleOutcome, Error> {
+    for attempt in 0..8 {
+        let outcome = patch_scale_once(storage, group, version, resource, namespace, name,
+            kind_of_patch, patch_doc, dry_run).await?;
+        if outcome != ScaleOutcome::Conflict || attempt == 7
+            || !patch_allows_conflict_retry(kind_of_patch, patch_doc)
+        {
+            return Ok(outcome);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+    }
+    unreachable!("bounded PATCH retry loop returns its last outcome")
+}
+
+async fn patch_scale_once(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+) -> Result<ScaleOutcome, Error> {
     if !supports_scale(group, version, resource) {
         return Ok(ScaleOutcome::UnknownResource);
     }

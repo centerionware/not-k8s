@@ -9,6 +9,16 @@ pub enum PatchKind {
     StrategicMerge,
 }
 
+/// A patch without a caller-supplied version is a transformation of the
+/// latest object. Re-read and recompute it after an internal CAS race; never
+/// resubmit the stale candidate. Explicit preconditions still return 409.
+/// JSON Patch may test or replace metadata indirectly, so leave its caller
+/// in control of retrying those conditional operations.
+fn patch_allows_conflict_retry(kind: PatchKind, patch: &Value) -> bool {
+    !matches!(kind, PatchKind::Json)
+        && patch.pointer("/metadata/resourceVersion").is_none()
+}
+
 /// Real upstream's own three patch `Content-Type` media types
 /// (`k8s.io/apimachinery/pkg/types`): `application/json-patch+json`
 /// (RFC 6902), `application/merge-patch+json` (RFC 7386),

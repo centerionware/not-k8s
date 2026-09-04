@@ -36,7 +36,8 @@ const DEFAULT_SA_CREATE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_SA_RETRY_PERIOD: Duration = Duration::from_secs(5);
 
 fn is_terminating(ns: &Namespace) -> bool {
-    ns.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Terminating")
+    ns.metadata.deletion_timestamp.is_some()
+        || ns.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Terminating")
 }
 
 async fn ensure_default_service_account(
@@ -85,7 +86,8 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     queue.enqueue(name);
                 }
                 Some(Ok(Event::Delete(ns))) => { namespaces.remove(&ns.name_any()); }
-                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Ok(Event::Init)) => namespaces.clear(),
+                Some(Ok(Event::InitDone)) => {}
                 Some(Err(e)) => tracing::warn!(error = ?e, "namespace watch error in serviceaccount-controller"),
                 None => return Ok(()),
             },
@@ -99,7 +101,12 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     service_accounts.remove(&format!("{ns}/{}", sa.name_any()));
                     if sa.name_any() == DEFAULT_SA_NAME { queue.enqueue(ns); }
                 }
-                Some(Ok(Event::Init | Event::InitDone)) => {}
+                Some(Ok(Event::Init)) => service_accounts.clear(),
+                Some(Ok(Event::InitDone)) => {
+                    for name in namespaces.keys() {
+                        queue.enqueue(name.clone());
+                    }
+                }
                 Some(Err(e)) => tracing::warn!(error = ?e, "serviceaccount watch error in serviceaccount-controller"),
                 None => return Ok(()),
             },

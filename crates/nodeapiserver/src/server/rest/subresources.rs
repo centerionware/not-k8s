@@ -433,6 +433,29 @@ pub async fn patch_ephemeral_containers(
     patch_doc: &Value,
     dry_run: bool,
     field_manager: Option<&str>,
+    validate: impl Fn(&Value) -> Result<(), Vec<String>>,
+) -> Result<UpdateOutcome, Error> {
+    for attempt in 0..8 {
+        let outcome = patch_ephemeral_containers_once(storage, namespace, name,
+            kind_of_patch, patch_doc, dry_run, field_manager, &validate).await?;
+        if !matches!(outcome, UpdateOutcome::Conflict) || attempt == 7
+            || !patch_allows_conflict_retry(kind_of_patch, patch_doc)
+        {
+            return Ok(outcome);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+    }
+    unreachable!("bounded PATCH retry loop returns its last outcome")
+}
+
+async fn patch_ephemeral_containers_once(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
     validate: impl FnOnce(&Value) -> Result<(), Vec<String>>,
 ) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
@@ -467,6 +490,11 @@ pub async fn patch_ephemeral_containers(
         Ok(object) => object,
         Err(message) => return Ok(UpdateOutcome::Invalid(vec![message])),
     };
+    if let Some(version) = patch_doc.pointer("/metadata/resourceVersion").and_then(Value::as_str) {
+        if version.parse::<i64>().ok() != Some(existing_kv.mod_revision) {
+            return Ok(UpdateOutcome::Conflict);
+        }
+    }
     let object = match restrict_ephemeral_container_update(&existing_object, &patched) {
         Ok(object) => object,
         Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
