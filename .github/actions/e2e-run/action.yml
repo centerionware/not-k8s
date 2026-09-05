@@ -45,7 +45,7 @@ runs:
         CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
         CIDR: ${{ inputs.cidr }}
         CIDR6: ${{ inputs.cidr6 }}
-        RUST_LOG: info,nk_watch_trace=debug,kube_runtime::watcher=debug
+        RUST_LOG: info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
       shell: bash
       run: |
         set -euo pipefail

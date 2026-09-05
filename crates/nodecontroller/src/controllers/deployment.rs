@@ -69,8 +69,17 @@ use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub const POD_TEMPLATE_HASH_LABEL: &str = "pod-template-hash";
+
+// A controller loop must never be parked forever by one apiserver request.
+// Unlike a kube watch, these calls are ordinary request futures and kube's
+// client does not impose a useful upper bound on them.  This is deliberately
+// the same bound used by namespace-controller's mutation path: a timed-out
+// reconcile is retried, while the event loop remains able to consume new
+// Deployment/ReplicaSet events.
+const RECONCILE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// FNV-1a over the template's canonical JSON — see module doc for why this
 /// deliberately isn't upstream's own hash algorithm.
@@ -419,6 +428,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             queue.enqueue(key.clone());
                         }
                     }
+                    Some(Ok(Event::Init)) => {
+                        // InitApply is a replacement snapshot, not a delta.
+                        // Retaining objects removed during a relist can make a
+                        // stale ReplicaSet win the template-hash lookup and
+                        // suppress creation of the current one.
+                        replica_sets.clear();
+                        tracing::debug!(target: "nk_controller_trace", controller = "deployment", "replaced ReplicaSet informer snapshot");
+                    }
                     Some(Ok(Event::Delete(rs))) => {
                         let ns = ns_of(&rs);
                         replica_sets.remove(&format!("{ns}/{}", rs.name_any()));
@@ -426,7 +443,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             queue.enqueue(key.clone());
                         }
                     }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "replicaset watch error in deployment-controller"),
                     None => return Ok(()),
                 }
@@ -438,19 +455,41 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let name = d.name_any();
                         let key = format!("{ns}/{name}");
                         deployments.insert(key.clone(), d);
+                        tracing::debug!(target: "nk_controller_trace", controller = "deployment", key = %key, "enqueued Deployment event");
                         queue.enqueue(key);
+                    }
+                    Some(Ok(Event::Init)) => {
+                        deployments.clear();
+                        tracing::debug!(target: "nk_controller_trace", controller = "deployment", "replaced Deployment informer snapshot");
                     }
                     Some(Ok(Event::Delete(d))) => {
                         deployments.remove(&format!("{}/{}", ns_of(&d), d.name_any()));
                     }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "deployment watch error in deployment-controller"),
                     None => return Ok(()),
                 }
             }
             key = queue.pop() => {
                 if let Some(d) = deployments.get(&key).cloned() {
-                    if reconcile_deployment(&client, &d, &replica_sets).await {
+                    tracing::debug!(target: "nk_controller_trace", controller = "deployment", key = %key, "starting Deployment reconcile");
+                    let needs_retry = match tokio::time::timeout(
+                        RECONCILE_TIMEOUT,
+                        reconcile_deployment(&client, &d, &replica_sets),
+                    ).await {
+                        Ok(needs_retry) => needs_retry,
+                        Err(_) => {
+                            tracing::warn!(
+                                target: "nk_controller_trace",
+                                controller = "deployment",
+                                key = %key,
+                                timeout_secs = RECONCILE_TIMEOUT.as_secs(),
+                                "Deployment reconcile timed out; retrying"
+                            );
+                            true
+                        }
+                    };
+                    if needs_retry {
                         schedule_retry(&queue, key);
                     }
                 }
