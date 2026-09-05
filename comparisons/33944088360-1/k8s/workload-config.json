@@ -1,0 +1,8 @@
+{
+  "preset": "heavy",
+  "replicas": 10,
+  "api_workers": 4,
+  "seconds_per_phase": 120,
+  "job_churn": true,
+  "http_interval_seconds": 0.05
+}
