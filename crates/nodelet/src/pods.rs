@@ -114,6 +114,7 @@ enum ReconcileRequest {
 struct ReconcileWorker {
     id: u64,
     request: Option<ReconcileRequest>,
+    latest: Option<ReconcileRequest>,
     cancel: Arc<WorkerCancellation>,
     running: bool,
 }
@@ -138,9 +139,10 @@ struct ReconcileWorkers {
     active: Mutex<HashMap<String, ReconcileWorker>>,
     pending: Mutex<VecDeque<(String, u64)>>,
     running: AtomicU64,
+    max_concurrent: u64,
 }
 
-const MAX_CONCURRENT_RECONCILES: u64 = 16;
+const MAX_CONCURRENT_RECONCILES_CAP: u64 = 16;
 
 impl ReconcileWorkers {
     fn new() -> Self {
@@ -149,8 +151,19 @@ impl ReconcileWorkers {
             active: Mutex::new(HashMap::new()),
             pending: Mutex::new(VecDeque::new()),
             running: AtomicU64::new(0),
+            max_concurrent: max_concurrent_reconciles(),
         }
     }
+}
+
+fn max_concurrent_reconciles() -> u64 {
+    if let Ok(value) = std::env::var("NODELET_MAX_CONCURRENT_RECONCILES") {
+        if let Ok(value) = value.parse::<u64>() {
+            return value.clamp(1, MAX_CONCURRENT_RECONCILES_CAP);
+        }
+    }
+    let cpus = std::thread::available_parallelism().map_or(1, |count| count.get() as u64);
+    cpus.saturating_mul(2).clamp(2, MAX_CONCURRENT_RECONCILES_CAP)
 }
 
 impl Clone for PodController {
@@ -402,6 +415,16 @@ impl PodController {
     /// accepted for this namespace/name. Kubernetes resource versions are
     /// decimal etcd revisions in this implementation; if an implementation
     /// supplies a non-numeric version, there is no safe ordering comparison.
+    fn pod_uid_changed(&self, pod: &Pod) -> bool {
+        let Some((namespace, name)) = key_parts(pod) else { return false };
+        let Some(uid) = pod.metadata.uid.as_deref() else { return false };
+        self.observed_pods
+            .lock()
+            .unwrap()
+            .get(&pod_key(&namespace, &name))
+            .is_some_and(|previous| previous.uid != uid)
+    }
+
     fn observe_watch_pod(&self, pod: &Pod) -> bool {
         let Some((namespace, name)) = key_parts(pod) else { return true };
         let Some(uid) = pod.metadata.uid.clone() else { return true };
@@ -424,29 +447,53 @@ impl PodController {
     }
 
     /// Enqueue the newest desired Pod state without waiting for runtime or
-    /// apiserver I/O. One worker owns a key at a time; a newer event cancels
-    /// and replaces older queued or running work for that key.
+    /// apiserver I/O. One worker owns a key at a time; ordinary updates are
+    /// coalesced behind an in-flight operation, while UID replacement uses
+    /// the cancellation path below.
     fn enqueue_pod_reconcile(&self, pod: Pod) {
         let Some((namespace, name)) = key_parts(&pod) else { return };
-        self.enqueue_reconcile_request(pod_key(&namespace, &name), ReconcileRequest::Pod(pod));
+        self.enqueue_reconcile_request(pod_key(&namespace, &name), ReconcileRequest::Pod(pod), false);
+    }
+
+    fn enqueue_pod_reconcile_replacing(&self, pod: Pod) {
+        let Some((namespace, name)) = key_parts(&pod) else { return };
+        self.enqueue_reconcile_request(pod_key(&namespace, &name), ReconcileRequest::Pod(pod), true);
     }
 
     /// Runtime and probe events carry only a key. Let that Pod's worker fetch
     /// the latest object, rather than blocking the watch loop on a GET.
     fn enqueue_runtime_reconcile(&self, key: String) {
         if key.split_once('/').is_some() {
-            self.enqueue_reconcile_request(key, ReconcileRequest::Refresh);
+            self.enqueue_reconcile_request(key, ReconcileRequest::Refresh, false);
         }
     }
 
-    fn enqueue_reconcile_request(&self, key: String, request: ReconcileRequest) {
+    /// Queue a request for one Pod. Normal events never cancel a running CRI
+    /// mutation: they replace a queued request or become the single latest
+    /// request to run after the current operation. Only deletion and UID
+    /// replacement pass `cancel_running=true`, because continuing work for
+    /// the old object could mutate the replacement Pod.
+    fn enqueue_reconcile_request(&self, key: String, request: ReconcileRequest, cancel_running: bool) {
         {
             let mut active = self.reconcile_workers.active.lock().unwrap();
-            // A newer event supersedes both queued and running work for this
-            // key. Cancellation makes stale API/CRI work stop promptly; the
-            // replacement is appended at the current FIFO position.
-            if let Some(stale) = active.remove(&key) {
-                stale.cancel.cancel();
+            if cancel_running {
+                if let Some(stale) = active.remove(&key) {
+                    stale.cancel.cancel();
+                }
+            } else if let Some(worker) = active.get_mut(&key) {
+                if worker.running {
+                    // Do not abort an in-flight CRI mutation for an ordinary
+                    // status/runtime event. Keep only the newest follow-up;
+                    // it will be appended to the FIFO queue when this run
+                    // completes.
+                    worker.latest = Some(request);
+                    return;
+                } else {
+                    // A queued worker has not started I/O yet, so replacing
+                    // its request preserves its existing FIFO position.
+                    worker.request = Some(request);
+                    return;
+                }
             }
             self.insert_reconcile_worker(&mut active, key, request);
         }
@@ -466,6 +513,7 @@ impl PodController {
             ReconcileWorker {
                 id,
                 request: Some(request),
+                latest: None,
                 cancel,
                 running: false,
             },
@@ -481,7 +529,7 @@ impl PodController {
             let next = {
                 let mut active = self.reconcile_workers.active.lock().unwrap();
                 let mut pending = self.reconcile_workers.pending.lock().unwrap();
-                if self.reconcile_workers.running.load(Ordering::Acquire) >= MAX_CONCURRENT_RECONCILES {
+                if self.reconcile_workers.running.load(Ordering::Acquire) >= self.reconcile_workers.max_concurrent {
                     None
                 } else {
                     let mut next = None;
@@ -546,11 +594,17 @@ impl PodController {
     fn finish_reconcile_worker(&self, key: &str, id: u64) {
         self.reconcile_workers.running.fetch_sub(1, Ordering::AcqRel);
         let mut active = self.reconcile_workers.active.lock().unwrap();
-        let _pending = self.reconcile_workers.pending.lock().unwrap();
+        let mut _pending = self.reconcile_workers.pending.lock().unwrap();
         let mut remove = false;
         if let Some(worker) = active.get_mut(key) {
             if worker.id == id {
-                remove = true;
+                if let Some(latest) = worker.latest.take() {
+                    worker.request = Some(latest);
+                    worker.running = false;
+                    pending.push_back((key.to_string(), id));
+                } else {
+                    remove = true;
+                }
             }
         }
         if remove {
@@ -995,6 +1049,7 @@ impl PodController {
     fn on_watch(&self, ev: Event<Pod>) {
         match ev {
             Event::Apply(pod) | Event::InitApply(pod) => {
+                let uid_replaced = self.pod_uid_changed(&pod);
                 if self.observe_watch_pod(&pod) {
                     let key = key_parts(&pod).map(|(namespace, name)| pod_key(&namespace, &name));
                     if pod.metadata.deletion_timestamp.is_some() {
@@ -1003,7 +1058,11 @@ impl PodController {
                         }
                         self.spawn_teardown(pod);
                     } else {
-                        self.enqueue_pod_reconcile(pod);
+                        if uid_replaced {
+                            self.enqueue_pod_reconcile_replacing(pod);
+                        } else {
+                            self.enqueue_pod_reconcile(pod);
+                        }
                     }
                 }
             }
