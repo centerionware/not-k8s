@@ -16,14 +16,16 @@ size=$(stat -c %s "$archive")
     exit 1
 }
 gh auth setup-git
+stamp="$(date -u +%Y-%m-%d_%H-%M-%S)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-stack"
 if git ls-remote --exit-code --heads "https://github.com/$GITHUB_REPOSITORY.git" profiling-results >/dev/null; then
-    git clone --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" "$work/results"
+    git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" "$work/results"
+    git -C "$work/results" sparse-checkout set --no-cone /README.md /latest-stack.md "/history/$stamp/"
+    git -C "$work/results" checkout profiling-results
 else
     git init "$work/results"
     git -C "$work/results" checkout --orphan profiling-results
     git -C "$work/results" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
 fi
-stamp="$(date -u +%Y-%m-%d_%H-%M-%S)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-stack"
 dest="$work/results/history/$stamp"
 mkdir -p "$dest"
 split -b 48M -d -a 3 "$archive" "$dest/profile.tar.gz.part-"

@@ -9,8 +9,10 @@ backend=${3:-}
 case "$mode:$backend" in leg:notk8s|leg:k8s|leg:k3s|report:) ;; *) exit 2 ;; esac
 work=$(mktemp -d)
 gh auth setup-git
-git clone --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" "$work/results"
 relative="comparisons/$GITHUB_RUN_ID-${GITHUB_RUN_ATTEMPT:-1}"
+git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" "$work/results"
+git -C "$work/results" sparse-checkout set --no-cone "/$relative/" /latest-comparison.md
+git -C "$work/results" checkout profiling-results
 dest="$work/results/$relative"
 if [[ "$mode" == leg ]]; then
     mkdir -p "$dest/$backend"

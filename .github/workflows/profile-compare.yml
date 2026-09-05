@@ -138,7 +138,9 @@ jobs:
         run: |
           set -euo pipefail
           gh auth setup-git
-          git clone --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" profile-results
+          git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" profile-results
+          git -C profile-results sparse-checkout set --no-cone "/comparisons/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/"
+          git -C profile-results checkout profiling-results
           python3 -m pip install --quiet --break-system-packages matplotlib numpy
           python3 deploy/render-profile-comparison.py --input "profile-results/comparisons/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --output comparison-report
       - name: Publish README with embedded charts
