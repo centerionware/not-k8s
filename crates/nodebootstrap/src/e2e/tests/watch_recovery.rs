@@ -22,8 +22,18 @@ pub(super) async fn paginated_list_watch_preserves_concurrent_updates(context: &
         maps.create(&PostParams::default(), &map).await?;
     }
     let params = ListParams::default().labels("snapshot-test=yes").limit(1);
-    let first = maps.list(&params).await?;
-    let revision = first.metadata.resource_version.context("first page missing resourceVersion")?;
+    let mut first = maps.list(&params).await?;
+    let revision = first.metadata.resource_version.clone().context("first page missing resourceVersion")?;
+    // Storage pagination may return an empty filtered page (for example the
+    // namespace's kube-root-ca.crt). Follow its token rather than treating
+    // that valid response as a failure or skipping the snapshot check.
+    while first.items.is_empty() {
+        let token = first.metadata.continue_.as_deref().filter(|token| !token.is_empty())
+            .context("LIST ended before any test ConfigMap")?;
+        first = maps.list(&params.clone().continue_token(token)).await?;
+        anyhow::ensure!(first.metadata.resource_version.as_deref() == Some(revision.as_str()),
+            "LIST snapshot advanced while following an empty filtered page");
+    }
     anyhow::ensure!(first.items.len() == 1, "expected one object on the first page");
     let changed_name = first.items[0].metadata.name.as_deref().context("first item missing name")?;
     let changed = maps.patch(changed_name, &PatchParams::default(),
