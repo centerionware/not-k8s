@@ -1,0 +1,20 @@
+name: Profiling script checks
+on:
+  pull_request:
+    paths:
+      - 'deploy/*profil*.py'
+      - 'deploy/*profil*.sh'
+      - 'deploy/lib/render-perf.sh'
+      - '.github/workflows/*profil*.yml'
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: bash -n deploy/profile-process.sh deploy/lib/render-perf.sh deploy/publish-stack-profile.sh
+      - run: python3 -B deploy/test-profile-stack.py

@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Bounded, single-node diagnostic workload and simultaneous component captures.
+
+Run only against a disposable profiling cluster. No third-party Python packages.
+This is a repeatable workload sample, not Kubernetes conformance or a throughput
+benchmark. The load generator and perf themselves consume runner resources.
+"""
+import argparse
+import concurrent.futures
+import csv
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import threading
+import time
+
+COMPONENTS = ("nodestore", "nodeapiserver", "nodescheduler", "nodecontroller", "nodelet", "nodeproxy")
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def component_name(argv):
+    if not argv:
+        return None
+    name = Path(argv[0]).name
+    if name == "notk8s" and len(argv) > 1:
+        name = argv[1]
+    return name if name in COMPONENTS else None
+
+
+def counters(pid):
+    # comm may contain spaces and parentheses; split after its final ')'.
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+    ticks = int(fields[11]) + int(fields[12])
+    rss = int(fields[21]) * os.sysconf("SC_PAGE_SIZE") // 1024
+    pss = None
+    try:
+        for line in Path(f"/proc/{pid}/smaps_rollup").read_text().splitlines():
+            if line.startswith("Pss:"):
+                pss = int(line.split()[1])
+    except (PermissionError, FileNotFoundError):
+        pass
+    return ticks, rss, pss, fields[19]
+
+
+def processes():
+    found = {name: [] for name in COMPONENTS}
+    for path in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            argv = path.read_bytes().decode(errors="replace").rstrip("\0").split("\0")
+            name = component_name(argv)
+            if name:
+                found[name].append(int(path.parent.name))
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+    bad = {name: pids for name, pids in found.items() if len(pids) != 1}
+    if bad:
+        raise RuntimeError(f"expected exactly one process per component, found {bad}")
+    return {name: pids[0] for name, pids in found.items()}
+
+
+class Workload:
+    def __init__(self, output, replicas, workers):
+        self.output, self.replicas, self.workers = output, replicas, workers
+        self.namespace = f"nk-profile-{os.getpid()}-{time.time_ns():x}"
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.events = []
+
+    def kubectl(self, *args, body=None, timeout=45):
+        started = time.monotonic()
+        command = ["kubectl", "--request-timeout=30s", "-n", self.namespace, *args]
+        result = subprocess.run(command, input=json.dumps(body) if body else None,
+                                text=True, capture_output=True, timeout=timeout)
+        with self.lock:
+            self.events.append({"time": time.time(), "operation": list(args),
+                                "seconds": time.monotonic() - started,
+                                "exit_code": result.returncode, "error": result.stderr[-2000:]})
+        if result.returncode:
+            raise RuntimeError(f"kubectl {args}: {result.stderr}")
+        return result.stdout
+
+    def setup(self):
+        self.kubectl("create", "namespace", self.namespace)
+        image = "busybox:1.37.0"
+        server = {"apiVersion": "apps/v1", "kind": "Deployment",
+                  "metadata": {"name": "profile-server"}, "spec": {
+                      "replicas": self.replicas, "selector": {"matchLabels": {"app": "profile-server"}},
+                      "template": {"metadata": {"labels": {"app": "profile-server"}}, "spec": {
+                          "containers": [{"name": "http", "image": image,
+                              "command": ["sh", "-c", "mkdir -p /www; echo profiling >/www/index.html; exec httpd -f -p 8080 -h /www"],
+                              "readinessProbe": {"httpGet": {"path": "/", "port": 8080}},
+                              "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}}}]}}}}
+        service = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "profile-server"},
+                   "spec": {"selector": {"app": "profile-server"}, "ports": [{"port": 8080, "targetPort": 8080}]}}
+        self.kubectl("apply", "-f", "-", body={"apiVersion": "v1", "kind": "List", "items": [server, service]})
+        self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=180s", timeout=190)
+
+    def start_client(self):
+        client = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "profile-client"},
+                  "spec": {"restartPolicy": "Never", "containers": [{"name": "traffic", "image": "busybox:1.37.0",
+                      "command": ["sh", "-c", "while true; do wget -q -O /dev/null http://profile-server:8080/ || exit 1; echo request-ok; sleep 0.2; done"],
+                      "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}}}]}}
+        self.kubectl("create", "-f", "-", body=client)
+        self.kubectl("wait", "pod/profile-client", "--for=condition=Ready", "--timeout=90s", timeout=100)
+
+    def api_worker(self, worker):
+        counter = 0
+        while not self.stop.is_set():
+            name = f"profile-config-{worker}"
+            self.kubectl("create", "configmap", name, f"--from-literal=counter={counter}")
+            self.kubectl("get", "configmaps", "-o", "name")
+            self.kubectl("patch", "configmap", name, "--type=merge", "-p", json.dumps({"data": {"counter": str(counter + 1)}}))
+            self.kubectl("delete", "configmap", name, "--wait=false")
+            counter += 1
+            self.stop.wait(1)
+
+    def scale_worker(self):
+        extra = True
+        while not self.stop.wait(15):
+            self.kubectl("scale", "deployment/profile-server", f"--replicas={self.replicas + int(extra)}")
+            extra = not extra
+
+    def save(self):
+        (self.output / "workload-operations.json").write_text(json.dumps(self.events, indent=2))
+
+
+def capture(output, phase, duration):
+    phase_dir = output / phase
+    phase_dir.mkdir()
+    pids = processes()
+    baseline = {name: counters(pid) for name, pid in pids.items()}
+    identity = {name: {"pid": pid, "exe": os.readlink(f"/proc/{pid}/exe"),
+                       "start_ticks": baseline[name][3]} for name, pid in pids.items()}
+    (phase_dir / "processes.json").write_text(json.dumps(identity, indent=2))
+    captures = []
+    env = dict(os.environ, PROFILE_EVENT="cpu-clock", PROFILE_FREQUENCY="49",
+               PROFILE_CALL_GRAPH="fp", PROFILE_CAPTURE_ONLY="1", PROFILE_REQUIRE_PERF="1")
+    try:
+        for name, pid in pids.items():
+            log = (phase_dir / f"{name}-capture.log").open("w")
+            proc = subprocess.Popen(["bash", str(ROOT / "deploy/profile-process.sh"), "--pid", str(pid),
+                                     "--label", name, "--duration", str(duration),
+                                     "--output", str(phase_dir / name)], env=env, stdout=log,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            captures.append((proc, log))
+        started = time.monotonic()
+        previous = baseline.copy()
+        previous_time = started
+        with (phase_dir / "timeseries.csv").open("w") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["elapsed_seconds", "component", "pid", "cpu_seconds", "cpu_pct_one_core", "rss_kib", "pss_kib"])
+            while time.monotonic() - started < duration:
+                time.sleep(1)
+                now = time.monotonic()
+                for name, pid in pids.items():
+                    current = counters(pid)
+                    if current[3] != baseline[name][3]:
+                        raise RuntimeError(f"{name} restarted during {phase}; sample invalid")
+                    delta = (current[0] - previous[name][0]) / os.sysconf("SC_CLK_TCK")
+                    total = (current[0] - baseline[name][0]) / os.sysconf("SC_CLK_TCK")
+                    writer.writerow([now - started, name, pid, total, 100 * delta / (now - previous_time), current[1], current[2]])
+                    previous[name] = current
+                stream.flush()
+                previous_time = now
+        for proc, _ in captures:
+            if proc.wait(timeout=30):
+                raise RuntimeError(f"perf capture failed during {phase}; see capture logs")
+    finally:
+        for proc, log in captures:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGINT)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
+            log.close()
+
+
+def run(args):
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    workload = Workload(output, args.replicas, args.workers)
+    watcher = None
+    watch_log = None
+    try:
+        workload.setup()
+        capture(output, "idle", args.seconds)
+        workload.start_client()
+        watch_log = (output / "watch-events.txt").open("w")
+        watcher = subprocess.Popen(["kubectl", "-n", workload.namespace, "get", "configmaps", "--watch-only"],
+                                   stdout=watch_log, stderr=subprocess.STDOUT)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers + 1) as pool:
+            futures = [pool.submit(workload.api_worker, i) for i in range(args.workers)]
+            futures.append(pool.submit(workload.scale_worker))
+            try:
+                capture(output, "load", args.seconds)
+            finally:
+                workload.stop.set()
+            for future in futures:
+                future.result()
+        if watcher.poll() is not None:
+            raise RuntimeError("ConfigMap watch exited during load")
+        traffic = workload.kubectl("logs", "profile-client")
+        (output / "traffic.txt").write_text(traffic)
+        pod = json.loads(workload.kubectl("get", "pod/profile-client", "-o", "json"))
+        if "request-ok" not in traffic or pod.get("status", {}).get("phase") != "Running":
+            raise RuntimeError("in-cluster HTTP traffic did not remain healthy")
+        (output / "pods.json").write_text(workload.kubectl("get", "pods", "-o", "json"))
+        (output / "workload.json").write_text(json.dumps({"namespace": workload.namespace,
+            "replicas": args.replicas, "api_workers": args.workers, "seconds_per_phase": args.seconds,
+            "http_successes": traffic.count("request-ok")}, indent=2))
+    finally:
+        workload.stop.set()
+        if watcher is not None:
+            watcher.terminate()
+            try:
+                watcher.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                watcher.kill()
+                watcher.wait()
+        if watch_log is not None:
+            watch_log.close()
+        try:
+            workload.kubectl("delete", "namespace", workload.namespace, "--ignore-not-found", "--wait=false")
+        finally:
+            workload.save()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--seconds", type=int, default=120)
+    parser.add_argument("--replicas", type=int, default=3)
+    parser.add_argument("--workers", type=int, default=2)
+    args = parser.parse_args()
+    if not 30 <= args.seconds <= 600 or not 1 <= args.replicas <= 10 or not 1 <= args.workers <= 4:
+        parser.error("seconds: 30..600; replicas: 1..10; workers: 1..4")
+    run(args)
+
+
+if __name__ == "__main__":
+    main()

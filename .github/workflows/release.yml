@@ -9,6 +9,11 @@ name: Release pipeline
 on:
   workflow_dispatch:
     inputs:
+      profile_after_release:
+        description: 'After publication, run one symbolized full-stack load profile'
+        required: false
+        default: true
+        type: boolean
       skip_e2e:
         description: 'Skip e2e only when a separate full e2e run already passed'
         required: false
@@ -22,6 +27,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  profile-release:
+    needs: publish-release
+    if: ${{ always() && needs.publish-release.result == 'success' && inputs.profile_after_release }}
+    uses: ./.github/workflows/profile-stack.yml
+    with:
+      source_ref: ${{ needs.publish-release.outputs.tag }}
+      build_profile: profiling
+      sample_seconds: '120'
+    secrets: inherit
+
   prepare-e2e-results:
     if: ${{ !inputs.skip_e2e }}
     runs-on: ubuntu-latest
@@ -534,6 +549,8 @@ jobs:
           retention-days: 1
 
   publish-release:
+    outputs:
+      tag: v${{ steps.version.outputs.version }}
     # `build-release` can intentionally run after the e2e dependency was
     # skipped by the manual skip_e2e gate. An explicit always() is required
     # here so that GitHub does not propagate that skipped ancestor into this

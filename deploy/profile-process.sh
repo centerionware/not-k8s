@@ -33,6 +33,8 @@ OUT_DIR=""
 STOP_FILE=""
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FG_DIR="$REPO_ROOT/.bootstrap/flamegraph-tools"
+FG_DIR="${FLAMEGRAPH_DIR:-$FG_DIR}"
+FG_REVISION=41fee1f99f9276008b7cd112fca19dc3ea84ac32
 
 usage() {
     cat <<'EOF'
@@ -130,7 +132,7 @@ ensure_flamegraph_toolkit() {
         if [[ ! -s "$FG_DIR/$f" ]]; then
             echo "==> fetching $f (FlameGraph toolkit, one-time)..."
             curl -sfL -o "$FG_DIR/$f" \
-                "https://raw.githubusercontent.com/brendangregg/FlameGraph/master/$f" \
+                "https://raw.githubusercontent.com/brendangregg/FlameGraph/$FG_REVISION/$f" \
                 || { echo "failed to fetch $f from raw.githubusercontent.com" >&2; return 1; }
         fi
     done
@@ -178,15 +180,21 @@ capture_with_perf() {
 
     echo "==> perf available; recording DWARF call stacks"
     rm -f "$perf_data"
-    run_perf_record "$perf_data" -F 99 --call-graph dwarf -p "$PID" \
+    run_perf_record "$perf_data" -e "${PROFILE_EVENT:-cycles}" -F "${PROFILE_FREQUENCY:-99}" --call-graph "${PROFILE_CALL_GRAPH:-dwarf}" -p "$PID" \
         > "$OUT_DIR/perf-record.txt" 2>&1
-    if [[ ! -s "$perf_data" ]]; then
+    local record_status=$?
+    if [[ "$record_status" -ne 0 || ! -s "$perf_data" ]]; then
+        [[ "${PROFILE_REQUIRE_PERF:-0}" != 1 ]] || return 1
         echo "DWARF call-graph capture failed; retrying with frame-pointer stacks" >> "$OUT_DIR/perf-record.txt"
         rm -f "$perf_data"
-        run_perf_record "$perf_data" -F 99 -g -p "$PID" \
+        run_perf_record "$perf_data" -e "${PROFILE_EVENT:-cycles}" -F "${PROFILE_FREQUENCY:-99}" -g -p "$PID" \
             >> "$OUT_DIR/perf-record.txt" 2>&1
+        [[ $? -eq 0 ]] || return 1
     fi
     [[ -s "$perf_data" ]] || return 1
+    PROFILE_METHOD="perf"
+    # A stack-wide caller renders separately after all captures complete.
+    [[ "${PROFILE_CAPTURE_ONLY:-0}" != 1 ]] || return 0
 
     # --no-inline on every perf report/script call below, deliberately.
     # Found live: perf's default inline-frame resolution shells out to
@@ -261,6 +269,10 @@ summarize_strace() {
 
 PROFILE_METHOD="none"
 if ! capture_with_perf; then
+    if [[ "${PROFILE_REQUIRE_PERF:-0}" == 1 ]]; then
+        echo "perf capture failed; refusing to label fallback data a CPU profile" >&2
+        exit 1
+    fi
     if ! capture_with_strace; then
         echo "WARNING: neither perf nor strace is available/usable; sleeping for the sample window." >&2
         sleep "$DURATION"

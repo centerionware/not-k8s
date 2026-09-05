@@ -1,4 +1,4 @@
-name: Profiling — nodelet vs a real upstream kubelet (same control plane)
+name: Profiling — comparison or full-stack load
 
 # Manual trigger only, same conservative posture as e2e.yml — this job is
 # slow and its numbers are only meaningful once things have settled, not
@@ -52,6 +52,24 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Legacy nodelet/kubelet comparison or one full-stack load profile'
+        type: choice
+        options: [comparison, stack]
+        default: comparison
+      source_ref:
+        description: 'Stack mode: branch, tag, or SHA to build (empty uses this workflow ref)'
+        type: string
+        default: ''
+      build_profile:
+        description: 'Stack mode: optimized with symbols, or debug for diagnosis only'
+        type: choice
+        options: [profiling, debug]
+        default: profiling
+      archive_limit_mib:
+        description: 'Stack mode: maximum compressed bundle size; fail rather than omit data'
+        type: string
+        default: '512'
       sample_seconds:
         description: "Sample window in seconds, 1 sample/sec (e.g. 120 for 2m, 300 for 5m, 600 for 10m)"
         required: false
@@ -72,7 +90,18 @@ env:
   SAMPLE_SECS: ${{ inputs.sample_seconds }}
 
 jobs:
+  stack:
+    if: inputs.mode == 'stack'
+    uses: ./.github/workflows/profile-stack.yml
+    with:
+      source_ref: ${{ inputs.source_ref || github.sha }}
+      build_profile: ${{ inputs.build_profile }}
+      sample_seconds: ${{ inputs.sample_seconds }}
+      archive_limit_mib: ${{ inputs.archive_limit_mib }}
+    secrets: inherit
+
   profile:
+    if: inputs.mode != 'stack'
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +201,10 @@ jobs:
 
   report:
     needs: profile
-    if: always()
+    if: ${{ always() && inputs.mode != 'stack' }}
+    concurrency:
+      group: profiling-results-publisher
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -272,6 +304,7 @@ jobs:
           bash deploy/lib/profiling-report.sh --readme \
             "$COMMIT_SHA" "$RUN_URL" "$STAMP" \
             > "$WORKDIR/README.md"
+          [[ ! -f "$WORKDIR/latest-stack.md" ]] || printf '\n[Latest stack profile](latest-stack.md)\n' >> "$WORKDIR/README.md"
 
           cd "$WORKDIR"
           git add -A
