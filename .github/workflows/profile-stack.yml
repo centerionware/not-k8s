@@ -17,6 +17,9 @@ on:
       archive_limit_mib:
         type: string
         default: '512'
+      workload:
+        type: string
+        default: standard
 
 permissions:
   contents: write
@@ -31,6 +34,7 @@ jobs:
     env:
       PROFILE_BUILD: ${{ inputs.build_profile }}
       PROFILE_SECONDS: ${{ inputs.sample_seconds }}
+      PROFILE_WORKLOAD: ${{ inputs.workload }}
       PROFILE_ARCHIVE_LIMIT_MIB: ${{ inputs.archive_limit_mib }}
       KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
       FLAMEGRAPH_DIR: ${{ github.workspace }}/.bootstrap/flamegraph-tools
@@ -49,6 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$PROFILE_BUILD" in profiling|debug) ;; *) exit 2 ;; esac
+          case "$PROFILE_WORKLOAD" in standard|heavy) ;; *) exit 2 ;; esac
           [[ "$PROFILE_SECONDS" =~ ^[0-9]+$ ]] && (( PROFILE_SECONDS >= 30 && PROFILE_SECONDS <= 600 ))
           [[ "$PROFILE_ARCHIVE_LIMIT_MIB" =~ ^[0-9]+$ ]] && (( PROFILE_ARCHIVE_LIMIT_MIB >= 64 && PROFILE_ARCHIVE_LIMIT_MIB <= 2048 ))
           mkdir -p profile-data/bootstrap
@@ -59,6 +64,7 @@ jobs:
             echo "tooling_sha=$(git rev-parse HEAD)"
             echo "build_profile=$PROFILE_BUILD"
             echo "seconds_per_phase=$PROFILE_SECONDS"
+            echo "workload=$PROFILE_WORKLOAD"
             echo "rustflags=$RUSTFLAGS"
             echo 'sampling=cpu-clock,49Hz,frame-pointers'
             uname -a
@@ -125,7 +131,7 @@ jobs:
         id: capture
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
+          sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
       - name: Preserve diagnostics and render after captures stop
         id: render
         if: ${{ always() && steps.build.outcome == 'success' }}

@@ -17,6 +17,9 @@ on:
       sample_seconds:
         type: string
         default: '120'
+      workload:
+        type: string
+        default: standard
 permissions:
   contents: write
 jobs:
@@ -32,6 +35,7 @@ jobs:
           COMPONENTS: ${{ inputs.components }}
           WHOLE: ${{ inputs.whole_stack }}
           SECONDS_INPUT: ${{ inputs.sample_seconds }}
+          WORKLOAD: ${{ inputs.workload }}
         run: |
           python3 - <<'PY'
           import json, os
@@ -44,6 +48,7 @@ jobs:
           assert selected and len(selected) == len(set(selected)) and set(selected) <= set(names), 'invalid component selection'
           assert not whole or set(selected) == set(names), 'whole-stack requires components=all'
           assert 30 <= int(os.environ['SECONDS_INPUT']) <= 600, 'sample_seconds must be 30..600'
+          assert os.environ['WORKLOAD'] in ('standard', 'heavy'), 'invalid workload preset'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               print('backends=' + json.dumps(['notk8s'] + (['k8s', 'k3s'] if baseline == 'both' else [baseline])), file=out)
               print('components=' + ','.join(selected), file=out)
@@ -59,6 +64,7 @@ jobs:
     env:
       PROFILE_DISPOSABLE_RUNNER: '1'
       PROFILE_SECONDS: ${{ inputs.sample_seconds }}
+      PROFILE_WORKLOAD: ${{ inputs.workload }}
       PROFILE_COMPONENTS: ${{ needs.plan.outputs.components }}
       PROFILE_WHOLE: ${{ inputs.whole_stack }}
       PROFILE_BACKEND: ${{ matrix.backend }}
@@ -106,7 +112,7 @@ jobs:
           kubectl get nodes -o json > profile-data/nodes.json
           kubectl -n kube-system get pods -o json > profile-data/system-pods.json
           # All legs warm up with the same small ready Deployment before idle.
-          args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
+          args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --workload "$PROFILE_WORKLOAD" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
           if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
           sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py "${args[@]}"
           sudo chown -R "$(id -u):$(id -g)" profile-data

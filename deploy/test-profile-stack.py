@@ -19,6 +19,26 @@ CHART_SPEC.loader.exec_module(charts)
 
 
 class ProfileStackTests(unittest.TestCase):
+    def test_heavy_job_requires_completion_and_foreground_gc(self):
+        workload = stack.Workload(Path("unused"), 10, 4, "heavy")
+        calls = []
+        def kubectl(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args[0] == "delete":
+                workload.stop.set()
+        with patch.object(workload, "kubectl", side_effect=kubectl):
+            workload.job_worker()
+        self.assertEqual(calls[0][1]["body"]["kind"], "Job")
+        self.assertIn("--for=condition=Complete", calls[1][0])
+        self.assertIn("--cascade=foreground", calls[2][0])
+        self.assertIn("--wait=true", calls[2][0])
+
+    def test_heavy_job_failure_cannot_be_reported_as_completed_work(self):
+        workload = stack.Workload(Path("unused"), 10, 4, "heavy")
+        with patch.object(workload, "kubectl", side_effect=["", RuntimeError("Job never completed")]):
+            with self.assertRaisesRegex(RuntimeError, "Job never completed"):
+                workload.job_worker()
+
     def test_upstream_mapping_and_k3s_monolith(self):
         for component, upstream in stack.UPSTREAM.items():
             self.assertEqual(stack.component_name([f"/usr/bin/{upstream}"], "k8s"), component)

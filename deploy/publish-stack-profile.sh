@@ -35,13 +35,14 @@ while IFS= read -r -d '' file; do
     relative=${file#"$out/"}
     mkdir -p "$dest/$(dirname "$relative")"
     cp "$file" "$dest/$relative"
-done < <(find "$out" -type f \( -name '*.svg' -o -name '*.png' -o -name 'timeseries.csv' -o -name 'SUMMARY.txt' -o -name 'no-samples.txt' -o -name 'workload.json' \) -print0)
+done < <(find "$out" -type f \( -name '*.svg' -o -name '*.png' -o -name 'timeseries.csv' -o -name 'SUMMARY.txt' -o -name 'no-samples.txt' -o -name 'workload.json' -o -name 'workload-config.json' \) -print0)
 cat > "$dest/README.md" <<EOF
 # Stack CPU profile
 
 - Source: \`$PROFILE_SHA\`
 - Run: ${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 - Build: ${PROFILE_BUILD:-unknown}; capture result: ${PROFILE_RESULT:-unknown}
+- Workload: ${PROFILE_WORKLOAD:-standard} (see workload-config.json for parameters)
 - Complete compressed bundle: $size bytes; parts are below GitHub's per-file limit.
 
 This is one single-node diagnostic sample, not conformance, a release performance

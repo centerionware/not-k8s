@@ -84,6 +84,11 @@ on:
         required: false
         default: "120"
         type: string
+      workload:
+        description: 'standard or heavy (10-15 HTTP pods, API churn, completed Jobs and GC)'
+        type: choice
+        options: [standard, heavy]
+        default: standard
 
 permissions:
   contents: write
@@ -107,6 +112,7 @@ jobs:
       baseline: ${{ inputs.baseline }}
       components: ${{ inputs.components }}
       whole_stack: ${{ inputs.mode == 'whole-stack' }}
+      workload: ${{ inputs.workload }}
       sample_seconds: ${{ inputs.sample_seconds }}
     secrets: inherit
 
@@ -118,6 +124,7 @@ jobs:
       build_profile: ${{ inputs.build_profile }}
       sample_seconds: ${{ inputs.sample_seconds }}
       archive_limit_mib: ${{ inputs.archive_limit_mib }}
+      workload: ${{ inputs.workload }}
     secrets: inherit
 
   profile:

@@ -61,6 +61,29 @@ Perf failure is explicit: the stack mode never substitutes strace or sleeping
 for flame graphs. Zero sampled stacks are recorded as `no-samples.txt`, not zero
 CPU. Rendering happens after capture to keep symbolization out of the workload.
 
+### Heavy pre-merge workload
+
+Select `workload=heavy` for a more demanding, bounded single-node simulation:
+10 HTTP replicas scaling to 15 and back (each rollout must converge), four
+ConfigMap CRUD workers with a watch, HTTP/DNS/ClusterIP traffic at up to 20
+requests/second, and repeated real Jobs writing and hashing an emptyDir file.
+Every Job must complete and foreground deletion must finish, exercising
+scheduling, node/container lifecycle, controller status updates, and GC.
+Failures invalidate the result; they are not counted as efficient execution.
+
+```bash
+gh workflow run profiling.yml --ref perf/stack-load-profiling \
+  -f mode=stack -f source_ref=perf/stack-load-profiling \
+  -f workload=heavy -f build_profile=profiling -f sample_seconds=300
+```
+
+The same preset works in component and whole-stack comparison modes; each
+backend receives identical workload settings. `workload-config.json` records
+the parameters even if setup fails. This is heavier than the standard preset,
+not a substitute for production-scale, multi-node, CSI/DRA, or HA testing.
+Inspect completed operations and latency alongside CPU/RSS/PSS; an overloaded
+cluster doing less useful work must not be presented as a performance win.
+
 ## Results and storage
 
 Results go to the existing `profiling-results` branch under

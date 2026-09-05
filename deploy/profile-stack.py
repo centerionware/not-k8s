@@ -79,8 +79,9 @@ def processes(backend="notk8s", selected=COMPONENTS, whole=False):
 
 
 class Workload:
-    def __init__(self, output, replicas, workers):
+    def __init__(self, output, replicas, workers, preset="standard"):
         self.output, self.replicas, self.workers = output, replicas, workers
+        self.preset = preset
         self.namespace = f"nk-profile-{os.getpid()}-{time.time_ns():x}"
         self.stop = threading.Event()
         self.lock = threading.Lock()
@@ -116,9 +117,10 @@ class Workload:
         self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=180s", timeout=190)
 
     def start_client(self):
+        interval = "0.05" if self.preset == "heavy" else "0.2"
         client = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "profile-client"},
                   "spec": {"restartPolicy": "Never", "containers": [{"name": "traffic", "image": "busybox:1.37.0",
-                      "command": ["sh", "-c", "while true; do wget -q -O /dev/null http://profile-server:8080/ || exit 1; echo request-ok; sleep 0.2; done"],
+                      "command": ["sh", "-c", f"while true; do wget -q -O /dev/null http://profile-server:8080/ || exit 1; echo request-ok; sleep {interval}; done"],
                       "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}}}]}}
         self.kubectl("create", "-f", "-", body=client)
         self.kubectl("wait", "pod/profile-client", "--for=condition=Ready", "--timeout=90s", timeout=100)
@@ -132,13 +134,34 @@ class Workload:
             self.kubectl("patch", "configmap", name, "--type=merge", "-p", json.dumps({"data": {"counter": str(counter + 1)}}))
             self.kubectl("delete", "configmap", name, "--wait=false")
             counter += 1
-            self.stop.wait(1)
+            self.stop.wait(0.1 if self.preset == "heavy" else 1)
 
     def scale_worker(self):
         extra = True
-        while not self.stop.wait(15):
-            self.kubectl("scale", "deployment/profile-server", f"--replicas={self.replicas + int(extra)}")
+        while not self.stop.wait(5 if self.preset == "heavy" else 15):
+            burst = 5 if self.preset == "heavy" else 1
+            self.kubectl("scale", "deployment/profile-server", f"--replicas={self.replicas + burst * int(extra)}")
+            if self.preset == "heavy":
+                self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=90s", timeout=100)
             extra = not extra
+
+    def job_worker(self):
+        """Exercise scheduling, container/emptyDir lifecycle, Job status and GC."""
+        counter = 0
+        while not self.stop.is_set():
+            name = f"profile-job-{counter}"
+            job = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name},
+                   "spec": {"backoffLimit": 0, "template": {"spec": {
+                       "restartPolicy": "Never", "volumes": [{"name": "scratch", "emptyDir": {}}],
+                       "containers": [{"name": "work", "image": "busybox:1.37.0",
+                           "command": ["sh", "-ec", "dd if=/dev/zero of=/data/payload bs=1024 count=1024; sha256sum /data/payload"],
+                           "volumeMounts": [{"name": "scratch", "mountPath": "/data"}],
+                           "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}}}]}}}}
+            self.kubectl("create", "-f", "-", body=job)
+            self.kubectl("wait", f"job/{name}", "--for=condition=Complete", "--timeout=90s", timeout=100)
+            self.kubectl("delete", f"job/{name}", "--cascade=foreground", "--wait=true", "--timeout=60s", timeout=70)
+            counter += 1
+            self.stop.wait(1)
 
     def save(self):
         (self.output / "workload-operations.json").write_text(json.dumps(self.events, indent=2))
@@ -201,7 +224,12 @@ def capture(output, phase, duration, backend="notk8s", selected=COMPONENTS, whol
 def run(args):
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    workload = Workload(output, args.replicas, args.workers)
+    workload = Workload(output, args.replicas, args.workers, args.workload)
+    (output / "workload-config.json").write_text(json.dumps({
+        "preset": args.workload, "replicas": args.replicas, "api_workers": args.workers,
+        "seconds_per_phase": args.seconds, "job_churn": args.workload == "heavy",
+        "http_interval_seconds": 0.05 if args.workload == "heavy" else 0.2,
+    }, indent=2))
     watcher = None
     watch_log = None
     try:
@@ -211,9 +239,11 @@ def run(args):
         watch_log = (output / "watch-events.txt").open("w")
         watcher = subprocess.Popen(["kubectl", "-n", workload.namespace, "get", "configmaps", "--watch-only"],
                                    stdout=watch_log, stderr=subprocess.STDOUT)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers + 1) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers + 2) as pool:
             futures = [pool.submit(workload.api_worker, i) for i in range(args.workers)]
             futures.append(pool.submit(workload.scale_worker))
+            if args.workload == "heavy":
+                futures.append(pool.submit(workload.job_worker))
             try:
                 capture(output, "load", args.seconds, args.backend, args.components, args.whole_stack, not args.metrics_only)
             finally:
@@ -230,7 +260,7 @@ def run(args):
         (output / "pods.json").write_text(workload.kubectl("get", "pods", "-o", "json"))
         (output / "workload.json").write_text(json.dumps({"namespace": workload.namespace,
             "backend": args.backend, "components": args.components, "whole_stack": args.whole_stack,
-            "metrics_only": args.metrics_only,
+            "metrics_only": args.metrics_only, "preset": args.workload,
             "replicas": args.replicas, "api_workers": args.workers, "seconds_per_phase": args.seconds,
             "http_successes": traffic.count("request-ok")}, indent=2))
     finally:
@@ -254,13 +284,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--seconds", type=int, default=120)
-    parser.add_argument("--replicas", type=int, default=3)
-    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--workload", choices=("standard", "heavy"), default="standard")
+    parser.add_argument("--replicas", type=int)
+    parser.add_argument("--workers", type=int)
     parser.add_argument("--backend", choices=("notk8s", "k8s", "k3s"), default="notk8s")
     parser.add_argument("--components", default=",".join(COMPONENTS))
     parser.add_argument("--whole-stack", action="store_true")
     parser.add_argument("--metrics-only", action="store_true")
     args = parser.parse_args()
+    args.replicas = args.replicas if args.replicas is not None else (10 if args.workload == "heavy" else 3)
+    args.workers = args.workers if args.workers is not None else (4 if args.workload == "heavy" else 2)
     args.components = tuple(args.components.split(","))
     if not args.components or len(set(args.components)) != len(args.components) or set(args.components) - set(COMPONENTS):
         parser.error("components must be unique canonical not-k8s runtime component names")
