@@ -11,7 +11,7 @@
 
 use crate::probes::{self, HealthMap};
 use crate::runtime::{pod_key, Phase, PodRuntime, RuntimeStatus};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
@@ -265,6 +265,13 @@ const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
 const CNI_SEED_NAME: &str = "nodebootstrap-cni-seed";
 const COREDNS_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const COREDNS_API_TIMEOUT: Duration = Duration::from_secs(5);
+/// A single slow CRI or apiserver call must not stop this controller from
+/// consuming events for every other Pod. In particular, kube-rs clients can
+/// queue an ordinary request behind a long-lived HTTP watch when they share a
+/// transport; the watch clients below prevent the normal case, and this is
+/// the last-resort bound for the cases they cannot prevent (a wedged CRI,
+/// storage, or apiserver request).
+const RECONCILE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Double the delay, up to the ceiling.
 ///
@@ -363,7 +370,7 @@ impl PodController {
                         .and_then(|spec| spec.node_name.as_deref())
                         == Some(&self.node_name) =>
                 {
-                    self.reconcile(seed).await;
+                    self.reconcile_with_timeout(seed).await;
                 }
                 Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
                 Ok(Err(error)) => warn!(?error, "failed to inspect the CNI seed Pod; retrying"),
@@ -412,7 +419,7 @@ impl PodController {
                     status.pod_ip.is_none() || !probe_supervisor_running
                 });
                 if needs_reconcile {
-                    self.reconcile(pod.clone()).await;
+                    self.reconcile_with_timeout(pod.clone()).await;
                     runtime_status = match self.runtime.status(&namespace, &name).await {
                         Ok(status) => status,
                         Err(error) => {
@@ -525,7 +532,24 @@ impl PodController {
         if self.dns_gate_enabled {
             self.wait_for_coredns().await;
         }
-        let api: Api<Pod> = Api::all(self.client.clone());
+        // A kube-rs Client clone shares its underlying tower service. On an
+        // HTTP/1.1 apiserver that can queue normal requests behind a
+        // long-lived watch until the watch's five-minute server timeout. A
+        // projected ServiceAccount token request hit exactly that path in
+        // live CI: RunPodSandbox completed immediately, but the TokenRequest
+        // was not received by the apiserver for 4m50s, blocking this whole
+        // serial event loop. Give every long-lived watch its own transport;
+        // the regular client remains available for reconcile/status traffic.
+        let pod_watch_client = kube::Client::try_default()
+            .await
+            .context("building the Pod watch client")?;
+        let cm_watch_client = kube::Client::try_default()
+            .await
+            .context("building the ConfigMap watch client")?;
+        let sec_watch_client = kube::Client::try_default()
+            .await
+            .context("building the Secret watch client")?;
+        let api: Api<Pod> = Api::all(pod_watch_client);
         let wc = watcher::Config::default()
             .fields(&format!("spec.nodeName={}", self.node_name));
         // .backoff() on every one of these — see WatchBackoffPolicy's own
@@ -550,10 +574,10 @@ impl PodController {
         // for exactly this case (`Api<PartialObjectMeta<K>>` requests and
         // decodes only `ObjectMeta`, not the whole object) — this crate's
         // own reference-tracking never needed the body at all.
-        let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(self.client.clone());
+        let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(cm_watch_client);
         let mut cm_stream =
             watcher(cm_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
-        let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(self.client.clone());
+        let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(sec_watch_client);
         let mut sec_stream =
             watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
@@ -690,7 +714,7 @@ impl PodController {
                 }
             };
             info!(pod = %format!("{namespace}/{pod_name}"), namespace, name, ?kind, "re-materializing volumes after referenced object changed");
-            self.reconcile(pod).await;
+            self.reconcile_with_timeout(pod).await;
         }
     }
 
@@ -698,7 +722,7 @@ impl PodController {
         match ev {
             Event::Apply(pod) | Event::InitApply(pod) => {
                 if self.observe_watch_pod(&pod) {
-                    self.reconcile(pod).await;
+                    self.reconcile_with_timeout(pod).await;
                 }
             }
             Event::Delete(pod) => {
@@ -713,6 +737,25 @@ impl PodController {
                 }
             }
             Event::Init | Event::InitDone => {}
+        }
+    }
+
+    /// Keep a stalled API/CRI operation from blocking all later watch events.
+    ///
+    /// The watch event has already been consumed when this returns, so a
+    /// timeout must schedule a retry rather than simply dropping the pod.
+    async fn reconcile_with_timeout(&self, pod: Pod) {
+        let Some((ns, name)) = key_parts(&pod) else { return };
+        match tokio::time::timeout(RECONCILE_TIMEOUT, self.reconcile(pod)).await {
+            Ok(()) => {}
+            Err(_) => {
+                warn!(
+                    pod = %format!("{ns}/{name}"),
+                    timeout_secs = RECONCILE_TIMEOUT.as_secs(),
+                    "pod reconcile timed out; continuing event loop"
+                );
+                self.schedule_retry(ns, name);
+            }
         }
     }
 
@@ -1107,7 +1150,7 @@ impl PodController {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
         debug!(target: "nk_watch_trace", pod = %key, "runtime event fetching current Pod");
         match api.get_opt(name).await {
-            Ok(Some(p)) => self.reconcile(p).await,
+            Ok(Some(p)) => self.reconcile_with_timeout(p).await,
             Ok(None) => debug!(pod = %key, "pod gone; skipping status write"),
             Err(e) => warn!(pod = %key, error = ?e, "get_opt failed"),
         }
