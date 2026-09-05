@@ -27,7 +27,11 @@ use std::sync::OnceLock;
 
 const OPERATION_METHODS: [&str; 8] = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
 
-pub const V2_PROTOBUF_CONTENT_TYPE: &str = "application/com.github.proto-openapi.spec.v2@v1.0+protobuf";
+// client-go still sends the historical '@' spelling in Accept, but that
+// spelling is not a valid response MIME subtype. Match kube-openapi's
+// handler: accept either spelling and always return the standards-safe one.
+pub const V2_PROTOBUF_CONTENT_TYPE: &str = "application/com.github.proto-openapi.spec.v2.v1.0+protobuf";
+pub const V2_PROTOBUF_LEGACY_ACCEPT: &str = "application/com.github.proto-openapi.spec.v2@v1.0+protobuf";
 
 /// `None` means no supported representation. JSON remains the default;
 /// explicit exclusions take precedence over wildcard media ranges.
@@ -43,7 +47,7 @@ pub fn negotiate_v2(accept: Option<&str>) -> Option<bool> {
                 "*/*" => 0,
                 "application/*" => 1,
                 "application/json" if !protobuf => 2,
-                V2_PROTOBUF_CONTENT_TYPE | "application/com.github.proto-openapi.spec.v2.v1.0+protobuf" if protobuf => 2,
+                V2_PROTOBUF_CONTENT_TYPE | V2_PROTOBUF_LEGACY_ACCEPT if protobuf => 2,
                 _ => continue,
             };
             let quality = parts.find_map(|part| part.trim().strip_prefix("q=")).map_or(Some(1.0), |q| q.parse::<f32>().ok())

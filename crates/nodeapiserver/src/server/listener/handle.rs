@@ -174,11 +174,13 @@ async fn handle(
         };
         match route_discovery(&parts, accept_header, &crds, &aggregated) {
             DiscoveryRoute::Found(doc) => {
-                return Ok(json_response_with_content_type(
+                let mut response = json_response_with_content_type(
                     StatusCode::OK,
                     &doc,
                     discovery_content_type(&parts, accept_header),
-                ));
+                );
+                response.headers_mut().insert("Vary", hyper::header::HeaderValue::from_static("Accept"));
+                return Ok(response);
             }
             DiscoveryRoute::FoundRaw(bytes) => {
                 return Ok(Response::builder()

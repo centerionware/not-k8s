@@ -1131,6 +1131,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_readiness_does_not_wait_for_liveness_delay",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_liveness_probe_failure_restarts_the_container",
         group: TestGroup::General,
     },
@@ -2511,6 +2515,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_readiness_probe_gates_ready_condition" => {
             probes::readiness_probe_gates_ready_condition(context).await
+        }
+        "test_readiness_does_not_wait_for_liveness_delay" => {
+            probes::readiness_does_not_wait_for_liveness_delay(context).await
         }
         "test_liveness_probe_failure_restarts_the_container" => {
             probes::liveness_probe_failure_restarts_container(context).await

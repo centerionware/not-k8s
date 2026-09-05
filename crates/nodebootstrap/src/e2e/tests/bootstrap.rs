@@ -970,6 +970,18 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
 pub(super) async fn kubectl_apply_uses_openapi_schema(context: &E2eContext) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
+    // Newer kubectl can prefer v3 and miss a broken v2 response header.
+    // Check the legacy client-go request explicitly, independent of the
+    // installed kubectl version. '@' is accepted but must never be emitted.
+    for accept in ["application/com.github.proto-openapi.spec.v2@v1.0+protobuf",
+                   "application/com.github.proto-openapi.spec.v2.v1.0+protobuf"] {
+        let response = context.client.send(Request::builder().uri("/openapi/v2")
+            .header("Accept", accept).body(kube::client::Body::from(Vec::new()))?).await?;
+        anyhow::ensure!(response.status().is_success(), "OpenAPI v2 request failed: {}", response.status());
+        anyhow::ensure!(response.headers().get("Content-Type").and_then(|v| v.to_str().ok())
+            == Some("application/com.github.proto-openapi.spec.v2.v1.0+protobuf"),
+            "OpenAPI v2 must return the valid MIME subtype, not the legacy Accept spelling");
+    }
     let cfg = crate::config::Config::from_env()?;
     let kubeconfig = std::env::var_os("KUBECONFIG")
         .map(PathBuf::from)

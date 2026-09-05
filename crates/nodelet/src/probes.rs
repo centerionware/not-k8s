@@ -495,23 +495,15 @@ async fn probe_container(
         return;
     }
 
-    let period = [liveness.as_ref().map(|(t, _)| t.period), readiness.as_ref().map(|(t, _)| t.period)]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(Duration::from_secs(10));
-    let initial_delay = [liveness.as_ref().map(|(t, _)| t.initial_delay), readiness.as_ref().map(|(t, _)| t.initial_delay)]
-        .into_iter()
-        .flatten()
-        .max()
-        .unwrap_or_default();
-    tokio::time::sleep(initial_delay).await;
-
-    let mut live_tracker = liveness.as_ref().map(|(_, _)| ProbeTracker::new(true));
-    let mut ready_tracker = readiness.as_ref().map(|(_, _)| ProbeTracker::new(false));
-
-    loop {
-        if let (Some((t, check)), Some(tracker)) = (&liveness, &mut live_tracker) {
+    // Each probe owns its delay, period and in-flight check. In particular,
+    // CoreDNS's 60s liveness grace must not postpone its readiness check.
+    // Join within this container's task so aborting it cancels both futures;
+    // neither becomes a detached task that survives Pod deletion.
+    let live_loop = async {
+        let Some((t, check)) = &liveness else { return };
+        tokio::time::sleep(t.initial_delay).await;
+        let mut tracker = ProbeTracker::new(true);
+        loop {
             let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
             let was_passing = tracker.passing;
             tracker.record(ok, t.success_threshold, t.failure_threshold);
@@ -519,10 +511,16 @@ async fn probe_container(
                 let grace = probe_grace_period_seconds(container.liveness_probe.as_ref().unwrap(), pod_grace_period_seconds);
                 warn!(pod = %key, container = %cname, grace_period_seconds = grace, "liveness probe failed; restarting container");
                 restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
-                *tracker = ProbeTracker::new(true); // give the fresh container a clean slate
+                tracker = ProbeTracker::new(true); // give the fresh container a clean slate
             }
+            tokio::time::sleep(t.period).await;
         }
-        if let (Some((t, check)), Some(tracker)) = (&readiness, &mut ready_tracker) {
+    };
+    let ready_loop = async {
+        let Some((t, check)) = &readiness else { return };
+        tokio::time::sleep(t.initial_delay).await;
+        let mut tracker = ProbeTracker::new(false);
+        loop {
             let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
             let was_passing = tracker.passing;
             tracker.record(ok, t.success_threshold, t.failure_threshold);
@@ -530,9 +528,10 @@ async fn probe_container(
             if tracker.passing != was_passing {
                 notify_reconcile();
             }
+            tokio::time::sleep(t.period).await;
         }
-        tokio::time::sleep(period).await;
-    }
+    };
+    tokio::join!(live_loop, ready_loop);
 }
 
 #[cfg(test)]

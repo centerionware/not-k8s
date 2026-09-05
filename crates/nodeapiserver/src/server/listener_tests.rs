@@ -212,7 +212,9 @@ mod tests {
 
     #[test]
     fn openapi_v2_honors_kubectl_protobuf_accept_and_quality_exclusions() {
-        let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_CONTENT_TYPE), &[], &[]);
+        assert_eq!(openapi::V2_PROTOBUF_CONTENT_TYPE, "application/com.github.proto-openapi.spec.v2.v1.0+protobuf");
+        assert_eq!(openapi::negotiate_v2(Some(openapi::V2_PROTOBUF_CONTENT_TYPE)), Some(true));
+        let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_LEGACY_ACCEPT), &[], &[]);
         let DiscoveryRoute::FoundOpenApiProtobuf(bytes) = route else { panic!("kubectl requires gnostic protobuf") };
         assert!(!bytes.starts_with(b"{") && !bytes.starts_with(b"k8s\0"));
         assert_eq!(openapi::negotiate_v2(Some("application/json;q=0,*/*;q=1")), Some(true));
