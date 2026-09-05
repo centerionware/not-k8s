@@ -293,6 +293,18 @@ sudo() {
                     f'e2e-prof-v0.8.0:e2e/fixture/results-shard-{shard}.txt'], capture_output=True, text=True)
                 self.assertEqual(result.stdout, f'shard {shard}\n', result.stderr)
 
+    def test_manual_e2e_results_are_scoped_to_run_and_attempt(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/e2e.yml').read_text())
+        prepare = next(step['run'] for step in workflow['jobs']['prepare-e2e-results']['steps']
+                       if step.get('name') == 'Prepare results')
+        self.assertNotIn('--force', prepare)
+        self.assertNotIn('checkout --orphan', prepare)
+        self.assertIn('history/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT', prepare)
+        action = next(step for step in workflow['jobs']['e2e']['steps']
+                      if step.get('uses') == './.github/actions/e2e-run')
+        self.assertEqual(action['with']['results_prefix'],
+                         'history/${{ github.run_id }}-${{ github.run_attempt }}')
+
     def test_release_graph_is_post_publication_and_has_no_workflow_calls(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
         workflow = yaml.safe_load(text)

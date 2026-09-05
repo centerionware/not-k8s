@@ -246,6 +246,20 @@ const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
 const TEARDOWN_API_TIMEOUT: Duration = Duration::from_secs(30);
 const TEARDOWN_RUNTIME_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Runtime cleanup gets its own budget after the one shared shutdown grace.
+/// Retrying must not restart a Pod's grace period from zero.
+fn teardown_attempt_budget(pod: &Pod, elapsed: Duration) -> (i64, Duration) {
+    let grace = pod.metadata.deletion_grace_period_seconds
+        .filter(|seconds| *seconds >= 0)
+        .or_else(|| pod.spec.as_ref().and_then(|spec| spec.termination_grace_period_seconds)
+            .filter(|seconds| *seconds >= 0))
+        .unwrap_or(30);
+    let remaining = Duration::from_secs(grace as u64).saturating_sub(elapsed);
+    // CRI accepts whole seconds; round up so truncation never kills early.
+    let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0);
+    (seconds as i64, Duration::from_secs(seconds) + TEARDOWN_RUNTIME_TIMEOUT)
+}
+
 const COREDNS_NAMESPACE: &str = "kube-system";
 const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
 const CNI_SEED_NAME: &str = "nodebootstrap-cni-seed";
@@ -788,7 +802,7 @@ impl PodController {
 
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
-                debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
+                debug!(target: "nk_watch_trace", pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "runtime ensure completed; publishing status");
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
@@ -796,6 +810,7 @@ impl PodController {
                 if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos, pod.metadata.generation).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
+                debug!(target: "nk_watch_trace", pod = %format!("{ns}/{name}"), "pod status publication finished");
                 // Round 124: a still-pending CSI volume attach or device-
                 // plugin resource (pending_csi_volume_names()/pending_
                 // device_plugin_resources()) touches nothing on the Pod
@@ -1013,9 +1028,13 @@ impl PodController {
             // interval while a fixed dependency eventually makes progress.
             let mut attempt: u32 = 0;
             let mut delay = RETRY_FIRST_DELAY;
+            let teardown_started = tokio::time::Instant::now();
             loop {
                 attempt += 1;
-                match tokio::time::timeout(TEARDOWN_RUNTIME_TIMEOUT, runtime.remove_pod(&pod)).await {
+                let (remaining_grace, timeout) = teardown_attempt_budget(&pod, teardown_started.elapsed());
+                let mut attempt_pod = pod.clone();
+                attempt_pod.metadata.deletion_grace_period_seconds = Some(remaining_grace);
+                match tokio::time::timeout(timeout, runtime.remove_pod(&attempt_pod)).await {
                     Ok(Ok(())) => break,
                     Ok(Err(e)) => {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, attempt, "remove_pod failed; retrying");
@@ -1023,7 +1042,7 @@ impl PodController {
                         delay = next_retry_delay(delay);
                     }
                     Err(_) => {
-                        warn!(pod = %format!("{ns}/{name}"), timeout_secs = TEARDOWN_RUNTIME_TIMEOUT.as_secs(), attempt, "remove_pod timed out; retrying");
+                        warn!(pod = %format!("{ns}/{name}"), timeout_secs = timeout.as_secs(), remaining_grace, attempt, "remove_pod timed out; retrying");
                         tokio::time::sleep(delay).await;
                         delay = next_retry_delay(delay);
                     }
@@ -1056,10 +1075,19 @@ impl PodController {
                 attempt += 1;
                 match tokio::time::timeout(TEARDOWN_API_TIMEOUT, api.delete(&name, &dp)).await {
                     Ok(Ok(_)) => break,
-                    // A 404 means the object was already removed. A 409 is
-                    // the UID precondition protecting a replacement Pod;
-                    // either outcome means this old teardown must stop.
-                    Ok(Err(kube::Error::Api(error))) if error.code == 404 || error.code == 409 => break,
+                    Ok(Err(kube::Error::Api(error))) if error.code == 404 => break,
+                    Ok(Err(kube::Error::Api(error))) if error.code == 409 => {
+                        // Status writes can exhaust the server's CAS retries
+                        // without changing UID. Only stop for a proven
+                        // replacement; keep retrying deletion of this Pod.
+                        match tokio::time::timeout(TEARDOWN_API_TIMEOUT, api.get(&name)).await {
+                            Ok(Ok(current)) if current.metadata.uid.as_ref()
+                                != dp.preconditions.as_ref().and_then(|p| p.uid.as_ref()) => break,
+                            Ok(Err(kube::Error::Api(status))) if status.code == 404 => break,
+                            _ => warn!(pod = %format!("{ns}/{name}"), attempt,
+                                "final pod delete conflicted without a confirmed replacement; retrying"),
+                        }
+                    }
                     Ok(Err(error)) => warn!(pod = %format!("{ns}/{name}"), error = ?error, attempt, "final delete of pod object failed; retrying"),
                     Err(_) => warn!(pod = %format!("{ns}/{name}"), timeout_secs = TEARDOWN_API_TIMEOUT.as_secs(), attempt, "timed out deleting pod object; retrying"),
                 }
@@ -1077,6 +1105,7 @@ impl PodController {
     async fn on_runtime_event(&self, key: &str) {
         let Some((ns, name)) = key.split_once('/') else { return };
         let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
+        debug!(target: "nk_watch_trace", pod = %key, "runtime event fetching current Pod");
         match api.get_opt(name).await {
             Ok(Some(p)) => self.reconcile(p).await,
             Ok(None) => debug!(pod = %key, "pod gone; skipping status write"),
@@ -1469,7 +1498,10 @@ fn build_pod_status(
             state: Some(container_state(c, rt.started_at.map(Time), "ContainerCreating")),
             last_state: c.last_terminated.as_ref().map(|info| last_container_state(Some(info))),
             resources: c.resources.clone(),
-            allocated_resources: c.allocated_resources.clone(),
+            // Empty protobuf maps have no wire entries and read back absent.
+            // Reporting Some({}) would therefore differ on every watch event
+            // and keep the status PATCH -> watch -> PATCH loop alive.
+            allocated_resources: c.allocated_resources.clone().filter(|resources| !resources.is_empty()),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             user: container_user_field(c.container_user.as_ref()),
             volume_mounts: volume_mount_statuses_field(&c.volume_mount_statuses),

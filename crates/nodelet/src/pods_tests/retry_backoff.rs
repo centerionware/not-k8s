@@ -4,6 +4,30 @@
 use super::*;
 
 #[test]
+fn teardown_retries_share_one_grace_period_and_leave_time_for_cleanup() {
+    let pod: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"deletionGracePeriodSeconds": 60},
+        "spec": {"containers": [], "terminationGracePeriodSeconds": 90},
+    })).unwrap();
+    assert_eq!(teardown_attempt_budget(&pod, Duration::ZERO),
+        (60, Duration::from_secs(120)));
+    assert_eq!(teardown_attempt_budget(&pod, Duration::from_millis(59_500)),
+        (1, Duration::from_secs(61)));
+    assert_eq!(teardown_attempt_budget(&pod, Duration::from_secs(65)),
+        (0, TEARDOWN_RUNTIME_TIMEOUT));
+}
+
+#[test]
+fn force_deleted_pod_does_not_regain_its_spec_grace() {
+    let pod: Pod = serde_json::from_value(serde_json::json!({
+        "metadata": {"deletionGracePeriodSeconds": 0},
+        "spec": {"containers": [], "terminationGracePeriodSeconds": 60},
+    })).unwrap();
+    assert_eq!(teardown_attempt_budget(&pod, Duration::ZERO),
+        (0, TEARDOWN_RUNTIME_TIMEOUT));
+}
+
+#[test]
 fn first_step_doubles_the_initial_delay() {
     assert_eq!(next_retry_delay(RETRY_FIRST_DELAY), Duration::from_secs(10));
 }

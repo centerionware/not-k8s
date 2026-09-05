@@ -293,6 +293,12 @@ runs:
         sudo journalctl -b -u nodeapiserver --no-pager -o short-iso-precise \
           | awk '/namespace watch event/' >> /tmp/e2e-controller-journal.txt
         cat /tmp/e2e-controller-journal.txt
+        # Keep the actual request/CRI history too, compressed off-console.
+        # Tails and Namespace-only traces cannot locate an earlier stuck
+        # Pod/Node request or distinguish process exit from sandbox cleanup.
+        sudo journalctl -b -u nodeapiserver -u containerd -u flanneld \
+          -u nodecontroller -u nodestore -u nodelet -u nodeproxy -u nodescheduler \
+          --no-pager -o short-iso-precise | gzip -c > /tmp/e2e-controller-journal.txt.gz
 
     - name: Publish e2e results
       if: always()
@@ -319,6 +325,9 @@ runs:
         cp /tmp/e2e-results-final.txt "$payload/results-shard-${SHARD}.txt"
         if [[ -f /tmp/e2e-controller-journal.txt ]]; then
           cp /tmp/e2e-controller-journal.txt "$payload/controller-journal-shard-${SHARD}.txt"
+        fi
+        if [[ -f /tmp/e2e-controller-journal.txt.gz ]]; then
+          cp /tmp/e2e-controller-journal.txt.gz "$payload/full-journal-shard-${SHARD}.txt.gz"
         fi
         bash deploy/publish-validation-results.sh "$payload" "$RESULTS_BRANCH" "$RESULTS_PREFIX"
 

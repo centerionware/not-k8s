@@ -23,17 +23,20 @@ else
     git -C "$work/results" checkout --orphan "$branch"
     git -C "$work/results" remote add origin "$remote"
 fi
-mkdir -p "$work/results/$prefix"
-cp -a "$data/." "$work/results/$prefix/"
 git -C "$work/results" config user.name github-actions\[bot\]
 git -C "$work/results" config user.email github-actions\[bot\]@users.noreply.github.com
-git -C "$work/results" add -- "${prefix:-.}"
-if git -C "$work/results" diff --cached --quiet; then exit 0; fi
-git -C "$work/results" commit -m "test(results): publish validation data for run ${GITHUB_RUN_ID:-local}"
 for attempt in {1..10}; do
+    mkdir -p "$work/results/$prefix"
+    cp -a "$data/." "$work/results/$prefix/"
+    git -C "$work/results" add -- "${prefix:-.}"
+    if git -C "$work/results" diff --cached --quiet; then exit 0; fi
+    git -C "$work/results" commit -m "test(results): publish validation data for run ${GITHUB_RUN_ID:-local}"
     if git -C "$work/results" push origin "HEAD:$branch"; then exit 0; fi
     git -C "$work/results" fetch origin "$branch"
-    git -C "$work/results" rebase FETCH_HEAD
+    # This is a disposable publication checkout. Replay only our preserved
+    # payload on the newest tree, not a conflicting commit/old root snapshot.
+    # This also handles two publishers creating an absent branch concurrently.
+    git -C "$work/results" checkout -B "$branch" FETCH_HEAD
     sleep "$((attempt < 6 ? attempt : 5))"
 done
 echo 'result publication failed after concurrent-write retries' >&2

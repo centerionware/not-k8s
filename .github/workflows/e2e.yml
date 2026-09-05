@@ -55,16 +55,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Reset e2e results
+      - name: Prepare results
         env:
           RESULTS_BRANCH: e2e-results
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan "$RESULTS_BRANCH"
-          git rm -rf . >/dev/null 2>&1 || true
-          cat > README.md <<EOF
+          payload=$(mktemp -d)
+          cat > "$payload/README.md" <<EOF
           # e2e results
 
           - commit: $GITHUB_SHA
@@ -73,9 +71,11 @@ jobs:
 
           Each shard writes its complete output to results-shard-N.txt.
           EOF
-          git add README.md
-          git commit -m "e2e results: start run ${GITHUB_SHA:0:12}"
-          git push --force origin "HEAD:$RESULTS_BRANCH"
+          bash deploy/publish-validation-results.sh "$payload" "$RESULTS_BRANCH" \
+            "history/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf '# E2E results\n\n[Browse runs and attempts](history/). Each run retains its own shard logs.\n' \
+            > "$payload/README.md"
+          bash deploy/publish-validation-results.sh "$payload" "$RESULTS_BRANCH"
 
   build-source-runtime:
     needs: prepare-e2e-results
@@ -203,6 +203,7 @@ jobs:
           cluster_domain: ${{ inputs.cluster_domain }}
           cidr: ${{ inputs.cidr }}
           cidr6: ${{ inputs.cidr6 }}
+          results_prefix: history/${{ github.run_id }}-${{ github.run_attempt }}
 
   cleanup-e2e-artifact:
     needs: [build-source-runtime, e2e]
