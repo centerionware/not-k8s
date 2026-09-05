@@ -72,8 +72,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq linux-tools-generic perl
           python3 -m pip install --quiet --break-system-packages matplotlib numpy
-          perf_bin=$(find /usr/lib/linux-tools -type f -name perf | sort -V | tail -1)
-          [[ -n "$perf_bin" ]]
+          # Ubuntu's versioned kernel directory contains symlinks to the real tool.
+          perf_bin=$(find -L /usr/lib/linux-tools -type f -name perf | sort -V | tail -1)
+          [[ -n "$perf_bin" && -x "$perf_bin" ]] || { echo 'No usable perf executable installed' >&2; exit 1; }
           echo "$(dirname "$perf_bin")" >> "$GITHUB_PATH"
           sudo sysctl kernel.perf_event_paranoid=-1
           sudo "$perf_bin" stat -e cpu-clock -- sleep 1
