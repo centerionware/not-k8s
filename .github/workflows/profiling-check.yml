@@ -1,18 +1,8 @@
 name: Profiling checks
+# Run explicitly when changing profiling/release tooling. PR path filters use
+# the cumulative diff, so they reran these checks on unrelated follow-up commits.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'deploy/*profil*.py'
-      - 'deploy/*profil*.sh'
-      - 'deploy/lib/render-perf.sh'
-      - 'deploy/lib/*profil*.sh'
-      - 'deploy/lib/render-stack-charts.py'
-      - '.github/workflows/*.yml'
-      - '.github/actions/**'
-      - 'deploy/*release*.py'
-      - 'deploy/*release*.sh'
-      - 'deploy/publish-validation-results.sh'
 permissions:
   contents: read
 jobs:
