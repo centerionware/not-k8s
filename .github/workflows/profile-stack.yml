@@ -92,11 +92,15 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$PROFILE_BUILD" == debug ]]; then
-            cargo build --locked --features cri -p notk8s
+            cargo build --features cri -p notk8s
           else
-            cargo build --locked --profile profiling --features cri -p notk8s
+            cargo build --profile profiling --features cri -p notk8s
           fi
           binary="$GITHUB_WORKSPACE/profile-source/target/$PROFILE_BUILD/notk8s"
+          # Older integration refs can have a stale lockfile (the normal e2e
+          # build also resolves it). Retain the exact resolved graph and diff.
+          cp Cargo.lock "$GITHUB_WORKSPACE/profile-data/Cargo.lock"
+          git diff -- Cargo.lock > "$GITHUB_WORKSPACE/profile-data/lockfile-resolution.patch"
           echo "PROFILE_BINARY=$binary" >> "$GITHUB_ENV"
           {
             rustc -Vv
