@@ -22,10 +22,10 @@ INFRASTRUCTURE = ("containerd", "flanneld", "coredns")
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def component_name(argv, backend="notk8s", whole=False, executable=None):
+def component_name(argv, backend="notk8s", whole=False, executable=None, cgroup=""):
     if not argv:
         return None
-    name = Path(argv[0]).name
+    name = Path(argv[0]).name.strip()
     if name == "notk8s" and len(argv) > 1:
         name = argv[1]
     if backend == "notk8s" and name in COMPONENTS:
@@ -37,8 +37,13 @@ def component_name(argv, backend="notk8s", whole=False, executable=None):
     if whole and name in INFRASTRUCTURE:
         # Hosted runners may also run Docker's unused containerd. k3s uses
         # its own bundled runtime, not that unrelated system process.
-        if backend == "k3s" and name == "containerd" and not (executable or argv[0]).startswith("/var/lib/rancher/k3s/"):
-            return None
+        if backend == "k3s" and name == "containerd":
+            # Multi-call/rewritten process titles need not resolve to an
+            # executable under the k3s data directory. Systemd ownership is
+            # an independent identity check, excluding Docker's containerd.
+            owned = any("k3s.service" in line.split(":", 2)[-1].split("/") for line in cgroup.splitlines())
+            if not owned and not (executable or argv[0]).startswith("/var/lib/rancher/k3s/"):
+                return None
         return name
     return None
 
@@ -63,10 +68,17 @@ def processes(backend="notk8s", selected=COMPONENTS, whole=False):
     if whole:
         required = tuple(required) + (("containerd", "coredns") if backend == "k3s" else INFRASTRUCTURE)
     found = {name: [] for name in required}
+    runtime_candidates = []
     for path in Path("/proc").glob("[0-9]*/cmdline"):
         try:
             argv = path.read_bytes().decode(errors="replace").rstrip("\0").split("\0")
-            name = component_name(argv, backend, whole, os.readlink(path.parent / "exe"))
+            executable = os.readlink(path.parent / "exe")
+            cgroup = (path.parent / "cgroup").read_text()
+            if argv and Path(argv[0]).name.strip() == "containerd":
+                # Identity only: do not print command arguments that may contain credentials.
+                runtime_candidates.append(dict(pid=int(path.parent.name), executable=executable,
+                                               cgroup=cgroup.strip()))
+            name = component_name(argv, backend, whole, executable, cgroup)
             if name in found:
                 found[name].append(int(path.parent.name))
         except (FileNotFoundError, PermissionError, ProcessLookupError):
@@ -74,7 +86,7 @@ def processes(backend="notk8s", selected=COMPONENTS, whole=False):
     bad = {name: pids for name, pids in found.items()
            if not pids or (name not in INFRASTRUCTURE and len(pids) != 1)}
     if bad:
-        raise RuntimeError(f"expected exactly one process per component, found {bad}")
+        raise RuntimeError(f"missing or ambiguous component processes: {bad}; containerd identities: {runtime_candidates}")
     return {f"{name}@{pid}": pid for name, pids in found.items() for pid in pids}
 
 

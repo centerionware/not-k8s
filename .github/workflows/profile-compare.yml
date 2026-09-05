@@ -20,6 +20,12 @@ on:
       workload:
         type: string
         default: standard
+      k3s_version:
+        type: string
+        default: latest
+      k8s_version:
+        type: string
+        default: latest
 permissions:
   contents: write
 jobs:
@@ -36,9 +42,14 @@ jobs:
           WHOLE: ${{ inputs.whole_stack }}
           SECONDS_INPUT: ${{ inputs.sample_seconds }}
           WORKLOAD: ${{ inputs.workload }}
+          K3S_VERSION: ${{ inputs.k3s_version }}
+          K8S_VERSION: ${{ inputs.k8s_version }}
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, os, re
+          for name, pattern in [('K3S_VERSION', r'v\d+\.\d+\.\d+\+k3s\d+'), ('K8S_VERSION', r'v\d+\.\d+\.\d+')]:
+              value = os.environ[name]
+              assert value == 'latest' or re.fullmatch(pattern, value), f'invalid {name}: {value}'
           names = ['nodestore', 'nodeapiserver', 'nodescheduler', 'nodecontroller', 'nodelet', 'nodeproxy']
           baseline = os.environ['BASELINE']
           assert baseline in ('k8s', 'k3s', 'both'), 'baseline must be k8s, k3s or both'
@@ -68,6 +79,8 @@ jobs:
       PROFILE_COMPONENTS: ${{ needs.plan.outputs.components }}
       PROFILE_WHOLE: ${{ inputs.whole_stack }}
       PROFILE_BACKEND: ${{ matrix.backend }}
+      PROFILE_K3S_VERSION: ${{ inputs.k3s_version }}
+      PROFILE_K8S_VERSION: ${{ inputs.k8s_version }}
       KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
     steps:
       - uses: actions/checkout@v7
@@ -81,11 +94,13 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
         if: matrix.backend == 'notk8s'
-      - name: Record host and install identical workload client
+      - name: Record host and install not-k8s workload client
         run: |
           set -euo pipefail
           mkdir -p profile-data
           { echo "backend=$PROFILE_BACKEND"; echo "tooling_sha=$(git rev-parse HEAD)"; uname -a; lscpu; free -h; } > profile-data/metadata.txt
+          # Upstream setup installs a server-matched client to avoid version skew.
+          if [[ "$PROFILE_BACKEND" != notk8s ]]; then exit 0; fi
           curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl -o /tmp/profile-kubectl
           curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl.sha256 -o /tmp/profile-kubectl.sha256
           echo "$(cat /tmp/profile-kubectl.sha256)  /tmp/profile-kubectl" | sha256sum -c

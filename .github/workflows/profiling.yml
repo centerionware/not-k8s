@@ -89,6 +89,14 @@ on:
         type: choice
         options: [standard, heavy]
         default: standard
+      k3s_version:
+        description: 'k3s latest release, or an exact tag such as v1.34.3+k3s1'
+        type: string
+        default: latest
+      k8s_version:
+        description: 'Kubernetes latest stable release, or an exact version such as v1.34.3'
+        type: string
+        default: latest
 
 permissions:
   contents: write
@@ -110,6 +118,8 @@ jobs:
     with:
       source_ref: ${{ inputs.source_ref || github.sha }}
       baseline: ${{ inputs.baseline }}
+      k3s_version: ${{ inputs.k3s_version }}
+      k8s_version: ${{ inputs.k8s_version }}
       components: ${{ inputs.components }}
       whole_stack: ${{ inputs.mode == 'whole-stack' }}
       workload: ${{ inputs.workload }}

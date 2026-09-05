@@ -35,7 +35,7 @@ while IFS= read -r -d '' file; do
     relative=${file#"$out/"}
     mkdir -p "$dest/$(dirname "$relative")"
     cp "$file" "$dest/$relative"
-done < <(find "$out" -type f \( -name '*.svg' -o -name '*.png' -o -name 'timeseries.csv' -o -name 'SUMMARY.txt' -o -name 'no-samples.txt' -o -name 'workload.json' -o -name 'workload-config.json' \) -print0)
+done < <(find "$out" -type f \( -name '*.svg' -o -name '*.png' -o -name '*.csv' -o -name 'SUMMARY.txt' -o -name 'no-samples.txt' -o -name 'workload.json' -o -name 'workload-config.json' \) -print0)
 cat > "$dest/README.md" <<EOF
 # Stack CPU profile
 
@@ -53,6 +53,9 @@ host. Inspect workload errors and restart checks before interpreting CPU numbers
 The archive includes raw perf data, decoded stacks, per-process CPU/RSS/PSS series,
 workload operations, symbolized executable, build identity, and diagnostics.
 An empty folded-stack file is reported as no samples, not zero CPU usage.
+Exact min/mean/max values are in [charts/summary.csv](charts/summary.csv).
+Memory units are MiB; CPU is percent of one logical CPU. Chart whiskers show
+the observed range, not a confidence interval.
 
 Download all parts and SHA256SUMS into an empty directory, then:
 

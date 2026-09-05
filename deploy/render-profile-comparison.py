@@ -38,6 +38,8 @@ def main():
             '(k3s embeds Flannel). They exclude workload containers, runtime shims, the load generator',
             'and unrelated host services. RSS sums can double-count shared pages; PSS apportions them.',
             'Missing values are unavailable, never zero. Component-mode totals include only selected components.', '',
+            '[Exact min/mean/max values (CSV)](charts/summary.csv). Memory values are MiB;',
+            'CPU values are percent of one logical CPU. Whiskers show observed range, not confidence intervals.', '',
             '## Source data', '']
     text += [f'- [{backend} metadata]({backend}/metadata.txt), [workload]({backend}/workload.json), '
              f'[idle CSV]({backend}/idle/timeseries.csv), [load CSV]({backend}/load/timeseries.csv)' for backend in backends]

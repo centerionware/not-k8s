@@ -86,6 +86,24 @@ cluster doing less useful work must not be presented as a performance win.
 
 ## Results and storage
 
+Charts show exact min/mean/max in their legends, with memory expressed in MiB
+and CPU as percent of one logical CPU. Component bars label the mean and
+`[min, max]`; whiskers show the observed range, not confidence intervals.
+`charts/summary.csv` contains the same values without rounding, including
+combined totals calculated at the original sample timestamps.
+
+Comparison inputs `k8s_version` and `k3s_version` both default to `latest`.
+Kubernetes resolves `dl.k8s.io/release/stable.txt`; k3s resolves its official
+`latest` channel once per run. Exact versions (e.g. `v1.34.3` and
+`v1.34.3+k3s1`) can be supplied for repeatable version-matched experiments.
+Resolved versions, binary hashes where downloaded, and actual server versions
+are retained with each backend's metadata. Latest baselines may implement a
+different Kubernetes version than not-k8s; report that distinction explicitly.
+Upstream legs install a kubectl matching their resolved server version; not-k8s
+uses its 1.34 client. This avoids unsupported client/server skew with `latest`,
+but client versions are another experiment variable, recorded in
+`kubernetes-version.json`. Pin baselines for controlled version comparisons.
+
 Results go to the existing `profiling-results` branch under
 `history/<timestamp>-<run>-<attempt>-stack/`; `latest-stack.md` links to the latest
 stack result without duplicating its archive. Legacy `latest/` is preserved.
@@ -120,8 +138,8 @@ Choose `components` for one component or a selected combination, and
 fixture as `stack`, but no perf collection. not-k8s is built with its normal
 optimized, stripped release profile on its measurement runner (no build artifact
 handoff). Upstream is a real kubeadm Kubernetes cluster, not our bootstrap's
-upstream-apiserver-only option. Kubernetes 1.34.3 and k3s v1.34.3+k3s1 are pinned;
-actual server versions and target source identity are recorded with the results.
+upstream-apiserver-only option. Both upstream versions default to `latest`, with
+optional exact pins; actual client/server versions and source identity are recorded.
 
 ```sh
 # One component; also accepts nodeapiserver,nodestore or all.

@@ -47,6 +47,12 @@ class ProfileStackTests(unittest.TestCase):
         self.assertEqual(stack.component_name(["containerd"], "k3s", True,
                                              "/var/lib/rancher/k3s/data/hash/bin/containerd"), "containerd")
         self.assertIsNone(stack.component_name(["kubelet"], "notk8s"))
+        self.assertEqual(stack.component_name(["containerd "], "k3s", True,
+            "/usr/local/bin/k3s", "0::/system.slice/k3s.service\n"), "containerd")
+        self.assertIsNone(stack.component_name(["containerd"], "k3s", True,
+            "/usr/bin/containerd", "0::/system.slice/containerd.service\n"))
+        self.assertIsNone(stack.component_name(["containerd-shim-runc-v2"], "k3s", True,
+            "/var/lib/rancher/k3s/data/hash/bin/containerd-shim-runc-v2", "0::/system.slice/k3s.service\n"))
 
     def test_embedded_component_comparison_is_rejected_before_setup(self):
         result = subprocess.run(["python3", str(ROOT / "deploy/profile-stack.py"),
@@ -82,15 +88,21 @@ class ProfileStackTests(unittest.TestCase):
                         writer = csv.writer(stream)
                         writer.writerow(['elapsed_seconds', 'pid', 'component', 'cpu_pct_one_core', 'rss_kib', 'pss_kib'])
                         names = ['k3s'] if label == 'k3s' else ['nodeapiserver', 'nodestore']
-                        for second in (1, 2):
+                        for second, rss in ((1.0, 1024), (1.4, 4096), (2.1, 1024)):
                             for pid, name in enumerate(names, 1):
-                                writer.writerow([second, pid, name, 2, 1024, 512])
+                                writer.writerow([second, pid, name, 2, rss, 512])
             charts.render(root / "whole", sources, None, True)
             charts.render(root / "selected", {k: v for k, v in sources.items() if k != "k3s"}, ['nodeapiserver', 'nodestore'])
             for mode in ('whole', 'selected'):
                 self.assertTrue((root / mode / 'load-combined-cpu_pct_one_core.png').is_file())
                 self.assertTrue((root / mode / 'load-nodeapiserver-rss_kib.png').is_file())
             self.assertIn('not separately attributable', (root / 'whole/chart-notes.txt').read_text())
+            with (root / 'whole/summary.csv').open() as stream:
+                stats = list(csv.DictReader(stream))
+            value = next(row for row in stats if row['phase'] == 'load' and row['stack'] == 'notk8s'
+                         and row['component'] == 'combined' and row['metric'] == 'rss_kib')
+            self.assertEqual(value['unit'], 'MiB')
+            self.assertEqual([float(value[k]) for k in ('min', 'mean', 'max')], [2, 4, 8])
 
     def test_exact_process_identity(self):
         self.assertEqual(stack.component_name(["/bin/nodelet"]), "nodelet")
