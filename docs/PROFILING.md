@@ -26,11 +26,14 @@ Ordinary release artifacts remain stripped and unchanged. This rebuilds tagged
 source with instrumentation; it does not measure the exact stripped release
 asset byte-for-byte. Record that distinction in performance claims.
 
-The release workflow defaults `profile_after_release` to true. It calls this
-same single-runner job after successful publication, using the published tag.
-Set it false to skip the extra cost. This does not depend on a `release` event
-trigger (events created using `GITHUB_TOKEN` ordinarily do not start workflows).
-A profiling failure after publication does not undo the published release.
+The release workflow automatically runs full e2e, heavy all-component flamegraphs,
+and a heavy three-way comparison after publication. It downloads exact tagged
+assets and shares local composite actions with these manual workflows; it does
+not trigger or call another workflow. Results go to `e2e-prof-{release-tag}`,
+linked above the release changelog. See [release validation](RELEASE_VALIDATION.md)
+for executable provenance, parallel jobs and failure reporting. Manual stack mode
+still builds source; release flamegraphs use an additional published symbolized
+asset. A post-publication failure does not undo the published release.
 
 ## What is measured
 

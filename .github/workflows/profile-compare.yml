@@ -94,53 +94,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
         if: matrix.backend == 'notk8s'
-      - name: Record host and install not-k8s workload client
-        run: |
-          set -euo pipefail
-          mkdir -p profile-data
-          { echo "backend=$PROFILE_BACKEND"; echo "tooling_sha=$(git rev-parse HEAD)"; uname -a; lscpu; free -h; } > profile-data/metadata.txt
-          # Upstream setup installs a server-matched client to avoid version skew.
-          if [[ "$PROFILE_BACKEND" != notk8s ]]; then exit 0; fi
-          curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl -o /tmp/profile-kubectl
-          curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl.sha256 -o /tmp/profile-kubectl.sha256
-          echo "$(cat /tmp/profile-kubectl.sha256)  /tmp/profile-kubectl" | sha256sum -c
-          sudo install -m 0755 /tmp/profile-kubectl /usr/local/bin/kubectl
-      - name: Build optimized not-k8s and bootstrap on the same runner
-        if: matrix.backend == 'notk8s'
-        run: |
-          set -euo pipefail
-          cd profile-source
-          cargo build --release --features cri -p notk8s
-          cp Cargo.lock ../profile-data/Cargo.lock
-          { echo "source_sha=$(git rev-parse HEAD)"; echo 'build_profile=release'; rustc -Vv; sha256sum target/release/notk8s Cargo.lock; } >> ../profile-data/metadata.txt
-          sudo -E env NOTK8S_COMBINED_PREBUILT="$PWD/target/release/notk8s" NOTK8S_BUILD_LAYOUT=combined \
-            target/release/notk8s nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
-          sudo chmod 644 "$KUBECONFIG"
-      - name: Install a genuine upstream stack
-        if: matrix.backend != 'notk8s'
-        run: bash deploy/setup-profile-baseline.sh "$PROFILE_BACKEND"
-      - name: Capture metrics without perf overhead
-        run: |
-          set -euo pipefail
-          kubectl wait nodes --all --for=condition=Ready --timeout=240s
-          kubectl version -o json > profile-data/kubernetes-version.json
-          kubectl get nodes -o json > profile-data/nodes.json
-          kubectl -n kube-system get pods -o json > profile-data/system-pods.json
-          # All legs warm up with the same small ready Deployment before idle.
-          args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --workload "$PROFILE_WORKLOAD" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
-          if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
-          sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py "${args[@]}"
-          sudo chown -R "$(id -u):$(id -g)" profile-data
-      - name: Publish validated measurements directly to results branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash deploy/publish-profile-comparison.sh leg "$GITHUB_WORKSPACE/profile-data" "$PROFILE_BACKEND"
-      - name: Failure diagnostics
-        if: failure()
-        run: |
-          sudo journalctl --no-pager -n 200 -u nodeapiserver -u nodelet -u k3s -u kubelet -u containerd
-          kubectl get pods -A -o wide || true
-          kubectl get events -A --sort-by=.metadata.creationTimestamp | tail -100 || true
+      - uses: ./.github/actions/profile-compare-leg
+
   report:
     needs: [plan, measure]
     runs-on: ubuntu-latest
@@ -150,6 +105,7 @@ jobs:
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
+      PROFILE_RESULTS_BRANCH: profiling-results
       PROFILE_BACKENDS: ${{ needs.plan.outputs.backends }}
       PROFILE_COMPONENTS: ${{ needs.plan.outputs.components }}
       PROFILE_WHOLE: ${{ inputs.whole_stack }}
@@ -157,14 +113,4 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Fetch published measurements and draw component and combined pictures
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" profile-results
-          git -C profile-results sparse-checkout set --no-cone "/comparisons/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/"
-          git -C profile-results checkout profiling-results
-          python3 -m pip install --quiet --break-system-packages matplotlib numpy
-          python3 deploy/render-profile-comparison.py --input "profile-results/comparisons/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --output comparison-report
-      - name: Publish README with embedded charts
-        run: bash deploy/publish-profile-comparison.sh report "$GITHUB_WORKSPACE/comparison-report"
+      - uses: ./.github/actions/profile-compare-report

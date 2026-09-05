@@ -7,6 +7,8 @@ out=${1:?profile directory required}
 : "${GH_TOKEN:?}" "${GITHUB_REPOSITORY:?}" "${GITHUB_RUN_ID:?}" "${PROFILE_SHA:?}"
 budget=${PROFILE_ARCHIVE_LIMIT_MIB:-512}
 [[ "$budget" =~ ^[0-9]+$ ]] && (( budget >= 64 && budget <= 2048 )) || exit 2
+branch=${PROFILE_RESULTS_BRANCH:-profiling-results}
+git check-ref-format --branch "$branch" >/dev/null
 work=$(mktemp -d)
 archive="$work/profile.tar.gz"
 tar -czf "$archive" -C "$out" .
@@ -17,13 +19,13 @@ size=$(stat -c %s "$archive")
 }
 gh auth setup-git
 stamp="$(date -u +%Y-%m-%d_%H-%M-%S)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-stack"
-if git ls-remote --exit-code --heads "https://github.com/$GITHUB_REPOSITORY.git" profiling-results >/dev/null; then
-    git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch profiling-results "https://github.com/$GITHUB_REPOSITORY.git" "$work/results"
+if git ls-remote --exit-code --heads "https://github.com/$GITHUB_REPOSITORY.git" "$branch" >/dev/null; then
+    git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch "$branch" "https://github.com/$GITHUB_REPOSITORY.git" "$work/results"
     git -C "$work/results" sparse-checkout set --no-cone /README.md /latest-stack.md "/history/$stamp/"
-    git -C "$work/results" checkout profiling-results
+    git -C "$work/results" checkout "$branch"
 else
     git init "$work/results"
-    git -C "$work/results" checkout --orphan profiling-results
+    git -C "$work/results" checkout --orphan "$branch"
     git -C "$work/results" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
 fi
 dest="$work/results/history/$stamp"
@@ -92,12 +94,13 @@ git -C "$work/results" add history/"$stamp" latest-stack.md README.md
 git -C "$work/results" commit -m "perf: record stack profile ${PROFILE_SHA:0:12} run $GITHUB_RUN_ID"
 # Never force-push measurement history. A concurrent publisher is retried
 # through rebase; a conflict is visible rather than silently losing results.
-for attempt in 1 2 3; do
-    if git -C "$work/results" push origin HEAD:profiling-results; then
-        printf '[Stack profile results](https://github.com/%s/tree/profiling-results/history/%s)\n' "$GITHUB_REPOSITORY" "$stamp" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+for attempt in {1..10}; do
+    if git -C "$work/results" push origin "HEAD:$branch"; then
+        printf '[Stack profile results](https://github.com/%s/tree/%s/history/%s)\n' "$GITHUB_REPOSITORY" "$branch" "$stamp" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
         exit 0
     fi
-    git -C "$work/results" fetch origin profiling-results
+    git -C "$work/results" fetch origin "$branch"
     git -C "$work/results" rebase FETCH_HEAD
+    sleep "$((attempt < 6 ? attempt : 5))"
 done
 exit 1

@@ -1,0 +1,81 @@
+name: Measure a comparison leg
+description: Shared profiling steps for source and published binaries.
+inputs:
+  release_tag:
+    description: Exact release to measure, empty builds profile-source
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Record host and install not-k8s workload client
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p profile-data
+        { echo "backend=$PROFILE_BACKEND"; echo "tooling_sha=$(git rev-parse HEAD)"; uname -a; lscpu; free -h; } > profile-data/metadata.txt
+        # Upstream setup installs a server-matched client to avoid version skew.
+        if [[ "$PROFILE_BACKEND" != notk8s ]]; then exit 0; fi
+        curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl -o /tmp/profile-kubectl
+        curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl.sha256 -o /tmp/profile-kubectl.sha256
+        echo "$(cat /tmp/profile-kubectl.sha256)  /tmp/profile-kubectl" | sha256sum -c
+        sudo install -m 0755 /tmp/profile-kubectl /usr/local/bin/kubectl
+    - name: Obtain optimized not-k8s and bootstrap on the same runner
+      env:
+        RELEASE_TAG: ${{ inputs.release_tag }}
+        GH_TOKEN: ${{ github.token }}
+      if: env.PROFILE_BACKEND == 'notk8s'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "$RELEASE_TAG" ]]; then
+          bash deploy/download-release-runtime.sh "$RELEASE_TAG" release "$GITHUB_WORKSPACE/profile-bin"
+          binary="$GITHUB_WORKSPACE/profile-bin/notk8s"
+          { echo "release_tag=$RELEASE_TAG"; echo "source_sha=$(git rev-parse HEAD)"; echo 'build_profile=release'; cat profile-bin/SHA256SUMS; } >> profile-data/metadata.txt
+        else
+          cd profile-source
+          cargo build --release --features cri -p notk8s
+          cp Cargo.lock ../profile-data/Cargo.lock
+          { echo "source_sha=$(git rev-parse HEAD)"; echo 'build_profile=release'; rustc -Vv; sha256sum target/release/notk8s Cargo.lock; } >> ../profile-data/metadata.txt
+          binary="$PWD/target/release/notk8s"
+        fi
+        sudo -E env NOTK8S_COMBINED_PREBUILT="$binary" NOTK8S_BUILD_LAYOUT=combined \
+          "$binary" nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
+        sudo chmod 644 "$KUBECONFIG"
+    - name: Install a genuine upstream stack
+      if: env.PROFILE_BACKEND != 'notk8s'
+      shell: bash
+      run: bash deploy/setup-profile-baseline.sh "$PROFILE_BACKEND"
+    - name: Capture metrics without perf overhead
+      shell: bash
+      run: |
+        set -euo pipefail
+        kubectl wait nodes --all --for=condition=Ready --timeout=240s
+        kubectl version -o json > profile-data/kubernetes-version.json
+        kubectl get nodes -o json > profile-data/nodes.json
+        kubectl -n kube-system get pods -o json > profile-data/system-pods.json
+        # All legs warm up with the same small ready Deployment before idle.
+        args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --workload "$PROFILE_WORKLOAD" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
+        if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
+        sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py "${args[@]}"
+        sudo chown -R "$(id -u):$(id -g)" profile-data
+    - name: Publish validated measurements directly to results branch
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: bash deploy/publish-profile-comparison.sh leg "$GITHUB_WORKSPACE/profile-data" "$PROFILE_BACKEND"
+    - name: Failure diagnostics
+      if: failure()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p profile-data
+        {
+          sudo journalctl --no-pager -n 200 -u nodeapiserver -u nodelet -u k3s -u kubelet -u containerd || true
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.metadata.creationTimestamp | tail -100 || true
+        } 2>&1 | tee profile-data/failure-diagnostics.txt
+        sudo chown -R "$(id -u):$(id -g)" profile-data
+        bash deploy/publish-validation-results.sh profile-data "${PROFILE_RESULTS_BRANCH:-profiling-results}" \
+          "comparisons/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/$PROFILE_BACKEND"
