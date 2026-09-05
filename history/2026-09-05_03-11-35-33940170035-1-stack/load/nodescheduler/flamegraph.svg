@@ -1,0 +1,838 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="630" onload="init(evt)" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="630.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >load/nodescheduler CPU samples</text>
+<text id="details" x="10.00" y="613" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="613" > </text>
+<g id="frames">
+<g >
+<title>&lt;serde_json::read::SliceRead&gt;::skip_to_escape (20,408,163 samples, 5.56%)</title><rect x="731.1" y="197" width="65.6" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="734.11" y="207.5" >&lt;serde_..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 5.56%)</title><rect x="141.1" y="245" width="65.6" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="144.11" y="255.5" >malloc</text>
+</g>
+<g >
+<title>&lt;serde_json::read::StrRead as serde_json::read::Read&gt;::parse_str (20,408,163 samples, 5.56%)</title><rect x="731.1" y="213" width="65.6" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="734.11" y="223.5" >&lt;serde_..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::MapDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::MapAccess&gt;::next_value_seed::&lt;core::marker::PhantomData&lt;core::option::Option&lt;alloc::vec::Vec&lt;k8s_openapi::v1_34::api::core::v1::downward_api_volume_file::DownwardAPIVolumeFile&gt;&gt;&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="213" width="65.6" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="865.22" y="223.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCore&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::process_new_packets (40,816,326 samples, 11.11%)</title><rect x="141.1" y="293" width="131.1" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="144.11" y="303.5" >&lt;rustls::conn::C..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="101" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="111.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_option::&lt;serde_core::de::impls::OptionVisitor&lt;alloc::string::String&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="927.8" y="277" width="65.5" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="930.78" y="287.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 5.56%)</title><rect x="1124.4" y="309" width="65.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1127.44" y="319.5" >[libc.s..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_seq::&lt;&lt;alloc::vec::Vec&lt;_&gt; as serde_core::de::Deserialize&gt;::deserialize::VecVisitor&lt;k8s_openapi::v1_34::api::core::v1::downward_api_volume_file::DownwardAPIVolumeFile&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="197" width="65.6" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="865.22" y="207.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>serde::private::de::content::visit_content_seq::&lt;&lt;alloc::vec::Vec&lt;_&gt; as serde_core::de::Deserialize&gt;::deserialize::VecVisitor&lt;k8s_openapi::v1_34::api::core::v1::volume::Volume&gt;, serde_json::error::Error&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="277" width="65.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="865.22" y="287.5" >serde::..</text>
+</g>
+<g >
+<title>&lt;rustls::msgs::base::Payload&gt;::into_vec (20,408,163 samples, 5.56%)</title><rect x="141.1" y="261" width="65.6" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="144.11" y="271.5" >&lt;rustls..</text>
+</g>
+<g >
+<title>&lt;futures_util::future::future::Map&lt;futures_util::future::try_future::MapErr&lt;hyper::client::conn::http1::upgrades::UpgradeableConnection&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, kube_client::client::body::Body&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}::{closure#2}&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}::{closure#3}&gt; as core::future::future::Future&gt;::poll (61,224,489 samples, 16.67%)</title><rect x="141.1" y="405" width="196.7" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="144.11" y="415.5" >&lt;futures_util::future::fu..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::apimachinery::pkg::apis::meta::v1::object_meta::ObjectMeta as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (20,408,163 samples, 5.56%)</title><rect x="927.8" y="293" width="65.5" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="930.78" y="303.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (61,224,489 samples, 16.67%)</title><rect x="796.7" y="325" width="196.6" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="799.67" y="335.5" >&lt;serde::private::de::cont..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 5.56%)</title><rect x="796.7" y="229" width="65.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="799.67" y="239.5" >[libc.s..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 5.56%)</title><rect x="206.7" y="261" width="65.5" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="209.67" y="271.5" >malloc</text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::clone::Clone&gt;::clone (20,408,163 samples, 5.56%)</title><rect x="534.4" y="373" width="65.6" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="537.44" y="383.5" >&lt;alloc:..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_seq::&lt;&lt;alloc::vec::Vec&lt;_&gt; as serde_core::de::Deserialize&gt;::deserialize::VecVisitor&lt;k8s_openapi::v1_34::api::core::v1::volume_projection::VolumeProjection&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="245" width="65.6" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="865.22" y="255.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::io::Buffered&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, hyper::proto::h1::encode::EncodedBuf&lt;bytes::bytes::Bytes&gt;&gt; as hyper::proto::h1::io::MemRead&gt;::read_mem (40,816,326 samples, 11.11%)</title><rect x="141.1" y="357" width="131.1" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="144.11" y="367.5" >&lt;hyper::proto::h..</text>
+</g>
+<g >
+<title>&lt;rustls::client::tls13::ExpectTraffic as rustls::common_state::State&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::handle (40,816,326 samples, 11.11%)</title><rect x="141.1" y="277" width="131.1" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="144.11" y="287.5" >&lt;rustls::client:..</text>
+</g>
+<g >
+<title>[libc.so.6] (367,346,934 samples, 100.00%)</title><rect x="10.0" y="533" width="1180.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (367,346,934 samples, 100.00%)</title><rect x="10.0" y="501" width="1180.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0}, </text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="133" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="143.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="245" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="255.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="325" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="335.5" >[[kerne..</text>
+</g>
+<g >
+<title>epoll_wait (20,408,163 samples, 5.56%)</title><rect x="75.6" y="373" width="65.5" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="78.56" y="383.5" >epoll_w..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::api::core::v1::pod_spec::PodSpec as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="293" width="65.6" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="865.22" y="303.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (20,408,163 samples, 5.56%)</title><rect x="731.1" y="245" width="65.6" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="734.11" y="255.5" >&lt;&amp;mut s..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output =  (61,224,489 samples, 16.67%)</title><rect x="141.1" y="421" width="196.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="144.11" y="431.5" >tokio::runtime::task::raw..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::decode::Decoder&gt;::decode::&lt;hyper::proto::h1::io::Buffered&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, hyper::proto::h1::encode::EncodedBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt; (40,816,326 samples, 11.11%)</title><rect x="141.1" y="373" width="131.1" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="144.11" y="383.5" >&lt;hyper::proto::h..</text>
+</g>
+<g >
+<title>&lt;nodescheduler::queue::SchedulingQueue&gt;::remove (20,408,163 samples, 5.56%)</title><rect x="1058.9" y="389" width="65.5" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="1061.89" y="399.5" >&lt;nodesc..</text>
+</g>
+<g >
+<title>tokio-rt-worker (367,346,934 samples, 100.00%)</title><rect x="10.0" y="565" width="1180.0" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >tokio-rt-worker</text>
+</g>
+<g >
+<title>kube_runtime::watcher::next_with_idle_timeout::&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn futures_core::stream::Stream&lt;Item = core::result::Result&lt;kube_core::watch::WatchEvent&lt;k8s_openapi::v1_34::api::core::v1::persistent_volume_claim::PersistentVolumeClaim&gt;, kube_client::error::Error&gt;&gt; + core::marker::Send&gt;&gt;, core::result::Result&lt;kube_core::watch::WatchEvent&lt;k8s_openapi::v1_34::api::core::v1::persistent_volume_claim::PersistentVolumeClaim&gt;, kube_client::error::Error&gt;&gt;::{closure#0} (20,408,163 samples, 5.56%)</title><rect x="600.0" y="373" width="65.6" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="603.00" y="383.5" >kube_ru..</text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (40,816,326 samples, 11.11%)</title><rect x="665.6" y="309" width="131.1" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="668.56" y="319.5" >&lt;&amp;mut serde_json..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::MapDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::MapAccess&gt;::next_value_seed::&lt;core::marker::PhantomData&lt;core::option::Option&lt;k8s_openapi::v1_34::api::core::v1::pod_spec::PodSpec&gt;&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="309" width="65.6" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="865.22" y="319.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;kube_runtime::utils::stream_backoff::StreamBackoff&lt;futures_util::stream::unfold::Unfold&lt; (20,408,163 samples, 5.56%)</title><rect x="337.8" y="405" width="65.5" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="340.78" y="415.5" >&lt;kube_r..</text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 5.56%)</title><rect x="1124.4" y="325" width="65.6" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="1127.44" y="335.5" >cfree</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::api::core::v1::pod_status::PodStatus as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (20,408,163 samples, 5.56%)</title><rect x="796.7" y="309" width="65.5" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="799.67" y="319.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_seq::&lt;&lt;alloc::vec::Vec&lt;_&gt; as serde_core::de::Deserialize&gt;::deserialize::VecVisitor&lt;k8s_openapi::v1_34::api::core::v1::pod_condition::PodCondition&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="796.7" y="293" width="65.5" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="799.67" y="303.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 5.56%)</title><rect x="534.4" y="357" width="65.6" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="537.44" y="367.5" >malloc</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, alloc::string::String&gt; as core::clone::Clone&gt;::clone (20,408,163 samples, 5.56%)</title><rect x="468.9" y="373" width="65.5" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="471.89" y="383.5" >&lt;alloc:..</text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (40,816,326 samples, 11.11%)</title><rect x="665.6" y="277" width="131.1" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="668.56" y="287.5" >&lt;&amp;mut serde_json..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;nodescheduler::schedule_forever::{closure#0}::{closure#2}, alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (265,306,119 samples, 72.22%)</title><rect x="337.8" y="421" width="852.2" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="340.78" y="431.5" >tokio::runtime::task::raw::poll::&lt;nodescheduler::schedule_forever::{closure#0}::{closure#2}, alloc::sync::Arc&lt;tokio::r..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_string::&lt;serde_core::de::impls::StringVisitor&gt; (20,408,163 samples, 5.56%)</title><rect x="796.7" y="245" width="65.5" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="799.67" y="255.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 5.56%)</title><rect x="10.0" y="373" width="65.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >[libc.s..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::time::Driver&gt;::park_internal (40,816,326 samples, 11.11%)</title><rect x="10.0" y="421" width="131.1" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >&lt;tokio::runtime:..</text>
+</g>
+<g >
+<title>nodescheduler::watch::run::{closure#0} (244,897,956 samples, 66.67%)</title><rect x="403.3" y="405" width="786.7" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="406.33" y="415.5" >nodescheduler::watch::run::{closure#0}</text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::multi_thread::worker::run (367,346,934 samples, 100.00%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >tokio::runtime::scheduler::multi_thread::worker::run</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="309" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="319.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::api::core::v1::projected_volume_source::ProjectedVolumeSource as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="261" width="65.6" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="865.22" y="271.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;std::sys::thread::unix::Thread&gt;::new::thread_start (367,346,934 samples, 100.00%)</title><rect x="10.0" y="517" width="1180.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >&lt;std::sys::thread::unix::Thread&gt;::new::thread_start</text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (20,408,163 samples, 5.56%)</title><rect x="731.1" y="229" width="65.6" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="734.11" y="239.5" >&lt;&amp;mut s..</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, rustls::client::client_conn::connection::ClientConnection&gt;&gt;::read_io (40,816,326 samples, 11.11%)</title><rect x="141.1" y="309" width="131.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="144.11" y="319.5" >&lt;tokio_rustls::c..</text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (40,816,326 samples, 11.11%)</title><rect x="665.6" y="325" width="131.1" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="668.56" y="335.5" >&lt;&amp;mut serde_json..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="69" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="79.5" >[[kerne..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;serde_core::private::content::Content&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="149" width="65.6" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="865.22" y="159.5" >core::p..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="357" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="367.5" >[[kerne..</text>
+</g>
+<g >
+<title>httparse::parse_headers_iter_uninit (20,408,163 samples, 5.56%)</title><rect x="272.2" y="373" width="65.6" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="275.22" y="383.5" >httpars..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::conn::Conn&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, bytes::bytes::Bytes, hyper::proto::h1::role::Client&gt;&gt;::poll_read_body (40,816,326 samples, 11.11%)</title><rect x="141.1" y="389" width="131.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="144.11" y="399.5" >&lt;hyper::proto::h..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::MapDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::MapAccess&gt;::next_value_seed::&lt;core::marker::PhantomData&lt;core::option::Option&lt;k8s_openapi::v1_34::apimachinery::pkg::apis::meta::v1::object_meta::ObjectMeta&gt;&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="927.8" y="309" width="65.5" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="930.78" y="319.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>kube_runtime::watcher::next_with_idle_timeout::&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn futures_core::stream::Stream&lt;Item = core::result::Result&lt;kube_core::watch::WatchEvent&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod&gt;, kube_client::error::Error&gt;&gt; + core::marker::Send&gt;&gt;, core::result::Result&lt;kube_core::watch::WatchEvent&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod&gt;, kube_client::error::Error&gt;&gt;::{closure#0} (102,040,815 samples, 27.78%)</title><rect x="665.6" y="357" width="327.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="668.56" y="367.5" >kube_runtime::watcher::next_with_idle_timeou..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="85" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="95.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="213" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="223.5" >[[kerne..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler::multi_thread::worker::Launch&gt;::launch::{closure#0}&gt;, tokio::runtime::blocking::schedule::BlockingSchedule&gt; (367,346,934 samples, 100.00%)</title><rect x="10.0" y="469" width="1180.0" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" >tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler::multi_thread::worker::Launch&gt;::launch::{closure#0}&gt;, toki..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="293" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="303.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (40,816,326 samples, 11.11%)</title><rect x="665.6" y="293" width="131.1" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="668.56" y="303.5" >&lt;&amp;mut serde_json..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::api::core::v1::downward_api_projection::DownwardAPIProjection as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="229" width="65.6" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="865.22" y="239.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="229" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="239.5" >[[kerne..</text>
+</g>
+<g >
+<title>all (367,346,934 samples, 100%)</title><rect x="10.0" y="581" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::StrRead&gt; as serde_core::de::Deserializer&gt;::deserialize_any::&lt;serde::private::de::content::ContentVisitor&gt; (40,816,326 samples, 11.11%)</title><rect x="665.6" y="261" width="131.1" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="668.56" y="271.5" >&lt;&amp;mut serde_json..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 5.56%)</title><rect x="141.1" y="229" width="65.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="144.11" y="239.5" >[libc.s..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::io::driver::Driver&gt;::turn (40,816,326 samples, 11.11%)</title><rect x="10.0" y="389" width="131.1" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >&lt;tokio::runtime:..</text>
+</g>
+<g >
+<title>&lt;futures_util::stream::stream::filter_map::FilterMap&lt;tokio_util::codec::framed_read::FramedRead&lt;tokio_util::io::stream_reader::StreamReader&lt;futures_util::stream::try_stream::MapErr&lt;http_body_util::stream::BodyDataStream&lt;kube_client::client::body::Body&gt;, &lt;kube_client::client::Client&gt;::request_events&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod&gt;::{closure#0}::{closure#0}&gt;, bytes::bytes::Bytes&gt;, tokio_util::codec::lines_codec::LinesCodec&gt;, &lt;kube_client::client::Client&gt;::request_events&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod&gt;::{closure#0}::{closure#1}::{closure#0}, &lt;kube_client::client::Client&gt;::request_events&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod&gt;::{closure#0}::{closure#1}&gt; as futures_core::stream::Stream&gt;::poll_next (102,040,815 samples, 27.78%)</title><rect x="665.6" y="341" width="327.7" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="668.56" y="351.5" >&lt;futures_util::stream::stream::filter_map::F..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;core::option::Option&lt;alloc::vec::Vec&lt;k8s_openapi::v1_34::api::core::v1::container_status::ContainerStatus&gt;&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="1124.4" y="373" width="65.6" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1127.44" y="383.5" >core::p..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::MapDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::MapAccess&gt;::next_value_seed::&lt;core::marker::PhantomData&lt;core::option::Option&lt;alloc::string::String&gt;&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="796.7" y="277" width="65.5" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="799.67" y="287.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;k8s_openapi::v1_34::api::core::v1::volume_mount_status::VolumeMountStatus&gt; (20,408,163 samples, 5.56%)</title><rect x="1124.4" y="341" width="65.6" height="15.0" fill="rgb(223,82,19)" rx="2" ry="2" />
+<text  x="1127.44" y="351.5" >core::p..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;k8s_openapi::v1_34::api::core::v1::pod_status::PodStatus&gt; (20,408,163 samples, 5.56%)</title><rect x="1124.4" y="389" width="65.6" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1127.44" y="399.5" >core::p..</text>
+</g>
+<g >
+<title>&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod as core::clone::Clone&gt;::clone.2759 (40,816,326 samples, 11.11%)</title><rect x="468.9" y="389" width="131.1" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="471.89" y="399.5" >&lt;k8s_openapi::v1..</text>
+</g>
+<g >
+<title>kube_runtime::watcher::step::&lt;kube_runtime::watcher::FullObject&lt;nodescheduler::cache::dra::RawResourceClaim&gt;&gt;::{closure#0} (20,408,163 samples, 5.56%)</title><rect x="993.3" y="373" width="65.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="996.33" y="383.5" >kube_ru..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_struct::&lt;&lt;k8s_openapi::v1_34::api::core::v1::object_field_selector::ObjectFieldSelector as serde_core::de::Deserialize&gt;::deserialize::Visitor&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="165" width="65.6" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="865.22" y="175.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="261" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="271.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;alloc::vec::Vec&lt;k8s_openapi::v1_34::api::core::v1::container_status::ContainerStatus&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 5.56%)</title><rect x="1124.4" y="357" width="65.6" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1127.44" y="367.5" >&lt;alloc:..</text>
+</g>
+<g >
+<title>httparse::simd::avx2::match_header_value_vectored (20,408,163 samples, 5.56%)</title><rect x="272.2" y="357" width="65.6" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="275.22" y="367.5" >httpars..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::io::Buffered&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, hyper::proto::h1::encode::EncodedBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll_read_from_io (40,816,326 samples, 11.11%)</title><rect x="141.1" y="341" width="131.1" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="144.11" y="351.5" >&lt;hyper::proto::h..</text>
+</g>
+<g >
+<title>&lt;kube_runtime::utils::stream_backoff::StreamBackoff&lt;futures_util::stream::unfold::Unfold&lt; (142,857,141 samples, 38.89%)</title><rect x="600.0" y="389" width="458.9" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="603.00" y="399.5" >&lt;kube_runtime::utils::stream_backoff::StreamBackoff&lt;futures_ut..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="53" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="63.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="37" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="47.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="277" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="287.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::ContentDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::Deserializer&gt;::deserialize_option::&lt;serde_core::de::impls::OptionVisitor&lt;alloc::string::String&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="796.7" y="261" width="65.5" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="799.67" y="271.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (367,346,934 samples, 100.00%)</title><rect x="10.0" y="485" width="1180.0" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0}, </text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="197" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="207.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;hyper_timeout::stream::TimeoutReader&lt;hyper_timeout::stream::TimeoutWriter&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt; as hyper::rt::io::Read&gt;::poll_read (40,816,326 samples, 11.11%)</title><rect x="141.1" y="325" width="131.1" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="144.11" y="335.5" >&lt;hyper_timeout::..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::driver::IoStack&gt;::park_timeout (40,816,326 samples, 11.11%)</title><rect x="10.0" y="405" width="131.1" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >&lt;tokio::runtime:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="862.2" y="117" width="65.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="865.22" y="127.5" >[[kerne..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::role::Client as hyper::proto::h1::Http1Transaction&gt;::parse (20,408,163 samples, 5.56%)</title><rect x="272.2" y="389" width="65.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="275.22" y="399.5" >&lt;hyper:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.56%)</title><rect x="75.6" y="341" width="65.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="351.5" >[[kerne..</text>
+</g>
+<g >
+<title>[libc.so.6] (367,346,934 samples, 100.00%)</title><rect x="10.0" y="549" width="1180.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>&lt;serde::private::de::content::MapDeserializer&lt;serde_json::error::Error&gt; as serde_core::de::MapAccess&gt;::next_value_seed::&lt;core::marker::PhantomData&lt;core::option::Option&lt;k8s_openapi::v1_34::api::core::v1::object_field_selector::ObjectFieldSelector&gt;&gt;&gt; (20,408,163 samples, 5.56%)</title><rect x="862.2" y="181" width="65.6" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="865.22" y="191.5" >&lt;serde:..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::park_internal (40,816,326 samples, 11.11%)</title><rect x="10.0" y="437" width="131.1" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >&lt;tokio::runtime:..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task (326,530,608 samples, 88.89%)</title><rect x="141.1" y="437" width="1048.9" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="144.11" y="447.5" >&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task</text>
+</g>
+<g >
+<title>kube_runtime::watcher::step::&lt;kube_runtime::watcher::FullObject&lt;k8s_openapi::v1_34::api::core::v1::pod::Pod&gt;&gt;::{closure#0} (102,040,815 samples, 27.78%)</title><rect x="665.6" y="373" width="327.7" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="668.56" y="383.5" >kube_runtime::watcher::step::&lt;kube_runtime::..</text>
+</g>
+</g>
+</svg>
