@@ -282,6 +282,40 @@ async fn reconcile_namespace(
     finalize_namespace(client, namespace).await;
 }
 
+fn apply_namespace_event(
+    namespaces: &mut HashMap<String, Namespace>,
+    pending: &mut Option<HashMap<String, Namespace>>,
+    queue: &crate::workqueue::KeyedWorkQueue<String>,
+    event: Event<Namespace>,
+) {
+    match event {
+        Event::Init => *pending = Some(HashMap::new()),
+        Event::InitApply(namespace) => {
+            pending.get_or_insert_with(HashMap::new)
+                .insert(namespace.name_any(), namespace);
+        }
+        Event::InitDone => {
+            if let Some(snapshot) = pending.take() {
+                // Replace, don't merge: deletes can occur while disconnected.
+                // Publish only a complete snapshot so orphan sweeps cannot
+                // mistake namespaces on a later LIST page for missing ones.
+                *namespaces = snapshot;
+                for name in namespaces.keys() {
+                    queue.enqueue(name.clone());
+                }
+            }
+        }
+        Event::Apply(namespace) => {
+            let name = namespace.name_any();
+            namespaces.insert(name.clone(), namespace);
+            queue.enqueue(name);
+        }
+        Event::Delete(namespace) => {
+            namespaces.remove(&namespace.name_any());
+        }
+    }
+}
+
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
     let mut resources = discover_cleanup_resources(&discovery);
@@ -291,6 +325,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     );
 
     let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+    let mut pending_namespaces = Some(HashMap::new());
     let mut crds: HashMap<String, CustomResourceDefinition> = HashMap::new();
     let queue: crate::workqueue::KeyedWorkQueue<String> = Default::default();
     let mut stream = crate::watch::watch_namespaces(&client);
@@ -312,15 +347,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     loop {
         tokio::select! {
             ev = stream.next() => match ev {
-                Some(Ok(Event::Apply(namespace))) | Some(Ok(Event::InitApply(namespace))) => {
-                    let name = namespace.name_any();
-                    namespaces.insert(name.clone(), namespace);
-                    queue.enqueue(name);
+                Some(Ok(event)) => {
+                    apply_namespace_event(&mut namespaces, &mut pending_namespaces, &queue, event);
                 }
-                Some(Ok(Event::Delete(namespace))) => {
-                    namespaces.remove(&namespace.name_any());
-                }
-                Some(Ok(Event::Init | Event::InitDone)) => {}
                 Some(Err(error)) => tracing::warn!(error = ?error, "namespace watch error in namespace-controller"),
                 None => return Ok(()),
             },
@@ -389,7 +418,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     }
                 }
             }
-            _ = orphan_sweep.tick() => {
+            _ = orphan_sweep.tick(), if pending_namespaces.is_none() => {
                 sweep_orphaned_pods(&client, &namespaces).await;
             }
         }
@@ -399,6 +428,34 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relist_replaces_namespace_snapshot_only_after_completion() {
+        let mut old = namespace(Some(vec![NAMESPACE_FINALIZER]), true);
+        old.metadata.name = Some("deleted-while-disconnected".into());
+        let mut live = namespace(None, false);
+        live.metadata.name = Some("live".into());
+        let mut namespaces = HashMap::from([(old.name_any(), old.clone())]);
+        let mut pending = None;
+        let queue = crate::workqueue::KeyedWorkQueue::default();
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::Init);
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitApply(live.clone()));
+        assert!(pending.is_some(), "orphan sweep must remain disabled during LIST");
+        assert!(namespaces.contains_key(&old.name_any()), "partial LIST must not replace the snapshot");
+        assert!(!namespaces.contains_key("live"));
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitDone);
+        assert!(pending.is_none());
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains_key("live"));
+        assert!(!namespaces.contains_key(&old.name_any()), "relist must remove missed deletes");
+
+        // Restarting an interrupted LIST must discard its partial contents.
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::Init);
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitApply(old));
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::Init);
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitDone);
+        assert!(namespaces.is_empty(), "empty replacement LIST must not retain stale namespaces");
+    }
 
     fn namespace(finalizers: Option<Vec<&str>>, terminating: bool) -> Namespace {
         Namespace {
