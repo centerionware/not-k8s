@@ -263,6 +263,17 @@ runs:
         echo "all service state and logs on failure: end"
         echo "=========================================="
 
+    - name: Preserve the full controller and datastore failure timeline
+      if: failure() || steps.e2e.outputs.exit_code != '0'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A last-300-lines dump at suite end can miss a failure twenty
+        # minutes earlier. Keep all controller events across service restarts.
+        sudo journalctl -b -u nodecontroller -u nodestore --no-pager -o short-iso-precise \
+          > /tmp/e2e-controller-journal.txt
+        cat /tmp/e2e-controller-journal.txt
+
     - name: Publish this shard's e2e results
       if: always()
       env:
@@ -286,6 +297,9 @@ runs:
 
         payload=$(mktemp -d)
         cp /tmp/e2e-results-final.txt "$payload/results-shard-${SHARD}.txt"
+        if [[ -f /tmp/e2e-controller-journal.txt ]]; then
+          cp /tmp/e2e-controller-journal.txt "$payload/controller-journal-shard-${SHARD}.txt"
+        fi
         bash deploy/publish-validation-results.sh "$payload" "$RESULTS_BRANCH" "$RESULTS_PREFIX"
 
     - name: Fail the job if the e2e suite failed
