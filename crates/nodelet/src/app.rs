@@ -335,6 +335,17 @@ async fn evict_pod(client: &kube::Client, runtime: &Arc<dyn PodRuntime>, pod: &k
         warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to stop containers");
     }
 
+    // A reconcile that was already inside ensure_pod() when the first patch
+    // landed can finish afterward and write a fresh non-terminal status. The
+    // runtime stop emits its own events too, so repeat the terminal patch
+    // after stopping: the last writer must be the eviction path, otherwise
+    // activeDeadlineSeconds can be lost and the Pod keeps running forever.
+    if status_patched {
+        if let Err(e) = pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await {
+            warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to reaffirm pod status");
+        }
+    }
+
     if status_patched {
         info!(pod = %format!("{ns}/{name}"), status_reason, "evicted pod (containers stopped; object left for cleanup, matching real kubelet)");
     }
@@ -375,6 +386,25 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
                 continue;
             }
         };
+
+        // activeDeadlineSeconds is independent of resource-pressure ranking.
+        // Check it before the CRI stats RPC: a slow or wedged
+        // ListPodSandboxStats call must not delay a deadline eviction past
+        // the pod's own deadline.
+        let now = k8s_openapi::jiff::Timestamp::now();
+        let over_active_deadline = pods.iter().find(|p| {
+            if p.metadata.deletion_timestamp.is_some() {
+                return false;
+            }
+            let active_deadline_seconds = p.spec.as_ref().and_then(|s| s.active_deadline_seconds).map(i64::from);
+            let seconds_since_start =
+                p.status.as_ref().and_then(|s| s.start_time.as_ref()).map(|t| (now - t.0).get_seconds());
+            nodelet::eviction::active_deadline_exceeded(active_deadline_seconds, seconds_since_start)
+        });
+        if let Some(victim) = over_active_deadline {
+            evict_pod(&client, &runtime, victim, "DeadlineExceeded", "Pod was active on the node longer than the specified deadline").await;
+            continue;
+        }
 
         let usage_stats = match runtime.pod_usage_stats().await {
             Ok(stats) => stats,
@@ -436,31 +466,6 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
         });
         if let Some((victim, volume)) = over_empty_dir_limit {
             evict_pod(&client, &runtime, victim, "Evicted", &format!("The node was low on resource: emptyDir volume '{volume}' exceeded its sizeLimit.")).await;
-            continue; // one pod per check, matching the pressure-based path below
-        }
-
-        // spec.activeDeadlineSeconds (round 81; found in round 80's
-        // re-audit): real kubelet's own job, independent of node
-        // pressure and of restartPolicy — a pod running past its own
-        // deadline is terminated regardless of whether it would
-        // otherwise keep restarting under Always/OnFailure. Reuses the
-        // same evict_pod() stop-and-mark-Failed-but-never-delete path
-        // every other kubelet-initiated termination in this codebase
-        // uses (ephemeral-storage/emptyDir limits above, node-pressure
-        // eviction below) — matching real kubelet's own behavior exactly
-        // now (round 123), not a simplification of it.
-        let now = k8s_openapi::jiff::Timestamp::now();
-        let over_active_deadline = pods.iter().find(|p| {
-            if p.metadata.deletion_timestamp.is_some() {
-                return false;
-            }
-            let active_deadline_seconds = p.spec.as_ref().and_then(|s| s.active_deadline_seconds).map(i64::from);
-            let seconds_since_start =
-                p.status.as_ref().and_then(|s| s.start_time.as_ref()).map(|t| (now - t.0).get_seconds());
-            nodelet::eviction::active_deadline_exceeded(active_deadline_seconds, seconds_since_start)
-        });
-        if let Some(victim) = over_active_deadline {
-            evict_pod(&client, &runtime, victim, "DeadlineExceeded", "Pod was active on the node longer than the specified deadline").await;
             continue; // one pod per check, matching the pressure-based path below
         }
 

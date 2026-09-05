@@ -183,7 +183,11 @@ async fn handle_request(
             if !resync(api, watchers, tx).await {
                 return false;
             }
-            let revision = api.current_revision().unwrap_or(0);
+            // Each position was established by the same locked read as its
+            // replay. A fresh current_revision() here could include a write
+            // made while sending that replay, falsely acknowledging it.
+            let revision = watchers.values().map(|watcher| watcher.last_revision).min()
+                .unwrap_or(0);
             tx.send(Ok(pb::WatchResponse {
                 header: api.header(revision),
                 watch_id: -1,
@@ -380,11 +384,15 @@ async fn resync(
         let Some(watcher) = watchers.get_mut(&id) else { continue };
         let from = watcher.last_revision;
         let range = watcher.range.clone();
-        match api.node().read(|s| s.events_since(from, &range)) {
-            Ok(history) => {
+        match api.node().read(|s| Ok((s.events_since(from, &range)?, s.revision()?))) {
+            Ok((history, revision)) => {
                 if !send_events(api, watcher, history, tx).await {
                     return false;
                 }
+                // Even a range with no matching writes is caught up to the
+                // snapshot revision. Never sample a later revision after the
+                // asynchronous sends above.
+                watcher.last_revision = watcher.last_revision.max(revision);
             }
             Err(Error::Compacted { compact_revision }) => {
                 // The events it missed have been compacted away. Cancelling
@@ -414,4 +422,65 @@ async fn resync(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{Command, PutOp};
+    use crate::consensus::{Node, SingleNode};
+    use crate::store::Store;
+    use std::future::Future;
+    use std::sync::Arc;
+
+    async fn put(node: &Node, key: &str) -> i64 {
+        node.propose(Command::Put(PutOp {
+            key: key.as_bytes().to_vec(), value: b"value".to_vec(),
+            lease: 0, prev_kv: false, ignore_value: false, ignore_lease: false,
+        })).await.unwrap().revision
+    }
+
+    #[tokio::test]
+    async fn progress_does_not_acknowledge_a_write_during_replay() {
+        let node = Node::new(Store::open(std::path::Path::new(":memory:")).unwrap(),
+            Arc::new(SingleNode::new(1, 1)), 16);
+        put(&node, "/first").await;
+        let replay_revision = put(&node, "/second").await;
+        let api = EtcdApi::new(node.clone());
+        let mut watchers = HashMap::from([(0, Watcher {
+            id: 0, range: KeyRange::All, prev_kv: false,
+            last_revision: 1, filter_put: false, filter_delete: false,
+        })]);
+        // Zero free seats deliberately parks replay after its snapshot read.
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(Ok(pb::WatchResponse::default())).await.unwrap();
+        let req = pb::WatchRequest {
+            request_union: Some(pb::watch_request::RequestUnion::ProgressRequest(
+                pb::WatchProgressRequest {})),
+        };
+        let mut next_id = 1;
+        let progress = handle_request(&api, req, &mut watchers, &mut next_id, &tx);
+        tokio::pin!(progress);
+        std::future::poll_fn(|cx| {
+            assert!(progress.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        let late_revision = put(&node, "/late").await;
+        rx.recv().await.unwrap().unwrap(); // remove the deliberate blocker
+        let drain = async {
+            let mut delivered = Vec::new();
+            loop {
+                let response = rx.recv().await.unwrap().unwrap();
+                if response.watch_id == -1 {
+                    assert_eq!(response.header.unwrap().revision, replay_revision);
+                    assert!(replay_revision < late_revision);
+                    break;
+                }
+                delivered.extend(response.events);
+            }
+            assert_eq!(delivered.len(), 2);
+        };
+        let (ok, ()) = tokio::join!(progress, drain);
+        assert!(ok);
+    }
 }

@@ -138,13 +138,14 @@ impl WatchCache {
     }
 
     /// Applies one event from the live watch, in the order it arrived.
-    /// `revision` must be monotonically increasing — the driver loop's
+    /// `revision` must be monotonically nondecreasing — one transaction can
+    /// change several keys at the same revision. The driver loop's
     /// job, not this method's, to guarantee (a real etcd/nodestore watch
     /// stream is already strictly ordered by construction, so this is a
     /// sanity assertion against a driver-loop bug, not a real-world input
     /// this needs to tolerate).
     pub fn apply(&mut self, kind: EventKind, key: Vec<u8>, value: Vec<u8>, revision: i64) {
-        debug_assert!(revision > self.revision, "watch events must arrive in increasing revision order");
+        debug_assert!(revision >= self.revision, "watch events must arrive in revision order");
         // Real upstream's own `WatchEvent.Object` doc comment: for a
         // `Deleted` event, `Object` is "the state of the object
         // immediately before deletion." The caller (`cacher::driver`)
@@ -185,7 +186,7 @@ impl WatchCache {
         // No live receiver is not an error — a cache with nobody watching
         // yet still needs to keep its own state current.
         let _ = self.events.send(event);
-        let _ = self.revision_tx.send(revision);
+        self.revision_tx.send_replace(revision);
     }
 
     /// `resourceVersion=0`/unset semantics: whatever the cache currently
@@ -376,6 +377,16 @@ impl SharedCache {
 
     pub fn apply(&self, kind: EventKind, key: Vec<u8>, value: Vec<u8>, revision: i64) {
         self.write().apply(kind, key, value, revision)
+    }
+
+    /// A datastore response may contain multiple keys at one revision. Hold
+    /// the snapshot lock for the complete batch so a LIST cannot advertise
+    /// that revision while still missing another key from the transaction.
+    pub fn apply_batch(&self, events: Vec<(EventKind, Vec<u8>, Vec<u8>, i64)>) {
+        let mut cache = self.write();
+        for (kind, key, value, revision) in events {
+            cache.apply(kind, key, value, revision);
+        }
     }
 
     /// Swaps in an entirely new snapshot — what a reconnect-and-relist does

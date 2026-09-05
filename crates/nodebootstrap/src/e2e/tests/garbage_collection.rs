@@ -386,7 +386,7 @@ pub(super) async fn garbage_collector_cascades_deployment_delete_to_replicaset_a
         })
         .await?;
     deployments.delete(name, &DeleteParams::default()).await?;
-    context
+    let cascade = context
         .wait_until("garbage collector removes the Deployment ReplicaSet", Duration::from_secs(60), || {
             let replicasets: Api<k8s_openapi::api::apps::v1::ReplicaSet> =
                 Api::namespaced(context.client.clone(), &context.namespace);
@@ -398,7 +398,18 @@ pub(super) async fn garbage_collector_cascades_deployment_delete_to_replicaset_a
                     .is_empty())
             }
         })
-        .await?;
+        .await;
+    if let Err(error) = cascade {
+        let replicasets: Api<k8s_openapi::api::apps::v1::ReplicaSet> =
+            Api::namespaced(context.client.clone(), &context.namespace);
+        // Capture evidence before namespace cleanup deletes the owner chain.
+        // A recreated owner, a stuck finalizer, and a missed GC event are
+        // different failures even though all three look like a timeout.
+        eprintln!("GC Deployment at failure: {:?}", deployments.get_opt(name).await);
+        eprintln!("GC ReplicaSets at failure: {:?}", replicasets.list(&labels(&format!("app={name}"))).await);
+        eprintln!("GC Pods at failure: {:?}", pods.list(&labels(&format!("app={name}"))).await);
+        return Err(error);
+    }
     context
         .wait_until("garbage collector removes the Deployment Pods", Duration::from_secs(120), || {
             let pods = pods.clone();

@@ -70,7 +70,7 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
         None => {
             let nested_message = codegen::resolve_message_ref(message, &field.proto_type);
             if is_time_message(&nested_message) {
-                decode_time_message(&label(), as_bytes(&label(), raw)?)
+                decode_time_message(&nested_message, &label(), as_bytes(&label(), raw)?)
             } else if is_fields_v1_message(&nested_message) {
                 decode_json_message(&label(), as_bytes(&label(), raw)?)
             } else if is_json_message(&nested_message) {
@@ -138,7 +138,7 @@ fn encode_time_string(field_label: &str, s: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
+fn decode_time_message(message: &str, field_label: &str, bytes: &[u8]) -> Result<Value> {
     let mut seconds: i64 = 0;
     let mut nanos: i32 = 0;
     let mut pos = 0;
@@ -156,9 +156,12 @@ fn decode_time_message(field_label: &str, bytes: &[u8]) -> Result<Value> {
             value: format!("seconds={seconds}, nanos={nanos}"),
         }
     })?;
-    Ok(Value::String(
-        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    ))
+    let format = if message.ends_with("MicroTime") {
+        chrono::SecondsFormat::Micros
+    } else {
+        chrono::SecondsFormat::AutoSi
+    };
+    Ok(Value::String(dt.to_rfc3339_opts(format, true)))
 }
 
 /// Group K's own well-known-type special case, the same shape

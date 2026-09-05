@@ -89,7 +89,12 @@ redispatch merely because compilation is slow.
 
 Read the branch's `build.yml`, `nodebootstrap/src/fetch.rs`, and component
 table for actual artifact names, architecture, layout, and prebuilt env vars.
-Use debug for correctness iteration. Real nodelet needs `cri`; nodestore and
+Use quick-check's debug build for the compile/unit loop. The current e2e
+workflow deliberately builds stripped release binaries: debug artifacts have
+approached 900 MB, so faster compilation alone is not an acceptable tradeoff.
+Preserve that default unless an alternative's artifact size and storage budget
+are verified. Reuse the combined installer applet instead of compiling and
+uploading a redundant standalone installer. Real nodelet needs `cri`; nodestore and
 nodeapiserver also require protoc. A mock-runtime pass does not prove CRI.
 
 - Check free memory/disk and target architecture before downloading. On the

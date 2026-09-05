@@ -229,22 +229,32 @@ fn rs_hash(rs: &ReplicaSet) -> Option<&str> {
     rs.metadata.labels.as_ref().and_then(|l| l.get(POD_TEMPLATE_HASH_LABEL)).map(|s| s.as_str())
 }
 
-async fn scale_replica_set(rs_api: &Api<ReplicaSet>, name: &str, replicas: i32) {
+async fn scale_replica_set(rs_api: &Api<ReplicaSet>, name: &str, replicas: i32) -> bool {
     let patch = serde_json::json!({ "spec": { "replicas": replicas } });
     if let Err(e) = rs_api.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
         tracing::warn!(replicaset = %name, replicas, error = ?e, "failed to scale ReplicaSet for deployment-controller");
+        return true;
     }
+    false
 }
 
-async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMap<String, ReplicaSet>) {
+async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMap<String, ReplicaSet>) -> bool {
+    if d.metadata.deletion_timestamp.is_some() {
+        return false;
+    }
+    // A failed scale/delete/status write does not itself mutate the
+    // Deployment, so a watch-driven controller would otherwise have no event
+    // that can retry the desired state. Keep the retry decision local to one
+    // reconciliation and let the caller schedule one low-frequency retry.
+    let mut needs_retry = false;
     let namespace = ns_of(d);
     let name = d.name_any();
     let d_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
     let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), &namespace);
-    let Some(d_uid) = d.uid() else { return };
-    let Some(spec) = d.spec.as_ref() else { return };
+    let Some(d_uid) = d.uid() else { return needs_retry };
+    let Some(spec) = d.spec.as_ref() else { return needs_retry };
     if spec.paused == Some(true) {
-        return;
+        return needs_retry;
     }
     let desired = spec.replicas.unwrap_or(1);
     let hash = compute_template_hash(&spec.template);
@@ -264,10 +274,25 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
     let new_rs: &ReplicaSet = match new_rs {
         Some(rs) => rs,
         None => {
+            // The RS delete event can arrive before this controller sees
+            // its owner's deletion. Check authority only on the create
+            // path; normal reconciles remain entirely watch-driven.
+            match d_api.get(&name).await {
+                Ok(current) if current.uid() == d.uid()
+                    && current.metadata.deletion_timestamp.is_none()
+                    && current.metadata.generation == d.metadata.generation => {}
+                Ok(_) => return false,
+                Err(kube::Error::Api(status)) if status.is_not_found() => return false,
+                Err(error) => {
+                    tracing::warn!(deployment = %name, error = ?error,
+                        "failed to verify Deployment before creating ReplicaSet");
+                    return true;
+                }
+            }
             // Always created at 0 — RollingUpdate scales it up incrementally
             // below; Recreate only scales it up once old ReplicaSets are
             // drained, handled in the `is_recreate` branch further down.
-            let Some(new) = build_new_replica_set(d, &hash, 0) else { return };
+            let Some(new) = build_new_replica_set(d, &hash, 0) else { return needs_retry };
             match rs_api.create(&PostParams::default(), &new).await {
                 Ok(created) => {
                     new_rs_owned = created;
@@ -276,10 +301,10 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
                 // The shared ReplicaSet informer will deliver the object
                 // that won this create race. Do not issue a compensating GET
                 // here: that turns a normal cache-lag race into an API burst.
-                Err(kube::Error::Api(ref status)) if status.is_already_exists() => return,
+                Err(kube::Error::Api(ref status)) if status.is_already_exists() => return needs_retry,
                 Err(e) => {
                     tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to create new ReplicaSet for deployment-controller");
-                    return;
+                    return true;
                 }
             }
         }
@@ -295,13 +320,13 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
         // granularity, not real per-Pod wait).
         for rs in &old {
             if rs_replicas(rs) != 0 {
-                scale_replica_set(&rs_api, &rs.name_any(), 0).await;
+                needs_retry |= scale_replica_set(&rs_api, &rs.name_any(), 0).await;
             }
         }
         let old_settled = old.iter().all(|rs| rs.status.as_ref().map(|s| s.replicas).unwrap_or(0) == 0);
         let target = if old_settled { desired } else { 0 };
         if rs_replicas(new_rs) != target {
-            scale_replica_set(&rs_api, &new_rs.name_any(), target).await;
+            needs_retry |= scale_replica_set(&rs_api, &new_rs.name_any(), target).await;
         }
     } else {
         let rolling = spec.strategy.as_ref().and_then(|s| s.rolling_update.as_ref());
@@ -312,14 +337,14 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
         let current_total = old_total + rs_replicas(new_rs);
         let new_target = new_rs_desired_replicas(desired, max_surge, current_total, rs_replicas(new_rs));
         if new_target != rs_replicas(new_rs) {
-            scale_replica_set(&rs_api, &new_rs.name_any(), new_target).await;
+            needs_retry |= scale_replica_set(&rs_api, &new_rs.name_any(), new_target).await;
         }
 
         let available_total = old_available + rs_available(new_rs);
         let budget = scale_down_budget(desired, max_unavailable, available_total, new_target, rs_available(new_rs));
         let old_sorted: Vec<(String, i32)> = old.iter().map(|rs| (rs.name_any(), rs_replicas(rs))).collect();
         for (rs_name, new_count) in scale_down_old(old_sorted, budget) {
-            scale_replica_set(&rs_api, &rs_name, new_count).await;
+            needs_retry |= scale_replica_set(&rs_api, &rs_name, new_count).await;
         }
     }
 
@@ -333,6 +358,7 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
     if drained.len() > limit {
         for rs in &drained[..drained.len() - limit] {
             if let Err(e) = rs_api.delete(&rs.name_any(), &Default::default()).await {
+                needs_retry = true;
                 tracing::warn!(namespace = %namespace, replicaset = %rs.name_any(), error = ?e, "failed to delete old ReplicaSet past revisionHistoryLimit");
             }
         }
@@ -354,15 +380,30 @@ async fn reconcile_deployment(client: &Client, d: &Deployment, rs_cache: &HashMa
     if d.status.as_ref() != Some(&status) {
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = d_api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+            needs_retry = true;
             tracing::warn!(namespace = %namespace, deployment = %name, error = ?e, "failed to patch Deployment status");
         }
     }
+    needs_retry
+}
+
+/// How long to wait before retrying a Deployment whose reconcile hit a
+/// transient scale/delete/status failure. A fixed, low-frequency retry closes
+/// the watch-driven gap without turning this into a periodic full resync.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn schedule_retry(queue: &std::sync::Arc<KeyedWorkQueue<String>>, key: String) {
+    let queue = queue.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(RETRY_DELAY).await;
+        queue.enqueue(key);
+    });
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut replica_sets: HashMap<String, ReplicaSet> = HashMap::new();
     let mut deployments: HashMap<String, Deployment> = HashMap::new();
-    let queue: KeyedWorkQueue<String> = KeyedWorkQueue::default();
+    let queue: std::sync::Arc<KeyedWorkQueue<String>> = std::sync::Arc::new(KeyedWorkQueue::default());
 
     let mut rs_stream = crate::watch::watch_replica_sets(&client);
     let mut d_stream = crate::watch::watch_deployments(&client);
@@ -409,7 +450,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(d) = deployments.get(&key).cloned() {
-                    reconcile_deployment(&client, &d, &replica_sets).await;
+                    if reconcile_deployment(&client, &d, &replica_sets).await {
+                        schedule_retry(&queue, key);
+                    }
                 }
             }
         }

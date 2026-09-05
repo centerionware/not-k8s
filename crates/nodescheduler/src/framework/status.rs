@@ -46,6 +46,10 @@ pub enum Code {
     /// than serving a penalty. DRA is the motivating case: allocating a claim
     /// is progress even though this cycle didn't place the pod.
     Pending,
+    /// The object disappeared or entered deletion while an asynchronous bind
+    /// was still in flight. This is terminal for this bind attempt: retrying
+    /// it cannot place the object and only creates a conflict storm.
+    Cancelled,
 }
 
 impl Code {
@@ -103,6 +107,10 @@ impl Status {
 
     pub fn pending(plugin: &'static str, reason: impl Into<String>) -> Self {
         Status { code: Code::Pending, plugin, reasons: vec![reason.into()] }
+    }
+
+    pub fn cancelled(plugin: &'static str, reason: impl Into<String>) -> Self {
+        Status { code: Code::Cancelled, plugin, reasons: vec![reason.into()] }
     }
 
     pub fn is_success(&self) -> bool {

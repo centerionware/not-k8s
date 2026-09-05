@@ -238,17 +238,13 @@ impl Backoff for WatchBackoffPolicy {
 const RETRY_FIRST_DELAY: Duration = Duration::from_secs(5);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
 
-/// How many times a teardown retries `remove_pod` before giving up and
-/// leaving it to the next event.
-///
-/// Bounded, unlike `schedule_retry`'s open-ended loop, and the asymmetry is
-/// deliberate: that one retries a pod that is *supposed to be running*, so
-/// giving up would strand a workload. This one retries a pod that is already
-/// gone from the apiserver — the cost of stopping is a warn and some leftover
-/// containers that the next event or a restart will collect, whereas retrying
-/// forever would pin a task per undead pod for the process's whole lifetime.
-/// Six attempts spans roughly five minutes on the shared backoff curve.
-const TEARDOWN_MAX_ATTEMPTS: u32 = 6;
+/// A pod teardown is the last actor that can remove a terminating Pod. Both
+/// runtime cleanup and the final API delete therefore retry until the
+/// transient dependency recovers; giving up is indistinguishable from
+/// intentionally leaking a terminating Pod because this controller is
+/// watch-driven and no later Pod event is guaranteed to arrive.
+const TEARDOWN_API_TIMEOUT: Duration = Duration::from_secs(30);
+const TEARDOWN_RUNTIME_TIMEOUT: Duration = Duration::from_secs(60);
 
 const COREDNS_NAMESPACE: &str = "kube-system";
 const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
@@ -1009,26 +1005,25 @@ impl PodController {
             // retry here the pod stays Terminating forever and its
             // containers keep running.
             //
-            // Bounded rather than endless, and the guard is deliberately
-            // still held across the whole loop: a teardown genuinely is in
-            // flight, and a duplicate event must not start a second one
-            // beside it. When the attempts are exhausted the guard drops,
-            // which is what lets a later event try again from scratch.
+            // The guard is deliberately held across the whole loop: a
+            // teardown genuinely is in flight, and a duplicate event must
+            // not start a second one beside it. The backoff reaches the same
+            // five-minute ceiling used by ordinary pod recovery, so an API or
+            // runtime that is permanently broken costs one wakeup per ceiling
+            // interval while a fixed dependency eventually makes progress.
             let mut attempt: u32 = 0;
             let mut delay = RETRY_FIRST_DELAY;
             loop {
                 attempt += 1;
-                match runtime.remove_pod(&pod).await {
-                    Ok(()) => break,
-                    Err(e) if attempt >= TEARDOWN_MAX_ATTEMPTS => {
-                        warn!(
-                            pod = %format!("{ns}/{name}"), error = ?e, attempt,
-                            "remove_pod still failing after the last attempt — giving up;                              the next watch event for this pod will start over"
-                        );
-                        return;
-                    }
-                    Err(e) => {
+                match tokio::time::timeout(TEARDOWN_RUNTIME_TIMEOUT, runtime.remove_pod(&pod)).await {
+                    Ok(Ok(())) => break,
+                    Ok(Err(e)) => {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, attempt, "remove_pod failed; retrying");
+                        tokio::time::sleep(delay).await;
+                        delay = next_retry_delay(delay);
+                    }
+                    Err(_) => {
+                        warn!(pod = %format!("{ns}/{name}"), timeout_secs = TEARDOWN_RUNTIME_TIMEOUT.as_secs(), attempt, "remove_pod timed out; retrying");
                         tokio::time::sleep(delay).await;
                         delay = next_retry_delay(delay);
                     }
@@ -1055,10 +1050,21 @@ impl PodController {
                 }),
                 ..Default::default()
             };
-            match api.delete(&name, &dp).await {
-                Ok(_) => {}
-                Err(kube::Error::Api(e)) if e.code == 404 || e.code == 409 => {}
-                Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
+            let mut attempt: u32 = 0;
+            let mut delay = RETRY_FIRST_DELAY;
+            loop {
+                attempt += 1;
+                match tokio::time::timeout(TEARDOWN_API_TIMEOUT, api.delete(&name, &dp)).await {
+                    Ok(Ok(_)) => break,
+                    // A 404 means the object was already removed. A 409 is
+                    // the UID precondition protecting a replacement Pod;
+                    // either outcome means this old teardown must stop.
+                    Ok(Err(kube::Error::Api(error))) if error.code == 404 || error.code == 409 => break,
+                    Ok(Err(error)) => warn!(pod = %format!("{ns}/{name}"), error = ?error, attempt, "final delete of pod object failed; retrying"),
+                    Err(_) => warn!(pod = %format!("{ns}/{name}"), timeout_secs = TEARDOWN_API_TIMEOUT.as_secs(), attempt, "timed out deleting pod object; retrying"),
+                }
+                tokio::time::sleep(delay).await;
+                delay = next_retry_delay(delay);
             }
         });
     }

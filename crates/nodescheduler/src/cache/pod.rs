@@ -435,6 +435,12 @@ pub struct PodInfo {
     pub attempts: u32,
     /// Set by preemption; the node this pod has been promised.
     pub nominated_node_name: Option<String>,
+    /// The apiserver has begun deleting this Pod. An unassigned Pod in this
+    /// state must leave the scheduling queue: its binding endpoint is
+    /// required to reject it, so retrying it is a permanent 409 loop while a
+    /// namespace is being torn down. Assigned Pods still stay in the cache
+    /// until their delete event so their resources remain reserved.
+    pub deleting: bool,
     /// The pod is being terminated by scheduler preemption. Upstream only
     /// suppresses a second preemption attempt while a lower-priority pod on
     /// the nominated node has both a deletion timestamp and the
@@ -640,6 +646,7 @@ impl PodInfo {
                 .status
                 .as_ref()
                 .and_then(|s| s.nominated_node_name.clone()),
+            deleting: meta.deletion_timestamp.is_some(),
             terminating_by_preemption: meta.deletion_timestamp.is_some()
                 && pod
                     .status
