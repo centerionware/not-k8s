@@ -960,6 +960,7 @@ impl PodController {
         }
     }
 
+    #[cfg(test)]
     async fn on_referenced_object_event<T>(&self, event: Event<T>, kind: ReferencedKind)
     where
         T: kube::Resource<DynamicType = ()>,
@@ -1000,6 +1001,7 @@ impl PodController {
     /// real kubelet's config-map-manager live-update behavior. Env vars
     /// (envFrom/valueFrom) are deliberately NOT covered: kubelet captures
     /// those once at container start, by design, and never refreshes them.
+    #[cfg(test)]
     async fn on_referenced_object_changed(&self, namespace: &str, name: &str, kind: ReferencedKind) {
         self.on_referenced_object_changed_inner(namespace, name, kind, false).await;
     }
