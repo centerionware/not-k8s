@@ -119,6 +119,8 @@ jobs:
           sudo chmod 644 "$KUBECONFIG"
           kubectl wait nodes --all --for=condition=Ready --timeout=180s
           kubectl version -o json > profile-data/kubernetes-version.json
+          kubectl get nodes -o json > profile-data/nodes.json
+          kubectl -n kube-system get pods -o json > profile-data/system-pods.json
       - name: Capture idle and realistic bounded load
         id: capture
         run: |

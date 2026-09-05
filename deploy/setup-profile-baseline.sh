@@ -74,4 +74,7 @@ for attempt in {1..90}; do
     sleep 2
 done
 kubectl wait nodes --all --for=condition=Ready --timeout=240s
+# k3s applies bundled addons asynchronously after its API becomes ready.
+# rollout status fails immediately on NotFound; first wait for creation.
+kubectl -n kube-system wait --for=create deployment/coredns --timeout=180s
 kubectl -n kube-system rollout status deployment/coredns --timeout=240s

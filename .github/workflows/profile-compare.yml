@@ -103,6 +103,8 @@ jobs:
           set -euo pipefail
           kubectl wait nodes --all --for=condition=Ready --timeout=240s
           kubectl version -o json > profile-data/kubernetes-version.json
+          kubectl get nodes -o json > profile-data/nodes.json
+          kubectl -n kube-system get pods -o json > profile-data/system-pods.json
           # All legs warm up with the same small ready Deployment before idle.
           args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
           if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
