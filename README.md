@@ -67,3 +67,5 @@ sudo ./deploy/measure.sh 120 /tmp/out /usr/local/bin/kubelet
 ```
 
 Or dispatch `gh workflow run profiling.yml`.
+
+[Latest stack profile](latest-stack.md)
