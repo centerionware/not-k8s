@@ -67,24 +67,27 @@ impl Drop for PriorityLease {
 
 struct QueueGuard {
     queue: Arc<PriorityQueue>,
-    armed: bool,
 }
 
 impl QueueGuard {
     fn new(queue: Arc<PriorityQueue>) -> Self {
-        Self { queue, armed: true }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
+        Self { queue }
     }
 }
 
 impl Drop for QueueGuard {
     fn drop(&mut self) {
-        if self.armed {
-            self.queue.queued.fetch_sub(1, Ordering::Release);
-        }
+        self.queue.queued.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Request cancellation must release accounting as well as the semaphore's
+/// own wait node. Otherwise timeouts permanently consume queue capacity.
+struct WaitingCount<'a>(&'a AtomicUsize);
+
+impl Drop for WaitingCount<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -203,15 +206,18 @@ async fn acquire_priority(
             return Ok(PriorityLease { state, queue });
         }
         let notified = state.notify.notified();
-        let mut guard = QueueGuard::new(queue.clone());
+        tokio::pin!(notified);
+        // Register before the second capacity check: notify_one stores only
+        // one permit when multiple seats are released before the first poll.
+        notified.as_mut().enable();
+        let guard = QueueGuard::new(queue.clone());
         let previous = queue.queued.fetch_add(1, Ordering::AcqRel);
         if previous >= state.queue_length_limit.load(Ordering::Acquire) {
             return Err(Error::QueueFull);
         }
         if try_claim(&state, &queue) {
-            guard.disarm();
-            drop(notified);
-            return Ok(PriorityLease { state, queue });
+            drop(guard);
+            return Ok(PriorityLease { state: state.clone(), queue });
         }
         notified.await;
         drop(guard);
@@ -357,13 +363,11 @@ async fn acquire_seat(semaphore: Arc<Semaphore>, queued: &AtomicUsize, queue_len
         Err(TryAcquireError::Closed) => Err(Error::Closed),
         Err(TryAcquireError::NoPermits) => {
             let previous = queued.fetch_add(1, Ordering::AcqRel);
+            let _waiting = WaitingCount(queued);
             if previous >= queue_length_limit {
-                queued.fetch_sub(1, Ordering::Release);
                 return Err(Error::QueueFull);
             }
-            let result = semaphore.acquire_owned().await.map_err(|_| Error::Closed);
-            queued.fetch_sub(1, Ordering::Release);
-            result
+            semaphore.acquire_owned().await.map_err(|_| Error::Closed)
         }
     }
 }
@@ -396,6 +400,31 @@ mod tests {
             verb: verb.to_string(),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_seat_wait_does_not_leak_queue_capacity() {
+        let semaphore = Arc::new(Semaphore::new(0));
+        let queued = AtomicUsize::new(0);
+        for _ in 0..3 {
+            let mut waiting = Box::pin(acquire_seat(semaphore.clone(), &queued, 1));
+            assert!(futures::poll!(&mut waiting).is_pending());
+            assert_eq!(queued.load(Ordering::Acquire), 1);
+            drop(waiting);
+            assert_eq!(queued.load(Ordering::Acquire), 0);
+        }
+        semaphore.add_permits(1);
+        assert!(acquire_seat(semaphore, &queued, 1).await.is_ok());
+    }
+
+    #[test]
+    fn leaving_priority_queue_releases_accounting_on_success_too() {
+        let queue = Arc::new(PriorityQueue {
+            active: AtomicUsize::new(0),
+            queued: AtomicUsize::new(1),
+        });
+        drop(QueueGuard::new(queue.clone()));
+        assert_eq!(queue.queued.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]

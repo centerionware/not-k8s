@@ -199,6 +199,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_kubectl_apply_uses_openapi_schema",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_enforces_node_restriction",
         group: TestGroup::General,
     },
@@ -1127,6 +1131,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_readiness_does_not_wait_for_liveness_delay",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_liveness_probe_failure_restarts_the_container",
         group: TestGroup::General,
     },
@@ -1419,6 +1427,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_paginated_list_watch_preserves_concurrent_updates",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion",
         group: TestGroup::CsiDra,
     },
@@ -1561,22 +1573,20 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                 } else {
                     // A failed test must not poison later tests with its
                     // Pods, Services, PVCs, or controller-owned children.
-                    // The following workflow diagnostic phase collects
-                    // service state and logs, so retaining the namespace is
-                    // not worth allowing a failure cascade on a one-node
-                    // runner.
-                    test_context.cleanup().await;
                     println!("FAIL ({}ms)", started.elapsed().as_millis());
                     eprintln!("    {error:#}");
+                    test_context.capture_failure().await;
+                    test_context.cleanup().await;
                     failures.push(name);
                 }
             }
             Err(_) => {
-                test_context.cleanup().await;
                 println!("FAIL ({}ms)", started.elapsed().as_millis());
                 eprintln!(
                     "    test exceeded the 300-second safety timeout; the next test will run after cleanup"
                 );
+                test_context.capture_failure().await;
+                test_context.cleanup().await;
                 failures.push(name);
             }
         }
@@ -1842,6 +1852,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
+        "test_kubectl_apply_uses_openapi_schema" => bootstrap::kubectl_apply_uses_openapi_schema(context).await,
         "test_nodeapiserver_enforces_node_restriction" => {
             bootstrap::nodeapiserver_enforces_node_restriction(context).await
         },
@@ -2507,6 +2518,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_readiness_probe_gates_ready_condition" => {
             probes::readiness_probe_gates_ready_condition(context).await
         }
+        "test_readiness_does_not_wait_for_liveness_delay" => {
+            probes::readiness_does_not_wait_for_liveness_delay(context).await
+        }
         "test_liveness_probe_failure_restarts_the_container" => {
             probes::liveness_probe_failure_restarts_container(context).await
         }
@@ -2765,6 +2779,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_the_node_still_reconciles_pods_after_an_apiserver_restart" => {
             watch_recovery::node_still_reconciles_pods_after_an_apiserver_restart(context).await
+        }
+        "test_paginated_list_watch_preserves_concurrent_updates" => {
+            watch_recovery::paginated_list_watch_preserves_concurrent_updates(context).await
         }
         "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers" => {
             controller_manager::node_is_tainted_unreachable_after_heartbeat_loss_and_recovers(context).await

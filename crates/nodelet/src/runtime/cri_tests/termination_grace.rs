@@ -22,6 +22,15 @@ fn unset_defaults_to_thirty_seconds() {
 }
 
 #[test]
+fn hooks_and_later_containers_share_the_remaining_grace() {
+    assert_eq!(remaining_termination_grace(8, Duration::ZERO), 8);
+    assert_eq!(remaining_termination_grace(8, Duration::from_secs(3)), 5);
+    assert_eq!(remaining_termination_grace(8, Duration::from_millis(7_500)), 1);
+    assert_eq!(remaining_termination_grace(8, Duration::from_secs(9)), 0);
+    assert_eq!(remaining_termination_grace(0, Duration::ZERO), 0);
+}
+
+#[test]
 fn explicit_value_is_honored() {
     assert_eq!(termination_grace_seconds(&pod_with_grace(Some(5))), 5);
 }

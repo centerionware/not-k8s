@@ -854,7 +854,7 @@ pub(super) async fn a_long_lived_watch_survives_a_service_churn_burst(
                 "name": "watcher",
                 "image": "curlimages/curl:8.10.1",
                 "command": ["sh", "-c", format!(
-                    "TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert $CACERT -H \"Authorization: Bearer $TOKEN\" \"https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/{}/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err & echo $! > /tmp/watch.pid; wait $(cat /tmp/watch.pid); echo WATCH_EXIT=$? >> /tmp/watch.err; sleep 3600",
+                    "TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert $CACERT -H \"Authorization: Bearer $TOKEN\" \"https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/{}/pods?watch=true&sendInitialEvents=true&allowWatchBookmarks=true&resourceVersion=0&resourceVersionMatch=NotOlderThan&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err & echo $! > /tmp/watch.pid; wait $(cat /tmp/watch.pid); echo WATCH_EXIT=$? >> /tmp/watch.err; sleep 3600",
                     context.namespace
                 )]
             }]

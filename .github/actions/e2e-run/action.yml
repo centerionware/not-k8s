@@ -1,0 +1,337 @@
+name: Run e2e shard
+description: Shared bootstrap, reference drivers, tests and result publication for prebuilt binaries.
+inputs:
+  shard:
+    description: 'shard'
+    default: '1'
+  needs_drivers:
+    description: 'needs_drivers'
+    default: 'false'
+  only:
+    description: 'only'
+    default: ''
+  proxy:
+    description: 'proxy'
+    default: 'nodeproxy'
+  apiserver:
+    description: 'apiserver'
+    default: 'nodeapiserver'
+  network:
+    description: 'network'
+    default: 'flannel'
+  cluster_domain:
+    description: 'cluster_domain'
+    default: 'cluster.local'
+  cidr:
+    description: 'cidr'
+    default: ''
+  cidr6:
+    description: 'cidr6'
+    default: ''
+  results_branch:
+    description: 'results_branch'
+    default: 'e2e-results'
+  results_prefix:
+    description: 'results_prefix'
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Bootstrap cluster
+      env:
+        PROXY: ${{ inputs.proxy }}
+        APISERVER: ${{ inputs.apiserver }}
+        NETWORK: ${{ inputs.network }}
+        CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
+        CIDR: ${{ inputs.cidr }}
+        CIDR6: ${{ inputs.cidr6 }}
+        RUST_LOG: info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
+      shell: bash
+      run: |
+        set -euo pipefail
+        args=(bootstrap \
+          --layout=combined \
+          --proxy="$PROXY" \
+          --apiserver="$APISERVER" \
+          --datastore=nodestore \
+          --scheduler=nodescheduler \
+          --controller-manager=nodecontroller)
+        args+=("--cluster-domain=$CLUSTER_DOMAIN")
+        [[ -z "$CIDR" ]] || args+=("--cidr=$CIDR")
+        [[ -z "$CIDR6" ]] || args+=("--cidr6=$CIDR6")
+        if [[ "$NETWORK" == external ]]; then
+          args+=(--without-flannel --proxy=none)
+        fi
+        # The bootstrapper must use its kube client directly. Put a
+        # failing kubectl shim first on PATH so any install-time regression
+        # fails this real bootstrap instead of silently reintroducing the
+        # executable dependency. E2e cases that use kubectl run later in
+        # separate steps/processes with the normal runner PATH.
+        no_kubectl="$RUNNER_TEMP/no-kubectl"
+        mkdir -p "$no_kubectl"
+        printf '#!/bin/sh\necho "unexpected install-time kubectl invocation" >&2\nexit 127\n' > "$no_kubectl/kubectl"
+        chmod +x "$no_kubectl/kubectl"
+        chmod +x dist-bin/notk8s
+        ln -sfn notk8s dist-bin/nodebootstrap
+        PATH="$no_kubectl:$PATH" sudo -E env PATH="$no_kubectl:$PATH" \
+          NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
+          NOTK8S_BUILD_LAYOUT=combined \
+          ./dist-bin/nodebootstrap "${args[@]:1}"
+        if [[ "$APISERVER" == nodeapiserver ]]; then
+          installed_env=$(sudo systemctl show nodeapiserver --property=Environment --value)
+          if [[ "$installed_env" != *"RUST_LOG=$RUST_LOG"* ]]; then
+            echo 'nodeapiserver service did not retain the requested watch tracing' >&2
+            exit 1
+          fi
+          # Bootstrap creates system namespaces: prove traces were emitted,
+          # not merely requested, before spending time on the full suite.
+          sudo journalctl -b -u nodeapiserver --no-pager \
+            | awk '/namespace watch event/ { found=1 } END { exit !found }'
+        fi
+
+    - name: Allow admin access
+      shell: bash
+      run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
+
+    - name: Reserve huge pages
+      shell: bash
+      run: |
+        set -euo pipefail
+        reserved="$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || echo 0)"
+        if [[ "$reserved" -eq 0 ]]; then
+          echo 64 | sudo tee /proc/sys/vm/nr_hugepages >/dev/null
+          reserved="$(cat /proc/sys/vm/nr_hugepages)"
+        fi
+        if [[ "$reserved" -eq 0 ]]; then
+          echo "failed to reserve huge pages for the e2e suite" >&2
+          exit 1
+        fi
+
+    - name: Install CSI and DRA
+      if: inputs.needs_drivers == 'true'
+      env:
+        KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The test cases are Rust now, but the real reference-driver
+        # deployment helper remains archived with the old harness. Fetch it
+        # only for the two driver shards; it is not part of the release tree.
+        git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+        git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodebootstrap-e2e-full-setup.sh
+        chmod +x /tmp/nodebootstrap-e2e-full-setup.sh
+        sudo -E timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
+
+    - name: Run e2e tests
+      id: e2e
+      env:
+        KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+        ONLY: ${{ inputs.only }}
+        NEEDS_DRIVERS: ${{ inputs.needs_drivers }}
+        SHARD: ${{ inputs.shard }}
+        NETWORK: ${{ inputs.network }}
+        NODEBOOTSTRAP_SERVICE_CIDR: ${{ inputs.cidr || '10.43.0.0/16' }}
+        NODEBOOTSTRAP_SERVICE_CIDR6: ${{ inputs.cidr6 }}
+      shell: bash
+      run: |
+        set +e
+        if [[ "$NEEDS_DRIVERS" == true ]]; then
+          export TEST_DRA_DEVICE_CLASS=gpu.example.com
+          export TEST_CSI_STORAGE_CLASS=csi-hostpath-sc
+          export TEST_CSI_ATTACH_STORAGE_CLASS=csi-hostpath-sc
+          export TEST_CSI_INLINE_DRIVER=hostpath.csi.k8s.io
+          export TEST_CSI_BLOCK_STORAGE_CLASS=csi-hostpath-block-sc
+          export TEST_CSI_STORAGE_CLASS_WAIT=csi-hostpath-sc-wait
+        fi
+        args=(bootstrap --e2e "--shard=$SHARD/5")
+        if [[ "$NETWORK" == external && -z "$ONLY" ]]; then
+          ONLY=external_cni
+        fi
+        [[ -z "$ONLY" ]] || args+=("--only=$ONLY")
+        ./dist-bin/nodebootstrap "${args[@]:1}" 2>&1 | tee /tmp/e2e-raw.txt
+        exit_code=${PIPESTATUS[0]}
+        sed -r 's/\x1b\[[0-9;]*m//g' /tmp/e2e-raw.txt > /tmp/e2e-results.txt
+        echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+        exit 0
+
+    - name: Test worker setup
+      if: inputs.shard == '5' && steps.e2e.outputs.exit_code == '0'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo -E env \
+          NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
+          NOTK8S_BUILD_LAYOUT=combined \
+          ./dist-bin/nodebootstrap \
+            --worker \
+            --kubeconfig=/etc/nodebootstrap/admin.kubeconfig \
+            --without-flannel \
+            --proxy=none \
+            --skip-nodelet
+
+    - name: Dump failure logs
+      if: failure() || steps.e2e.outputs.exit_code != '0'
+      shell: bash
+      run: |
+        set +e
+        export KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
+        kubectl_cmd() {
+          local -a kubectl_args=(--kubeconfig "$KUBECONFIG" --request-timeout=30s "$@")
+          if [[ "$(id -u)" == 0 ]]; then
+            kubectl "${kubectl_args[@]}"
+          else
+            sudo kubectl "${kubectl_args[@]}"
+          fi
+        }
+
+        echo "=========================================="
+        echo "all service state and logs on failure: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "=========================================="
+        echo "── disk space ──"
+        df -h /
+
+        echo "── node status ──"
+        kubectl_cmd get nodes -o wide
+        kubectl_cmd describe nodes
+        echo "── all pods (every namespace) ──"
+        kubectl_cmd get pods -A -o wide
+        echo "── CoreDNS container logs ──"
+        mapfile -t coredns_pods < <(kubectl_cmd get pods -n kube-system -l k8s-app=kube-dns \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+        for pod in "${coredns_pods[@]}"; do
+          [[ -n "$pod" ]] || continue
+          echo "── $pod logs ──"
+          kubectl_cmd logs -n kube-system "$pod" --all-containers --tail=200 || true
+        done
+        echo "── DRA ResourceSlices ──"
+        kubectl_cmd get resourceslices.resource.k8s.io -o yaml || true
+        echo "── DRA driver pod describe/logs ──"
+        mapfile -t dra_pods < <(kubectl_cmd get pods -n dra-example-driver \
+          -l app.kubernetes.io/component=kubeletplugin \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+        for pod in "${dra_pods[@]}"; do
+          [[ -n "$pod" ]] || continue
+          kubectl_cmd describe pod -n dra-example-driver "$pod" || true
+          kubectl_cmd logs -n dra-example-driver "$pod" -c plugin --tail=300 || true
+          kubectl_cmd logs -n dra-example-driver "$pod" -c plugin --previous --tail=300 || true
+        done
+        echo "── pods not Running/Completed ──"
+        kubectl_cmd get pods -A -o wide | awk 'NR==1 || ($4 !~ /Running|Completed/)'
+        echo "── Service datapath prerequisites ──"
+        cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+        cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "bridge-nf-call-iptables unavailable"
+        sudo nft list table inet not_k8s_svc 2>&1 || true
+
+        echo "── all installed service state and logs ──"
+        mapfile -t services < <(
+          {
+            sudo systemctl list-units --type=service --all --no-legend --no-pager
+            sudo systemctl list-unit-files --type=service --no-legend --no-pager
+          } | awk '$1 ~ /^[[:alnum:]_@%:.-]+\.service$/ {print $1}' | sort -u
+        )
+        for unit in "${services[@]}"; do
+          echo "── $unit state ──"
+          sudo systemctl status "$unit" --no-pager -l || true
+          echo "── $unit logs (last 300 lines) ──"
+          sudo journalctl -u "$unit" --no-pager -n 300 || true
+        done
+
+        echo "── scheduler lease ──"
+        kubectl_cmd get lease kube-scheduler -n kube-system -o yaml | head -30
+        echo "── controller-manager lease ──"
+        kubectl_cmd get lease kube-controller-manager -n kube-system -o yaml | head -30
+        echo "── apiserver request/readiness signals ──"
+        for api_service in nodeapiserver kube-apiserver; do
+          sudo journalctl -u "$api_service.service" --no-pager -n 800 \
+            | grep -iE '429|retry-after|watchlist|priority|fairness|inflight|readyz|error|failed' || true
+        done
+        echo "── nodeapiserver panic/restart signals (unbounded, survives audit-log volume) ──"
+        sudo journalctl -u nodeapiserver.service --no-pager \
+          | grep -iE 'panic|SIGABRT|SIGSEGV|core dump|Main process exited|Started .*nodeapiserver|Stopped .*nodeapiserver' || true
+        echo "── nodecontroller volume/attach signals ──"
+        sudo journalctl -u nodecontroller.service --no-pager -n 1200 \
+          | grep -iE 'attachdetach|volumeattachment|persistentvolume|reconciler|csidriver|csinode|nodeipam|cidr|desiredstateofworld|actualstateofworld|populat' || true
+
+        echo "── volumeattachments ──"
+        kubectl_cmd get volumeattachments.storage.k8s.io -o wide
+        echo "── csidrivers ──"
+        kubectl_cmd get csidrivers.storage.k8s.io -o yaml
+        echo "── csinodes ──"
+        kubectl_cmd get csinodes.storage.k8s.io -o yaml
+        echo "── recent events (last 100) ──"
+        kubectl_cmd get events -A --sort-by=.lastTimestamp | tail -100
+
+        echo "── controller RBAC and authorization ──"
+        kubectl_cmd get clusterrole system:controller:replicaset-controller -o yaml
+        kubectl_cmd get clusterrolebindings -o yaml \
+          | grep -B5 -A15 'name: replicaset-controller\|controller-sa-replicaset-controller' || true
+        kubectl_cmd auth can-i patch replicasets/status \
+          --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system
+        kubectl_cmd auth can-i update replicasets/status \
+          --as=system:serviceaccount:kube-system:replicaset-controller -n kube-system
+        kubectl_cmd auth can-i patch endpointslices \
+          --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
+        kubectl_cmd auth can-i update endpointslices \
+          --as=system:serviceaccount:kube-system:endpointslice-controller -n kube-system
+        kubectl_cmd get clusterrole system:controller:endpointslice-controller -o yaml
+        echo "=========================================="
+        echo "all service state and logs on failure: end"
+        echo "=========================================="
+
+    - name: Save controller logs
+      if: failure() || steps.e2e.outputs.exit_code != '0'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A last-300-lines dump at suite end can miss a failure twenty
+        # minutes earlier. Keep runtime and controller events across restarts.
+        sudo journalctl -b -u nodecontroller -u nodestore -u nodelet -u nodeproxy -u nodescheduler --no-pager -o short-iso-precise \
+          > /tmp/e2e-controller-journal.txt
+        # Retain both API watch boundaries across the entire failure interval,
+        # without flooding the result with unrelated per-request audit events.
+        # awk succeeds with zero matches; journalctl errors still fail the pipe.
+        sudo journalctl -b -u nodeapiserver --no-pager -o short-iso-precise \
+          | awk '/namespace watch event/' >> /tmp/e2e-controller-journal.txt
+        cat /tmp/e2e-controller-journal.txt
+        # Keep the actual request/CRI history too, compressed off-console.
+        # Tails and Namespace-only traces cannot locate an earlier stuck
+        # Pod/Node request or distinguish process exit from sandbox cleanup.
+        sudo journalctl -b -u nodeapiserver -u containerd -u flanneld \
+          -u nodecontroller -u nodestore -u nodelet -u nodeproxy -u nodescheduler \
+          --no-pager -o short-iso-precise | gzip -c > /tmp/e2e-controller-journal.txt.gz
+
+    - name: Publish e2e results
+      if: always()
+      env:
+        RESULTS_BRANCH: ${{ inputs.results_branch }}
+        RESULTS_PREFIX: ${{ inputs.results_prefix }}
+        GH_TOKEN: ${{ github.token }}
+        RUN_EXIT_CODE: ${{ steps.e2e.outputs.exit_code }}
+        SHARD: ${{ inputs.shard }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "commit: $GITHUB_SHA"
+          echo "workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo "timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "shard: ${SHARD}/5"
+          echo "exit code: ${RUN_EXIT_CODE:-unknown}"
+          echo "----------------------------------------"
+          cat /tmp/e2e-results.txt 2>/dev/null || echo "(no results captured — the job failed before the Rust e2e runner started)"
+        } > /tmp/e2e-results-final.txt
+
+        payload=$(mktemp -d)
+        cp /tmp/e2e-results-final.txt "$payload/results-shard-${SHARD}.txt"
+        if [[ -f /tmp/e2e-controller-journal.txt ]]; then
+          cp /tmp/e2e-controller-journal.txt "$payload/controller-journal-shard-${SHARD}.txt"
+        fi
+        if [[ -f /tmp/e2e-controller-journal.txt.gz ]]; then
+          cp /tmp/e2e-controller-journal.txt.gz "$payload/full-journal-shard-${SHARD}.txt.gz"
+        fi
+        bash deploy/publish-validation-results.sh "$payload" "$RESULTS_BRANCH" "$RESULTS_PREFIX"
+
+    - name: Check e2e result
+      if: steps.e2e.outputs.exit_code != '0'
+      shell: bash
+      run: exit 1

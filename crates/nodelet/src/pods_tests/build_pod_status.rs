@@ -134,6 +134,27 @@ fn full_status_payload_is_stable_on_an_unchanged_reconcile() {
     );
 }
 
+#[test]
+fn empty_allocated_resources_converges_after_storage_omits_the_map() {
+    let mut runtime = running_status();
+    runtime.containers[0].allocated_resources = Some(Default::default());
+    let mut stored = bps("10.0.0.1", &runtime, None);
+    // A protobuf map with zero entries decodes as an absent optional map.
+    stored.container_statuses.as_mut().unwrap()[0].allocated_resources = None;
+    let desired = bps("10.0.0.1", &runtime, Some(&stored));
+    assert!(!status_patch_changes(Some(&stored), &desired),
+        "an empty allocation must not perpetually trigger status writes");
+
+    runtime.containers[0].allocated_resources.as_mut().unwrap().insert(
+        "cpu".into(), k8s_openapi::apimachinery::pkg::api::resource::Quantity("100m".into()),
+    );
+    let changed = bps("10.0.0.1", &runtime, Some(&stored));
+    assert!(status_patch_changes(Some(&stored), &changed),
+        "a real allocation change must still be published");
+    assert!(changed.container_statuses.as_ref().unwrap()[0]
+        .allocated_resources.as_ref().unwrap().contains_key("cpu"));
+}
+
 fn counting_client(patches: Arc<AtomicUsize>) -> Client {
     let response = Arc::new(
         serde_json::to_vec(&serde_json::json!({

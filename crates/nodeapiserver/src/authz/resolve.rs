@@ -162,8 +162,8 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
 
     match rest::list_at_revision(storage, None, GROUP, VERSION, "clusterrolebindings", None, "", "", 0, "", revision).await {
         Ok(ListOutcome::Found(list)) => {
-            for item in list["items"].as_array().cloned().unwrap_or_default() {
-                accumulate_binding(storage, &item, user_name, user_groups, "", revision, &mut resolved).await;
+            for item in list["items"].as_array().into_iter().flatten() {
+                accumulate_binding(storage, item, user_name, user_groups, "", revision, &mut resolved).await;
             }
         }
         Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("clusterrolebindings is unknown to this build".to_string()),
@@ -173,8 +173,8 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
     if !namespace.is_empty() {
         match rest::list_at_revision(storage, None, GROUP, VERSION, "rolebindings", Some(namespace), "", "", 0, "", revision).await {
             Ok(ListOutcome::Found(list)) => {
-                for item in list["items"].as_array().cloned().unwrap_or_default() {
-                    accumulate_binding(storage, &item, user_name, user_groups, namespace, revision, &mut resolved).await;
+                for item in list["items"].as_array().into_iter().flatten() {
+                    accumulate_binding(storage, item, user_name, user_groups, namespace, revision, &mut resolved).await;
                 }
             }
             Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("rolebindings is unknown to this build".to_string()),

@@ -47,7 +47,7 @@ use tokio::sync::{broadcast, watch as ready_watch, Semaphore};
 /// not the much heavier full NodeStatus push.
 pub const NODE_LEASE_NAMESPACE: &str = "kube-node-lease";
 
-const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Shared informer startup admission. An initial LIST can make the apiserver
@@ -126,6 +126,10 @@ where
     T: Resource + ResourceExt + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
 {
     fn new(api: Api<T>) -> Arc<Self> {
+        Self::with_startup_semaphore(api, startup_semaphore())
+    }
+
+    fn with_startup_semaphore(api: Api<T>, startup: Arc<Semaphore>) -> Arc<Self> {
         let (ready, _) = ready_watch::channel(false);
         let (events, _) = broadcast::channel(512);
         let shared = Arc::new(Self {
@@ -136,34 +140,67 @@ where
 
         let task_shared = shared.clone();
         tokio::spawn(async move {
-            let mut startup_permit = Some(startup_semaphore()
-                .acquire_owned()
-                .await
-                .expect("nodecontroller watch startup semaphore was closed"));
+            let mut initialized = false;
+            let mut initial_failures: u32 = 0;
             loop {
-                let stream = watcher(api.clone(), watch_config()).backoff(WatchBackoffPolicy::default());
-                futures::pin_mut!(stream);
-                while let Some(result) = stream.next().await {
+                let mut startup_permit = if initialized { None } else {
+                    Some(startup.clone().acquire_owned().await
+                        .expect("nodecontroller watch startup semaphore was closed"))
+                };
+                if !initialized {
+                    tracing::info!(resource = %std::any::type_name::<T>(), "shared informer starting initial LIST");
+                }
+                let mut stream = Box::pin(watcher(api.clone(), watch_config()).backoff(WatchBackoffPolicy::default()));
+                let mut listing = true;
+                loop {
+                    // Every new stream starts with a LIST, even after startup.
+                    // Bound a stalled page, not a healthy idle watch.
+                    // On failure release admission before sleeping/retrying so
+                    // one unavailable kind cannot park every later informer.
+                    let next = if !listing { stream.next().await } else {
+                        // Start with a one-second request budget, then allow
+                        // slower snapshots progressively more time (max 30s).
+                        let deadline = watch_backoff(initial_failures.saturating_add(1));
+                        match tokio::time::timeout(deadline, stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                tracing::warn!(resource = %std::any::type_name::<T>(), "shared informer LIST stalled; releasing any startup slot");
+                                break;
+                            }
+                        }
+                    };
+                    let Some(result) = next else { break };
                     let event = match result {
                         Ok(event) => event,
                         Err(error) => {
                             tracing::warn!(resource = %std::any::type_name::<T>(), error = ?error,
-                                "shared nodecontroller watch received an error; kube-rs will retry it");
-                            continue;
+                                "shared nodecontroller watch received an error; restarting with a bounded LIST");
+                            break;
                         }
                     };
 
                     let initial_done = matches!(&event, Event::InitDone);
+                    if matches!(&event, Event::Init) { listing = true; }
+                    if initial_done {
+                        listing = false;
+                        initial_failures = 0;
+                    }
                     task_shared.apply(&event);
-                    let _ = task_shared.events.send(event);
                     if initial_done && startup_permit.is_some() {
                         // Only the initial snapshot is admission-controlled.
                         // Steady-state watches remain independent.
                         drop(startup_permit.take());
+                        initialized = true;
+                        initial_failures = 0;
+                        tracing::info!(resource = %std::any::type_name::<T>(), "shared informer installed initial snapshot");
                     }
                 }
+                // Cancel any pending request before admitting another LIST.
+                drop(stream);
+                drop(startup_permit);
                 tracing::warn!(resource = %std::any::type_name::<T>(), "shared nodecontroller watch ended; restarting");
-                tokio::time::sleep(WATCH_MAX_BACKOFF).await;
+                initial_failures = initial_failures.saturating_add(1);
+                tokio::time::sleep(watch_backoff(initial_failures)).await;
             }
         });
 
@@ -175,27 +212,44 @@ where
     }
 
     fn apply(&self, event: &Event<T>) {
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Namespace>() {
+            match event {
+                Event::Apply(object) | Event::InitApply(object) | Event::Delete(object) => {
+                    tracing::debug!(target: "nk_watch_trace", boundary = "http_to_informer",
+                        name = %object.name_any(), revision = ?object.resource_version(),
+                        deleted = matches!(event, Event::Delete(_)), "namespace watch event");
+                }
+                _ => {}
+            }
+        }
+        // Publish under the snapshot lock. A subscriber must see an event
+        // either in its snapshot or in its new receiver, never an older
+        // buffered event replayed after a newer snapshot.
+        let mut objects = self.objects.lock().expect("shared watch object store poisoned");
         match event {
             Event::Init => {
-                self.objects.lock().expect("shared watch object store poisoned").clear();
+                objects.clear();
                 self.ready.send_replace(false);
             }
             Event::InitApply(object) | Event::Apply(object) => {
-                self.objects
-                    .lock()
-                    .expect("shared watch object store poisoned")
-                    .insert(Self::object_key(object), object.clone());
+                objects.insert(Self::object_key(object), object.clone());
             }
             Event::Delete(object) => {
-                self.objects
-                    .lock()
-                    .expect("shared watch object store poisoned")
-                    .remove(&Self::object_key(object));
+                objects.remove(&Self::object_key(object));
             }
             Event::InitDone => {
                 self.ready.send_replace(true);
             }
         }
+        let _ = self.events.send(event.clone());
+    }
+
+    fn snapshot_and_subscribe(&self) -> Option<(Vec<T>, broadcast::Receiver<Event<T>>)> {
+        let objects = self.objects.lock().expect("shared watch object store poisoned");
+        if !*self.ready.borrow() {
+            return None;
+        }
+        Some((objects.values().cloned().collect(), self.events.subscribe()))
     }
 
     fn subscribe(self: &Arc<Self>) -> BoxStream<'static, watcher::Result<Event<T>>> {
@@ -243,20 +297,12 @@ where
         loop {
             match self.phase {
                 SubscriptionPhase::NeedSnapshot => {
-                    if !*self.ready.borrow() {
+                    let Some((initial, events)) = self.shared.snapshot_and_subscribe() else {
                         self.ready.changed().await.ok()?;
                         continue;
-                    }
-
-                    while self.events.try_recv().is_ok() {}
-                    self.initial = self
-                        .shared
-                        .objects
-                        .lock()
-                        .expect("shared watch object store poisoned")
-                        .values()
-                        .cloned()
-                        .collect();
+                    };
+                    self.initial = initial;
+                    self.events = events;
                     self.initial_index = 0;
                     self.phase = SubscriptionPhase::Init;
                 }
@@ -560,6 +606,143 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn snapshot_discards_lagged_events_before_following_live_updates() {
+        let (ready, _) = ready_watch::channel(false);
+        let (events, _) = broadcast::channel(2);
+        let shared = Arc::new(SharedWatch::<Namespace> {
+            objects: Mutex::new(HashMap::new()), ready, events,
+        });
+        shared.apply(&Event::InitDone);
+        let mut subscription = shared.subscribe();
+        let mut old = Namespace::default();
+        old.metadata.name = Some("replaced".into());
+        old.metadata.uid = Some("old".into());
+        shared.apply(&Event::Apply(old.clone()));
+        shared.apply(&Event::Delete(old));
+        let mut replacement = Namespace::default();
+        replacement.metadata.name = Some("replaced".into());
+        replacement.metadata.uid = Some("new".into());
+        shared.apply(&Event::Apply(replacement.clone()));
+        // The receiver is now lagged. Draining with `while try_recv().is_ok()`
+        // stops at Lagged and leaves the stale deletion behind the snapshot.
+        assert!(matches!(subscription.next().await, Some(Ok(Event::Init))));
+        assert!(matches!(subscription.next().await,
+            Some(Ok(Event::InitApply(ns))) if ns.uid().as_deref() == Some("new")));
+        assert!(matches!(subscription.next().await, Some(Ok(Event::InitDone))));
+        replacement.metadata.resource_version = Some("4".into());
+        shared.apply(&Event::Apply(replacement));
+        assert!(matches!(subscription.next().await,
+            Some(Ok(Event::Apply(ns))) if ns.resource_version().as_deref() == Some("4")));
+    }
+
+    #[test]
+    fn snapshot_waits_for_the_complete_relist_and_subscribes_at_its_boundary() {
+        let (ready, _) = ready_watch::channel(false);
+        let (events, _) = broadcast::channel(8);
+        let shared = SharedWatch::<Namespace> {
+            objects: Mutex::new(HashMap::new()), ready, events,
+        };
+        shared.apply(&Event::Init);
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("listed".into());
+        shared.apply(&Event::InitApply(ns.clone()));
+        assert!(shared.snapshot_and_subscribe().is_none());
+        shared.apply(&Event::InitDone);
+        let (snapshot, mut events) = shared.snapshot_and_subscribe().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+        shared.apply(&Event::Delete(ns));
+        assert!(matches!(events.try_recv(), Ok(Event::Delete(_))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_reconnect_list_is_retried_without_startup_admission() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let lists = Arc::new(AtomicUsize::new(0));
+        let requests = lists.clone();
+        let reconnecting = Arc::new(tokio::sync::Notify::new());
+        let observed = reconnecting.clone();
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let lists = requests.clone();
+            let reconnecting = reconnecting.clone();
+            async move {
+                if request.uri().query().is_some_and(|query| query.contains("watch=true")) {
+                    if lists.load(Ordering::SeqCst) == 1 {
+                        return Ok::<_, std::convert::Infallible>(http::Response::builder()
+                            .status(410).body(kube::client::Body::from(
+                                br#"{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Expired","message":"relist","code":410}"#.to_vec()
+                            )).unwrap());
+                    }
+                    futures::future::pending::<()>().await;
+                }
+                let number = lists.fetch_add(1, Ordering::SeqCst) + 1;
+                if number == 2 {
+                    reconnecting.notify_one();
+                    futures::future::pending::<()>().await;
+                }
+                let name = if number == 1 { "before" } else { "after" };
+                Ok(http::Response::new(kube::client::Body::from(serde_json::to_vec(
+                    &serde_json::json!({"apiVersion":"v1","kind":"PodList",
+                        "metadata":{"resourceVersion":number.to_string()},
+                        "items":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":name}}]})
+                ).unwrap())))
+            }
+        });
+        let admission = Arc::new(Semaphore::new(1));
+        let shared = SharedWatch::<Pod>::with_startup_semaphore(
+            Api::all(Client::new(service, "default")), admission.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(10), observed.notified())
+            .await.expect("the watch must enter its second LIST");
+        // Reconnects must not compete for initial startup slots.
+        let _held = admission.try_acquire().expect("initial snapshot released admission");
+        let mut subscription = shared.subscribe();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(Ok(event)) = subscription.next().await {
+                if matches!(event, Event::InitApply(ref pod) if pod.name_any() == "after") {
+                    return;
+                }
+            }
+            panic!("subscription ended before the replacement snapshot");
+        }).await.expect("a stalled reconnect LIST must time out and recover");
+        assert_eq!(lists.load(Ordering::SeqCst), 3);
+        tokio::time::sleep(WATCH_MAX_BACKOFF * 2).await;
+        assert_eq!(lists.load(Ordering::SeqCst), 3, "idle watches must not use the LIST deadline");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_initial_list_releases_admission_before_retry_backoff() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let observed = entered.clone();
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let entered = entered.clone();
+            async move {
+                if request.uri().path().ends_with("/namespaces") {
+                    entered.notify_one();
+                    futures::future::pending::<()>().await;
+                }
+                if request.uri().query().is_some_and(|query| query.contains("watch=true")) {
+                    futures::future::pending::<()>().await;
+                }
+                Ok::<_, std::convert::Infallible>(http::Response::new(kube::client::Body::from(
+                    br#"{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[]}"#.to_vec()
+                )))
+            }
+        });
+        let client = Client::new(service, "default");
+        let admission = Arc::new(Semaphore::new(1));
+        let _stalled = SharedWatch::<Namespace>::with_startup_semaphore(Api::all(client.clone()), admission.clone());
+        observed.notified().await; // Prove the first request owns the only slot.
+        let healthy = SharedWatch::<Pod>::with_startup_semaphore(Api::all(client), admission);
+        let started = tokio::time::Instant::now();
+        let mut subscription = healthy.subscribe();
+        tokio::time::timeout(WATCH_INITIAL_BACKOFF * 2, async {
+            assert!(matches!(subscription.next().await, Some(Ok(Event::Init))));
+            assert!(matches!(subscription.next().await, Some(Ok(Event::InitDone))));
+        }).await.expect("a failed kind must release admission before its retry");
+        assert_eq!(started.elapsed(), WATCH_INITIAL_BACKOFF);
+    }
+
+    #[tokio::test]
     async fn a_late_subscriber_receives_the_completed_snapshot() {
         let (ready, _) = ready_watch::channel(false);
         let (events, _) = broadcast::channel(2);
@@ -591,9 +774,12 @@ mod tests {
 
     #[test]
     fn backoff_doubles_up_to_the_ceiling() {
-        assert_eq!(watch_backoff(1), std::time::Duration::from_millis(500));
-        assert_eq!(watch_backoff(2), std::time::Duration::from_millis(1000));
-        assert_eq!(watch_backoff(3), std::time::Duration::from_millis(2000));
+        let mut policy = WatchBackoffPolicy::default();
+        for seconds in [1, 2, 4, 8, 16, 30, 30] {
+            assert_eq!(policy.next(), Some(std::time::Duration::from_secs(seconds)));
+        }
+        policy.reset();
+        assert_eq!(policy.next(), Some(WATCH_INITIAL_BACKOFF));
     }
 
     #[test]

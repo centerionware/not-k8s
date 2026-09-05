@@ -4,6 +4,70 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn paginated_list_does_not_advance_its_snapshot_when_the_store_changes() {
+        let snapshot = list_snapshot_revision(0, Some(7));
+        let token = encode_continue_token(b"/registry/configmaps/default/a\0", snapshot);
+        let (_, pinned) = decode_continue_token(&token).unwrap();
+        assert_eq!(list_snapshot_revision(pinned, Some(9)), snapshot);
+        assert_eq!(list_snapshot_revision(7, Some(10)), 7);
+    }
+
+    #[test]
+    fn finalizer_patch_uses_the_mvcc_revision_not_the_persisted_deletion_revision() {
+        let deleted = json!({"metadata":{"name":"test", "resourceVersion":"7",
+            "deletionTimestamp":"2026-09-05T07:00:00Z", "finalizers":["example.com/hold"]}});
+        let mut existing = deleted.clone();
+        let patched = apply_patch(PatchKind::Merge, None, None, &mut existing,
+            &json!({"metadata":{"finalizers":[]}}), 9).unwrap();
+        assert_eq!(patched["metadata"]["resourceVersion"], "9");
+        assert_eq!(patched["metadata"]["finalizers"], json!([]));
+        assert_eq!(patched["metadata"]["deletionTimestamp"], deleted["metadata"]["deletionTimestamp"]);
+
+        let patched = apply_patch(PatchKind::Merge, None, None, &mut existing,
+            &json!({"metadata":{"resourceVersion":"8", "finalizers":[]}}), 9).unwrap();
+        assert_eq!(patched["metadata"]["resourceVersion"], "8",
+            "a caller's stale precondition must remain visible to persistence");
+
+        let patched = apply_patch(PatchKind::Json, None, None, &mut existing,
+            &json!([{"op":"test", "path":"/metadata/resourceVersion", "value":"9"},
+                {"op":"replace", "path":"/metadata/finalizers", "value":[]}]), 9).unwrap();
+        assert_eq!(patched["metadata"]["finalizers"], json!([]));
+        assert!(apply_patch(PatchKind::Json, None, None, &mut existing,
+            &json!([{"op":"test", "path":"/metadata/resourceVersion", "value":"7"}]), 9).is_err());
+    }
+
+    #[tokio::test]
+    async fn ordinary_patch_rejects_a_stale_version_before_writing() {
+        let mut storage = StorageClient::connect_lazy(&crate::config::Config::default()).unwrap();
+        let context = PatchContext {
+            schema: None,
+            open_api_schema: None,
+            storage_open_api_schema: None,
+            kind: "Pod".into(),
+            conversion_webhook: None,
+            key: "/registry/pods/default/test".into(),
+            existing_kv: mvccpb::KeyValue { mod_revision: 9, ..Default::default() },
+            existing_object: json!({"metadata":{"name":"test"}}),
+            has_status_subresource: true,
+        };
+        let outcome = patch_persist(&mut storage, "", "v1", "pods", Some("default"),
+            "test", context, json!({"metadata":{"resourceVersion":"8"}}), false)
+            .await.unwrap();
+        assert!(matches!(outcome, UpdateOutcome::Conflict));
+    }
+
+    #[test]
+    fn merge_patch_retries_do_not_weaken_explicit_preconditions() {
+        let patch = json!({"status":{"phase":"Running"}});
+        assert!(patch_allows_conflict_retry(PatchKind::Merge, &patch));
+        assert!(patch_allows_conflict_retry(PatchKind::StrategicMerge, &patch));
+        assert!(!patch_allows_conflict_retry(PatchKind::Merge,
+            &json!({"metadata":{"resourceVersion":"7"}, "status":{}})));
+        assert!(!patch_allows_conflict_retry(PatchKind::Json,
+            &json!([{"op":"test", "path":"/metadata/resourceVersion", "value":"7"}])));
+    }
+
+    #[test]
     fn continue_token_round_trips_the_resume_key_and_revision() {
         let token = encode_continue_token(b"/registry/pods/default/my-pod\x00", 42);
         let (key, revision) =

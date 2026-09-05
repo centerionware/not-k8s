@@ -1,0 +1,32 @@
+name: Profiling checks
+# Run explicitly when changing profiling/release tooling. PR path filters use
+# the cumulative diff, so they reran these checks on unrelated follow-up commits.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check profile shell
+        run: |
+          for script in deploy/*profil*.sh deploy/lib/*profil*.sh deploy/lib/render-perf.sh; do
+            bash -n "$script" || exit
+          done
+      - name: Check release shell
+        run: |
+          for script in deploy/download-release-runtime.sh deploy/publish-validation-results.sh; do
+            bash -n "$script" || exit
+          done
+      - name: Install test tools
+        run: python3 -m pip install --quiet --break-system-packages matplotlib numpy pyyaml
+      - name: Test profiling
+        run: python3 -B deploy/test-profile-stack.py
+      - name: Test release checks
+        run: python3 -B deploy/test-release-validation.py

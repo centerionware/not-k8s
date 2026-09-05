@@ -1,4 +1,4 @@
-name: Profiling — nodelet vs a real upstream kubelet (same control plane)
+name: Profiling
 
 # Manual trigger only, same conservative posture as e2e.yml — this job is
 # slow and its numbers are only meaningful once things have settled, not
@@ -52,11 +52,51 @@ name: Profiling — nodelet vs a real upstream kubelet (same control plane)
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Flamegraphs, selected-component comparison, whole-stack comparison, or legacy comparison'
+        type: choice
+        options: [stack, components, whole-stack, comparison]
+        default: stack
+      baseline:
+        description: 'Comparison baseline (k3s and both require whole-stack mode)'
+        type: choice
+        options: [k8s, k3s, both]
+        default: k8s
+      components:
+        description: 'Component mode: all or comma-separated canonical names, e.g. nodeapiserver,nodestore'
+        type: string
+        default: all
+      source_ref:
+        description: 'Branch, tag, or SHA to build (empty uses this workflow ref; unused by legacy comparison)'
+        type: string
+        default: ''
+      build_profile:
+        description: 'Stack mode: optimized with symbols, or debug for diagnosis only'
+        type: choice
+        options: [profiling, debug]
+        default: profiling
+      archive_limit_mib:
+        description: 'Stack mode: maximum compressed bundle size; fail rather than omit data'
+        type: string
+        default: '512'
       sample_seconds:
         description: "Sample window in seconds, 1 sample/sec (e.g. 120 for 2m, 300 for 5m, 600 for 10m)"
         required: false
         default: "120"
         type: string
+      workload:
+        description: 'standard or heavy (10-15 HTTP pods, API churn, completed Jobs and GC)'
+        type: choice
+        options: [standard, heavy]
+        default: standard
+      k3s_version:
+        description: 'k3s latest release, or an exact tag such as v1.34.3+k3s1'
+        type: string
+        default: latest
+      k8s_version:
+        description: 'Kubernetes latest stable release, or an exact version such as v1.34.3'
+        type: string
+        default: latest
 
 permissions:
   contents: write
@@ -72,7 +112,33 @@ env:
   SAMPLE_SECS: ${{ inputs.sample_seconds }}
 
 jobs:
+  compare:
+    if: inputs.mode == 'components' || inputs.mode == 'whole-stack'
+    uses: ./.github/workflows/profile-compare.yml
+    with:
+      source_ref: ${{ inputs.source_ref || github.sha }}
+      baseline: ${{ inputs.baseline }}
+      k3s_version: ${{ inputs.k3s_version }}
+      k8s_version: ${{ inputs.k8s_version }}
+      components: ${{ inputs.components }}
+      whole_stack: ${{ inputs.mode == 'whole-stack' }}
+      workload: ${{ inputs.workload }}
+      sample_seconds: ${{ inputs.sample_seconds }}
+    secrets: inherit
+
+  stack:
+    if: inputs.mode == 'stack'
+    uses: ./.github/workflows/profile-stack.yml
+    with:
+      source_ref: ${{ inputs.source_ref || github.sha }}
+      build_profile: ${{ inputs.build_profile }}
+      sample_seconds: ${{ inputs.sample_seconds }}
+      archive_limit_mib: ${{ inputs.archive_limit_mib }}
+      workload: ${{ inputs.workload }}
+    secrets: inherit
+
   profile:
+    if: inputs.mode == 'comparison'
     strategy:
       fail-fast: false
       matrix:
@@ -126,12 +192,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
 
-      - name: Build the Rust bootstrap applet
+      - name: Build bootstrap
         run: cargo build --features cri -p notk8s
 
-      - name: Bootstrap the shared stack with Rust (stripped control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
+      - name: Bootstrap cluster
         env:
           SKIP_NODELET: ${{ matrix.skip_nodelet }}
         run: |
@@ -140,16 +207,16 @@ jobs:
           [[ "$SKIP_NODELET" == true ]] && args+=(--skip-nodelet)
           sudo -E ./target/debug/notk8s "${args[@]}"
 
-      - name: Start a real upstream kubelet (same control plane, same containerd — nodelet was never installed on this runner)
+      - name: Start kubelet
         if: matrix.agent == 'kubelet'
         run: |
           set -e
           sudo bash deploy/lib/upstream-kubelet.sh start
 
-      - name: Settle before measuring idle steady-state
+      - name: Settle cluster
         run: sleep 30
 
-      - name: Measure ${{ matrix.agent }} replicate ${{ matrix.replicate }} (idle, ${{ env.SAMPLE_SECS }}s, 1 sample/sec)
+      - name: Measure idle usage
         run: |
           set -e
           sudo ./deploy/measure.sh "$SAMPLE_SECS" /tmp/measure-out "${{ matrix.agent_pattern }}" | tee /tmp/measure-out-console.txt
@@ -172,7 +239,10 @@ jobs:
 
   report:
     needs: profile
-    if: always()
+    if: ${{ always() && inputs.mode == 'comparison' }}
+    concurrency:
+      group: profiling-results-publisher
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -181,15 +251,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download all measurements
+      - name: Get measurements
         uses: actions/download-artifact@v4
         with:
           path: /tmp/artifacts
 
-      - name: Install matplotlib/numpy
+      - name: Install chart tools
         run: python3 -m pip install --quiet --break-system-packages matplotlib numpy
 
-      - name: Render charts + aggregated stats
+      - name: Render charts
         run: |
           set -e
           mkdir -p /tmp/profiling-report
@@ -203,7 +273,7 @@ jobs:
             --summary "nodelet=$nodelet_summaries" \
             --summary "upstream kubelet=$kubelet_summaries"
 
-      - name: Build comparison report
+      - name: Build report
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
@@ -215,7 +285,7 @@ jobs:
             > /tmp/profiling-report/README.md
           cat /tmp/profiling-report/README.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish results to the profiling-results branch
+      - name: Publish results
         env:
           COMMIT_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -272,6 +342,7 @@ jobs:
           bash deploy/lib/profiling-report.sh --readme \
             "$COMMIT_SHA" "$RUN_URL" "$STAMP" \
             > "$WORKDIR/README.md"
+          [[ ! -f "$WORKDIR/latest-stack.md" ]] || printf '\n[Latest stack profile](latest-stack.md)\n' >> "$WORKDIR/README.md"
 
           cd "$WORKDIR"
           git add -A

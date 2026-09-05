@@ -61,7 +61,7 @@
 //! built-in or CRD — is covered generically.
 
 use anyhow::Result;
-use futures::stream::{select_all, BoxStream, StreamExt};
+use futures::stream::{select_all, BoxStream, FuturesUnordered, StreamExt};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{Api, DeleteParams, DynamicObject, Preconditions, PropagationPolicy};
 use kube::core::PartialObjectMeta;
@@ -70,6 +70,8 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+use tokio::time::Instant;
 
 const EXCLUDED_GROUPS: &[&str] = &["coordination.k8s.io", "events.k8s.io"];
 const EXCLUDED_KINDS: &[&str] = &["Event"];
@@ -168,14 +170,12 @@ fn should_delete_orphan(record: &ObjRecord, ready: bool, exists: &HashSet<String
 /// Deletes `record`, background-propagated. Silently ignores "already
 /// gone" — the routine outcome of two cascade paths reaching the same
 /// child (e.g. discovered both directly and via a since-vanished owner).
+/// Returns whether the UID needs another attempt after backoff.
 async fn delete_object(
     client: &Client,
-    resources: &HashMap<String, kube::discovery::ApiResource>,
+    ar: &kube::discovery::ApiResource,
     record: &ObjRecord,
-) {
-    let Some(ar) = resources.get(&record.gvk_key) else {
-        return;
-    };
+) -> bool {
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &record.namespace, ar);
     let dp = DeleteParams {
         propagation_policy: Some(PropagationPolicy::Background),
@@ -187,13 +187,30 @@ async fn delete_object(
     };
     match api.delete(&record.name, &dp).await {
         Ok(_) => {
-            tracing::info!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, "garbage-collector-controller deleted an orphaned object")
+            tracing::info!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, uid = %record.uid, "garbage-collector-controller deleted an orphaned object");
+            false
         }
-        Err(kube::Error::Api(ref status)) if status.is_not_found() || status.code == 409 => {}
+        Err(kube::Error::Api(ref status)) if status.is_not_found() => false,
         Err(e) => {
-            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, error = ?e, "garbage-collector-controller failed to delete an orphaned object")
+            // A 409 can be a storage CAS race, not just a replacement UID.
+            // Never delete a replacement, but do retry the original object.
+            if matches!(&e, kube::Error::Api(status) if status.code == 409) {
+                match api.get(&record.name).await {
+                    Ok(current) if current.uid().as_deref() != Some(record.uid.as_str()) => return false,
+                    Err(kube::Error::Api(status)) if status.is_not_found() => return false,
+                    _ => {}
+                }
+            }
+            let retry = !matches!(&e, kube::Error::Api(status) if matches!(status.code, 400 | 401 | 403 | 405 | 422));
+            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, uid = %record.uid, retry, error = ?e, "garbage-collector-controller failed to delete an orphaned object");
+            retry
         }
     }
+}
+
+struct DeleteRetry {
+    due: Instant,
+    delay: Duration,
 }
 
 struct State {
@@ -204,9 +221,26 @@ struct State {
     pending_init: HashSet<String>,
     uid_to_kind: HashMap<String, String>,
     relist: HashMap<String, HashMap<String, ObjRecord>>,
+    deletes: HashMap<String, DeleteRetry>,
 }
 
 impl State {
+    fn enqueue_delete(&mut self, uid: String) {
+        self.deletes.entry(uid).or_insert(DeleteRetry {
+            due: Instant::now(),
+            delay: Duration::from_secs(1),
+        });
+    }
+
+    fn complete_delete(&mut self, uid: &str, retry: bool) {
+        if !retry {
+            self.deletes.remove(uid);
+        } else if let Some(entry) = self.deletes.get_mut(uid) {
+            entry.due = Instant::now() + entry.delay;
+            entry.delay = (entry.delay * 2).min(Duration::from_secs(30));
+        }
+    }
+
     fn owners_initialized(&self, record: &ObjRecord) -> bool {
         record.owner_kinds.iter().all(|kind| {
             self.resources.contains_key(kind) && !self.pending_init.contains(kind)
@@ -240,9 +274,8 @@ impl State {
         self.objects_with_owners.insert(uid, record);
     }
 
-    async fn handle_apply(
+    fn handle_apply(
         &mut self,
-        client: &Client,
         kind_key: &str,
         obj: DynamicObject,
         staged: bool,
@@ -270,7 +303,7 @@ impl State {
         }
         self.store_record(record.clone());
         if should_delete_orphan(&record, self.owners_initialized(&record), &self.exists) {
-            delete_object(client, &self.resources, &record).await;
+            self.enqueue_delete(record.uid);
         }
     }
 
@@ -279,9 +312,9 @@ impl State {
         self.relist.insert(kind_key.to_string(), HashMap::new());
     }
 
-    async fn finish_relist(&mut self, client: &Client, kind_key: &str) {
+    fn finish_relist(&mut self, kind_key: &str) {
         for record in self.install_snapshot(kind_key) {
-            delete_object(client, &self.resources, &record).await;
+            self.enqueue_delete(record.uid);
         }
     }
 
@@ -328,8 +361,9 @@ impl State {
             .collect()
     }
 
-    async fn handle_delete(&mut self, client: &Client, obj: DynamicObject) {
+    fn handle_delete(&mut self, obj: DynamicObject) {
         let Some(uid) = obj.uid() else { return };
+        self.deletes.remove(&uid);
         self.exists.remove(&uid);
         self.uid_to_kind.remove(&uid);
         if let Some(record) = self.objects_with_owners.remove(&uid) {
@@ -348,7 +382,7 @@ impl State {
                 continue;
             };
             if should_delete_orphan(&record, self.owners_initialized(&record), &self.exists) {
-                delete_object(client, &self.resources, &record).await;
+                self.enqueue_delete(record.uid);
             }
         }
     }
@@ -372,6 +406,7 @@ mod tests {
             pending_init: HashSet::new(),
             uid_to_kind: HashMap::new(),
             relist: HashMap::new(),
+            deletes: HashMap::new(),
         }
     }
 
@@ -384,6 +419,81 @@ mod tests {
             owner_uids: owners.iter().map(|owner| (*owner).into()).collect(),
             owner_kinds: owners.iter().map(|_| "apps/v1/Deployment".into()).collect(),
             deleting: false,
+        }
+    }
+
+    #[test]
+    fn failed_delete_remains_queued_without_another_watch_event() {
+        let mut state = empty_state();
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["deployment"]));
+        let owner = DynamicObject {
+            types: None,
+            data: serde_json::Value::Null,
+            metadata: kube::api::ObjectMeta {
+                uid: Some("deployment".into()),
+                ..Default::default()
+            },
+        };
+        state.handle_delete(owner);
+        assert!(state.deletes.contains_key("replicaset"));
+        state.complete_delete("replicaset", true);
+        let due = state.deletes["replicaset"].due;
+        assert_eq!(state.deletes["replicaset"].delay, Duration::from_secs(2));
+        // A noisy child watch must not bypass the failed request's backoff.
+        state.enqueue_delete("replicaset".into());
+        assert_eq!(state.deletes["replicaset"].due, due);
+        for _ in 0..10 {
+            state.complete_delete("replicaset", true);
+        }
+        assert_eq!(state.deletes["replicaset"].delay, Duration::from_secs(30));
+        state.complete_delete("replicaset", false);
+        assert!(state.deletes.is_empty());
+    }
+
+    #[test]
+    fn child_delete_cancels_a_pending_retry() {
+        let mut state = empty_state();
+        state.enqueue_delete("old-uid".into());
+        state.handle_delete(DynamicObject {
+            types: None,
+            data: serde_json::Value::Null,
+            metadata: kube::api::ObjectMeta {
+                uid: Some("old-uid".into()),
+                ..Default::default()
+            },
+        });
+        // Completion of an already-running failed request cannot resurrect it.
+        state.complete_delete("old-uid", true);
+        assert!(state.deletes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_conflict_retries_same_uid_but_preserves_replacement() {
+        for (live_uid, expected_retry) in [("child-uid", true), ("replacement-uid", false)] {
+            let service = tower::service_fn(move |request: http::Request<kube::client::Body>| async move {
+                let (status, body) = if request.method() == http::Method::DELETE {
+                    (409, serde_json::json!({
+                        "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                        "reason": "Conflict", "message": "compare failed", "code": 409,
+                    }))
+                } else {
+                    assert_eq!(request.method(), http::Method::GET);
+                    (200, serde_json::json!({
+                        "apiVersion": "apps/v1", "kind": "ReplicaSet",
+                        "metadata": {"name": "child-uid", "uid": live_uid},
+                    }))
+                };
+                Ok::<_, std::convert::Infallible>(http::Response::builder()
+                    .status(status)
+                    .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap())
+            });
+            let client = Client::new(service, "default");
+            let ar = kube::discovery::ApiResource::from_gvk(
+                &kube::core::GroupVersionKind::gvk("apps", "v1", "ReplicaSet"),
+            );
+            let child = record("child-uid", "apps/v1/ReplicaSet", &["gone"]);
+            assert_eq!(delete_object(&client, &ar, &child).await, expected_retry);
         }
     }
 
@@ -593,6 +703,7 @@ async fn run_generation(
         children_of: HashMap::new(),
         uid_to_kind: HashMap::new(),
         relist: HashMap::new(),
+        deletes: HashMap::new(),
     };
 
     // Discovery commonly returns dozens of kinds. Starting every dynamic
@@ -612,9 +723,54 @@ async fn run_generation(
         tokio::time::Instant::now() + admission_period,
         admission_period,
     );
+    // One active request, one queued entry per UID. Keep consuming watches
+    // during network I/O; an unavailable API must not freeze the owner graph.
+    let mut deleting: FuturesUnordered<futures::future::BoxFuture<'static, (String, bool)>> =
+        FuturesUnordered::new();
 
     loop {
+        let next_delete = state.deletes.iter()
+            .min_by_key(|(_, entry)| entry.due)
+            .map(|(uid, entry)| (uid.clone(), entry.due));
+        let delete_due = next_delete.as_ref().map(|(_, due)| *due)
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(30));
         tokio::select! {
+            Some((uid, retry)) = deleting.next(), if !deleting.is_empty() => {
+                state.complete_delete(&uid, retry);
+            }
+            _ = tokio::time::sleep_until(delete_due), if deleting.is_empty() && next_delete.is_some() => {
+                let Some((uid, _)) = next_delete else { continue };
+                let Some(record) = state.objects_with_owners.get(&uid).cloned() else {
+                    state.deletes.remove(&uid);
+                    continue;
+                };
+                // Recompute from the latest graph, never retry a stale orphan
+                // decision after adoption, deletion, or an incomplete relist.
+                if !should_delete_orphan(&record, state.owners_initialized(&record), &state.exists) {
+                    state.deletes.remove(&uid);
+                    continue;
+                }
+                let Some(ar) = state.resources.get(&record.gvk_key).cloned() else {
+                    state.deletes.remove(&uid);
+                    continue;
+                };
+                let client = client.clone();
+                deleting.push(Box::pin(async move {
+                    tracing::debug!(kind = %record.gvk_key, namespace = %record.namespace,
+                        name = %record.name, uid = %uid, "garbage-collector-controller attempting orphan deletion");
+                    let retry = match tokio::time::timeout(
+                        Duration::from_secs(15), delete_object(&client, &ar, &record),
+                    ).await {
+                        Ok(retry) => retry,
+                        Err(_) => {
+                            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace,
+                                name = %record.name, uid = %uid, "garbage-collector-controller orphan deletion timed out; retry queued");
+                            true
+                        }
+                    };
+                    (uid, retry)
+                }));
+            }
             crd_event = crd_stream.next() => {
                 match crd_event {
                     Some(Ok(event)) => {
@@ -642,17 +798,17 @@ async fn run_generation(
                 match ev {
                     Ok(Event::Apply(obj)) => {
                         let staged = state.pending_init.contains(&kind_key);
-                        state.handle_apply(client, &kind_key, obj, staged).await;
+                        state.handle_apply(&kind_key, obj, staged);
                     }
                     Ok(Event::InitApply(obj)) => {
-                        state.handle_apply(client, &kind_key, obj, true).await;
+                        state.handle_apply(&kind_key, obj, true);
                     }
                     Ok(Event::Delete(obj)) => {
-                        state.handle_delete(client, obj).await;
+                        state.handle_delete(obj);
                     }
                     Ok(Event::Init) => state.begin_relist(&kind_key),
                     Ok(Event::InitDone) => {
-                        state.finish_relist(client, &kind_key).await;
+                        state.finish_relist(&kind_key);
                     }
                     Err(e) => {
                         tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller")

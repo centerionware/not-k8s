@@ -1,0 +1,50 @@
+name: Stack load profile
+
+# Reused by the manual profiling selector and by the release workflow. All
+# build, bootstrap, capture, rendering and publication stays on ONE runner.
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
+      build_profile:
+        type: string
+        default: profiling
+      sample_seconds:
+        type: string
+        default: '120'
+      archive_limit_mib:
+        type: string
+        default: '512'
+      workload:
+        type: string
+        default: standard
+
+permissions:
+  contents: write
+
+jobs:
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: profiling-results-publisher
+      cancel-in-progress: false
+    env:
+      PROFILE_BUILD: ${{ inputs.build_profile }}
+      PROFILE_SECONDS: ${{ inputs.sample_seconds }}
+      PROFILE_WORKLOAD: ${{ inputs.workload }}
+      PROFILE_ARCHIVE_LIMIT_MIB: ${{ inputs.archive_limit_mib }}
+      KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+      FLAMEGRAPH_DIR: ${{ github.workspace }}/.bootstrap/flamegraph-tools
+      RUSTFLAGS: '-C force-frame-pointers=yes'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Stack flamegraphs
+        uses: ./.github/actions/profile-stack-run
+        with:
+          source_ref: ${{ inputs.source_ref }}

@@ -51,6 +51,11 @@ macro_rules! handle_patch_standard {
         };
         let namespace = storage_namespace(&$info);
 
+        // Recompute admission and the candidate after an internal CAS race.
+        // Explicit resourceVersion and JSON Patch preconditions still fail;
+        // they must not be silently turned into unconditional writes.
+        let mut attempt = 0;
+        loop {
         // Group J: `namespace_lifecycle`, same `Update`-shaped check
         // `CREATE`/`UPDATE` already get (an "operation" of `Update` is
         // exactly right for a `PATCH` too — real upstream's own
@@ -284,6 +289,12 @@ macro_rules! handle_patch_standard {
         }
 
         return match rest::patch_persist_with_manager(&mut client, &$info.api_group, &$info.api_version, &$info.resource, namespace, &$info.name, context, candidate, dry_run, $request_field_manager.as_deref()).await {
+            Ok(rest::UpdateOutcome::Conflict)
+                if attempt < 7 && rest::patch_allows_conflict_retry(kind_of_patch, &patch_doc) => {
+                tokio::time::sleep(std::time::Duration::from_millis(10u64 << attempt)).await;
+                attempt += 1;
+                continue;
+            }
             Ok(rest::UpdateOutcome::Updated(object)) => Ok(json_response(StatusCode::OK, &object)),
             Ok(rest::UpdateOutcome::UnknownResource) | Ok(rest::UpdateOutcome::ObjectNotFound) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str))),
             Ok(rest::UpdateOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &update_conflict_status(&$path_str))),
@@ -302,5 +313,6 @@ macro_rules! handle_patch_standard {
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
             }
         };
+        }
     }};
 }

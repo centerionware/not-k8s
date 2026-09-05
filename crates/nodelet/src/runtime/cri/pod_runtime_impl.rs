@@ -10,7 +10,11 @@ impl PodRuntime for CriRuntime {
         // `ensure_pod()` for the same pod can otherwise race on
         // `CreateContainer`'s attempt-numbered container name).
         let lock = self.pod_ensure_lock(&format!("{}/{}", id.namespace, id.name));
+        tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+            operation = "ensure", stage = "wait for lifecycle lock", "pod runtime operation");
         let _ensure_guard = lock.lock().await;
+        tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+            operation = "ensure", stage = "find sandbox", "pod runtime operation");
         let found = self.find_sandbox_with_uid(&id.namespace, &id.name).await?;
         let uid_matches = found.as_ref().is_some_and(|(_, _, found_uid)| *found_uid == id.uid);
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
@@ -110,7 +114,11 @@ impl PodRuntime for CriRuntime {
             .map(|refs| refs.iter().map(|r| r.name.clone()).filter(|n| !n.is_empty()).collect())
             .unwrap_or_default();
 
+        tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+            operation = "ensure", stage = "resolve volumes", "pod runtime operation");
         let volumes = self.resolve_volumes(pod, &id, &pull_secrets).await;
+        tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+            operation = "ensure", stage = "volumes resolved", "pod runtime operation");
         let pending_projected_tokens = pending_projected_token_volume_names(pod, &volumes);
         if !pending_projected_tokens.is_empty() {
             return Ok(RuntimeStatus {
@@ -316,23 +324,34 @@ impl PodRuntime for CriRuntime {
 
     async fn remove_pod(&self, pod: &Pod) -> Result<()> {
         let id = pod_id(pod);
+        let removal_started = tokio::time::Instant::now();
         // Teardown runs on its own task so a long grace period cannot block
         // unrelated Pod events, but it must still serialize with a replacement
         // Pod using the same namespace/name. Otherwise the old teardown can
         // remove the replacement sandbox or clean up state belonging to its
         // new UID.
         let lock = self.pod_ensure_lock(&format!("{}/{}", id.namespace, id.name));
+        tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+            operation = "remove", stage = "wait for lifecycle lock", "pod runtime operation");
         let _remove_guard = lock.lock().await;
+        tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+            operation = "remove", stage = "find sandbox", "pod runtime operation");
         if let Some((sandbox_id, _state, sandbox_uid)) = self.find_sandbox_with_uid(&id.namespace, &id.name).await? {
             if sandbox_uid.is_empty() || sandbox_uid == id.uid {
-                let grace = termination_grace_seconds(pod);
+                let grace = remaining_termination_grace(termination_grace_seconds(pod), removal_started.elapsed());
+                tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+                    operation = "remove", stage = "stop containers", grace, "pod runtime operation");
                 self.graceful_stop_containers(&sandbox_id, pod, grace).await;
 
                 let mut rt = self.rt.clone();
+                tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+                    operation = "remove", stage = "stop sandbox", "pod runtime operation");
                 // StopPodSandbox is idempotent; RemovePodSandbox also removes its containers.
                 let _ = rt
                     .stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
                     .await;
+                tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
+                    operation = "remove", stage = "remove sandbox", "pod runtime operation");
                 rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: sandbox_id.clone() })
                     .await
                     .context("RemovePodSandbox")?;

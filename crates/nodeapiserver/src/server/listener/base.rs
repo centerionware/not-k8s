@@ -663,6 +663,11 @@ fn encode_watch_event(
             }
             let mut bytes = serde_json::to_vec(&event_json).unwrap_or_default();
             bytes.push(b'\n');
+            if resource == "namespaces" {
+                tracing::debug!(target: "nk_watch_trace", boundary = "cache_to_http",
+                    key = %String::from_utf8_lossy(&event.key), revision = event.revision,
+                    kind = ?event.kind, "namespace watch event");
+            }
             // Group M: `apiserver_watch_events_total` -- real upstream's
             // own increment point too (`metrics.go`'s own `WatchEvents.
             // WithLabelValues(...).Inc()`, called once per event actually

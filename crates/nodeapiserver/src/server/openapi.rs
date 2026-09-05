@@ -27,6 +27,50 @@ use std::sync::OnceLock;
 
 const OPERATION_METHODS: [&str; 8] = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
 
+// client-go still sends the historical '@' spelling in Accept, but that
+// spelling is not a valid response MIME subtype. Match kube-openapi's
+// handler: accept either spelling and always return the standards-safe one.
+pub const V2_PROTOBUF_CONTENT_TYPE: &str = "application/com.github.proto-openapi.spec.v2.v1.0+protobuf";
+pub const V2_PROTOBUF_LEGACY_ACCEPT: &str = "application/com.github.proto-openapi.spec.v2@v1.0+protobuf";
+
+/// `None` means no supported representation. JSON remains the default;
+/// explicit exclusions take precedence over wildcard media ranges.
+pub fn negotiate_v2(accept: Option<&str>) -> Option<bool> {
+    let Some(accept) = accept.filter(|header| !header.trim().is_empty()) else { return Some(false) };
+    let mut best: Option<(f32, usize, bool)> = None;
+    for protobuf in [false, true] {
+        let mut offer: Option<(u8, f32, usize)> = None;
+        for (index, range) in accept.split(',').enumerate() {
+            let mut parts = range.trim().split(';');
+            let media = parts.next().unwrap_or_default().trim();
+            let specificity = match media {
+                "*/*" => 0,
+                "application/*" => 1,
+                "application/json" if !protobuf => 2,
+                V2_PROTOBUF_CONTENT_TYPE | V2_PROTOBUF_LEGACY_ACCEPT if protobuf => 2,
+                _ => continue,
+            };
+            let quality = parts.find_map(|part| part.trim().strip_prefix("q=")).map_or(Some(1.0), |q| q.parse::<f32>().ok())
+                .filter(|q| q.is_finite() && (0.0..=1.0).contains(q)).unwrap_or(0.0);
+            if offer.is_none_or(|(specific, _, _)| specificity > specific) {
+                offer = Some((specificity, quality, index));
+            }
+        }
+        if let Some((_, quality, index)) = offer.filter(|(_, q, _)| *q > 0.0) {
+            if best.is_none_or(|(q, i, _)| quality > q || (quality == q && index < i)) {
+                best = Some((quality, index, protobuf));
+            }
+        }
+    }
+    best.map(|(_, _, protobuf)| protobuf)
+}
+
+pub fn v2_protobuf() -> &'static [u8] {
+    static DOCUMENT: OnceLock<Vec<u8>> = OnceLock::new();
+    DOCUMENT.get_or_init(|| super::openapi_protobuf::encode(&v2())
+        .expect("vendored OpenAPI document must encode with its gnostic descriptor"))
+}
+
 /// `/openapi/v3` — the root discovery index: every servable path, each
 /// with a `serverRelativeURL` a client follows to fetch that document.
 pub fn root() -> Value {

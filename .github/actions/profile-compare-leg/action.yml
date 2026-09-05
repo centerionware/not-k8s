@@ -1,0 +1,101 @@
+name: Measure comparison
+description: Shared profiling steps for source and published binaries.
+inputs:
+  release_tag:
+    description: Exact release to measure, empty builds profile-source
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Prepare client
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p profile-data
+        { echo "backend=$PROFILE_BACKEND"; echo "tooling_sha=$(git rev-parse HEAD)"; uname -a; lscpu; free -h; } > profile-data/metadata.txt
+        # Upstream setup installs a server-matched client to avoid version skew.
+        if [[ "$PROFILE_BACKEND" != notk8s ]]; then exit 0; fi
+        curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl -o /tmp/profile-kubectl
+        curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl.sha256 -o /tmp/profile-kubectl.sha256
+        echo "$(cat /tmp/profile-kubectl.sha256)  /tmp/profile-kubectl" | sha256sum -c
+        sudo install -m 0755 /tmp/profile-kubectl /usr/local/bin/kubectl
+    - name: Get release binary
+      if: env.PROFILE_BACKEND == 'notk8s' && inputs.release_tag != ''
+      env:
+        RELEASE_TAG: ${{ inputs.release_tag }}
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: bash deploy/download-release-runtime.sh "$RELEASE_TAG" release "$GITHUB_WORKSPACE/profile-bin"
+    - name: Build and bootstrap
+      env:
+        RELEASE_TAG: ${{ inputs.release_tag }}
+      if: env.PROFILE_BACKEND == 'notk8s'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "$RELEASE_TAG" ]]; then
+          binary="$GITHUB_WORKSPACE/profile-bin/notk8s"
+          { echo "release_tag=$RELEASE_TAG"; echo 'build_profile=release'; cat profile-bin/SHA256SUMS; } >> profile-data/metadata.txt
+        else
+          cd profile-source
+          cargo build --release --features cri -p notk8s
+          cp Cargo.lock ../profile-data/Cargo.lock
+          { echo "source_sha=$(git rev-parse HEAD)"; echo 'build_profile=release'; rustc -Vv; sha256sum target/release/notk8s Cargo.lock; } >> ../profile-data/metadata.txt
+          binary="$PWD/target/release/notk8s"
+        fi
+        sudo -E env NOTK8S_COMBINED_PREBUILT="$binary" NOTK8S_BUILD_LAYOUT=combined \
+          "$binary" nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
+        sudo chmod 644 "$KUBECONFIG"
+    - name: Install upstream
+      if: env.PROFILE_BACKEND != 'notk8s'
+      shell: bash
+      run: bash deploy/setup-profile-baseline.sh "$PROFILE_BACKEND"
+    - name: Capture metrics
+      shell: bash
+      run: |
+        set -euo pipefail
+        kubectl wait nodes --all --for=condition=Ready --timeout=240s
+        kubectl version -o json > profile-data/kubernetes-version.json
+        kubectl get nodes -o json > profile-data/nodes.json
+        kubectl -n kube-system get pods -o json > profile-data/system-pods.json
+        # All legs warm up with the same small ready Deployment before idle.
+        args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --workload "$PROFILE_WORKLOAD" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
+        if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
+        sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py "${args[@]}"
+        sudo chown -R "$(id -u):$(id -g)" profile-data
+    - name: Failure diagnostics
+      if: failure()
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p profile-data
+        {
+          # Separate unit histories: a busy apiserver audit stream must not
+          # consume the shared tail and hide nodelet/scheduler failures.
+          for unit in nodelet nodescheduler nodecontroller nodestore nodeproxy k3s kubelet containerd; do
+            sudo journalctl -b --no-pager -u "$unit" > "profile-data/$unit-journal.txt" || true
+            tail -200 "profile-data/$unit-journal.txt"
+          done
+          sudo journalctl -b --no-pager -u nodeapiserver --grep='WARN|ERROR|panic|failed|exited' > profile-data/nodeapiserver-errors.txt || true
+          cat profile-data/nodeapiserver-errors.txt
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.metadata.creationTimestamp | tail -100 || true
+        } 2>&1 | tee profile-data/failure-diagnostics.txt
+        sudo chown -R "$(id -u):$(id -g)" profile-data
+    - name: Record outcome
+      if: always()
+      env:
+        MEASURE_STATUS: ${{ job.status }}
+      shell: bash
+      run: |
+        mkdir -p profile-data
+        sudo chown -R "$(id -u):$(id -g)" profile-data
+        printf '%s\n' "$MEASURE_STATUS" > profile-data/measurement-status.txt
+    - name: Upload measurements
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: comparison-metrics-${{ github.run_attempt }}-${{ env.PROFILE_BACKEND }}
+        path: profile-data/
+        if-no-files-found: error
+        retention-days: 1

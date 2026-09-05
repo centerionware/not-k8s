@@ -45,6 +45,9 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 serde_yaml = "0.9"
+# OpenAPI uses gnostic's document protobuf, not Kubernetes' object envelope.
+# Resolve fields from the vendored descriptor instead of hand-maintaining tags.
+prost-reflect = "0.16.5"
 # Group E's watch response lifetime uses the standard stream combinators to
 # apply Kubernetes' request timeout without turning the listener into a
 # polling loop.
@@ -193,5 +196,6 @@ serde_json = { workspace = true }
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
+prost-types = { workspace = true }
 # server::tls's own tests generate a cert into a scratch directory.
 tempfile = "3"

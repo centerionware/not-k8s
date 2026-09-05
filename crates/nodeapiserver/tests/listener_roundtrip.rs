@@ -433,6 +433,10 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         status_patch.text().await.unwrap_or_default()
     );
 
+    tokio::time::timeout(Duration::from_secs(120),
+        namespace_watch_reconnect_stress(&client, &endpoint, &name))
+        .await.expect("namespace watch reconnect stress must not hang");
+
     let deleted = client
         .delete(format!("{endpoint}/api/v1/namespaces/{name}"))
         .send()
@@ -444,4 +448,44 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
     let _ = nodeapiserver_child.wait().await;
     let _ = nodestore_child.kill().await;
     let _ = nodestore_child.wait().await;
+}
+
+async fn namespace_watch_reconnect_stress(client: &Client, endpoint: &str, name: &str) {
+    let mut revision = "0".to_string();
+    // Repeatedly drop live HTTP watches while writes wake their receivers,
+    // then resume at the last observed revision on a reused client pool.
+    for round in 0..64 {
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let response = client.get(format!("{endpoint}/api/v1/namespaces"))
+                .query(&[("watch", "true"), ("resourceVersion", revision.as_str()),
+                    ("timeoutSeconds", "10"), ("allowWatchBookmarks", "true")])
+                .send().await.unwrap().error_for_status().unwrap();
+            readers.push(response);
+        }
+        let updated: serde_json::Value = client.patch(format!("{endpoint}/api/v1/namespaces/{name}"))
+            .header("content-type", "application/merge-patch+json")
+            .json(&json!({"metadata":{"annotations":{"watch-stress":round.to_string()}}}))
+            .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+        revision = updated["metadata"]["resourceVersion"].as_str().unwrap().to_string();
+        for mut response in readers {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut pending = Vec::new();
+                while let Some(chunk) = response.chunk().await.unwrap() {
+                    pending.extend_from_slice(&chunk);
+                    while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                        let event: serde_json::Value = serde_json::from_slice(&pending[..end]).unwrap();
+                        pending.drain(..=end);
+                        assert_ne!(event["type"], "ERROR", "watch failed: {event}");
+                        if event["object"]["metadata"]["name"] == name
+                            && event["object"]["metadata"]["resourceVersion"] == revision
+                        {
+                            return;
+                        }
+                    }
+                }
+                panic!("namespace watch ended before revision {revision} in round {round}");
+            }).await.unwrap_or_else(|_| panic!("namespace watch stalled at revision {revision} in round {round}"));
+        }
+    }
 }

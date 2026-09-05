@@ -104,6 +104,7 @@ pub mod healthz;
 /// which labels are and aren't tracked).
 pub mod metrics;
 pub mod openapi;
+mod openapi_protobuf;
 pub mod version;
 pub mod rest;
 pub mod watch_event;

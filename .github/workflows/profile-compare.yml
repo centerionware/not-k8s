@@ -1,0 +1,143 @@
+name: Profile comparison
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
+      baseline:
+        type: string
+        default: k8s
+      components:
+        type: string
+        default: all
+      whole_stack:
+        type: boolean
+        default: false
+      sample_seconds:
+        type: string
+        default: '120'
+      workload:
+        type: string
+        default: standard
+      k3s_version:
+        type: string
+        default: latest
+      k8s_version:
+        type: string
+        default: latest
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      backends: ${{ steps.plan.outputs.backends }}
+      components: ${{ steps.plan.outputs.components }}
+    steps:
+      - name: Plan comparison
+        id: plan
+        env:
+          BASELINE: ${{ inputs.baseline }}
+          COMPONENTS: ${{ inputs.components }}
+          WHOLE: ${{ inputs.whole_stack }}
+          SECONDS_INPUT: ${{ inputs.sample_seconds }}
+          WORKLOAD: ${{ inputs.workload }}
+          K3S_VERSION: ${{ inputs.k3s_version }}
+          K8S_VERSION: ${{ inputs.k8s_version }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          for name, pattern in [('K3S_VERSION', r'v\d+\.\d+\.\d+\+k3s\d+'), ('K8S_VERSION', r'v\d+\.\d+\.\d+')]:
+              value = os.environ[name]
+              assert value == 'latest' or re.fullmatch(pattern, value), f'invalid {name}: {value}'
+          names = ['nodestore', 'nodeapiserver', 'nodescheduler', 'nodecontroller', 'nodelet', 'nodeproxy']
+          baseline = os.environ['BASELINE']
+          assert baseline in ('k8s', 'k3s', 'both'), 'baseline must be k8s, k3s or both'
+          whole = os.environ['WHOLE'] == 'true'
+          assert whole or baseline == 'k8s', 'k3s embeds components; select whole-stack or baseline=k8s'
+          selected = names if os.environ['COMPONENTS'] == 'all' else os.environ['COMPONENTS'].split(',')
+          assert selected and len(selected) == len(set(selected)) and set(selected) <= set(names), 'invalid component selection'
+          assert not whole or set(selected) == set(names), 'whole-stack requires components=all'
+          assert 30 <= int(os.environ['SECONDS_INPUT']) <= 600, 'sample_seconds must be 30..600'
+          assert os.environ['WORKLOAD'] in ('standard', 'heavy'), 'invalid workload preset'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              print('backends=' + json.dumps(['notk8s'] + (['k8s', 'k3s'] if baseline == 'both' else [baseline])), file=out)
+              print('components=' + ','.join(selected), file=out)
+          PY
+  measure:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: ${{ fromJSON(needs.plan.outputs.backends) }}
+    env:
+      PROFILE_DISPOSABLE_RUNNER: '1'
+      PROFILE_SECONDS: ${{ inputs.sample_seconds }}
+      PROFILE_WORKLOAD: ${{ inputs.workload }}
+      PROFILE_COMPONENTS: ${{ needs.plan.outputs.components }}
+      PROFILE_WHOLE: ${{ inputs.whole_stack }}
+      PROFILE_BACKEND: ${{ matrix.backend }}
+      PROFILE_K3S_VERSION: ${{ inputs.k3s_version }}
+      PROFILE_K8S_VERSION: ${{ inputs.k8s_version }}
+      KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out repository
+        uses: actions/checkout@v7
+        if: matrix.backend == 'notk8s'
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: profile-source
+          persist-credentials: false
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+        if: matrix.backend == 'notk8s'
+      - name: Measure comparison
+        uses: ./.github/actions/profile-compare-leg
+
+  publish:
+    needs: [plan, measure]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      PROFILE_RESULTS_BRANCH: profiling-results
+      PROFILE_BACKENDS: ${{ needs.plan.outputs.backends }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish comparison
+        uses: ./.github/actions/profile-compare-publish
+
+  report:
+    needs: [plan, measure, publish]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: profiling-comparison-report
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROFILE_RESULTS_BRANCH: profiling-results
+      PROFILE_BACKENDS: ${{ needs.plan.outputs.backends }}
+      PROFILE_COMPONENTS: ${{ needs.plan.outputs.components }}
+      PROFILE_WHOLE: ${{ inputs.whole_stack }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Render comparison
+        uses: ./.github/actions/profile-compare-report

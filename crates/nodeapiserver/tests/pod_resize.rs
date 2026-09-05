@@ -72,4 +72,17 @@ async fn pod_resize_updates_resources_without_replacing_the_pod() {
         rest::GetOutcome::Found(object) => assert_eq!(object, resized),
         other => panic!("expected Found, got {other:?}"),
     }
+
+    // A second write exercises a payload carrying metadata from a previous
+    // write, rather than only the RV-less freshly-created Pod.
+    let outcome = rest::patch_pod_resize(&mut storage, "default", "resize-pod",
+        rest::PatchKind::Merge,
+        &json!({"spec":{"containers":[{"name":"app","resources":{"limits":{"memory":"512Mi"}}}]}}),
+        false, None).await.unwrap();
+    assert!(matches!(outcome, rest::UpdateOutcome::Updated(_)), "{outcome:?}");
+    let stale = rest::patch_pod_resize(&mut storage, "default", "resize-pod",
+        rest::PatchKind::Merge,
+        &json!({"metadata":{"resourceVersion":resized["metadata"]["resourceVersion"]}}),
+        false, None).await.unwrap();
+    assert!(matches!(stale, rest::UpdateOutcome::Conflict), "{stale:?}");
 }
