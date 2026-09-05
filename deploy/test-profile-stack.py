@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fast contract checks; no cluster, Rust build, privileges, or actual perf."""
 import importlib.util
+import csv
 import os
 from pathlib import Path
 import subprocess
@@ -12,9 +13,65 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("profile_stack", ROOT / "deploy/profile-stack.py")
 stack = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(stack)
+CHART_SPEC = importlib.util.spec_from_file_location("stack_charts", ROOT / "deploy/lib/render-stack-charts.py")
+charts = importlib.util.module_from_spec(CHART_SPEC)
+CHART_SPEC.loader.exec_module(charts)
 
 
 class ProfileStackTests(unittest.TestCase):
+    def test_upstream_mapping_and_k3s_monolith(self):
+        for component, upstream in stack.UPSTREAM.items():
+            self.assertEqual(stack.component_name([f"/usr/bin/{upstream}"], "k8s"), component)
+        self.assertEqual(stack.component_name(["k3s server"], "k3s"), "k3s")
+        self.assertIsNone(stack.component_name(["/usr/bin/containerd"], "k3s", True))
+        self.assertEqual(stack.component_name(["containerd"], "k3s", True,
+                                             "/var/lib/rancher/k3s/data/hash/bin/containerd"), "containerd")
+        self.assertIsNone(stack.component_name(["kubelet"], "notk8s"))
+
+    def test_embedded_component_comparison_is_rejected_before_setup(self):
+        result = subprocess.run(["python3", str(ROOT / "deploy/profile-stack.py"),
+                                 "--backend", "k3s", "--metrics-only", "--output", "unused"],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("only whole-stack", result.stderr)
+
+    def test_multiple_processes_sum_and_missing_pss_is_not_zero(self):
+        rows = [{"component": "coredns", "elapsed_seconds": "1", "rss_kib": "10", "pss_kib": ""},
+                {"component": "coredns", "elapsed_seconds": "1", "rss_kib": "20", "pss_kib": "5"}]
+        self.assertEqual(charts.component_series(rows, "coredns", "rss_kib"), [(1.0, 30.0)])
+        self.assertIsNone(charts.component_series(rows, "coredns", "pss_kib"))
+        with self.assertRaisesRegex(ValueError, "missing component"):
+            charts.component_series(rows, "nodelet", "rss_kib")
+
+    def test_duplicate_pid_cannot_inflate_aggregate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "duplicate.csv"
+            path.write_text('elapsed_seconds,pid,component\n1,42,nodelet\n1,42,k3s\n')
+            with self.assertRaisesRegex(ValueError, "duplicate PID"):
+                charts.load_rows(path)
+
+    @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "chart dependency installed in CI only")
+    def test_component_and_whole_stack_graphs_render_without_fake_k3s_slots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = {label: root / label for label in ("notk8s", "k8s", "k3s")}
+            for label, directory in sources.items():
+                for phase in ("idle", "load"):
+                    (directory / phase).mkdir(parents=True)
+                    with (directory / phase / "timeseries.csv").open("w") as stream:
+                        writer = csv.writer(stream)
+                        writer.writerow(['elapsed_seconds', 'pid', 'component', 'cpu_pct_one_core', 'rss_kib', 'pss_kib'])
+                        names = ['k3s'] if label == 'k3s' else ['nodeapiserver', 'nodestore']
+                        for second in (1, 2):
+                            for pid, name in enumerate(names, 1):
+                                writer.writerow([second, pid, name, 2, 1024, 512])
+            charts.render(root / "whole", sources, None, True)
+            charts.render(root / "selected", {k: v for k, v in sources.items() if k != "k3s"}, ['nodeapiserver', 'nodestore'])
+            for mode in ('whole', 'selected'):
+                self.assertTrue((root / mode / 'load-combined-cpu_pct_one_core.png').is_file())
+                self.assertTrue((root / mode / 'load-nodeapiserver-rss_kib.png').is_file())
+            self.assertIn('not separately attributable', (root / 'whole/chart-notes.txt').read_text())
+
     def test_exact_process_identity(self):
         self.assertEqual(stack.component_name(["/bin/nodelet"]), "nodelet")
         self.assertEqual(stack.component_name(["/bin/notk8s", "nodecontroller"]), "nodecontroller")

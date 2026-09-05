@@ -17,16 +17,30 @@ import threading
 import time
 
 COMPONENTS = ("nodestore", "nodeapiserver", "nodescheduler", "nodecontroller", "nodelet", "nodeproxy")
+UPSTREAM = dict(zip(COMPONENTS, ("etcd", "kube-apiserver", "kube-scheduler", "kube-controller-manager", "kubelet", "kube-proxy")))
+INFRASTRUCTURE = ("containerd", "flanneld", "coredns")
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def component_name(argv):
+def component_name(argv, backend="notk8s", whole=False, executable=None):
     if not argv:
         return None
     name = Path(argv[0]).name
     if name == "notk8s" and len(argv) > 1:
         name = argv[1]
-    return name if name in COMPONENTS else None
+    if backend == "notk8s" and name in COMPONENTS:
+        return name
+    if backend == "k8s" and name in UPSTREAM.values():
+        return next(key for key, value in UPSTREAM.items() if value == name)
+    if backend == "k3s" and (name == "k3s server" or (name == "k3s" and argv[1:2] == ["server"])):
+        return "k3s"
+    if whole and name in INFRASTRUCTURE:
+        # Hosted runners may also run Docker's unused containerd. k3s uses
+        # its own bundled runtime, not that unrelated system process.
+        if backend == "k3s" and name == "containerd" and not (executable or argv[0]).startswith("/var/lib/rancher/k3s/"):
+            return None
+        return name
+    return None
 
 
 def counters(pid):
@@ -44,20 +58,24 @@ def counters(pid):
     return ticks, rss, pss, fields[19]
 
 
-def processes():
-    found = {name: [] for name in COMPONENTS}
+def processes(backend="notk8s", selected=COMPONENTS, whole=False):
+    required = ("k3s",) if backend == "k3s" else selected
+    if whole:
+        required = tuple(required) + (("containerd", "coredns") if backend == "k3s" else INFRASTRUCTURE)
+    found = {name: [] for name in required}
     for path in Path("/proc").glob("[0-9]*/cmdline"):
         try:
             argv = path.read_bytes().decode(errors="replace").rstrip("\0").split("\0")
-            name = component_name(argv)
-            if name:
+            name = component_name(argv, backend, whole, os.readlink(path.parent / "exe"))
+            if name in found:
                 found[name].append(int(path.parent.name))
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
-    bad = {name: pids for name, pids in found.items() if len(pids) != 1}
+    bad = {name: pids for name, pids in found.items()
+           if not pids or (name not in INFRASTRUCTURE and len(pids) != 1)}
     if bad:
         raise RuntimeError(f"expected exactly one process per component, found {bad}")
-    return {name: pids[0] for name, pids in found.items()}
+    return {f"{name}@{pid}": pid for name, pids in found.items() for pid in pids}
 
 
 class Workload:
@@ -126,10 +144,10 @@ class Workload:
         (self.output / "workload-operations.json").write_text(json.dumps(self.events, indent=2))
 
 
-def capture(output, phase, duration):
+def capture(output, phase, duration, backend="notk8s", selected=COMPONENTS, whole=False, flamegraphs=True):
     phase_dir = output / phase
     phase_dir.mkdir()
-    pids = processes()
+    pids = processes(backend, selected, whole)
     baseline = {name: counters(pid) for name, pid in pids.items()}
     identity = {name: {"pid": pid, "exe": os.readlink(f"/proc/{pid}/exe"),
                        "start_ticks": baseline[name][3]} for name, pid in pids.items()}
@@ -138,7 +156,8 @@ def capture(output, phase, duration):
     env = dict(os.environ, PROFILE_EVENT="cpu-clock", PROFILE_FREQUENCY="49",
                PROFILE_CALL_GRAPH="fp", PROFILE_CAPTURE_ONLY="1", PROFILE_REQUIRE_PERF="1")
     try:
-        for name, pid in pids.items():
+        for key, pid in pids.items() if flamegraphs else []:
+            name = key if whole else key.split("@", 1)[0]
             log = (phase_dir / f"{name}-capture.log").open("w")
             proc = subprocess.Popen(["bash", str(ROOT / "deploy/profile-process.sh"), "--pid", str(pid),
                                      "--label", name, "--duration", str(duration),
@@ -160,7 +179,7 @@ def capture(output, phase, duration):
                         raise RuntimeError(f"{name} restarted during {phase}; sample invalid")
                     delta = (current[0] - previous[name][0]) / os.sysconf("SC_CLK_TCK")
                     total = (current[0] - baseline[name][0]) / os.sysconf("SC_CLK_TCK")
-                    writer.writerow([now - started, name, pid, total, 100 * delta / (now - previous_time), current[1], current[2]])
+                    writer.writerow([now - started, name.split("@", 1)[0], pid, total, 100 * delta / (now - previous_time), current[1], current[2]])
                     previous[name] = current
                 stream.flush()
                 previous_time = now
@@ -187,7 +206,7 @@ def run(args):
     watch_log = None
     try:
         workload.setup()
-        capture(output, "idle", args.seconds)
+        capture(output, "idle", args.seconds, args.backend, args.components, args.whole_stack, not args.metrics_only)
         workload.start_client()
         watch_log = (output / "watch-events.txt").open("w")
         watcher = subprocess.Popen(["kubectl", "-n", workload.namespace, "get", "configmaps", "--watch-only"],
@@ -196,7 +215,7 @@ def run(args):
             futures = [pool.submit(workload.api_worker, i) for i in range(args.workers)]
             futures.append(pool.submit(workload.scale_worker))
             try:
-                capture(output, "load", args.seconds)
+                capture(output, "load", args.seconds, args.backend, args.components, args.whole_stack, not args.metrics_only)
             finally:
                 workload.stop.set()
             for future in futures:
@@ -210,6 +229,8 @@ def run(args):
             raise RuntimeError("in-cluster HTTP traffic did not remain healthy")
         (output / "pods.json").write_text(workload.kubectl("get", "pods", "-o", "json"))
         (output / "workload.json").write_text(json.dumps({"namespace": workload.namespace,
+            "backend": args.backend, "components": args.components, "whole_stack": args.whole_stack,
+            "metrics_only": args.metrics_only,
             "replicas": args.replicas, "api_workers": args.workers, "seconds_per_phase": args.seconds,
             "http_successes": traffic.count("request-ok")}, indent=2))
     finally:
@@ -235,7 +256,18 @@ def main():
     parser.add_argument("--seconds", type=int, default=120)
     parser.add_argument("--replicas", type=int, default=3)
     parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--backend", choices=("notk8s", "k8s", "k3s"), default="notk8s")
+    parser.add_argument("--components", default=",".join(COMPONENTS))
+    parser.add_argument("--whole-stack", action="store_true")
+    parser.add_argument("--metrics-only", action="store_true")
     args = parser.parse_args()
+    args.components = tuple(args.components.split(","))
+    if not args.components or len(set(args.components)) != len(args.components) or set(args.components) - set(COMPONENTS):
+        parser.error("components must be unique canonical not-k8s runtime component names")
+    if args.backend == "k3s" and not args.whole_stack:
+        parser.error("k3s embeds components; only whole-stack measurement is valid")
+    if args.whole_stack and set(args.components) != set(COMPONENTS):
+        parser.error("whole-stack measurement requires all runtime components")
     if not 30 <= args.seconds <= 600 or not 1 <= args.replicas <= 10 or not 1 <= args.workers <= 4:
         parser.error("seconds: 30..600; replicas: 1..10; workers: 1..4")
     run(args)

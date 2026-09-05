@@ -53,12 +53,21 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Legacy nodelet/kubelet comparison or one full-stack load profile'
+        description: 'Flamegraphs, selected-component comparison, whole-stack comparison, or legacy comparison'
         type: choice
-        options: [comparison, stack]
-        default: comparison
+        options: [stack, components, whole-stack, comparison]
+        default: stack
+      baseline:
+        description: 'Comparison baseline (k3s and both require whole-stack mode)'
+        type: choice
+        options: [k8s, k3s, both]
+        default: k8s
+      components:
+        description: 'Component mode: all or comma-separated canonical names, e.g. nodeapiserver,nodestore'
+        type: string
+        default: all
       source_ref:
-        description: 'Stack mode: branch, tag, or SHA to build (empty uses this workflow ref)'
+        description: 'Branch, tag, or SHA to build (empty uses this workflow ref; unused by legacy comparison)'
         type: string
         default: ''
       build_profile:
@@ -90,6 +99,17 @@ env:
   SAMPLE_SECS: ${{ inputs.sample_seconds }}
 
 jobs:
+  compare:
+    if: inputs.mode == 'components' || inputs.mode == 'whole-stack'
+    uses: ./.github/workflows/profile-compare.yml
+    with:
+      source_ref: ${{ inputs.source_ref || github.sha }}
+      baseline: ${{ inputs.baseline }}
+      components: ${{ inputs.components }}
+      whole_stack: ${{ inputs.mode == 'whole-stack' }}
+      sample_seconds: ${{ inputs.sample_seconds }}
+    secrets: inherit
+
   stack:
     if: inputs.mode == 'stack'
     uses: ./.github/workflows/profile-stack.yml
@@ -101,7 +121,7 @@ jobs:
     secrets: inherit
 
   profile:
-    if: inputs.mode != 'stack'
+    if: inputs.mode == 'comparison'
     strategy:
       fail-fast: false
       matrix:
@@ -201,7 +221,7 @@ jobs:
 
   report:
     needs: profile
-    if: ${{ always() && inputs.mode != 'stack' }}
+    if: ${{ always() && inputs.mode == 'comparison' }}
     concurrency:
       group: profiling-results-publisher
       cancel-in-progress: false

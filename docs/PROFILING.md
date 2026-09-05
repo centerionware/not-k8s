@@ -90,6 +90,50 @@ bundle includes the Rust executable, not an entire runner filesystem. Do not
 profile production or secret-bearing workloads and publish their diagnostics to
 a public branch. This mode creates only disposable, fixed-content test objects.
 
+## CPU/memory comparisons without flamegraphs
+
+Choose `components` for one component or a selected combination, and
+`whole-stack` for distribution-daemon totals. Both use the same idle/load
+fixture as `stack`, but no perf collection. not-k8s is built with its normal
+optimized, stripped release profile on its measurement runner (no build artifact
+handoff). Upstream is a real kubeadm Kubernetes cluster, not our bootstrap's
+upstream-apiserver-only option. Kubernetes 1.34.3 and k3s v1.34.3+k3s1 are pinned;
+actual server versions and target source identity are recorded with the results.
+
+```sh
+# One component; also accepts nodeapiserver,nodestore or all.
+gh workflow run profiling.yml --ref perf/stack-load-profiling \
+  -f mode=components -f source_ref=nodeapiserver \
+  -f components=nodeapiserver -f baseline=k8s -f sample_seconds=120
+
+# Whole distribution vs BOTH upstream choices in one run.
+gh workflow run profiling.yml --ref perf/stack-load-profiling \
+  -f mode=whole-stack -f source_ref=nodeapiserver \
+  -f baseline=both -f sample_seconds=120
+```
+
+`baseline=k8s`, `k3s`, and `both` are selectable for whole-stack. k3s runs its
+components inside one process: per-component CPU/RSS cannot be honestly isolated,
+so component mode rejects k3s. Graphs map canonical names to upstream equivalents:
+nodestore/etcd, nodeapiserver/kube-apiserver, nodescheduler/kube-scheduler,
+nodecontroller/kube-controller-manager, nodelet/kubelet, nodeproxy/kube-proxy.
+
+Every successful comparison publishes a README with embedded **per-component
+and combined** CPU/RSS/PSS PNG graphs, CSVs, workload diagnostics and metadata at
+`profiling-results/comparisons/<run>-<attempt>/`. `latest-comparison.md` links there.
+Whole-stack adds containerd, Flannel and CoreDNS (Flannel is embedded in k3s).
+It excludes workload processes, shims and unrelated host services; it is not a
+whole-machine measurement. Shared pages may be counted repeatedly in summed RSS;
+PSS apportions them. Missing components fail capture instead of becoming zeros.
+
+Each stack runs once on its own fresh hosted runner. Hardware/noisy-neighbor
+variation and dependency versions matter; repeat before making performance claims.
+Component comparisons measure components within their respective full stacks,
+not causal one-component swaps with identical surrounding implementations.
+Metrics publish directly to the results branch; failed legs do not produce a
+misleading combined report. No flamegraphs or large binary archives are collected
+by these comparison modes. Use `stack` for diagnostic SVG flamegraphs.
+
 ## Before interpreting compatibility or optimizing
 
 Keep the final unfiltered e2e gate. Next, run version-matched upstream conformance

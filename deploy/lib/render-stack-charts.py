@@ -33,7 +33,7 @@ def component_series(rows, component, metric):
     return sorted(totals.items())
 
 
-def render(output, sources, selected):
+def render(output, sources, selected, whole=False):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -45,7 +45,8 @@ def render(output, sources, selected):
     notes = []
     for phase in ("idle", "load"):
         rows = {label: load_rows(root / phase / "timeseries.csv") for label, root in sources.items()}
-        components = selected or sorted(set(row["component"] for row in next(iter(rows.values()))))
+        available = {label: {row["component"] for row in samples} for label, samples in rows.items()}
+        components = selected or sorted(set.union(*available.values()))
         for metric, ylabel, divisor in metrics:
             aggregates = {}
             summaries = {}
@@ -53,6 +54,9 @@ def render(output, sources, selected):
                 fig, ax = plt.subplots(figsize=(10, 4), dpi=140)
                 plotted = False
                 for label, samples in rows.items():
+                    if whole and component not in available[label]:
+                        notes.append(f"{phase}/{component}/{label}: not separately attributable, not zero")
+                        continue
                     values = component_series(samples, component, metric)
                     if values is None:
                         notes.append(f"{phase}/{component}/{label}: {metric} unavailable, not zero")
@@ -71,7 +75,8 @@ def render(output, sources, selected):
             fig, ax = plt.subplots(figsize=(10, 4), dpi=140)
             plotted = False
             for label, series in aggregates.items():
-                if len(series) != len(components):
+                expected = available[label] if whole else set(components)
+                if len(series) != len(expected):
                     notes.append(f"{phase}/{label}: aggregate {metric} omitted because a component is missing")
                     continue
                 end = min(x[-1] for x, _ in series)
@@ -82,17 +87,15 @@ def render(output, sources, selected):
                 plotted = True
             if plotted:
                 ax.set(xlabel="Seconds since phase start", ylabel=ylabel,
-                       title=f"{phase}: selected components combined ({', '.join(components)})")
+                       title=f"{phase}: {'distribution daemons' if whole else 'selected components'} combined")
                 ax.legend(); ax.grid(alpha=.2); fig.tight_layout()
                 fig.savefig(output / f"{phase}-combined-{metric}.png")
             plt.close(fig)
             fig, ax = plt.subplots(figsize=(12, 5), dpi=140)
             count = max(1, len(summaries))
             for index, (label, values) in enumerate(summaries.items()):
-                if set(values) != set(components):
-                    continue
                 ax.bar(np.arange(len(components)) + index * .8 / count,
-                       [values[component] for component in components], width=.8 / count, label=label)
+                       [values.get(component, float('nan')) for component in components], width=.8 / count, label=label)
             ax.set_xticks(np.arange(len(components)) + .4, components, rotation=25, ha="right")
             ax.set(ylabel=f"Mean {ylabel}", title=f"{phase}: component comparison")
             if ax.containers:
@@ -107,10 +110,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--series", action="append", required=True, help="label=profile-directory")
     parser.add_argument("--components", default="", help="comma-separated canonical component names")
+    parser.add_argument("--whole-stack", action="store_true")
     args = parser.parse_args()
     sources = dict(item.split("=", 1) for item in args.series)
     render(args.output, {label: Path(path) for label, path in sources.items()},
-           args.components.split(",") if args.components else None)
+           args.components.split(",") if args.components else None, args.whole_stack)
 
 
 if __name__ == "__main__":
