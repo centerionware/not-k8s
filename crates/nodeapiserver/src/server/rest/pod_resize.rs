@@ -93,6 +93,28 @@ pub async fn patch_pod_resize(
     dry_run: bool,
     field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
+    for attempt in 0..8 {
+        let outcome = patch_pod_resize_once(storage, namespace, name, kind_of_patch,
+            patch_doc, dry_run, field_manager).await?;
+        if !matches!(outcome, UpdateOutcome::Conflict) || attempt == 7
+            || !patch_allows_conflict_retry(kind_of_patch, patch_doc)
+        {
+            return Ok(outcome);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+    }
+    unreachable!("bounded PATCH retry loop returns its last outcome")
+}
+
+async fn patch_pod_resize_once(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     match patch_prepare(
         storage,
         "",
@@ -226,6 +248,12 @@ fn default_pod_resize_object(resolved: &ResolvedResource, object: Value) -> Resu
 /// field families: regular/init container resources and resize policies.
 fn restrict_resize_update(existing: &Value, candidate: &Value) -> Result<Value, Vec<String>> {
     let mut object = existing.clone();
+    // Keep the PATCH precondition even though other metadata is reset. The
+    // stored payload can contain an older RV than patch_prepare's live row;
+    // copying it back would reject every resize or discard an explicit RV.
+    if let Some(revision) = candidate.pointer("/metadata/resourceVersion") {
+        set_metadata_field(&mut object, "resourceVersion", revision.clone());
+    }
     for containers in ["containers", "initContainers"] {
         let Some(candidate_list) = candidate.pointer(&format!("/spec/{containers}")) else {
             continue;
@@ -288,6 +316,16 @@ fn restrict_resize_update(existing: &Value, candidate: &Value) -> Result<Value, 
 mod pod_resize_tests {
     use super::restrict_resize_update;
     use serde_json::json;
+
+    #[test]
+    fn resize_preserves_the_patch_revision_not_the_stored_payload_revision() {
+        let existing = json!({"metadata": {"resourceVersion": "7"}});
+        for revision in ["9", "6"] {
+            let candidate = json!({"metadata": {"resourceVersion": revision}});
+            let resized = restrict_resize_update(&existing, &candidate).unwrap();
+            assert_eq!(resized["metadata"]["resourceVersion"], revision);
+        }
+    }
 
     #[test]
     fn resize_only_changes_resources_and_policy() {

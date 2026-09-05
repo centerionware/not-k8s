@@ -4,6 +4,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn paginated_list_does_not_advance_its_snapshot_when_the_store_changes() {
+        let snapshot = list_snapshot_revision(0, Some(7));
+        let token = encode_continue_token(b"/registry/configmaps/default/a\0", snapshot);
+        let (_, pinned) = decode_continue_token(&token).unwrap();
+        assert_eq!(list_snapshot_revision(pinned, Some(9)), snapshot);
+        assert_eq!(list_snapshot_revision(7, Some(10)), 7);
+    }
+
+    #[test]
     fn finalizer_patch_uses_the_mvcc_revision_not_the_persisted_deletion_revision() {
         let deleted = json!({"metadata":{"name":"test", "resourceVersion":"7",
             "deletionTimestamp":"2026-09-05T07:00:00Z", "finalizers":["example.com/hold"]}});

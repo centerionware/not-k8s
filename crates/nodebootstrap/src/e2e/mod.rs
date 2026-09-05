@@ -1427,6 +1427,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_paginated_list_watch_preserves_concurrent_updates",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion",
         group: TestGroup::CsiDra,
     },
@@ -2775,6 +2779,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_the_node_still_reconciles_pods_after_an_apiserver_restart" => {
             watch_recovery::node_still_reconciles_pods_after_an_apiserver_restart(context).await
+        }
+        "test_paginated_list_watch_preserves_concurrent_updates" => {
+            watch_recovery::paginated_list_watch_preserves_concurrent_updates(context).await
         }
         "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers" => {
             controller_manager::node_is_tainted_unreachable_after_heartbeat_loss_and_recovers(context).await
