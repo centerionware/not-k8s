@@ -1,0 +1,10094 @@
+[
+  {
+    "time": 1788574302.8733473,
+    "operation": [
+      "create",
+      "namespace",
+      "nk-profile-12059-18d24ada26bdb7e6"
+    ],
+    "seconds": 0.04041260400003921,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574303.314986,
+    "operation": [
+      "apply",
+      "-f",
+      "-"
+    ],
+    "seconds": 0.4416286679999075,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574328.852073,
+    "operation": [
+      "rollout",
+      "status",
+      "deployment/profile-server",
+      "--timeout=180s"
+    ],
+    "seconds": 25.53707884000005,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574449.8280268,
+    "operation": [
+      "create",
+      "-f",
+      "-"
+    ],
+    "seconds": 0.10610042099995098,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.0094206,
+    "operation": [
+      "wait",
+      "pod/profile-client",
+      "--for=condition=Ready",
+      "--timeout=90s"
+    ],
+    "seconds": 0.18138795799995933,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.0823352,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=0"
+    ],
+    "seconds": 0.07021426100004646,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.0913723,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=0"
+    ],
+    "seconds": 0.0794902480000701,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.142356,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060016354000026695,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.146684,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0553059100000155,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.206032,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"1\"}}"
+    ],
+    "seconds": 0.06365141300000232,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.2121153,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"1\"}}"
+    ],
+    "seconds": 0.06541220500002964,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.264,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05796105100000659,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574450.2663527,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05423290800001723,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.3147342,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=1"
+    ],
+    "seconds": 0.050585940000019036,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.3177204,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=1"
+    ],
+    "seconds": 0.05130384500000673,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.37768,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06293927899992013,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.380829,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06310487099995044,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.4390278,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"2\"}}"
+    ],
+    "seconds": 0.061325484000008146,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.4458838,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"2\"}}"
+    ],
+    "seconds": 0.06503999400001703,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.5000062,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06097193999994488,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574451.5047152,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05882790099997237,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.5542195,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=2"
+    ],
+    "seconds": 0.05407057299998996,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.556987,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=2"
+    ],
+    "seconds": 0.052162533999990046,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.6220946,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06786988800001836,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.6224148,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06542477400000735,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.6822462,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"3\"}}"
+    ],
+    "seconds": 0.06012711699997908,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.6832385,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"3\"}}"
+    ],
+    "seconds": 0.060811510999997154,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.7364833,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05422943899998245,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574452.7366273,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05338654600006976,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.7887187,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=3"
+    ],
+    "seconds": 0.051889958999936425,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.789585,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=3"
+    ],
+    "seconds": 0.05296275700004571,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.8467689,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.057181007000053796,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.8469071,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05818232399997214,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.9160914,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"4\"}}"
+    ],
+    "seconds": 0.06917386999998598,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.917676,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"4\"}}"
+    ],
+    "seconds": 0.07088265400000182,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.9734073,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05572738900002605,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574453.97592,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05982341999992968,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.0287614,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=4"
+    ],
+    "seconds": 0.05519500400009747,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.0311782,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=4"
+    ],
+    "seconds": 0.055130875000031665,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.092435,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06366852600001494,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.092702,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06151995900006568,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.153437,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"5\"}}"
+    ],
+    "seconds": 0.060723019999954886,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.1547453,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"5\"}}"
+    ],
+    "seconds": 0.06228215299995554,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.2113123,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05786493400000836,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574455.2164495,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.061700030999986666,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.2703457,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=5"
+    ],
+    "seconds": 0.05889504799995393,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.274837,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=5"
+    ],
+    "seconds": 0.05829320899999857,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.3300252,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05967197899997245,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.3308198,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05597777399998449,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.3975296,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"6\"}}"
+    ],
+    "seconds": 0.06669591399997898,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.39863,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"6\"}}"
+    ],
+    "seconds": 0.0685770439999942,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.455225,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05768879900006141,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574456.4555924,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05695679099994777,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.504981,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=6"
+    ],
+    "seconds": 0.049287021000054665,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.5073419,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=6"
+    ],
+    "seconds": 0.051968945999988136,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.5646455,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05730115599999408,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.5651135,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06012520100000529,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.6307228,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"7\"}}"
+    ],
+    "seconds": 0.06604832099992564,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.6331525,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"7\"}}"
+    ],
+    "seconds": 0.06802696299996569,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.6992424,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.06608608099998037,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574457.6993108,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06858247599996048,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.756487,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=7"
+    ],
+    "seconds": 0.05677233999995224,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.7584229,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=7"
+    ],
+    "seconds": 0.05864335799992659,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.8147712,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05828194400010034,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.815712,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.057286663000013505,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.8854377,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"8\"}}"
+    ],
+    "seconds": 0.06970955300005244,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.885696,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"8\"}}"
+    ],
+    "seconds": 0.07088834700005009,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.9439678,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05852514399998654,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574458.944011,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05831247599996914,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574459.9975688,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=8"
+    ],
+    "seconds": 0.053490922000037244,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.0008643,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=8"
+    ],
+    "seconds": 0.05673679100004847,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.053367,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05579330900002333,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.058497,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.057630207999977756,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.1253166,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"9\"}}"
+    ],
+    "seconds": 0.06680366499995216,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.1258488,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"9\"}}"
+    ],
+    "seconds": 0.07245770400004403,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.1891093,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.06325778300004004,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574460.1913657,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06604395200008639,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.241706,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=9"
+    ],
+    "seconds": 0.05250073199999861,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.2456958,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=9"
+    ],
+    "seconds": 0.054202960999987226,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.3043778,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058678924999981064,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.3052838,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06357251300005373,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.3700633,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"10\"}}"
+    ],
+    "seconds": 0.06566044900000634,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.3711164,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"10\"}}"
+    ],
+    "seconds": 0.06581803599999603,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.4267855,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.056717508000019734,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574461.4275165,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.056395383999984006,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.4859653,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=10"
+    ],
+    "seconds": 0.05907797300005768,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.4890504,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=10"
+    ],
+    "seconds": 0.06143088800001806,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.5409834,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05501299699994888,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.5455031,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05645042100002229,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.6080227,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"11\"}}"
+    ],
+    "seconds": 0.06248238599994238,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.609451,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"11\"}}"
+    ],
+    "seconds": 0.06843398199998774,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.6609554,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0529270430000679,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574462.666775,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.057320939999954135,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.7207272,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=11"
+    ],
+    "seconds": 0.059625818999961666,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.7241828,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=11"
+    ],
+    "seconds": 0.05730929699996068,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.777389,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.056656831999930546,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.781091,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.056904732000020886,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.8404849,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"12\"}}"
+    ],
+    "seconds": 0.06306901699997525,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.8408158,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"12\"}}"
+    ],
+    "seconds": 0.05970874299998741,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.8918557,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05103792800002793,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574463.8942747,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.053784864000022026,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574464.9449944,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=12"
+    ],
+    "seconds": 0.05303200499997729,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574464.9481199,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=12"
+    ],
+    "seconds": 0.053740724000022055,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.0076084,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06260849499994947,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.0125172,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0643947329999719,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.0902061,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"13\"}}"
+    ],
+    "seconds": 0.08257290800008832,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.103348,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=4"
+    ],
+    "seconds": 0.09033616799990796,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.108524,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"13\"}}"
+    ],
+    "seconds": 0.09599122099996293,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.1842222,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.09401107300004696,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574465.2145452,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.10601639699996213,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.23095,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=13"
+    ],
+    "seconds": 0.04658080000001519,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.2721686,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=13"
+    ],
+    "seconds": 0.05752379000000474,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.2931979,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06224285400003282,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.3316786,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05950497300000279,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.3559408,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"14\"}}"
+    ],
+    "seconds": 0.06271981899999446,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.3924127,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"14\"}}"
+    ],
+    "seconds": 0.06070991000001413,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.4108844,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.054939174999958595,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574466.442383,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04996478800001114,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.4571717,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=14"
+    ],
+    "seconds": 0.04617030800000066,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.496575,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=14"
+    ],
+    "seconds": 0.05409186300005331,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.5161674,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058968842000012955,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.5540855,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05750505699995756,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.5854318,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"15\"}}"
+    ],
+    "seconds": 0.06923777800000153,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.6170986,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"15\"}}"
+    ],
+    "seconds": 0.06298853700002383,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.6442826,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05884527099999559,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574467.6689968,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05189359299993157,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.6933491,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=15"
+    ],
+    "seconds": 0.04892221599993718,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.7217956,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=15"
+    ],
+    "seconds": 0.05269413199994233,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.7492144,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.055860117999941394,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.7778816,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05608094499996241,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.808858,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"16\"}}"
+    ],
+    "seconds": 0.0596192880000217,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.8425407,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"16\"}}"
+    ],
+    "seconds": 0.06462453699998605,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.867291,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.058427824999967015,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574468.894998,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.052450808000003235,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574469.9139326,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=16"
+    ],
+    "seconds": 0.04652038199992603,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574469.9482834,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=16"
+    ],
+    "seconds": 0.0531863290000274,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574469.9692013,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05526366000003691,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574470.0037189,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05542925899999318,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574470.028258,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"17\"}}"
+    ],
+    "seconds": 0.05903224799999407,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574470.066696,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"17\"}}"
+    ],
+    "seconds": 0.06294812299995556,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574470.0874634,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05920016200002465,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574470.1175265,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.050825230999976156,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.1349602,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=17"
+    ],
+    "seconds": 0.047349631000088266,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.1712754,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=17"
+    ],
+    "seconds": 0.05365386400001171,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.1924531,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05748864200006665,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.2307746,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05949301300006482,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.256068,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"18\"}}"
+    ],
+    "seconds": 0.06358730800002377,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.2990928,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"18\"}}"
+    ],
+    "seconds": 0.06829820999996628,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.3180299,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.061956238999982816,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574471.3496263,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05052780900007292,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.3659647,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=18"
+    ],
+    "seconds": 0.04783859200006191,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.4021225,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=18"
+    ],
+    "seconds": 0.05239431899997271,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.4202082,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05423882499997035,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.4583688,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05624125300005289,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.4821916,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"19\"}}"
+    ],
+    "seconds": 0.06193192199998521,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.5238056,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"19\"}}"
+    ],
+    "seconds": 0.06541370299999016,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.543093,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.060896744000046965,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574472.5765548,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0527419430000009,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.5892804,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=19"
+    ],
+    "seconds": 0.04606876000002558,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.6315727,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=19"
+    ],
+    "seconds": 0.0549000140000544,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.6478152,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058528595000097994,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.6866863,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05510853300006602,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.7062693,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"20\"}}"
+    ],
+    "seconds": 0.05843195700003889,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.7467415,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"20\"}}"
+    ],
+    "seconds": 0.0600246710000647,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.7630377,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05676316599999609,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574473.796806,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05005917200003296,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574474.8103826,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=20"
+    ],
+    "seconds": 0.04720060199997533,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574474.8494399,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=20"
+    ],
+    "seconds": 0.05253157899994676,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574474.8689277,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05853937599999881,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574474.9114861,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06204110499993476,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574474.9322996,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"21\"}}"
+    ],
+    "seconds": 0.06334820699999,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574474.9766698,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"21\"}}"
+    ],
+    "seconds": 0.06516002099999696,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574475.0003095,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.0680029929999364,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574475.030582,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05390584000008403,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.0461934,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=21"
+    ],
+    "seconds": 0.04574781299993447,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.0849178,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=21"
+    ],
+    "seconds": 0.05423487699999896,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.1036565,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.057458344999986366,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.1432135,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05829132199994547,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.1670232,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"22\"}}"
+    ],
+    "seconds": 0.06334411000000273,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.2106006,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"22\"}}"
+    ],
+    "seconds": 0.06736277800007429,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.2287896,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06176033099995948,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574476.260645,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05003836399998818,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.2790792,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=22"
+    ],
+    "seconds": 0.05018452900003467,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.3141801,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=22"
+    ],
+    "seconds": 0.05343638399995143,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.3489597,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06987530900005368,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.3844268,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.07024044899992532,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.4159524,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"23\"}}"
+    ],
+    "seconds": 0.06696872500003792,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.4543765,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"23\"}}"
+    ],
+    "seconds": 0.06992583900000682,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.4769902,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06103216200006045,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574477.5073,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05291704700005084,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.52355,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=23"
+    ],
+    "seconds": 0.04646964400001252,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.5683482,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=23"
+    ],
+    "seconds": 0.06095390400002998,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.5844548,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06089911399999437,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.6244643,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05610880599999746,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.643206,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"24\"}}"
+    ],
+    "seconds": 0.05872060700005477,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.6924818,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"24\"}}"
+    ],
+    "seconds": 0.06798644399998466,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.6996932,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05648281200001293,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574478.7399943,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04750602399997206,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.7449193,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=24"
+    ],
+    "seconds": 0.045126557999992656,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.7923856,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=24"
+    ],
+    "seconds": 0.05228876199998922,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.8008242,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05589683400000922,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.8523216,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05992988299999524,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.8655176,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"25\"}}"
+    ],
+    "seconds": 0.06467107399998895,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.917849,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"25\"}}"
+    ],
+    "seconds": 0.06549688099994455,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.928032,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06250864399999045,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574479.9671075,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04925184599994736,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574480.1542606,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=3"
+    ],
+    "seconds": 0.050814163000040935,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574480.9706209,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=25"
+    ],
+    "seconds": 0.04248348299995541,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.0215409,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=25"
+    ],
+    "seconds": 0.05436071599990555,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.0239396,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05331178199992337,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.0881736,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06662637499994162,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.093808,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"26\"}}"
+    ],
+    "seconds": 0.06984586199996556,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.1488621,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.0550511669999878,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.150487,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"26\"}}"
+    ],
+    "seconds": 0.06228867800007265,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574481.1950085,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04451748199994654,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.1916087,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=26"
+    ],
+    "seconds": 0.04262385799995627,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.2530615,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=26"
+    ],
+    "seconds": 0.0579594639999641,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.253364,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06175001499991595,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.3181033,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06503421499996875,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.3190706,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"27\"}}"
+    ],
+    "seconds": 0.0656860639999195,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.3821924,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06311729300000479,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.386708,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"27\"}}"
+    ],
+    "seconds": 0.06858064100003958,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574482.4313679,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04465605699999742,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.4257724,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=27"
+    ],
+    "seconds": 0.043465981000053944,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.4813836,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.055607196999972075,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.4834628,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=27"
+    ],
+    "seconds": 0.05199397700005193,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.5453002,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.061835275000021284,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.5529742,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"28\"}}"
+    ],
+    "seconds": 0.07156504400006725,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.6166828,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"28\"}}"
+    ],
+    "seconds": 0.07134884799995689,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.6167426,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06372734499996113,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574483.662655,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045967275000066365,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.659787,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=28"
+    ],
+    "seconds": 0.042936850000046434,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.7165244,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.056732642999918426,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.7199728,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=28"
+    ],
+    "seconds": 0.05720809299998564,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.7785783,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058600772999966466,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.7842972,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"29\"}}"
+    ],
+    "seconds": 0.06774023899993153,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.8424304,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"29\"}}"
+    ],
+    "seconds": 0.06382671699998355,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.844249,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05994297200004439,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574484.8886254,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.046188288000053035,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574485.8868582,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=29"
+    ],
+    "seconds": 0.04248803500001941,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574485.9356184,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=29"
+    ],
+    "seconds": 0.04692035899995517,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574485.941032,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05416907699998319,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574485.9926927,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05706889000009596,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574486.003037,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"30\"}}"
+    ],
+    "seconds": 0.06198042500000156,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574486.0558128,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"30\"}}"
+    ],
+    "seconds": 0.06309717999999975,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574486.0584757,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05543518700005734,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574486.1021862,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04636919300003228,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.1053567,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=30"
+    ],
+    "seconds": 0.046729389999995874,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.156489,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=30"
+    ],
+    "seconds": 0.05418277000001126,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.164646,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05928223099999741,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.2169595,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06046633899995868,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.2282684,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"31\"}}"
+    ],
+    "seconds": 0.06359693399997468,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.2832232,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"31\"}}"
+    ],
+    "seconds": 0.06623516199999813,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.2841766,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05590485400000489,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574487.3297434,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04651323600000978,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.325803,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=31"
+    ],
+    "seconds": 0.04147505500009174,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.381102,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=31"
+    ],
+    "seconds": 0.051269040999954996,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.3823404,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.056532689000050595,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.4377825,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05667455700006485,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.4443405,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"32\"}}"
+    ],
+    "seconds": 0.061947971999984475,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.502098,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.057753907999995135,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.5028124,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"32\"}}"
+    ],
+    "seconds": 0.06500594600004206,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574488.5476203,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.044805254000038985,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.543807,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=32"
+    ],
+    "seconds": 0.04155822799998532,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.600314,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05650188200002049,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.6008081,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=32"
+    ],
+    "seconds": 0.05309256300006382,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.6584532,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.057643453000082445,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.6635914,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"33\"}}"
+    ],
+    "seconds": 0.0632555180000054,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.7210681,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.057473176000030435,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.7237601,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"33\"}}"
+    ],
+    "seconds": 0.06528494600001977,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574489.7693875,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045624864999922465,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.7640624,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=33"
+    ],
+    "seconds": 0.04288450800004284,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.8263025,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=33"
+    ],
+    "seconds": 0.05682005500000287,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.8274136,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06334684800003743,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.8819363,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05562813400001687,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.886563,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"34\"}}"
+    ],
+    "seconds": 0.05912761699994462,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.9529946,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"34\"}}"
+    ],
+    "seconds": 0.07103653000001486,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.9541256,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06755816600002618,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574490.998306,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045295723999970505,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574491.9995914,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=34"
+    ],
+    "seconds": 0.04532057899996289,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.0480168,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=34"
+    ],
+    "seconds": 0.049589671999910934,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.052762,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05316700399998808,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.109231,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06120981199990183,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.1147203,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"35\"}}"
+    ],
+    "seconds": 0.061938916999906724,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.170739,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"35\"}}"
+    ],
+    "seconds": 0.06148496999992403,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.174624,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05990009899994675,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574492.2166214,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04587784900002134,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.2170136,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=35"
+    ],
+    "seconds": 0.042236666999997396,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.2647562,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=35"
+    ],
+    "seconds": 0.04803973299999598,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.273827,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05681077600002027,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.3283436,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06358321400000477,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.3416793,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"36\"}}"
+    ],
+    "seconds": 0.06783169400000588,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.3966146,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"36\"}}"
+    ],
+    "seconds": 0.06824061500003609,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.3992338,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05754909699999189,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574493.4418185,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04519948699999077,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.4423125,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=36"
+    ],
+    "seconds": 0.04297187199995278,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.493941,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05162475299994185,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.4941845,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=36"
+    ],
+    "seconds": 0.05227178500001628,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.554568,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06038139800000408,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.555966,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"37\"}}"
+    ],
+    "seconds": 0.06200292099993021,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.6140761,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.058107974999984435,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.6157818,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"37\"}}"
+    ],
+    "seconds": 0.06119024199995238,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574494.6616287,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045844107000107215,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.2059119,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=4"
+    ],
+    "seconds": 0.05150143399998797,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.6585581,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=37"
+    ],
+    "seconds": 0.04434174499999699,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.7127385,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.054176689999962946,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.7137642,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=37"
+    ],
+    "seconds": 0.052044528999999784,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.7715623,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05779655899993941,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.7775176,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"38\"}}"
+    ],
+    "seconds": 0.06474699900002179,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.8310921,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05357198799993057,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.835605,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"38\"}}"
+    ],
+    "seconds": 0.0640148649999901,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574495.881577,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045969248999995216,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574496.8747115,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=38"
+    ],
+    "seconds": 0.04281120300004204,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574496.9296348,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=38"
+    ],
+    "seconds": 0.047900577000064004,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574496.929864,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05514822699990418,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574496.996017,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06637807699996756,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574497.0023873,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"39\"}}"
+    ],
+    "seconds": 0.07250532499995188,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574497.0586565,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"39\"}}"
+    ],
+    "seconds": 0.06261623800003235,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574497.0609007,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05850929999996879,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574497.1056793,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04701840799998536,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.1035564,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=39"
+    ],
+    "seconds": 0.04251259600005142,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.158504,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=39"
+    ],
+    "seconds": 0.05272559299999102,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.1601553,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05659451299993634,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.2161057,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0575972899999897,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.220053,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"40\"}}"
+    ],
+    "seconds": 0.0598548389999678,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.277162,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.057105524999997215,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.2802858,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"40\"}}"
+    ],
+    "seconds": 0.06412870400004067,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574498.327184,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04689474000008431,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.3197463,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=40"
+    ],
+    "seconds": 0.04200962300001265,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.379775,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06002432499997212,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.382261,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=40"
+    ],
+    "seconds": 0.05497481899999457,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.4454353,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0631688060000215,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.4479032,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"41\"}}"
+    ],
+    "seconds": 0.06810446300005424,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.5078328,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05992670299997371,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.5093236,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"41\"}}"
+    ],
+    "seconds": 0.06386598899996443,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574499.5561068,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04678026299995963,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.551089,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=41"
+    ],
+    "seconds": 0.043111819000046125,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.6152,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06410605299993222,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.6184385,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=41"
+    ],
+    "seconds": 0.06221792799999548,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.6734235,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05498204299999543,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.6759264,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"42\"}}"
+    ],
+    "seconds": 0.06070335599997634,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.737556,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.061626509999996415,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.746218,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"42\"}}"
+    ],
+    "seconds": 0.07276432699995894,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574500.7924068,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04618582300008711,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.7796793,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=42"
+    ],
+    "seconds": 0.04198404999999639,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.831577,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05189403899998979,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.8464699,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=42"
+    ],
+    "seconds": 0.05396860899998046,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.8955042,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"43\"}}"
+    ],
+    "seconds": 0.06390465200001927,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.9071245,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06064958600006776,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.9577255,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.0622156439999344,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574501.962939,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"43\"}}"
+    ],
+    "seconds": 0.055764135999993414,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574502.0077517,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.044808520000060525,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574502.999875,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=43"
+    ],
+    "seconds": 0.04202098500002194,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.052271,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05238903399992978,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.0595648,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=43"
+    ],
+    "seconds": 0.05171927100002449,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.1114428,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05187426400004824,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.1166143,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"44\"}}"
+    ],
+    "seconds": 0.06430888700003834,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.1790562,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"44\"}}"
+    ],
+    "seconds": 0.06759155800000372,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.18199,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06537280599991391,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574503.2274377,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.048375157000009494,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.2265847,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=44"
+    ],
+    "seconds": 0.04444945000000189,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.2775273,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=44"
+    ],
+    "seconds": 0.04998247399998945,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.2831035,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05651405599996906,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.3362033,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05866982099996676,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.3478975,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"45\"}}"
+    ],
+    "seconds": 0.0647355260000495,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.3984983,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"45\"}}"
+    ],
+    "seconds": 0.062273238999978275,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.4018931,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05399091100002806,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574504.4440267,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04552353199994741,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.4446867,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=45"
+    ],
+    "seconds": 0.042635160999907384,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.5010617,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=45"
+    ],
+    "seconds": 0.056887491999987105,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.5024412,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05775185599998167,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.5607004,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0596336710000287,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.5682282,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"46\"}}"
+    ],
+    "seconds": 0.0657635789999631,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.6220906,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"46\"}}"
+    ],
+    "seconds": 0.06136200200000985,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.6225944,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05436149599995588,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574505.6683202,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04622512599996753,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.6655476,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=46"
+    ],
+    "seconds": 0.04283881099991049,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.7206872,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=46"
+    ],
+    "seconds": 0.052273719000027086,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.7211401,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.055588088000035896,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.779398,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058706268999912936,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.7839181,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"47\"}}"
+    ],
+    "seconds": 0.06275428400010696,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.8356128,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05169122199993126,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.8373916,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"47\"}}"
+    ],
+    "seconds": 0.05797185000005811,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574506.8810568,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.043662282000013874,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574507.8811162,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=47"
+    ],
+    "seconds": 0.045356802000014795,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574507.9370077,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=47"
+    ],
+    "seconds": 0.055838837000010244,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574507.9372966,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.056175679999910244,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574507.9966242,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05961224800000764,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574507.9989095,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"48\"}}"
+    ],
+    "seconds": 0.06159469900001113,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574508.0602527,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06134014199994908,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574508.0628748,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"48\"}}"
+    ],
+    "seconds": 0.06622212400009175,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574508.108856,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045978262000062387,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.1033351,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=48"
+    ],
+    "seconds": 0.04293800599998576,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.161113,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05777358899990759,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.1612196,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=48"
+    ],
+    "seconds": 0.05226600100002088,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.2156196,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.054397971000071266,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.2237372,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"49\"}}"
+    ],
+    "seconds": 0.06257443399999829,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.2785056,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05476467699998011,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.2829998,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"49\"}}"
+    ],
+    "seconds": 0.06735684700004185,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574509.328354,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04534997700000076,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.255047,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=3"
+    ],
+    "seconds": 0.04899798300004932,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.3213286,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=49"
+    ],
+    "seconds": 0.042715428000065,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.3804517,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05911843299998054,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.3832896,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=49"
+    ],
+    "seconds": 0.05484966699998495,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.4437602,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06046794099995623,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.4488735,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"50\"}}"
+    ],
+    "seconds": 0.06839850500000466,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.5048249,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"50\"}}"
+    ],
+    "seconds": 0.06104232300003787,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.5053535,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05647724300001755,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574510.551698,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04686867199995959,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.5468814,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=50"
+    ],
+    "seconds": 0.04139233700004752,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.6093745,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=50"
+    ],
+    "seconds": 0.057582914000022356,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.6094654,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06257546999995611,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.6714017,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06202013099994019,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.6763885,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"51\"}}"
+    ],
+    "seconds": 0.06690374300001167,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.7315855,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05519304500000999,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.7345536,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"51\"}}"
+    ],
+    "seconds": 0.06312965500001155,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574511.7803848,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04582803599998897,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.7751122,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=51"
+    ],
+    "seconds": 0.0433734349999213,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.835574,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060457833999976174,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.8359096,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=51"
+    ],
+    "seconds": 0.05543344900002012,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.8894074,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.053495355999984895,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.8941762,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"52\"}}"
+    ],
+    "seconds": 0.058574090999968575,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.948639,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05445997100002842,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.9518802,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"52\"}}"
+    ],
+    "seconds": 0.06244969499994113,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574512.9969027,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0450190520000433,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574513.9927514,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=52"
+    ],
+    "seconds": 0.04399332000002687,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.0491247,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0563701690000471,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.0526042,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=52"
+    ],
+    "seconds": 0.055617751999989196,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.1168473,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06424053800003549,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.1185863,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"53\"}}"
+    ],
+    "seconds": 0.06940569100004268,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.1754866,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05689750900000945,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.1826658,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"53\"}}"
+    ],
+    "seconds": 0.06578870500004541,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574514.2278645,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045195494000040526,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.2187693,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=53"
+    ],
+    "seconds": 0.04313602499996705,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.2789295,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06015484899990042,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.2832139,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=53"
+    ],
+    "seconds": 0.0552531910000198,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.3399312,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05671371900007216,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.3422613,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"54\"}}"
+    ],
+    "seconds": 0.06330792299991117,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.4007466,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05848227499996028,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.4037638,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"54\"}}"
+    ],
+    "seconds": 0.06380870800001048,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574515.451711,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.047944840000013755,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.444239,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=54"
+    ],
+    "seconds": 0.04337780399998792,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.5001552,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05591230599998198,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.5020838,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=54"
+    ],
+    "seconds": 0.050271079000026475,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.5612545,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05916824899998119,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.567832,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"55\"}}"
+    ],
+    "seconds": 0.067620369999986,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.6212242,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"55\"}}"
+    ],
+    "seconds": 0.05994963600005576,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.6262834,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05844861699995363,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574516.6692317,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0479945189999853,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.6700017,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=55"
+    ],
+    "seconds": 0.04361823299996104,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.7272406,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=55"
+    ],
+    "seconds": 0.05795132100001865,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.7311792,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.061174020000066776,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.7872322,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.059986623000099826,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.789736,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"56\"}}"
+    ],
+    "seconds": 0.05853535500000362,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.8501616,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.060422852999977295,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.855069,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"56\"}}"
+    ],
+    "seconds": 0.06781183099997179,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574517.9032269,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04815450600005988,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574518.8983483,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=56"
+    ],
+    "seconds": 0.048090458000046965,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574518.9611173,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06276432799995746,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574518.9643202,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=56"
+    ],
+    "seconds": 0.060941694000007374,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574519.0256824,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.061359788999993725,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574519.0325682,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"57\"}}"
+    ],
+    "seconds": 0.07138034499996593,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574519.0918841,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05931317299996408,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574519.093763,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"57\"}}"
+    ],
+    "seconds": 0.06805809000002228,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574519.1403115,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04654511100000036,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.1350257,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=57"
+    ],
+    "seconds": 0.043000565999932405,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.1942446,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=57"
+    ],
+    "seconds": 0.053838519999999335,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.19521,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060179340000104276,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.2586226,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0643739550000646,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.2669144,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"58\"}}"
+    ],
+    "seconds": 0.07168277100004161,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.3215392,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.054619651999928465,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.3239756,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"58\"}}"
+    ],
+    "seconds": 0.06532980199995109,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574520.3719227,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.047943409000026804,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.3653753,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=58"
+    ],
+    "seconds": 0.043728556000019125,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.4281619,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06278243000008388,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.4337409,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=58"
+    ],
+    "seconds": 0.06167442100002063,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.4947042,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060959358999980395,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.4967606,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"59\"}}"
+    ],
+    "seconds": 0.0685665879999533,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.5668485,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.07008525000003374,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.5691833,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"59\"}}"
+    ],
+    "seconds": 0.07445574499990926,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574521.6130972,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04391053400001965,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.6101663,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=59"
+    ],
+    "seconds": 0.0432036209999751,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.6640399,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05386768000005304,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.6685803,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=59"
+    ],
+    "seconds": 0.05539322499998889,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.723263,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05467864100000952,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.7299337,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"60\"}}"
+    ],
+    "seconds": 0.06586149099996419,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.7868974,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05696095600001172,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.7886672,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"60\"}}"
+    ],
+    "seconds": 0.06538049299990689,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574522.8317428,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04307301699998334,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574523.8304708,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=60"
+    ],
+    "seconds": 0.04346736799993778,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574523.8848753,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=60"
+    ],
+    "seconds": 0.053040350000060243,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574523.8875604,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05708510199997363,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574523.9479685,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06308837000005951,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574523.9518907,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"61\"}}"
+    ],
+    "seconds": 0.06430987499993535,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574524.0103323,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05843965400003981,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574524.0124013,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"61\"}}"
+    ],
+    "seconds": 0.06441023100001075,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574524.0582337,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04582946499999707,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.055108,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=61"
+    ],
+    "seconds": 0.044671912000012526,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.1123316,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=61"
+    ],
+    "seconds": 0.054042254000023604,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.112452,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05733903699990606,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.1673987,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05506188599997586,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.1742404,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"62\"}}"
+    ],
+    "seconds": 0.061766969000018435,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.2320848,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"62\"}}"
+    ],
+    "seconds": 0.06466323100005411,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.2347012,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06045794499993917,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.2866886,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05459813599998142,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574525.311071,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=4"
+    ],
+    "seconds": 0.05592314900002293,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.2783923,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=62"
+    ],
+    "seconds": 0.04359315699991839,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.3352537,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05685707199995704,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.3386235,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=62"
+    ],
+    "seconds": 0.051836770000022625,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.3974428,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05881569500002115,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.3998077,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"63\"}}"
+    ],
+    "seconds": 0.06453116399995906,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.4578946,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05808344000001853,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.4624026,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"63\"}}"
+    ],
+    "seconds": 0.06493095099995116,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574526.5077593,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04535369699999592,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.501927,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=63"
+    ],
+    "seconds": 0.04392264900002374,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.561959,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06002853200004665,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.5679934,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=63"
+    ],
+    "seconds": 0.060150098000008256,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.631122,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06312447700008761,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.637529,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"64\"}}"
+    ],
+    "seconds": 0.07554506099995706,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.7019339,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"64\"}}"
+    ],
+    "seconds": 0.07075721900002918,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.7035966,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06606407499998568,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574527.7496912,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0477511090000462,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.7462645,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=64"
+    ],
+    "seconds": 0.042570454999918184,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.807298,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=64"
+    ],
+    "seconds": 0.057510441000090395,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.8073533,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.061084353000069314,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.8585205,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05121791800002029,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.8659396,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"65\"}}"
+    ],
+    "seconds": 0.05856655700006286,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.9259639,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06002060800005893,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.926491,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"65\"}}"
+    ],
+    "seconds": 0.06794194799999786,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574528.9718034,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04530983200004357,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574529.9682555,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=65"
+    ],
+    "seconds": 0.042201213999987885,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.023302,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=65"
+    ],
+    "seconds": 0.05140336000010848,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.0235116,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.055251489999932346,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.0767817,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05347561600001427,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.084609,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"66\"}}"
+    ],
+    "seconds": 0.061078847999965546,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.145043,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.060430198000062774,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.149152,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"66\"}}"
+    ],
+    "seconds": 0.07233938500007753,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574530.1944296,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04527389800000492,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.1882746,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=66"
+    ],
+    "seconds": 0.04310506299998451,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.2473981,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05911960499997804,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.250821,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=66"
+    ],
+    "seconds": 0.0562973429999829,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.30465,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05382251100002122,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.3079026,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"67\"}}"
+    ],
+    "seconds": 0.060480478999920706,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.3626385,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05473347999998168,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.3666153,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"67\"}}"
+    ],
+    "seconds": 0.061942595000004985,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574531.4124067,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04578899499995259,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.4080522,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=67"
+    ],
+    "seconds": 0.045306781000022056,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.4610045,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.052948004999961995,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.4689975,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=67"
+    ],
+    "seconds": 0.05653586300002189,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.5210204,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"68\"}}"
+    ],
+    "seconds": 0.059993101000031857,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.5232003,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0541985580000528,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.5878792,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06685390200004804,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.590354,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"68\"}}"
+    ],
+    "seconds": 0.06712982099998044,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574532.6346502,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.044293163000020286,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.6310291,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=68"
+    ],
+    "seconds": 0.043045515000017076,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.6840775,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=68"
+    ],
+    "seconds": 0.04931477200000245,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.6865022,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.055468089999976655,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.7444665,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06038466600000447,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.7495239,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"69\"}}"
+    ],
+    "seconds": 0.06299838100005672,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.8058598,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05633267100006378,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.8072035,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"69\"}}"
+    ],
+    "seconds": 0.06271380299995144,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574533.8542647,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04705829999988964,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574534.8486354,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=69"
+    ],
+    "seconds": 0.042672912000057295,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574534.9096014,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060961868000049435,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574534.9143116,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=69"
+    ],
+    "seconds": 0.05991582500007553,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574534.971993,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05767796800000724,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574534.9749396,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"70\"}}"
+    ],
+    "seconds": 0.06530938699995659,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574535.0426567,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"70\"}}"
+    ],
+    "seconds": 0.07063483800004633,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574535.0428903,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06794652399992174,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574535.0888941,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04623248300003979,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.085835,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=70"
+    ],
+    "seconds": 0.042803542999990896,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.1432703,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=70"
+    ],
+    "seconds": 0.05429483299997173,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.1450398,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05920040300009077,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.2019002,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058625395000035496,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.205216,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"71\"}}"
+    ],
+    "seconds": 0.06015737399991394,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.2635903,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"71\"}}"
+    ],
+    "seconds": 0.061662470000101166,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.2655516,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06033203300000878,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574536.3110132,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04741662800006452,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.3088958,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=71"
+    ],
+    "seconds": 0.04320284499999616,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.3640668,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=71"
+    ],
+    "seconds": 0.05296807499996703,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.3646567,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05575627500002156,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.4293146,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06524315199999364,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.4402106,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"72\"}}"
+    ],
+    "seconds": 0.07553617500002474,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.4983099,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.058092667999972036,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.5004296,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"72\"}}"
+    ],
+    "seconds": 0.07109218100004,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574537.548683,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04825063299995236,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.5414104,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=72"
+    ],
+    "seconds": 0.04300699300006272,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.6004107,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05899621699995805,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.6011775,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=72"
+    ],
+    "seconds": 0.05238691900001413,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.6571999,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05602037599999221,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.6635761,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"73\"}}"
+    ],
+    "seconds": 0.06313427499992486,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.726828,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"73\"}}"
+    ],
+    "seconds": 0.06960503400000562,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.7300928,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06651279999994131,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574538.7725477,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045714727000017774,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.7749233,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=73"
+    ],
+    "seconds": 0.04468601899998248,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.8265474,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=73"
+    ],
+    "seconds": 0.05359660099998109,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.8283248,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05339748500000496,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.887778,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.061225505999914276,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.8932757,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"74\"}}"
+    ],
+    "seconds": 0.06493128400006754,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.957452,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"74\"}}"
+    ],
+    "seconds": 0.06964763800010587,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574539.9580088,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06472956700008581,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574540.0050855,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04762810299996545,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574540.3609638,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=3"
+    ],
+    "seconds": 0.049739654999939376,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.0015402,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=74"
+    ],
+    "seconds": 0.04339031800009252,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.0673716,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=74"
+    ],
+    "seconds": 0.06221441799993954,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.0684505,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06690623099996174,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.126413,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05903751799996826,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.1327693,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"75\"}}"
+    ],
+    "seconds": 0.06429791700008991,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.1965544,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"75\"}}"
+    ],
+    "seconds": 0.07011832099999538,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.1977925,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06501985500005958,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574541.243499,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04693926800007375,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.2412505,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=75"
+    ],
+    "seconds": 0.043316881000009744,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.2927215,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=75"
+    ],
+    "seconds": 0.04916808400002992,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.2993853,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058129957999994986,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.3509154,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05818900399992799,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.3607104,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"76\"}}"
+    ],
+    "seconds": 0.06130464900002153,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.4143066,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"76\"}}"
+    ],
+    "seconds": 0.06336855300003208,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.4181929,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05747796700006802,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574542.4622927,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04798030999995717,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.462682,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=76"
+    ],
+    "seconds": 0.04434177899997849,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.5220618,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.059377002000019274,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.5245216,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=76"
+    ],
+    "seconds": 0.062128277999931925,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.5824192,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05789482099999077,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.5848508,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"77\"}}"
+    ],
+    "seconds": 0.06275863999997,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.649675,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06481816600000911,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.6545022,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"77\"}}"
+    ],
+    "seconds": 0.07205885799999123,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574543.700476,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045971055999984856,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.6929736,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=77"
+    ],
+    "seconds": 0.04315074099997673,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.74981,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.056831998000006934,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.7596014,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=77"
+    ],
+    "seconds": 0.05905277399995157,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.8144872,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0548817929999359,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.8168454,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"78\"}}"
+    ],
+    "seconds": 0.06700479099993117,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.876878,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.060030185999949026,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.8785105,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"78\"}}"
+    ],
+    "seconds": 0.0639989249999644,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574544.924819,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04630531099996915,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574545.9194646,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=78"
+    ],
+    "seconds": 0.042445168999961425,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574545.9846482,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=78"
+    ],
+    "seconds": 0.059720179999999345,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574545.9847353,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06526602200005982,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574546.0440533,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05940028100008021,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574546.0503426,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"79\"}}"
+    ],
+    "seconds": 0.06558621800002129,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574546.1057186,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.055372671999975864,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574546.1072047,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"79\"}}"
+    ],
+    "seconds": 0.06312797800001135,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574546.1522326,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04502474399998846,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.149673,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=79"
+    ],
+    "seconds": 0.04384473200002503,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.2139904,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=79"
+    ],
+    "seconds": 0.06166537599995081,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.2142806,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06460286499998347,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.2783353,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06434061799996016,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.286544,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"80\"}}"
+    ],
+    "seconds": 0.07224162800002887,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.3497078,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06315909999989344,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.3500326,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"80\"}}"
+    ],
+    "seconds": 0.07166730599999482,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574547.3986669,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04863160899992636,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.3934054,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=80"
+    ],
+    "seconds": 0.04354632499996569,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.4529457,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.059534232000032716,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.4566665,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=80"
+    ],
+    "seconds": 0.05789156500009085,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.5166185,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.059949774000074285,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.517843,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"81\"}}"
+    ],
+    "seconds": 0.06487413499996819,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.5788093,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.060964217999980974,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.5832653,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"81\"}}"
+    ],
+    "seconds": 0.06661797699996441,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574548.630971,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04770259899999019,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.6227896,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=81"
+    ],
+    "seconds": 0.04383363500005544,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.6758108,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05301630600001772,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.680424,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=81"
+    ],
+    "seconds": 0.04934836600000381,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.7420146,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.061587725999970644,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.7464826,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"82\"}}"
+    ],
+    "seconds": 0.07064215399998375,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.8088422,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.062356361999945875,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.8121755,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"82\"}}"
+    ],
+    "seconds": 0.07013025599997036,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574549.8605824,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04840402499996799,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574550.8535297,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=82"
+    ],
+    "seconds": 0.04458503099999689,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574550.9143085,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06077480800001922,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574550.9184794,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=82"
+    ],
+    "seconds": 0.05783075799990911,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574550.9755924,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05710978500007968,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574550.9830825,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"83\"}}"
+    ],
+    "seconds": 0.06875037000008888,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574551.037472,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.054385739000053945,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574551.041955,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"83\"}}"
+    ],
+    "seconds": 0.06633881599998404,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574551.0880296,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.046071758000039154,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.0817068,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=83"
+    ],
+    "seconds": 0.044084930000053646,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.1453543,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06364353700007541,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.1526394,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=83"
+    ],
+    "seconds": 0.0644603380000035,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.2175171,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"84\"}}"
+    ],
+    "seconds": 0.0721333550000054,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.2185938,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06594976600001701,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.2783086,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06078683999999157,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.283478,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"84\"}}"
+    ],
+    "seconds": 0.06486599899994872,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574552.3348525,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0513707830000385,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.3211896,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=84"
+    ],
+    "seconds": 0.04278266199992231,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.373023,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05182885600004283,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.3871212,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=84"
+    ],
+    "seconds": 0.05217042300000685,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.4409652,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"85\"}}"
+    ],
+    "seconds": 0.06791322300000502,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.4489827,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06185810799991032,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.5013814,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.0604106949999732,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.5096946,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"85\"}}"
+    ],
+    "seconds": 0.06069156099999873,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574553.5613642,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.05166687300004469,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.5446825,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=85"
+    ],
+    "seconds": 0.04320791499992538,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.604825,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06013719099996706,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.6152043,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=85"
+    ],
+    "seconds": 0.05368824000004224,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.6704907,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05528313000002072,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.6709747,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"86\"}}"
+    ],
+    "seconds": 0.06612708099999054,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.7291057,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05812726199997087,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.7338307,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"86\"}}"
+    ],
+    "seconds": 0.06331689000001006,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574554.7816138,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04777953999996498,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.4105759,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=4"
+    ],
+    "seconds": 0.0495001819999743,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.7738214,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=86"
+    ],
+    "seconds": 0.044620156000064526,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.8288598,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05503387400005977,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.8379066,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=86"
+    ],
+    "seconds": 0.05620085800001107,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.89476,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"87\"}}"
+    ],
+    "seconds": 0.06587982600001396,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.8977582,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05984735800007002,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.961675,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06690947799995683,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574555.9639764,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"87\"}}"
+    ],
+    "seconds": 0.0661988960000599,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574556.0095618,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04558296200002587,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.00451,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=87"
+    ],
+    "seconds": 0.04274184999997033,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.0675824,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=87"
+    ],
+    "seconds": 0.05792948600003456,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.0681791,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.0636646609999616,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.1243374,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05675057400003425,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.131075,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"88\"}}"
+    ],
+    "seconds": 0.06287732099997356,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.2012858,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.07020784700000604,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.2013555,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"88\"}}"
+    ],
+    "seconds": 0.0769953889999897,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574557.2483015,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.046943011999928785,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.2451084,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=88"
+    ],
+    "seconds": 0.04367777599998135,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.2992399,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05412773800003379,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.3024156,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=88"
+    ],
+    "seconds": 0.05400875499992708,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.36367,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06125050799994369,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.3675082,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"89\"}}"
+    ],
+    "seconds": 0.06824470799995197,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.4238064,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.056295077000072524,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.426662,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"89\"}}"
+    ],
+    "seconds": 0.06296221500008414,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574558.4745386,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.047873722999952406,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.467559,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=89"
+    ],
+    "seconds": 0.04365577199996551,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.528499,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060935542999914105,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.532045,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=89"
+    ],
+    "seconds": 0.05739681499994731,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.5975747,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06552716900000632,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.60322,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"90\"}}"
+    ],
+    "seconds": 0.07469805699997778,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.665574,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"90\"}}"
+    ],
+    "seconds": 0.06797692199995709,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.6657946,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.0625713370000085,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574559.708785,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.043206547000067985,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.7078617,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=90"
+    ],
+    "seconds": 0.041465458999937255,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.7590752,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=90"
+    ],
+    "seconds": 0.050199485999996796,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.7604928,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05262733899996874,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.8229802,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"91\"}}"
+    ],
+    "seconds": 0.06246293299989247,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.823543,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06446182800004863,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.8829281,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05994328899998891,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.8866794,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"91\"}}"
+    ],
+    "seconds": 0.06311728399998628,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574560.9335873,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.0469051820000459,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574561.927168,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=91"
+    ],
+    "seconds": 0.044095676999972966,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574561.979694,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.052521660000024895,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574561.987932,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=91"
+    ],
+    "seconds": 0.05419341300000724,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574562.0509377,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"92\"}}"
+    ],
+    "seconds": 0.0712145979999832,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574562.050994,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06305667599997378,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574562.109952,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05901065799992011,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574562.114879,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"92\"}}"
+    ],
+    "seconds": 0.06386413400002766,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574562.1625066,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04762451399994916,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.1545892,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=92"
+    ],
+    "seconds": 0.044499099000063325,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.2123303,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.057736694000027455,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.2208393,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=92"
+    ],
+    "seconds": 0.058238400000050206,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.2813358,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06049266100001205,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.2814124,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"93\"}}"
+    ],
+    "seconds": 0.06905977799999619,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.3390877,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.05767284199998812,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.342956,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"93\"}}"
+    ],
+    "seconds": 0.061596313999984886,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574563.3886397,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04568151300009049,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.3827384,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=93"
+    ],
+    "seconds": 0.04351343700000143,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.4459462,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06320304600001236,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.4503958,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=93"
+    ],
+    "seconds": 0.061654920000023594,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.5084097,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.058010792000004585,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.511021,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"94\"}}"
+    ],
+    "seconds": 0.06505118499990203,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.570802,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.059778037999990374,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.5731292,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"94\"}}"
+    ],
+    "seconds": 0.06470043499996336,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574564.6174443,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04428845099994305,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.6145954,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=94"
+    ],
+    "seconds": 0.04366389500000878,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.6815014,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06690166199996384,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.682517,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=94"
+    ],
+    "seconds": 0.06496202999994694,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.7506797,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06815902800008189,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.7559447,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"95\"}}"
+    ],
+    "seconds": 0.07441913200000272,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.8130774,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.057129859000042416,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.8163853,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"95\"}}"
+    ],
+    "seconds": 0.06567656000004263,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574565.8619914,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.045603390999986004,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574566.8557467,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=95"
+    ],
+    "seconds": 0.04252512499999739,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574566.9182875,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06253642999990916,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574566.922928,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=95"
+    ],
+    "seconds": 0.06083719800005838,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574566.9800117,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05707797399998071,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574566.9812768,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"96\"}}"
+    ],
+    "seconds": 0.06296244700001807,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574567.044891,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06361156499997378,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574567.0496223,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"96\"}}"
+    ],
+    "seconds": 0.06938431300000047,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574567.0961854,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.046560086999988926,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.0879653,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=96"
+    ],
+    "seconds": 0.04295513700003539,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.1487048,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=96"
+    ],
+    "seconds": 0.05242661900001622,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.1495965,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06162736800001767,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.2014139,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05270506400006525,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.2066474,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"97\"}}"
+    ],
+    "seconds": 0.057028440999943086,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.2658093,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.0591579179999826,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.2694552,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"97\"}}"
+    ],
+    "seconds": 0.06802038299997548,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574568.3151827,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04572440200001893,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.307272,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=97"
+    ],
+    "seconds": 0.041355604999921525,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.3655527,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05827670400003626,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.3731139,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=97"
+    ],
+    "seconds": 0.057813893999991706,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.4269931,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"98\"}}"
+    ],
+    "seconds": 0.061417788999960976,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.4288418,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.05572451600005479,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.491807,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06480809900006079,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.4945056,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"98\"}}"
+    ],
+    "seconds": 0.06564384299997528,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574569.5410695,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04656012800001008,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.4616296,
+    "operation": [
+      "scale",
+      "deployment/profile-server",
+      "--replicas=3"
+    ],
+    "seconds": 0.05094742500000393,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.5357776,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-1",
+      "--from-literal=counter=98"
+    ],
+    "seconds": 0.043869166000035875,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.596168,
+    "operation": [
+      "create",
+      "configmap",
+      "profile-config-0",
+      "--from-literal=counter=98"
+    ],
+    "seconds": 0.05498057300007986,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.5965135,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.06073220400003265,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.656693,
+    "operation": [
+      "get",
+      "configmaps",
+      "-o",
+      "name"
+    ],
+    "seconds": 0.060518278000017744,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.6641424,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-1",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"99\"}}"
+    ],
+    "seconds": 0.06761033600002975,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.7203114,
+    "operation": [
+      "patch",
+      "configmap",
+      "profile-config-0",
+      "--type=merge",
+      "-p",
+      "{\"data\": {\"counter\": \"99\"}}"
+    ],
+    "seconds": 0.06359613699999045,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.7252672,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-1",
+      "--wait=false"
+    ],
+    "seconds": 0.06112030499991761,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.7677548,
+    "operation": [
+      "delete",
+      "configmap",
+      "profile-config-0",
+      "--wait=false"
+    ],
+    "seconds": 0.04743877999999313,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574570.9632802,
+    "operation": [
+      "logs",
+      "profile-client"
+    ],
+    "seconds": 0.05287139399990792,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574571.0072806,
+    "operation": [
+      "get",
+      "pod/profile-client",
+      "-o",
+      "json"
+    ],
+    "seconds": 0.04385538799999722,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574571.0547066,
+    "operation": [
+      "get",
+      "pods",
+      "-o",
+      "json"
+    ],
+    "seconds": 0.04735226999991937,
+    "exit_code": 0,
+    "error": ""
+  },
+  {
+    "time": 1788574571.1018941,
+    "operation": [
+      "delete",
+      "namespace",
+      "nk-profile-12059-18d24ada26bdb7e6",
+      "--ignore-not-found",
+      "--wait=false"
+    ],
+    "seconds": 0.045683037000003424,
+    "exit_code": 0,
+    "error": "Warning: deleting cluster-scoped resources, not scoped to the provided namespace\n"
+  }
+]
