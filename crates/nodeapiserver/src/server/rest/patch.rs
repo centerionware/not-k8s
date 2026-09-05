@@ -14,7 +14,7 @@ pub enum PatchKind {
 /// resubmit the stale candidate. Explicit preconditions still return 409.
 /// JSON Patch may test or replace metadata indirectly, so leave its caller
 /// in control of retrying those conditional operations.
-fn patch_allows_conflict_retry(kind: PatchKind, patch: &Value) -> bool {
+pub(crate) fn patch_allows_conflict_retry(kind: PatchKind, patch: &Value) -> bool {
     !matches!(kind, PatchKind::Json)
         && patch.pointer("/metadata/resourceVersion").is_none()
 }
@@ -290,6 +290,16 @@ pub async fn patch_persist_with_manager(
     dry_run: bool,
     field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
+    // PATCH may omit resourceVersion, but an explicitly supplied version is
+    // still a precondition (not just metadata to strip before persistence).
+    if let Some(version) = candidate.pointer("/metadata/resourceVersion") {
+        if !version.is_null()
+            && version.as_str().and_then(|value| value.parse::<i64>().ok())
+                != Some(context.existing_kv.mod_revision)
+        {
+            return Ok(UpdateOutcome::Conflict);
+        }
+    }
     // Group K: same pruning `create`/`update` run, same order (before
     // validation/defaulting) — `candidate` is already owned, so this
     // just reassigns it rather than needing the borrow-juggling

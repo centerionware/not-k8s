@@ -3,6 +3,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn ordinary_patch_rejects_a_stale_version_before_writing() {
+        let mut storage = StorageClient::connect_lazy(&crate::config::Config::default()).unwrap();
+        let context = PatchContext {
+            schema: None,
+            open_api_schema: None,
+            storage_open_api_schema: None,
+            kind: "Pod".into(),
+            conversion_webhook: None,
+            key: "/registry/pods/default/test".into(),
+            existing_kv: mvccpb::KeyValue { mod_revision: 9, ..Default::default() },
+            existing_object: json!({"metadata":{"name":"test"}}),
+            has_status_subresource: true,
+        };
+        let outcome = patch_persist(&mut storage, "", "v1", "pods", Some("default"),
+            "test", context, json!({"metadata":{"resourceVersion":"8"}}), false)
+            .await.unwrap();
+        assert!(matches!(outcome, UpdateOutcome::Conflict));
+    }
+
     #[test]
     fn merge_patch_retries_do_not_weaken_explicit_preconditions() {
         let patch = json!({"status":{"phase":"Running"}});

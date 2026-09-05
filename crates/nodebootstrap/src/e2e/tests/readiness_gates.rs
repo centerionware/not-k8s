@@ -60,6 +60,47 @@ pub(super) async fn pod_stays_not_ready_until_its_readiness_gate_condition_is_se
         "Ready must be False while the readiness gate is unset"
     );
 
+    // Ordinary PATCH and /status contend on the same stored Pod. Verify the
+    // ordinary handler also retries its internal CAS without losing fields.
+    for round in 0..4 {
+        let mut writers = tokio::task::JoinSet::new();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(4));
+        for index in 0..4 {
+            let pods = pods.clone();
+            let barrier = barrier.clone();
+            writers.spawn(async move {
+                let key = format!("e2e.not-k8s.io/writer-{round}-{index}");
+                let patch = json!({"metadata":{"annotations":{(key):"kept"}}});
+                barrier.wait().await;
+                pods.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await
+            });
+        }
+        while let Some(result) = writers.join_next().await {
+            result.context("joining concurrent metadata writer")?
+                .context("unconditional metadata PATCH must absorb internal CAS conflicts")?;
+        }
+        context.wait_until("all concurrent metadata patches remain visible", Duration::from_secs(10), || {
+            let pods = pods.clone();
+            async move {
+                let annotations = pods.get(name).await?.metadata.annotations.unwrap_or_default();
+                Ok((0..4).all(|index| annotations.get(&format!("e2e.not-k8s.io/writer-{round}-{index}"))
+                    .is_some_and(|value| value == "kept")))
+            }
+        }).await?;
+    }
+
+    let first = pods.patch(name, &PatchParams::default(), &Patch::Merge(&json!({
+        "metadata":{"annotations":{"e2e.not-k8s.io/version-check":"first"}}
+    }))).await?;
+    pods.patch(name, &PatchParams::default(), &Patch::Merge(&json!({
+        "metadata":{"annotations":{"e2e.not-k8s.io/version-check":"second"}}
+    }))).await?;
+    let conditional = json!({"metadata":{"resourceVersion":first.metadata.resource_version,
+        "annotations":{"e2e.not-k8s.io/version-check":"must-not-write"}}});
+    let rejected = pods.patch(name, &PatchParams::default(), &Patch::Merge(&conditional)).await;
+    anyhow::ensure!(matches!(rejected, Err(kube::Error::Api(ref response)) if response.code == 409),
+        "ordinary PATCH must reject an explicit stale resourceVersion");
+
     // Exercise independent status writers racing the real nodelet. Strategic
     // merge must preserve every condition and absorb internal storage CAS
     // races without asking unconditional PATCH callers to retry themselves.

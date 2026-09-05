@@ -186,7 +186,6 @@ where
                         initial_failures = 0;
                     }
                     task_shared.apply(&event);
-                    let _ = task_shared.events.send(event);
                     if initial_done && startup_permit.is_some() {
                         // Only the initial snapshot is admission-controlled.
                         // Steady-state watches remain independent.
@@ -213,27 +212,34 @@ where
     }
 
     fn apply(&self, event: &Event<T>) {
+        // Publish under the snapshot lock. A subscriber must see an event
+        // either in its snapshot or in its new receiver, never an older
+        // buffered event replayed after a newer snapshot.
+        let mut objects = self.objects.lock().expect("shared watch object store poisoned");
         match event {
             Event::Init => {
-                self.objects.lock().expect("shared watch object store poisoned").clear();
+                objects.clear();
                 self.ready.send_replace(false);
             }
             Event::InitApply(object) | Event::Apply(object) => {
-                self.objects
-                    .lock()
-                    .expect("shared watch object store poisoned")
-                    .insert(Self::object_key(object), object.clone());
+                objects.insert(Self::object_key(object), object.clone());
             }
             Event::Delete(object) => {
-                self.objects
-                    .lock()
-                    .expect("shared watch object store poisoned")
-                    .remove(&Self::object_key(object));
+                objects.remove(&Self::object_key(object));
             }
             Event::InitDone => {
                 self.ready.send_replace(true);
             }
         }
+        let _ = self.events.send(event.clone());
+    }
+
+    fn snapshot_and_subscribe(&self) -> Option<(Vec<T>, broadcast::Receiver<Event<T>>)> {
+        let objects = self.objects.lock().expect("shared watch object store poisoned");
+        if !*self.ready.borrow() {
+            return None;
+        }
+        Some((objects.values().cloned().collect(), self.events.subscribe()))
     }
 
     fn subscribe(self: &Arc<Self>) -> BoxStream<'static, watcher::Result<Event<T>>> {
@@ -281,20 +287,12 @@ where
         loop {
             match self.phase {
                 SubscriptionPhase::NeedSnapshot => {
-                    if !*self.ready.borrow() {
+                    let Some((initial, events)) = self.shared.snapshot_and_subscribe() else {
                         self.ready.changed().await.ok()?;
                         continue;
-                    }
-
-                    while self.events.try_recv().is_ok() {}
-                    self.initial = self
-                        .shared
-                        .objects
-                        .lock()
-                        .expect("shared watch object store poisoned")
-                        .values()
-                        .cloned()
-                        .collect();
+                    };
+                    self.initial = initial;
+                    self.events = events;
                     self.initial_index = 0;
                     self.phase = SubscriptionPhase::Init;
                 }
@@ -596,6 +594,56 @@ pub fn watch_dynamic_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn snapshot_discards_lagged_events_before_following_live_updates() {
+        let (ready, _) = ready_watch::channel(false);
+        let (events, _) = broadcast::channel(2);
+        let shared = Arc::new(SharedWatch::<Namespace> {
+            objects: Mutex::new(HashMap::new()), ready, events,
+        });
+        shared.apply(&Event::InitDone);
+        let mut subscription = shared.subscribe();
+        let mut old = Namespace::default();
+        old.metadata.name = Some("replaced".into());
+        old.metadata.uid = Some("old".into());
+        shared.apply(&Event::Apply(old.clone()));
+        shared.apply(&Event::Delete(old));
+        let mut replacement = Namespace::default();
+        replacement.metadata.name = Some("replaced".into());
+        replacement.metadata.uid = Some("new".into());
+        shared.apply(&Event::Apply(replacement.clone()));
+        // The receiver is now lagged. Draining with `while try_recv().is_ok()`
+        // stops at Lagged and leaves the stale deletion behind the snapshot.
+        assert!(matches!(subscription.next().await, Some(Ok(Event::Init))));
+        assert!(matches!(subscription.next().await,
+            Some(Ok(Event::InitApply(ns))) if ns.uid().as_deref() == Some("new")));
+        assert!(matches!(subscription.next().await, Some(Ok(Event::InitDone))));
+        replacement.metadata.resource_version = Some("4".into());
+        shared.apply(&Event::Apply(replacement));
+        assert!(matches!(subscription.next().await,
+            Some(Ok(Event::Apply(ns))) if ns.resource_version().as_deref() == Some("4")));
+    }
+
+    #[test]
+    fn snapshot_waits_for_the_complete_relist_and_subscribes_at_its_boundary() {
+        let (ready, _) = ready_watch::channel(false);
+        let (events, _) = broadcast::channel(8);
+        let shared = SharedWatch::<Namespace> {
+            objects: Mutex::new(HashMap::new()), ready, events,
+        };
+        shared.apply(&Event::Init);
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("listed".into());
+        shared.apply(&Event::InitApply(ns.clone()));
+        assert!(shared.snapshot_and_subscribe().is_none());
+        shared.apply(&Event::InitDone);
+        let (snapshot, mut events) = shared.snapshot_and_subscribe().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+        shared.apply(&Event::Delete(ns));
+        assert!(matches!(events.try_recv(), Ok(Event::Delete(_))));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn stalled_reconnect_list_is_retried_without_startup_admission() {
