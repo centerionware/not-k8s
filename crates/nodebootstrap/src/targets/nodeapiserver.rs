@@ -193,6 +193,13 @@ fn install_service(
     if enforce_rbac {
         values.push(("NODEAPISERVER_ENFORCE_RBAC", "1".to_string()));
     }
+    // This target installs its own unit rather than using services.rs's
+    // environment builder. Preserve the caller's diagnostics in both phases.
+    if let Ok(filter) = std::env::var("RUST_LOG") {
+        if !filter.is_empty() {
+            values.push(("RUST_LOG", filter));
+        }
+    }
     let env: Vec<(&str, &str)> = values
         .iter()
         .map(|(key, value)| (*key, value.as_str()))

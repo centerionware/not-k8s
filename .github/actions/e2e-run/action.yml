@@ -77,6 +77,17 @@ runs:
           NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
           NOTK8S_BUILD_LAYOUT=combined \
           ./dist-bin/nodebootstrap "${args[@]:1}"
+        if [[ "$APISERVER" == nodeapiserver ]]; then
+          installed_env=$(sudo systemctl show nodeapiserver --property=Environment --value)
+          if [[ "$installed_env" != *"RUST_LOG=$RUST_LOG"* ]]; then
+            echo 'nodeapiserver service did not retain the requested watch tracing' >&2
+            exit 1
+          fi
+          # Bootstrap creates system namespaces: prove traces were emitted,
+          # not merely requested, before spending time on the full suite.
+          sudo journalctl -b -u nodeapiserver --no-pager \
+            | awk '/namespace watch event/ { found=1 } END { exit !found }'
+        fi
 
     - name: Allow admin access
       shell: bash
