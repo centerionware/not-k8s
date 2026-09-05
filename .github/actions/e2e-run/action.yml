@@ -276,6 +276,11 @@ runs:
         # minutes earlier. Keep runtime and controller events across restarts.
         sudo journalctl -b -u nodecontroller -u nodestore -u nodelet -u nodeproxy -u nodescheduler --no-pager -o short-iso-precise \
           > /tmp/e2e-controller-journal.txt
+        # Retain both API watch boundaries across the entire failure interval,
+        # without flooding the result with unrelated per-request audit events.
+        # awk succeeds with zero matches; journalctl errors still fail the pipe.
+        sudo journalctl -b -u nodeapiserver --no-pager -o short-iso-precise \
+          | awk '/namespace watch event/' >> /tmp/e2e-controller-journal.txt
         cat /tmp/e2e-controller-journal.txt
 
     - name: Publish e2e results

@@ -19,6 +19,42 @@ spec.loader.exec_module(summary)
 
 
 class ReleaseValidationTests(unittest.TestCase):
+    def test_e2e_journal_retains_api_watch_traces_without_audit_noise(self):
+        action = yaml.safe_load((ROOT / '.github/actions/e2e-run/action.yml').read_text())
+        script = next(step['run'] for step in action['runs']['steps']
+                      if step['name'] == 'Save controller logs')
+        fixture = '''
+sudo() {
+    if [[ " $* " == *" -u nodeapiserver "* ]]; then
+        printf '%s\\n' 'unrelated audit request'
+        if [[ "$TRACE_PRESENT" == 1 ]]; then
+            printf '%s\\n' 'old namespace watch event boundary=storage_to_cache revision=42'
+            printf '%s\\n' 'old namespace watch event boundary=cache_to_http revision=42'
+        fi
+        return "$JOURNAL_EXIT"
+    fi
+    printf '%s\\n' 'controller history'
+}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            journal = Path(temporary) / 'journal.txt'
+            script = script.replace('/tmp/e2e-controller-journal.txt', str(journal))
+            for present in ('0', '1'):
+                with self.subTest(trace_present=present):
+                    result = subprocess.run(['bash', '-c', fixture + script], capture_output=True,
+                                            text=True, env=dict(os.environ, TRACE_PRESENT=present,
+                                                               JOURNAL_EXIT='0'))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, journal.read_text())
+                    self.assertIn('controller history', result.stdout)
+                    self.assertNotIn('unrelated audit request', result.stdout)
+                    for boundary in ('storage_to_cache', 'cache_to_http'):
+                        self.assertEqual(f'boundary={boundary} revision=42' in result.stdout,
+                                         present == '1')
+            failure = subprocess.run(['bash', '-c', fixture + script], capture_output=True,
+                                     env=dict(os.environ, TRACE_PRESENT='0', JOURNAL_EXIT='1'))
+            self.assertNotEqual(failure.returncode, 0)
+
     def test_bootstrap_symlink_replaces_links_without_following_directories(self):
         action = yaml.safe_load((ROOT / '.github/actions/e2e-run/action.yml').read_text())
         script = next(step['run'] for step in action['runs']['steps'] if step['name'] == 'Bootstrap cluster')
