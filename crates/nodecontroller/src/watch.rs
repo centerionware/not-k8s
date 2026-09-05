@@ -606,7 +606,7 @@ mod tests {
                     futures::future::pending::<()>().await;
                 }
                 Ok::<_, std::convert::Infallible>(http::Response::new(kube::client::Body::from(
-                    r#"{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[]}"#
+                    br#"{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[]}"#.to_vec()
                 )))
             }
         });
