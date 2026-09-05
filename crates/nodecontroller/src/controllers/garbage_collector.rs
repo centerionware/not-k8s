@@ -725,7 +725,8 @@ async fn run_generation(
     );
     // One active request, one queued entry per UID. Keep consuming watches
     // during network I/O; an unavailable API must not freeze the owner graph.
-    let mut deleting = FuturesUnordered::new();
+    let mut deleting: FuturesUnordered<futures::future::BoxFuture<'static, (String, bool)>> =
+        FuturesUnordered::new();
 
     loop {
         let next_delete = state.deletes.iter()
@@ -754,7 +755,7 @@ async fn run_generation(
                     continue;
                 };
                 let client = client.clone();
-                deleting.push(async move {
+                deleting.push(Box::pin(async move {
                     tracing::debug!(kind = %record.gvk_key, namespace = %record.namespace,
                         name = %record.name, uid = %uid, "garbage-collector-controller attempting orphan deletion");
                     let retry = match tokio::time::timeout(
@@ -768,7 +769,7 @@ async fn run_generation(
                         }
                     };
                     (uid, retry)
-                });
+                }));
             }
             crd_event = crd_stream.next() => {
                 match crd_event {
