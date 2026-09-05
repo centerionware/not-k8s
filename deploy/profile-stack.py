@@ -99,9 +99,9 @@ class Workload:
         self.lock = threading.Lock()
         self.events = []
 
-    def kubectl(self, *args, body=None, timeout=45):
+    def kubectl(self, *args, body=None, timeout=45, request_timeout="30s"):
         started = time.monotonic()
-        command = ["kubectl", "--request-timeout=30s", "-n", self.namespace, *args]
+        command = ["kubectl", f"--request-timeout={request_timeout}", "-n", self.namespace, *args]
         result = subprocess.run(command, input=json.dumps(body) if body else None,
                                 text=True, capture_output=True, timeout=timeout)
         with self.lock:
@@ -126,7 +126,7 @@ class Workload:
         service = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "profile-server"},
                    "spec": {"selector": {"app": "profile-server"}, "ports": [{"port": 8080, "targetPort": 8080}]}}
         self.kubectl("apply", "-f", "-", body={"apiVersion": "v1", "kind": "List", "items": [server, service]})
-        self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=180s", timeout=190)
+        self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=180s", timeout=190, request_timeout="0")
 
     def start_client(self):
         interval = "0.05" if self.preset == "heavy" else "0.2"
@@ -135,7 +135,7 @@ class Workload:
                       "command": ["sh", "-c", f"while true; do wget -q -O /dev/null http://profile-server:8080/ || exit 1; echo request-ok; sleep {interval}; done"],
                       "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}}}]}}
         self.kubectl("create", "-f", "-", body=client)
-        self.kubectl("wait", "pod/profile-client", "--for=condition=Ready", "--timeout=90s", timeout=100)
+        self.kubectl("wait", "pod/profile-client", "--for=condition=Ready", "--timeout=90s", timeout=100, request_timeout="0")
 
     def api_worker(self, worker):
         counter = 0
@@ -154,7 +154,7 @@ class Workload:
             burst = 5 if self.preset == "heavy" else 1
             self.kubectl("scale", "deployment/profile-server", f"--replicas={self.replicas + burst * int(extra)}")
             if self.preset == "heavy":
-                self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=90s", timeout=100)
+                self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=90s", timeout=100, request_timeout="0")
             extra = not extra
 
     def job_worker(self):
@@ -170,7 +170,7 @@ class Workload:
                            "volumeMounts": [{"name": "scratch", "mountPath": "/data"}],
                            "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}}}]}}}}
             self.kubectl("create", "-f", "-", body=job)
-            self.kubectl("wait", f"job/{name}", "--for=condition=Complete", "--timeout=90s", timeout=100)
+            self.kubectl("wait", f"job/{name}", "--for=condition=Complete", "--timeout=90s", timeout=100, request_timeout="0")
             self.kubectl("delete", f"job/{name}", "--cascade=foreground", "--wait=true", "--timeout=60s", timeout=70)
             counter += 1
             self.stop.wait(1)

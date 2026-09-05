@@ -198,11 +198,13 @@ async fn handle(
                     .unwrap());
             }
             DiscoveryRoute::NotAcceptable => {
-                return Ok(json_response(StatusCode::NOT_ACCEPTABLE, &serde_json::json!({
+                let mut response = json_response(StatusCode::NOT_ACCEPTABLE, &serde_json::json!({
                     "apiVersion": "v1", "kind": "Status", "status": "Failure",
                     "reason": "NotAcceptable", "code": 406,
                     "message": "OpenAPI v2 supports application/json and the gnostic v2 protobuf media type"
-                })));
+                }));
+                response.headers_mut().insert("Vary", http::HeaderValue::from_static("Accept"));
+                return Ok(response);
             }
             DiscoveryRoute::NotFound => {
                 // Group L Phase 3's own last named gap, closed: a real

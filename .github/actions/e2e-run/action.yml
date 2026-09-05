@@ -71,7 +71,7 @@ runs:
         printf '#!/bin/sh\necho "unexpected install-time kubectl invocation" >&2\nexit 127\n' > "$no_kubectl/kubectl"
         chmod +x "$no_kubectl/kubectl"
         chmod +x dist-bin/notk8s
-        ln -s notk8s dist-bin/nodebootstrap
+        ln -sfn notk8s dist-bin/nodebootstrap
         PATH="$no_kubectl:$PATH" sudo -E env PATH="$no_kubectl:$PATH" \
           NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
           NOTK8S_BUILD_LAYOUT=combined \
@@ -115,12 +115,15 @@ runs:
       env:
         KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         ONLY: ${{ inputs.only }}
+        NEEDS_DRIVERS: ${{ inputs.needs_drivers }}
+        SHARD: ${{ inputs.shard }}
+        NETWORK: ${{ inputs.network }}
         NODEBOOTSTRAP_SERVICE_CIDR: ${{ inputs.cidr || '10.43.0.0/16' }}
         NODEBOOTSTRAP_SERVICE_CIDR6: ${{ inputs.cidr6 }}
       shell: bash
       run: |
         set +e
-        if [[ "${{ inputs.needs_drivers }}" == true ]]; then
+        if [[ "$NEEDS_DRIVERS" == true ]]; then
           export TEST_DRA_DEVICE_CLASS=gpu.example.com
           export TEST_CSI_STORAGE_CLASS=csi-hostpath-sc
           export TEST_CSI_ATTACH_STORAGE_CLASS=csi-hostpath-sc
@@ -128,8 +131,8 @@ runs:
           export TEST_CSI_BLOCK_STORAGE_CLASS=csi-hostpath-block-sc
           export TEST_CSI_STORAGE_CLASS_WAIT=csi-hostpath-sc-wait
         fi
-        args=(bootstrap --e2e --shard=${{ inputs.shard }}/5)
-        if [[ "${{ inputs.network }}" == external && -z "$ONLY" ]]; then
+        args=(bootstrap --e2e "--shard=$SHARD/5")
+        if [[ "$NETWORK" == external && -z "$ONLY" ]]; then
           ONLY=external_cni
         fi
         [[ -z "$ONLY" ]] || args+=("--only=$ONLY")

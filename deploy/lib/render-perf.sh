@@ -6,10 +6,11 @@ out=${1:?output directory required}
 label=${2:?profile label required}
 tools_dir=${FLAMEGRAPH_DIR:?set FLAMEGRAPH_DIR to the pinned toolkit directory}
 perf script --no-inline -i "$out/perf.data" > "$out/perf.script" 2> "$out/perf-script.txt"
-perf report --stdio --no-inline -i "$out/perf.data" --sort comm,dso,symbol --percent-limit 0 > "$out/perf-report.txt" 2>&1
-perf report --stdio --no-children --no-inline -i "$out/perf.data" --percent-limit 0 > "$out/perf-self-report.txt" 2>&1
-if command -v rustfilt >/dev/null 2>&1; then
-    rustfilt < "$out/perf.script" > "$out/perf-rustfilt.script"
+perf report --stdio --no-inline -i "$out/perf.data" --sort comm,dso,symbol --percent-limit 0 > "$out/perf-report.txt" 2>&1 || true
+perf report --stdio --no-children --no-inline -i "$out/perf.data" --percent-limit 0 > "$out/perf-self-report.txt" 2>&1 || true
+if command -v rustfilt >/dev/null 2>&1 &&
+    rustfilt < "$out/perf.script" > "$out/perf-rustfilt.script" 2> "$out/rustfilt.txt" &&
+    [[ -s "$out/perf-rustfilt.script" ]]; then
     input="$out/perf-rustfilt.script"
 else
     input="$out/perf.script"

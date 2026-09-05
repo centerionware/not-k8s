@@ -174,8 +174,11 @@ Each stack runs once on its own fresh hosted runner. Hardware/noisy-neighbor
 variation and dependency versions matter; repeat before making performance claims.
 Component comparisons measure components within their respective full stacks,
 not causal one-component swaps with identical surrounding implementations.
-Metrics publish directly to the results branch; failed legs do not produce a
-misleading combined report. No flamegraphs or large binary archives are collected
+Comparison builds run with read-only repository permissions and no publication
+token. Only metrics and diagnostics cross a one-day Actions artifact to a
+separate write-enabled publisher; source-built binaries never cross jobs.
+Failed legs retain their diagnostics but do not produce a misleading combined
+report. No flamegraphs or large binary archives are collected
 by these comparison modes. Use `stack` for diagnostic SVG flamegraphs.
 
 ## Before interpreting compatibility or optimizing

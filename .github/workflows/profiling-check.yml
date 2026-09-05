@@ -6,6 +6,7 @@ on:
       - 'deploy/*profil*.py'
       - 'deploy/*profil*.sh'
       - 'deploy/lib/render-perf.sh'
+      - 'deploy/lib/*profil*.sh'
       - 'deploy/lib/render-stack-charts.py'
       - '.github/workflows/*.yml'
       - '.github/actions/**'
@@ -24,9 +25,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Check profile shell
-        run: bash -n deploy/profile-process.sh deploy/lib/render-perf.sh deploy/publish-stack-profile.sh deploy/setup-profile-baseline.sh deploy/publish-profile-comparison.sh
+        run: |
+          for script in deploy/*profil*.sh deploy/lib/*profil*.sh deploy/lib/render-perf.sh; do
+            bash -n "$script" || exit
+          done
       - name: Check release shell
-        run: bash -n deploy/download-release-runtime.sh deploy/publish-validation-results.sh
+        run: |
+          for script in deploy/download-release-runtime.sh deploy/publish-validation-results.sh; do
+            bash -n "$script" || exit
+          done
       - name: Install test tools
         run: python3 -m pip install --quiet --break-system-packages matplotlib numpy pyyaml
       - name: Test profiling

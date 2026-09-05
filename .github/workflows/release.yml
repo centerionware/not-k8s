@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # Serialize release/version mutation. Validation jobs within a run remain parallel.
 concurrency:
@@ -234,6 +234,8 @@ jobs:
           retention-days: 1
 
   publish-release:
+    permissions:
+      contents: write
     outputs:
       tag: v${{ steps.version.outputs.version }}
       published: ${{ steps.publish.outputs.published }}
@@ -292,12 +294,38 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          git tag "$tag"
-          git push origin "$tag"
-          (cd dist && sha256sum * > SHA256SUMS)
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            git fetch origin "refs/tags/$tag"
+            [[ "$(git rev-parse 'FETCH_HEAD^{commit}')" == "$(git rev-parse HEAD)" ]] || {
+              echo "Existing $tag points to different source; refusing to retag" >&2; exit 1;
+            }
+          else
+            status=$?
+            [[ "$status" == 2 ]] || exit "$status"
+            git tag "$tag" HEAD
+            git push origin "refs/tags/$tag"
+          fi
+          (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS)
           mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
           [[ "${#assets[@]}" -gt 0 ]]
-          gh release create "$tag" --title "$tag" --notes-file release-notes.md "${assets[@]}"
+          if existing=$(gh release view "$tag" --json assets --jq '.assets[].name'); then
+            # Keep published bytes immutable. Rerun-failed-jobs reuses the
+            # same build artifacts; a rebuilt/mismatched bundle must fail.
+            checks=$(mktemp -d)
+            if grep -Fxq SHA256SUMS <<< "$existing"; then
+              gh release download "$tag" --pattern SHA256SUMS --dir "$checks"
+              [[ "$(sha256sum < dist/SHA256SUMS)" == "$(sha256sum < "$checks/SHA256SUMS")" ]] || {
+                echo 'Published checksums differ; refusing to overwrite release assets' >&2; exit 1;
+              }
+            fi
+            for asset in "${assets[@]}"; do
+              if ! grep -Fxq "${asset##*/}" <<< "$existing"; then
+                gh release upload "$tag" "$asset"
+              fi
+            done
+          else
+            gh release create "$tag" --verify-tag --title "$tag" --notes-file release-notes.md "${assets[@]}"
+          fi
           echo "published=true" >> "$GITHUB_OUTPUT"
       - name: Advance VERSION
         env:
@@ -404,6 +432,8 @@ jobs:
               done
 
   prepare-validation:
+    permissions:
+      contents: write
     needs: publish-release
     if: ${{ always() && needs.publish-release.outputs.published == 'true' }}
     runs-on: ubuntu-latest
@@ -462,6 +492,9 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   release-e2e:
+    # Publishes shard results directly; no build or source_ref execution.
+    permissions:
+      contents: write
     needs: [publish-release, prepare-validation]
     if: ${{ always() && needs.prepare-validation.result == 'success' }}
     runs-on: ubuntu-latest
@@ -490,6 +523,9 @@ jobs:
           results_prefix: e2e/${{ github.run_id }}-${{ github.run_attempt }}
 
   release-flamegraphs:
+    # Publishes large perf bundles without an Actions artifact round trip.
+    permissions:
+      contents: write
     needs: [publish-release, prepare-validation]
     if: ${{ always() && needs.prepare-validation.result == 'success' }}
     runs-on: ubuntu-latest
@@ -545,9 +581,30 @@ jobs:
         with:
           release_tag: ${{ needs.publish-release.outputs.tag }}
 
-  release-comparison-report:
+  release-comparison-publish:
     needs: [publish-release, prepare-validation, release-comparison]
-    if: ${{ always() && needs.release-comparison.result == 'success' }}
+    if: ${{ always() && needs.prepare-validation.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      PROFILE_RESULTS_BRANCH: ${{ needs.prepare-validation.outputs.branch }}
+      PROFILE_BACKENDS: '["notk8s","k8s","k3s"]'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.publish-release.outputs.tag }}
+          persist-credentials: false
+      - name: Publish comparison
+        uses: ./.github/actions/profile-compare-publish
+
+  release-comparison-report:
+    needs: [publish-release, prepare-validation, release-comparison, release-comparison-publish]
+    if: ${{ always() && needs.release-comparison.result == 'success' && needs.release-comparison-publish.result == 'success' }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -566,7 +623,9 @@ jobs:
         uses: ./.github/actions/profile-compare-report
 
   validation-summary:
-    needs: [publish-release, prepare-validation, release-e2e, release-flamegraphs, release-comparison, release-comparison-report]
+    needs: [publish-release, prepare-validation, release-e2e, release-flamegraphs, release-comparison, release-comparison-publish, release-comparison-report]
+    permissions:
+      contents: write
     if: ${{ always() && needs.publish-release.outputs.published == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15

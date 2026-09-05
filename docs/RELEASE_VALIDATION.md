@@ -37,6 +37,16 @@ not be presented as release benchmark ratios. No post-publication Rust build or
 Actions build-artifact transfer is needed. Release artifacts can be cleaned up
 as soon as publication completes.
 
+Comparison measurement jobs are read-only; small metrics/diagnostic artifacts
+(one-day retention, no binaries) pass to a dedicated publication job. E2e and
+flamegraph jobs publish directly and retain job-scoped write access. Builds and
+release-identity lookup inherit the workflow's read-only default.
+
+Retrying publication reuses a matching remote tag and existing release assets,
+uploading only missing assets. A different tag target or published checksum
+bundle fails closed rather than overwriting shipped bytes. Use rerun-failed-jobs
+to reuse the frozen version and original build artifacts after partial failure.
+
 ## One results branch
 
 The release page starts with a link to `e2e-prof-{release-tag}`, for example

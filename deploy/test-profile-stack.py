@@ -5,6 +5,7 @@ import csv
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -20,6 +21,50 @@ CHART_SPEC.loader.exec_module(charts)
 
 
 class ProfileStackTests(unittest.TestCase):
+    def test_watch_requests_keep_their_outer_timeout(self):
+        workload = stack.Workload(Path('unused'), 1, 1)
+        result = subprocess.CompletedProcess([], 0, '', '')
+        with patch.object(subprocess, 'run', return_value=result) as run:
+            workload.kubectl('get', 'pods')
+            self.assertIn('--request-timeout=30s', run.call_args.args[0])
+            workload.setup()
+            self.assertIn('--request-timeout=0', run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs['timeout'], 190)
+            workload.start_client()
+            self.assertIn('--request-timeout=0', run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs['timeout'], 100)
+
+    def test_optional_report_and_demangler_failures_still_render(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'perf').write_text('#!/bin/sh\n[ "$1" = script ] || exit 1\nprintf "raw-stack\\n"\n')
+            (root / 'rustfilt').write_text('#!/bin/sh\nprintf "partial\\n"\nexit 1\n')
+            for name in ('perf', 'rustfilt'):
+                (root / name).chmod(0o755)
+            (root / 'stackcollapse-perf.pl').write_text('while (<>) { print; }\n')
+            (root / 'flamegraph.pl').write_text('open my $input, "<", $ARGV[-1] or die $!; while (<$input>) { print; }\n')
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", FLAMEGRAPH_DIR=str(root))
+            result = subprocess.run(['bash', str(ROOT / 'deploy/lib/render-perf.sh'), str(root), 'fixture'],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'flamegraph.svg').read_text(), 'raw-stack\n')
+
+    def test_required_perf_accepts_a_successful_frame_pointer_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'perf').write_text('#!/bin/sh\nstatus=1\nwhile [ "$#" -gt 0 ]; do\n'
+                'case "$1" in -o) shift; printf captured > "$1";; -g) status=0;; esac\n'
+                'shift\ndone\nexit "$status"\n')
+            (root / 'perf').chmod(0o755)
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                       PROFILE_REQUIRE_PERF='1', PROFILE_CAPTURE_ONLY='1')
+            pid = Path('/proc/self/stat').read_text().split(' ', 1)[0]
+            result = subprocess.run(['bash', str(ROOT / 'deploy/profile-process.sh'), '--pid', pid,
+                '--duration', '1', '--output', str(root / 'out')], env=env, capture_output=True,
+                text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'out/perf.data').read_text(), 'captured')
+
     def test_failure_is_captured_before_cleanup_without_masking_original_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             calls = []
@@ -77,7 +122,7 @@ class ProfileStackTests(unittest.TestCase):
             "/var/lib/rancher/k3s/data/hash/bin/containerd-shim-runc-v2", "0::/system.slice/k3s.service\n"))
 
     def test_embedded_component_comparison_is_rejected_before_setup(self):
-        result = subprocess.run(["python3", str(ROOT / "deploy/profile-stack.py"),
+        result = subprocess.run([sys.executable, str(ROOT / "deploy/profile-stack.py"),
                                  "--backend", "k3s", "--metrics-only", "--output", "unused"],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)

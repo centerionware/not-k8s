@@ -85,6 +85,9 @@ else
     sudo chmod 644 /etc/kubernetes/admin.conf
     export KUBECONFIG=/etc/kubernetes/admin.conf
     curl -fL --retry 3 https://github.com/flannel-io/flannel/releases/download/v0.27.4/kube-flannel.yml -o "$work/flannel.yml"
+    # Digest of the upstream v0.27.4 release asset, before the CIDR edit.
+    FLANNEL_MANIFEST_SHA256=f17c57f82ffef1d53dbf558ac30755241980563044622778a15df339e4346c57
+    echo "$FLANNEL_MANIFEST_SHA256  $work/flannel.yml" | sha256sum -c
     sed -i 's@10.244.0.0/16@10.42.0.0/16@g' "$work/flannel.yml"
     kubectl apply -f "$work/flannel.yml"
     kubectl taint nodes --all node-role.kubernetes.io/control-plane- || exit 1

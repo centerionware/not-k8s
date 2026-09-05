@@ -184,7 +184,6 @@ capture_with_perf() {
         > "$OUT_DIR/perf-record.txt" 2>&1
     local record_status=$?
     if [[ "$record_status" -ne 0 || ! -s "$perf_data" ]]; then
-        [[ "${PROFILE_REQUIRE_PERF:-0}" != 1 ]] || return 1
         echo "DWARF call-graph capture failed; retrying with frame-pointer stacks" >> "$OUT_DIR/perf-record.txt"
         rm -f "$perf_data"
         run_perf_record "$perf_data" -e "${PROFILE_EVENT:-cycles}" -F "${PROFILE_FREQUENCY:-99}" -g -p "$PID" \

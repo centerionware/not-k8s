@@ -112,7 +112,8 @@ def render(output, sources, selected, whole=False):
                             (bar.get_x()+bar.get_width()/2, high), xytext=(0, 4),
                             textcoords='offset points', ha='center', va='bottom', fontsize=7, rotation=30)
             ax.margins(y=.3)
-            ax.set_xticks(np.arange(len(components)) + .4, components, rotation=25, ha="right")
+            ax.set_xticks(np.arange(len(components)) + (count - 1) * .8 / count / 2,
+                          components, rotation=25, ha="right")
             ax.set(ylabel=f"Mean {ylabel}", title=f"{phase}: component comparison — mean [min, max]; whiskers show range")
             if ax.containers:
                 ax.legend(); fig.tight_layout()

@@ -945,7 +945,7 @@ fn range_in(conn: &Connection, range: &KeyRange, at: i64, q: &RangeQuery) -> Res
         format!("SELECT (SELECT rowid FROM kv AS versions
                          WHERE versions.key = keys.key AND revision <= ?{n}
                          ORDER BY revision DESC, sub DESC LIMIT 1)
-                 FROM (SELECT DISTINCT key FROM kv WHERE {pred}) AS keys")
+                 FROM (SELECT DISTINCT key FROM kv WHERE {pred} AND revision <= ?{n}) AS keys")
     };
     let base = format!("SELECT key, value, create_revision, revision, version, lease, deleted
                         FROM kv WHERE rowid IN ({latest}) AND deleted = 0");
@@ -1065,6 +1065,9 @@ mod tests {
                     i64::from((revision + sub) % 5 == 0)]).unwrap();
             }
         }
+        // Keys born later must not enter an earlier historical snapshot.
+        s.conn.execute("INSERT INTO kv (revision,sub,key,value,create_revision,version,lease,deleted)
+            VALUES (10,9,?1,?2,10,1,0,0)", rusqlite::params![b"/later".as_slice(), b"late".as_slice()]).unwrap();
         for range in [KeyRange::All, KeyRange::Single(b"/0".to_vec()),
             KeyRange::Single(b"missing".to_vec()), KeyRange::From(b"/1".to_vec()),
             KeyRange::Between { from: b"/0".to_vec(), to: b"/2".to_vec() }] {

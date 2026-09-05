@@ -216,7 +216,19 @@ mod tests {
         assert_eq!(openapi::negotiate_v2(Some(openapi::V2_PROTOBUF_CONTENT_TYPE)), Some(true));
         let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_LEGACY_ACCEPT), &[], &[]);
         let DiscoveryRoute::FoundOpenApiProtobuf(bytes) = route else { panic!("kubectl requires gnostic protobuf") };
-        assert!(!bytes.starts_with(b"{") && !bytes.starts_with(b"k8s\0"));
+        let pool = prost_reflect::DescriptorPool::decode(
+            include_bytes!(concat!(env!("OUT_DIR"), "/openapi-v2-descriptor.bin")).as_slice()
+        ).unwrap();
+        let decoded = prost_reflect::DynamicMessage::decode(
+            pool.get_message_by_name("openapi.v2.Document").unwrap(), bytes
+        ).unwrap();
+        assert_eq!(decoded.get_field_by_name("swagger").unwrap().as_str(), Some("2.0"));
+        let definitions = decoded.get_field_by_name("definitions").unwrap();
+        let entries = definitions.as_message().unwrap().get_field_by_name("additional_properties").unwrap();
+        assert!(entries.as_list().unwrap().iter().any(|entry| {
+            entry.as_message().unwrap().get_field_by_name("name").unwrap().as_str()
+                == Some("io.k8s.api.core.v1.Pod")
+        }));
         assert_eq!(openapi::negotiate_v2(Some("application/json;q=0,*/*;q=1")), Some(true));
         assert_eq!(openapi::negotiate_v2(Some("application/xml")), None);
         assert!(matches!(route_discovery(&parts("/openapi/v2"), Some("application/xml"), &[], &[]), DiscoveryRoute::NotAcceptable));

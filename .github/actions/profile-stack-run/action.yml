@@ -23,8 +23,8 @@ runs:
         set -euo pipefail
         case "$PROFILE_BUILD" in profiling|debug) ;; *) exit 2 ;; esac
         case "$PROFILE_WORKLOAD" in standard|heavy) ;; *) exit 2 ;; esac
-        [[ "$PROFILE_SECONDS" =~ ^[0-9]+$ ]] && (( PROFILE_SECONDS >= 30 && PROFILE_SECONDS <= 600 ))
-        [[ "$PROFILE_ARCHIVE_LIMIT_MIB" =~ ^[0-9]+$ ]] && (( PROFILE_ARCHIVE_LIMIT_MIB >= 64 && PROFILE_ARCHIVE_LIMIT_MIB <= 2048 ))
+        [[ "$PROFILE_SECONDS" =~ ^[0-9]+$ ]] && (( PROFILE_SECONDS >= 30 && PROFILE_SECONDS <= 600 )) || { echo 'PROFILE_SECONDS must be 30..600' >&2; exit 2; }
+        [[ "$PROFILE_ARCHIVE_LIMIT_MIB" =~ ^[0-9]+$ ]] && (( PROFILE_ARCHIVE_LIMIT_MIB >= 64 && PROFILE_ARCHIVE_LIMIT_MIB <= 2048 )) || { echo 'PROFILE_ARCHIVE_LIMIT_MIB must be 64..2048' >&2; exit 2; }
         mkdir -p profile-data/bootstrap
         if [[ -d profile-source ]]; then sha=$(git -C profile-source rev-parse HEAD); else sha=$(git rev-parse HEAD); fi
         echo "PROFILE_SHA=$sha" >> "$GITHUB_ENV"

@@ -1,6 +1,6 @@
 # OpenAPI document wire schema
 
-`OpenAPIv2.proto` is unmodified from google/gnostic-models **v0.6.9**:
+`openapi/v2/OpenAPIv2.proto` is unmodified from google/gnostic-models **v0.6.9**:
 https://github.com/google/gnostic-models/blob/v0.6.9/openapiv2/OpenAPIv2.proto
 
 Its Apache-2.0 notice is retained. This is the schema used for kubectl's

@@ -82,25 +82,38 @@ while IFS= read -r file; do
 done < <(find "$dest" -type f \( -name '*.svg' -o -name '*.png' \) | sort)
 # A link, not a second copy of hundreds of MiB. Preserve the legacy latest/
 # comparison directory and its history when publishing this optional mode.
+update_pointers() {
 printf '# Latest stack profile\n\n[Results](history/%s/README.md)\n' "$stamp" > "$work/results/latest-stack.md"
 if [[ ! -f "$work/results/README.md" ]]; then
     printf '# not-k8s profiling results\n\n[Latest stack profile](latest-stack.md)\n' > "$work/results/README.md"
 elif ! grep -q 'latest-stack.md' "$work/results/README.md"; then
     printf '\n[Latest stack profile](latest-stack.md)\n' >> "$work/results/README.md"
 fi
+}
+update_pointers
 git -C "$work/results" config user.name not-k8s-profiling-bot
 git -C "$work/results" config user.email actions@users.noreply.github.com
 git -C "$work/results" add history/"$stamp" latest-stack.md README.md
 git -C "$work/results" commit -m "perf: record stack profile ${PROFILE_SHA:0:12} run $GITHUB_RUN_ID"
+result_commit=$(git -C "$work/results" rev-parse HEAD)
 # Never force-push measurement history. A concurrent publisher is retried
-# through rebase; a conflict is visible rather than silently losing results.
+# through rebase; shared index conflicts are rebuilt on the latest history.
 for attempt in {1..10}; do
     if git -C "$work/results" push origin "HEAD:$branch"; then
         printf '[Stack profile results](https://github.com/%s/tree/%s/history/%s)\n' "$GITHUB_REPOSITORY" "$branch" "$stamp" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
         exit 0
     fi
     git -C "$work/results" fetch origin "$branch"
-    git -C "$work/results" rebase FETCH_HEAD
+    if ! git -C "$work/results" rebase FETCH_HEAD; then
+        git -C "$work/results" rebase --abort
+        # Restore this unique committed payload, not another publisher's
+        # README or latest pointer. No force push and no history is discarded.
+        git -C "$work/results" checkout --detach FETCH_HEAD
+        git -C "$work/results" checkout "$result_commit" -- "history/$stamp"
+        update_pointers
+        git -C "$work/results" add "history/$stamp" latest-stack.md README.md
+        git -C "$work/results" commit -m "perf: record stack profile ${PROFILE_SHA:0:12} run $GITHUB_RUN_ID"
+    fi
     sleep "$((attempt < 6 ? attempt : 5))"
 done
 exit 1

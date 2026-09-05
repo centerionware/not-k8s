@@ -7,7 +7,7 @@ from pathlib import Path
 
 def render(tag, repository, run, attempt, results):
     required = ('prepare-validation', 'release-e2e', 'release-flamegraphs',
-                'release-comparison', 'release-comparison-report')
+                'release-comparison', 'release-comparison-publish', 'release-comparison-report')
     passed = all(results.get(name, {}).get('result') == 'success' for name in required)
     conclusion = 'success' if passed else 'failure'
     lines = [f'# {tag} validation', '', f'**Validation: {conclusion.upper()}**', '',
@@ -18,7 +18,7 @@ def render(tag, repository, run, attempt, results):
     lines += ['', f'[Full e2e shard logs](e2e/{run}-{attempt}/)', '',
               '[Latest stack flamegraphs](latest-stack.md)', '',
               '[Latest three-way comparison](latest-comparison.md)', '',
-              f'[This attempt’s comparison data](comparisons/{run}-{attempt}/)', '',
+              f"[This attempt's comparison data](comparisons/{run}-{attempt}/)", '',
               'Links may be absent when their producing job failed before publication.',
               'Latest-profile links can refer to an earlier attempt; check run/attempt identity.', '',
               'Both profiles use heavy load with 300-second idle and loaded windows.',

@@ -982,6 +982,11 @@ pub(super) async fn kubectl_apply_uses_openapi_schema(context: &E2eContext) -> R
             == Some("application/com.github.proto-openapi.spec.v2.v1.0+protobuf"),
             "OpenAPI v2 must return the valid MIME subtype, not the legacy Accept spelling");
     }
+    let rejected = context.client.send(Request::builder().uri("/openapi/v2")
+        .header("Accept", "application/xml").body(kube::client::Body::from(Vec::new()))?).await?;
+    anyhow::ensure!(rejected.status().as_u16() == 406, "unsupported OpenAPI media must return 406");
+    anyhow::ensure!(rejected.headers().get("Vary").and_then(|v| v.to_str().ok()) == Some("Accept"),
+        "OpenAPI rejection must vary on Accept just like successful negotiation");
     let cfg = crate::config::Config::from_env()?;
     let kubeconfig = std::env::var_os("KUBECONFIG")
         .map(PathBuf::from)

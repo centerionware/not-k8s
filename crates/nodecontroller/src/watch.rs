@@ -151,18 +151,20 @@ where
                     tracing::info!(resource = %std::any::type_name::<T>(), "shared informer starting initial LIST");
                 }
                 let mut stream = Box::pin(watcher(api.clone(), watch_config()).backoff(WatchBackoffPolicy::default()));
+                let mut listing = true;
                 loop {
-                    // Bound a stalled initial page, not a healthy idle watch.
+                    // Every new stream starts with a LIST, even after startup.
+                    // Bound a stalled page, not a healthy idle watch.
                     // On failure release admission before sleeping/retrying so
                     // one unavailable kind cannot park every later informer.
-                    let next = if initialized { stream.next().await } else {
+                    let next = if !listing { stream.next().await } else {
                         // Start with a one-second request budget, then allow
                         // slower snapshots progressively more time (max 30s).
                         let deadline = watch_backoff(initial_failures.saturating_add(1));
                         match tokio::time::timeout(deadline, stream.next()).await {
                             Ok(next) => next,
                             Err(_) => {
-                                tracing::warn!(resource = %std::any::type_name::<T>(), "shared informer initial LIST stalled; releasing startup slot");
+                                tracing::warn!(resource = %std::any::type_name::<T>(), "shared informer LIST stalled; releasing any startup slot");
                                 break;
                             }
                         }
@@ -172,13 +174,17 @@ where
                         Ok(event) => event,
                         Err(error) => {
                             tracing::warn!(resource = %std::any::type_name::<T>(), error = ?error,
-                                "shared nodecontroller watch received an error; kube-rs will retry it");
-                            if !initialized { break; }
-                            continue;
+                                "shared nodecontroller watch received an error; restarting with a bounded LIST");
+                            break;
                         }
                     };
 
                     let initial_done = matches!(&event, Event::InitDone);
+                    if matches!(&event, Event::Init) { listing = true; }
+                    if initial_done {
+                        listing = false;
+                        initial_failures = 0;
+                    }
                     task_shared.apply(&event);
                     let _ = task_shared.events.send(event);
                     if initial_done && startup_permit.is_some() {
@@ -590,6 +596,60 @@ pub fn watch_dynamic_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_reconnect_list_is_retried_without_startup_admission() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let lists = Arc::new(AtomicUsize::new(0));
+        let requests = lists.clone();
+        let reconnecting = Arc::new(tokio::sync::Notify::new());
+        let observed = reconnecting.clone();
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let lists = requests.clone();
+            let reconnecting = reconnecting.clone();
+            async move {
+                if request.uri().query().is_some_and(|query| query.contains("watch=true")) {
+                    if lists.load(Ordering::SeqCst) == 1 {
+                        return Ok::<_, std::convert::Infallible>(http::Response::builder()
+                            .status(410).body(kube::client::Body::from(
+                                br#"{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Expired","message":"relist","code":410}"#.to_vec()
+                            )).unwrap());
+                    }
+                    futures::future::pending::<()>().await;
+                }
+                let number = lists.fetch_add(1, Ordering::SeqCst) + 1;
+                if number == 2 {
+                    reconnecting.notify_one();
+                    futures::future::pending::<()>().await;
+                }
+                let name = if number == 1 { "before" } else { "after" };
+                Ok(http::Response::new(kube::client::Body::from(serde_json::to_vec(
+                    &serde_json::json!({"apiVersion":"v1","kind":"PodList",
+                        "metadata":{"resourceVersion":number.to_string()},
+                        "items":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":name}}]})
+                ).unwrap())))
+            }
+        });
+        let admission = Arc::new(Semaphore::new(1));
+        let shared = SharedWatch::<Pod>::with_startup_semaphore(
+            Api::all(Client::new(service, "default")), admission.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(10), observed.notified())
+            .await.expect("the watch must enter its second LIST");
+        // Reconnects must not compete for initial startup slots.
+        let _held = admission.try_acquire().expect("initial snapshot released admission");
+        let mut subscription = shared.subscribe();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(Ok(event)) = subscription.next().await {
+                if matches!(event, Event::InitApply(ref pod) if pod.name_any() == "after") {
+                    return;
+                }
+            }
+            panic!("subscription ended before the replacement snapshot");
+        }).await.expect("a stalled reconnect LIST must time out and recover");
+        assert_eq!(lists.load(Ordering::SeqCst), 3);
+        tokio::time::sleep(WATCH_MAX_BACKOFF * 2).await;
+        assert_eq!(lists.load(Ordering::SeqCst), 3, "idle watches must not use the LIST deadline");
+    }
 
     #[tokio::test(start_paused = true)]
     async fn stalled_initial_list_releases_admission_before_retry_backoff() {

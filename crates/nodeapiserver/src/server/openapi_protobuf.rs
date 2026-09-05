@@ -20,7 +20,8 @@ pub(super) fn encode(document: &Value) -> Result<Vec<u8>, String> {
     Ok(model(document, descriptor)?.encode_to_vec())
 }
 
-fn wrapper<'a>(name: &str, value: &'a Value) -> Option<(&'static str, &'a Value)> {
+fn wrapper<'a>(name: &str, value: &'a Value) -> Result<Option<(&'static str, &'a Value)>, String> {
+    let unknown = || format!("invalid {name} discriminator: {value}");
     let field = match name {
         "AdditionalPropertiesItem" => {
             if value.is_boolean() {
@@ -57,25 +58,25 @@ fn wrapper<'a>(name: &str, value: &'a Value) -> Option<(&'static str, &'a Value)
                 "non_body_parameter"
             }
         }
-        "NonBodyParameter" => match value["in"].as_str()? {
+        "NonBodyParameter" => match value["in"].as_str().ok_or_else(unknown)? {
             "header" => "header_parameter_sub_schema",
             "formData" => "form_data_parameter_sub_schema",
             "query" => "query_parameter_sub_schema",
             "path" => "path_parameter_sub_schema",
-            _ => return None,
+            _ => return Err(unknown()),
         },
-        "SecurityDefinitionsItem" => match (value["type"].as_str()?, value["flow"].as_str()) {
+        "SecurityDefinitionsItem" => match (value["type"].as_str().ok_or_else(unknown)?, value["flow"].as_str()) {
             ("basic", _) => "basic_authentication_security",
             ("apiKey", _) => "api_key_security",
             ("oauth2", Some("implicit")) => "oauth2_implicit_security",
             ("oauth2", Some("password")) => "oauth2_password_security",
             ("oauth2", Some("application")) => "oauth2_application_security",
             ("oauth2", Some("accessCode")) => "oauth2_access_code_security",
-            _ => return None,
+            _ => return Err(unknown()),
         },
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some((field, value))
+    Ok(Some((field, value)))
 }
 
 fn scalar(value: &Value, kind: Kind) -> Result<ProtoValue, String> {
@@ -115,7 +116,7 @@ fn set(message: &mut DynamicMessage, field: &FieldDescriptor, value: &Value) -> 
 fn model(value: &Value, descriptor: MessageDescriptor) -> Result<DynamicMessage, String> {
     let mut message = DynamicMessage::new(descriptor.clone());
     let name = descriptor.name();
-    if let Some((field_name, inner)) = wrapper(name, value) {
+    if let Some((field_name, inner)) = wrapper(name, value)? {
         let field = descriptor
             .get_field_by_name(field_name)
             .ok_or_else(|| format!("{name}.{field_name} missing"))?;
@@ -186,6 +187,20 @@ mod tests {
     #[allow(clippy::all)]
     mod pb {
         include!(concat!(env!("OUT_DIR"), "/openapi.v2.rs"));
+    }
+
+    #[test]
+    fn invalid_wrapper_discriminators_do_not_encode_empty_messages() {
+        for parameter in [json!({"name":"bad"}), json!({"in":"unknown", "name":"bad"})] {
+            let input = json!({"swagger":"2.0", "parameters":{"bad":parameter}});
+            assert!(encode(&input).unwrap_err().contains("NonBodyParameter"));
+        }
+        for security in [json!({}), json!({"type":"unknown"}),
+            json!({"type":"oauth2"}), json!({"type":"oauth2", "flow":"unknown"})] {
+            let input = json!({"swagger":"2.0", "securityDefinitions":{"bad":security}});
+            assert!(encode(&input).unwrap_err().contains("SecurityDefinitionsItem"));
+        }
+        assert!(wrapper("Document", &json!({})).unwrap().is_none());
     }
 
     #[test]
