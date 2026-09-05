@@ -4,6 +4,17 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn merge_patch_retries_do_not_weaken_explicit_preconditions() {
+        let patch = json!({"status":{"phase":"Running"}});
+        assert!(patch_allows_conflict_retry(PatchKind::Merge, &patch));
+        assert!(patch_allows_conflict_retry(PatchKind::StrategicMerge, &patch));
+        assert!(!patch_allows_conflict_retry(PatchKind::Merge,
+            &json!({"metadata":{"resourceVersion":"7"}, "status":{}})));
+        assert!(!patch_allows_conflict_retry(PatchKind::Json,
+            &json!([{"op":"test", "path":"/metadata/resourceVersion", "value":"7"}])));
+    }
+
+    #[test]
     fn continue_token_round_trips_the_resume_key_and_revision() {
         let token = encode_continue_token(b"/registry/pods/default/my-pod\x00", 42);
         let (key, revision) =

@@ -272,8 +272,8 @@ runs:
       run: |
         set -euo pipefail
         # A last-300-lines dump at suite end can miss a failure twenty
-        # minutes earlier. Keep all controller events across service restarts.
-        sudo journalctl -b -u nodecontroller -u nodestore --no-pager -o short-iso-precise \
+        # minutes earlier. Keep runtime and controller events across restarts.
+        sudo journalctl -b -u nodecontroller -u nodestore -u nodelet -u nodeproxy -u nodescheduler --no-pager -o short-iso-precise \
           > /tmp/e2e-controller-journal.txt
         cat /tmp/e2e-controller-journal.txt
 

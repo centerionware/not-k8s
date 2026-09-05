@@ -60,10 +60,43 @@ pub(super) async fn pod_stays_not_ready_until_its_readiness_gate_condition_is_se
         "Ready must be False while the readiness gate is unset"
     );
 
+    // Exercise independent status writers racing the real nodelet. Strategic
+    // merge must preserve every condition and absorb internal storage CAS
+    // races without asking unconditional PATCH callers to retry themselves.
+    for round in 0..4 {
+        let mut writers = tokio::task::JoinSet::new();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(4));
+        for index in 0..4 {
+            let pods = pods.clone();
+            let barrier = barrier.clone();
+            writers.spawn(async move {
+                let patch = json!({"status":{"conditions":[{
+                    "type":format!("www.example.com/writer-{round}-{index}"), "status":"True"
+                }]}});
+                barrier.wait().await;
+                pods.patch_status(name, &PatchParams::default(), &Patch::Strategic(&patch)).await
+            });
+        }
+        while let Some(result) = writers.join_next().await {
+            result.context("joining concurrent status writer")?
+                .context("unconditional concurrent status PATCH must absorb internal CAS conflicts")?;
+        }
+        let current = pods.get(name).await?;
+        for index in 0..4 {
+            anyhow::ensure!(condition_status(&current, &format!("www.example.com/writer-{round}-{index}"))
+                .as_deref() == Some("True"), "concurrent status condition was lost");
+        }
+    }
+    let stale_version = pods.get(name).await?.metadata.resource_version;
     let patch = json!({"status": {"conditions": [{"type": gate, "status": "False"}]}});
     pods.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
         .await
         .context("clearing readiness gate condition")?;
+    let conditional = json!({"metadata":{"resourceVersion":stale_version},
+        "status":{"conditions":[{"type":gate, "status":"True"}]}});
+    let rejected = pods.patch_status(name, &PatchParams::default(), &Patch::Merge(&conditional)).await;
+    anyhow::ensure!(matches!(rejected, Err(kube::Error::Api(ref response)) if response.code == 409),
+        "status PATCH must still reject an explicit stale resourceVersion");
     context
         .wait_until("readiness-gated Pod Ready remains False", Duration::from_secs(30), || {
             let pods = pods.clone();

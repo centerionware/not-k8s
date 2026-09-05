@@ -461,6 +461,34 @@ pub async fn patch_status_with_manager(
     dry_run: bool,
     field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
+    // Status has the same parent-object CAS as ordinary writes. An
+    // unconditional merge is a transformation of fresh state, not a stale
+    // replacement: recompute it after a concurrent node/controller update.
+    for attempt in 0..8 {
+        let outcome = patch_status_once(storage, group, version, resource,
+            namespace, name, kind_of_patch, patch_doc, dry_run, field_manager).await?;
+        if !matches!(outcome, UpdateOutcome::Conflict) || attempt == 7
+            || !patch_allows_conflict_retry(kind_of_patch, patch_doc)
+        {
+            return Ok(outcome);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+    }
+    unreachable!("bounded status PATCH retry loop returns its last outcome")
+}
+
+async fn patch_status_once(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -508,6 +536,15 @@ pub async fn patch_status_with_manager(
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
     };
 
+    // Metadata is otherwise reset by the status strategy, but the caller's
+    // explicit resourceVersion is still a precondition on the parent object.
+    if let Some(version) = patch_doc.pointer("/metadata/resourceVersion") {
+        if version.as_str().and_then(|value| value.parse::<i64>().ok())
+            != Some(existing_kv.mod_revision)
+        {
+            return Ok(UpdateOutcome::Conflict);
+        }
+    }
     let mut object = existing_object_for_request;
     match patched.get("status") {
         Some(status) => object["status"] = status.clone(),

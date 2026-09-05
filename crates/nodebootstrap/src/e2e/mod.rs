@@ -1569,22 +1569,20 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                 } else {
                     // A failed test must not poison later tests with its
                     // Pods, Services, PVCs, or controller-owned children.
-                    // The following workflow diagnostic phase collects
-                    // service state and logs, so retaining the namespace is
-                    // not worth allowing a failure cascade on a one-node
-                    // runner.
-                    test_context.cleanup().await;
                     println!("FAIL ({}ms)", started.elapsed().as_millis());
                     eprintln!("    {error:#}");
+                    test_context.capture_failure().await;
+                    test_context.cleanup().await;
                     failures.push(name);
                 }
             }
             Err(_) => {
-                test_context.cleanup().await;
                 println!("FAIL ({}ms)", started.elapsed().as_millis());
                 eprintln!(
                     "    test exceeded the 300-second safety timeout; the next test will run after cleanup"
                 );
+                test_context.capture_failure().await;
+                test_context.cleanup().await;
                 failures.push(name);
             }
         }

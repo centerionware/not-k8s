@@ -120,6 +120,37 @@ impl E2eContext {
             )
             .await;
     }
+
+    pub(super) async fn capture_failure(&self) {
+        // Collect before namespace cleanup destroys the evidence. Independent,
+        // bounded reads cannot replace the original test error or hang cleanup.
+        let dump = |prefix: &'static str, resource: &'static str| async move {
+            let uri = format!("{prefix}/namespaces/{}/{resource}", self.namespace);
+            let read = async {
+                let request = http::Request::builder().uri(&uri)
+                    .body(kube::client::Body::from(Vec::new()))?;
+                let mut value = self.client.request::<serde_json::Value>(request).await?;
+                if resource == "pods" {
+                    // Status plus scheduling identity suffice; don't dump
+                    // container environment variables into a public CI log.
+                    if let Some(items) = value["items"].as_array_mut() {
+                        for pod in items {
+                            *pod = serde_json::json!({"metadata":pod["metadata"],
+                                "nodeName":pod["spec"]["nodeName"], "status":pod["status"]});
+                        }
+                    }
+                }
+                Ok::<_, anyhow::Error>(value)
+            };
+            match tokio::time::timeout(Duration::from_secs(8), read).await {
+                Ok(Ok(value)) => eprintln!("failure snapshot {uri}: {value}"),
+                Ok(Err(error)) => eprintln!("failure snapshot {uri} unavailable: {error:#}"),
+                Err(_) => eprintln!("failure snapshot {uri} exceeded 8 seconds"),
+            }
+        };
+        tokio::join!(dump("/api/v1", "pods"), dump("/api/v1", "services"),
+            dump("/apis/discovery.k8s.io/v1", "endpointslices"), dump("/api/v1", "events"));
+    }
 }
 
 fn unique_suffix() -> u128 {
