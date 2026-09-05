@@ -1,0 +1,17 @@
+nodestore CPU profile
+==================
+pid: 10054
+started: 2026-09-05T01:52:09+00:00
+ended: 2026-09-05T01:57:10+00:00
+duration_seconds: 300
+profile_method: perf
+executable: /var/lib/nodebootstrap/toolchain/bin/notk8s
+cmdline: /var/lib/nodebootstrap/toolchain/bin/nodestore 
+
+files:
+  SUMMARY.txt
+  perf-record.txt
+  perf.data
+  process.txt
+  threads-after.txt
+  threads-before.txt

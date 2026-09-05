@@ -1,0 +1,2442 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="982" onload="init(evt)" viewBox="0 0 1200 982" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="982.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >idle/nodeapiserver CPU samples</text>
+<text id="details" x="10.00" y="965" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="965" > </text>
+<g id="frames">
+<g >
+<title>&lt;alloc::vec::Vec&lt;serde_json::value::Value&gt; as core::clone::Clone&gt;::clone (81,632,652 samples, 3.70%)</title><rect x="447.0" y="645" width="43.7" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="450.04" y="655.5" >&lt;all..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="163.0" y="261" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="165.96" y="271.5" >[..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="873.1" y="437" width="11.0" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="876.15" y="447.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="501" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="511.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;_, _, _&gt; as core::clone::Clone&gt;::clone::clone_subtree::&lt;alloc::string::String, serde_json::value::Value, alloc::alloc::Global&gt; (61,224,489 samples, 2.78%)</title><rect x="447.0" y="613" width="32.8" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="450.04" y="623.5" >&lt;a..</text>
+</g>
+<g >
+<title>nodeapiserver::server::listener::run::{closure#0}::{closure#3} (1,591,836,714 samples, 72.22%)</title><rect x="294.1" y="757" width="852.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="297.07" y="767.5" >nodeapiserver::server::listener::run::{closure#0}::{closure#3}</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="687.4" y="485" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="690.41" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;std::hash::random::RandomState as core::hash::BuildHasher&gt;::hash_one::&lt;&amp; (20,408,163 samples, 0.93%)</title><rect x="993.3" y="533" width="11.0" height="15.0" fill="rgb(208,18,4)" rx="2" ry="2" />
+<text  x="996.33" y="543.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;&lt;nodeapiserver::cacher::registry::CacheRegistry&gt;::spawn::{closure#0}, alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="75.6" y="773" width="10.9" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="78.56" y="783.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="785.7" y="501" width="11.0" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="788.74" y="511.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 2.78%)</title><rect x="152.0" y="357" width="32.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="155.04" y="367.5" >[[..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="545.4" y="533" width="10.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="548.37" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (61,224,489 samples, 2.78%)</title><rect x="556.3" y="581" width="32.8" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="559.30" y="591.5" >&lt;a..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="213" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="223.5" ></text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::SyncReadAdapter&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt; as std::io::Read&gt;::read (20,408,163 samples, 0.93%)</title><rect x="195.7" y="645" width="11.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="198.74" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, rustls::client::client_conn::connection::ClientConnection&gt;&gt;::read_io (20,408,163 samples, 0.93%)</title><rect x="195.7" y="693" width="11.0" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="198.74" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Core&gt;::maintenance (20,408,163 samples, 0.93%)</title><rect x="1146.3" y="789" width="10.9" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1149.30" y="799.5" ></text>
+</g>
+<g >
+<title>prost::encoding::message::merge_repeated::&lt;nodeapiserver::storage::pb::mvccpb::KeyValue, &amp;mut &amp;mut tonic::codec::buffer::DecodeBuf&gt; (40,816,326 samples, 1.85%)</title><rect x="600.0" y="565" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="603.00" y="575.5" >p..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::convert_to_requested_version::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="687.4" y="629" width="10.9" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="690.41" y="639.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codegen::resolve_message_ref (61,224,489 samples, 2.78%)</title><rect x="927.8" y="565" width="32.8" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="930.78" y="575.5" >no..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="578.1" y="549" width="11.0" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="581.15" y="559.5" ></text>
+</g>
+<g >
+<title>alloc::fmt::format::format_inner (61,224,489 samples, 2.78%)</title><rect x="927.8" y="549" width="32.8" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="930.78" y="559.5" >al..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="163.0" y="293" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="165.96" y="303.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="677" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="687.5" >[..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="1048.0" y="629" width="10.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1050.96" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::dispatch::Dispatcher&lt;hyper::proto::h1::dispatch::Server&lt;hyper::service::util::ServiceFn&lt;nodeapiserver::server::listener::run::{closure#0}::{closure#3}::{closure#2}, hyper::body::incoming::Incoming&gt;, hyper::body::incoming::Incoming&gt;, http_body_util::combinators::box_body::BoxBody&lt;bytes::bytes::Bytes, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;, hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;, hyper::proto::h1::role::Server&gt;&gt;::poll_write (1,510,204,062 samples, 68.52%)</title><rect x="315.9" y="725" width="808.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="318.93" y="735.5" >&lt;hyper::proto::h1::dispatch::Dispatcher&lt;hyper::proto::h1::dispatch::Server&lt;hyper::service::util::ServiceFn&lt;nodea..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="851.3" y="485" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="854.30" y="495.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="479.8" y="629" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="482.81" y="639.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="597" width="11.0" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1040.04" y="607.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (20,408,163 samples, 0.93%)</title><rect x="545.4" y="549" width="10.9" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="548.37" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="229" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="239.5" ></text>
+</g>
+<g >
+<title>h2::hpack::encoder::encode_int::&lt;bytes::bytes_mut::BytesMut&gt; (20,408,163 samples, 0.93%)</title><rect x="108.3" y="661" width="11.0" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="111.33" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::fmt::Write&gt;::write_str.10 (40,816,326 samples, 1.85%)</title><rect x="905.9" y="453" width="21.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="908.93" y="463.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;hyper_util::server::conn::auto::UpgradeableConnection&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, hyper::service::util::ServiceFn&lt;nodeapiserver::server::listener::run::{closure#0}::{closure#3}::{closure#2}, hyper::body::incoming::Incoming&gt;, hyper_util::rt::tokio::TokioExecutor&gt; as core::future::future::Future&gt;::poll (1,530,612,225 samples, 69.44%)</title><rect x="305.0" y="741" width="819.4" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="308.00" y="751.5" >&lt;hyper_util::server::conn::auto::UpgradeableConnection&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsSt..</text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::client::StorageClient&gt;::range::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="490.7" y="629" width="21.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="493.74" y="639.5" >&lt;..</text>
+</g>
+<g >
+<title>nodeapiserver::scheme::conversion::to_version (20,408,163 samples, 0.93%)</title><rect x="687.4" y="613" width="10.9" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="690.41" y="623.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="796.7" y="517" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="799.67" y="527.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="613" width="11.0" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1040.04" y="623.5" ></text>
+</g>
+<g >
+<title>h2::codec::framed_read::decode_frame (20,408,163 samples, 0.93%)</title><rect x="217.6" y="709" width="10.9" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="220.59" y="719.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decrypt_and_decode_with_rotation::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1048.0" y="661" width="10.9" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1050.96" y="671.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="549" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::stdio::unix::Stdout as std::io::Write&gt;::write_all (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="613" width="10.9" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="1105.59" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="421" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="213" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="223.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="392.4" y="565" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="395.41" y="575.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="565" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="575.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::time::Driver&gt;::park_internal (20,408,163 samples, 0.93%)</title><rect x="10.0" y="773" width="10.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="85" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="95.5" ></text>
+</g>
+<g >
+<title>&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt; as hyper::rt::io::Read&gt;::poll_read (20,408,163 samples, 0.93%)</title><rect x="195.7" y="629" width="11.0" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="198.74" y="639.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="485" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::conn::Conn&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;, bytes::bytes::Bytes, hyper::proto::h1::role::Server&gt;&gt;::write_head (20,408,163 samples, 0.93%)</title><rect x="315.9" y="709" width="11.0" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="318.93" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="720.2" y="453" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="723.19" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::deallocate (20,408,163 samples, 0.93%)</title><rect x="425.2" y="549" width="10.9" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="428.19" y="559.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="938.7" y="437" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="941.70" y="447.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="523.5" y="565" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="526.52" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="485" width="10.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1072.81" y="495.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="862.2" y="485" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="865.22" y="495.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (224,489,793 samples, 10.19%)</title><rect x="807.6" y="549" width="120.2" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="810.59" y="559.5" >nodeapiserver:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="165" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="175.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="545.4" y="565" width="10.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="548.37" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::SerializeMap as serde_core::ser::SerializeMap&gt;::serialize_value::&lt;serde_json::value::Value&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="453" width="21.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="646.70" y="463.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 3.70%)</title><rect x="141.1" y="389" width="43.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="144.11" y="399.5" >[[ke..</text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::fmt::Write&gt;::write_str.10 (40,816,326 samples, 1.85%)</title><rect x="709.3" y="533" width="21.8" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="712.26" y="543.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="485" width="11.0" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1040.04" y="495.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (20,408,163 samples, 0.93%)</title><rect x="1048.0" y="613" width="10.9" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1050.96" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::fmt::Write&gt;::write_str.10 (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="501" width="10.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1072.81" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::Serializer as serde_core::ser::Serializer&gt;::collect_seq::&lt;&amp;alloc::vec::Vec&lt;serde_json::value::Value&gt;&gt; (81,632,652 samples, 3.70%)</title><rect x="632.8" y="629" width="43.7" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="635.78" y="639.5" >&lt;ser..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="453" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="463.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="229" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="239.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;_, _, _&gt; as core::clone::Clone&gt;::clone::clone_subtree::&lt;alloc::string::String, serde_json::value::Value, alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="468.9" y="581" width="10.9" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="471.89" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="501" width="11.0" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="1040.04" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="392.4" y="613" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="395.41" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::entry::VacantEntry&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::insert_entry (20,408,163 samples, 0.93%)</title><rect x="785.7" y="533" width="11.0" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="788.74" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;tracing_subscriber::fmt::fmt_layer::Layer&lt;tracing_subscriber::layer::layered::Layered&lt;tracing_subscriber::filter::env::EnvFilter, tracing_subscriber::registry::sharded::Registry&gt;&gt; as tracing_subscriber::layer::Layer&lt;tracing_subscriber::layer::layered::Layered&lt;tracing_subscriber::filter::env::EnvFilter, tracing_subscriber::registry::sharded::Registry&gt;&gt;&gt;::on_event (40,816,326 samples, 1.85%)</title><rect x="1102.6" y="661" width="21.8" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1105.59" y="671.5" >&lt;..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler::multi_thread::worker::Launch&gt;::launch::{closure#0}&gt;, tokio::runtime::blocking::schedule::BlockingSchedule&gt; (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="821" width="1180.0" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler::multi_thread::worker::Launch&gt;::launch::{closure#0}&gt;, toki..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="469" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="479.5" >[[ker..</text>
+</g>
+<g >
+<title>nodeapiserver::codegen::resolve_message_ref (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="549" width="11.0" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="1040.04" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="533" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="543.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="533" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="543.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="437" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="447.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output =  (387,755,097 samples, 17.59%)</title><rect x="86.5" y="773" width="207.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="89.48" y="783.5" >tokio::runtime::task::raw::..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="597" width="21.8" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1061.89" y="607.5" >n..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_json_message (61,224,489 samples, 2.78%)</title><rect x="873.1" y="501" width="32.8" height="15.0" fill="rgb(219,66,16)" rx="2" ry="2" />
+<text  x="876.15" y="511.5" >no..</text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="597" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;tokio::runtime::task::raw::RawTask&gt;::drop_reference (20,408,163 samples, 0.93%)</title><rect x="239.4" y="693" width="11.0" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="242.44" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="405" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="415.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (61,224,489 samples, 2.78%)</title><rect x="556.3" y="597" width="32.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="559.30" y="607.5" >&lt;a..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;serde_json::value::Value&gt; (20,408,163 samples, 0.93%)</title><rect x="578.1" y="565" width="11.0" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="581.15" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="1091.7" y="581" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1094.67" y="591.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (469,387,749 samples, 21.30%)</title><rect x="709.3" y="581" width="251.3" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="712.26" y="591.5" >nodeapiserver::codec::protobuf::d..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decrypt_and_decode_with_rotation::{closure#0} (612,244,890 samples, 27.78%)</title><rect x="698.3" y="629" width="327.8" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="701.33" y="639.5" >nodeapiserver::server::rest::decrypt_and_dec..</text>
+</g>
+<g >
+<title>[[nf_conntrack]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="37" width="10.9" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="176.89" y="47.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="693" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="703.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="453" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="53.7" y="645" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="56.70" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h2::PipeToSendStream&lt;tonic::body::Body&gt; as core::future::future::Future&gt;::poll (61,224,489 samples, 2.78%)</title><rect x="228.5" y="741" width="32.8" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="231.52" y="751.5" >&lt;h..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="613" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (40,816,326 samples, 1.85%)</title><rect x="927.8" y="501" width="21.8" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="930.78" y="511.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;str&gt;::trim_start_matches::&lt;char&gt; (20,408,163 samples, 0.93%)</title><rect x="829.4" y="533" width="11.0" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="832.44" y="543.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decrypt_and_decode_with_rotation::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="645" width="11.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1040.04" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="905.9" y="373" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="908.93" y="383.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="414.3" y="469" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="417.26" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="485" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="495.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="1091.7" y="597" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1094.67" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="629" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="639.5" ></text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="403.3" y="533" width="11.0" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="406.33" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::SyncWriteAdapter&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt; as std::io::Write&gt;::write_vectored (122,448,978 samples, 5.56%)</title><rect x="119.3" y="645" width="65.5" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="122.26" y="655.5" >&lt;tokio_..</text>
+</g>
+<g >
+<title>nodeapiserver::cacher::selector::object_labels (20,408,163 samples, 0.93%)</title><rect x="676.5" y="613" width="10.9" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="679.48" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;h2::proto::streams::prioritize::Prioritize&gt;::queue_frame::&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="239.4" y="709" width="11.0" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="242.44" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;serde_json::value::Value as serde_core::ser::Serialize&gt;::serialize::&lt;serde_json::value::ser::Serializer&gt; (20,408,163 samples, 0.93%)</title><rect x="643.7" y="437" width="10.9" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="646.70" y="447.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decode_stored_object (20,408,163 samples, 0.93%)</title><rect x="1048.0" y="645" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1050.96" y="655.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::update_with_options_and_manager::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="1080.7" y="677" width="21.9" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="1083.74" y="687.5" >n..</text>
+</g>
+<g >
+<title>syscall (81,632,652 samples, 3.70%)</title><rect x="20.9" y="773" width="43.7" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="23.93" y="783.5" >sysc..</text>
+</g>
+<g >
+<title>&lt;tower::buffer::worker::Worker&lt;tonic::transport::channel::service::connection::Connection, http::request::Request&lt;tonic::body::Body&gt;&gt; as core::future::future::Future&gt;::poll (20,408,163 samples, 0.93%)</title><rect x="283.1" y="757" width="11.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="286.15" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="501.7" y="597" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="504.67" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;h2::proto::streams::streams::Actions&gt;::reset_on_recv_stream_err::&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="184.8" y="693" width="10.9" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="187.81" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt; as hyper::rt::io::Read&gt;::poll_read (20,408,163 samples, 0.93%)</title><rect x="305.0" y="677" width="10.9" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="308.00" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="453" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="463.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="629" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;serde_json::value::Value as serde_core::ser::Serialize&gt;::serialize::&lt;serde_json::value::ser::Serializer&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="469" width="21.9" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="646.70" y="479.5" >&lt;..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::persist_update::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1091.7" y="661" width="10.9" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="1094.67" y="671.5" ></text>
+</g>
+<g >
+<title>realloc (20,408,163 samples, 0.93%)</title><rect x="916.9" y="405" width="10.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="919.85" y="415.5" ></text>
+</g>
+<g >
+<title>&lt;tokio::net::tcp::stream::TcpStream&gt;::poll_read_priv (20,408,163 samples, 0.93%)</title><rect x="195.7" y="613" width="11.0" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="198.74" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, rustls::client::client_conn::connection::ClientConnection&gt;&gt;::write_io (122,448,978 samples, 5.56%)</title><rect x="119.3" y="677" width="65.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="122.26" y="687.5" >&lt;tokio_..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::park_internal (102,040,815 samples, 4.63%)</title><rect x="10.0" y="789" width="54.6" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >&lt;toki..</text>
+</g>
+<g >
+<title>nodeapiserver::scheme::validation::validate_openapi_constraints (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="661" width="11.0" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1083.74" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;std::io::stdio::StdoutLock as std::io::Write&gt;::write_all (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="629" width="10.9" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="1105.59" y="639.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="629" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;tokio::runtime::task::core::Core&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output =  (20,408,163 samples, 0.93%)</title><rect x="64.6" y="773" width="11.0" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="67.63" y="783.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="629" width="21.8" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1061.89" y="639.5" >n..</text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::client::StorageClient&gt;::range::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1026.1" y="661" width="10.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1029.11" y="671.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::multi_thread::worker::run (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="805" width="1180.0" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >tokio::runtime::scheduler::multi_thread::worker::run</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="341" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="351.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="565" width="11.0" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1040.04" y="575.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="421" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="431.5" >[[ker..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="581" width="21.8" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1061.89" y="591.5" >n..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="392.4" y="485" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="395.41" y="495.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="709" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="719.5" >[..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="916.9" y="373" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="919.85" y="383.5" ></text>
+</g>
+<g >
+<title>syscall (20,408,163 samples, 0.93%)</title><rect x="534.4" y="549" width="11.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="537.44" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="687.4" y="549" width="10.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="690.41" y="559.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::list_at_revision::{closure#0} (877,551,009 samples, 39.81%)</title><rect x="556.3" y="645" width="469.8" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="559.30" y="655.5" >nodeapiserver::server::rest::list_at_revision::{closure#0}</text>
+</g>
+<g >
+<title>&lt;h2::frame::headers::HeaderBlock&gt;::into_encoding (40,816,326 samples, 1.85%)</title><rect x="97.4" y="677" width="21.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="100.41" y="687.5" >&lt;..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="549" width="10.9" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1072.81" y="559.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (20,408,163 samples, 0.93%)</title><rect x="1113.5" y="629" width="10.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1116.52" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::fmt::Write&gt;::write_str.10 (40,816,326 samples, 1.85%)</title><rect x="927.8" y="517" width="21.8" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="930.78" y="527.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="725" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="735.5" >[..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="818.5" y="517" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="821.52" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="517" width="11.0" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1040.04" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;asn1_rs::header::Header as asn1_rs::traits::FromDer&gt;::from_der (20,408,163 samples, 0.93%)</title><rect x="1124.4" y="709" width="11.0" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1127.44" y="719.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="261" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="271.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="315.9" y="677" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="318.93" y="687.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::unwrap_unknown (122,448,978 samples, 5.56%)</title><rect x="960.6" y="597" width="65.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="963.56" y="607.5" >nodeapi..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="469" width="10.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1072.81" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::dispatch::Dispatcher&lt;hyper::proto::h1::dispatch::Server&lt;hyper::service::util::ServiceFn&lt;nodeapiserver::server::listener::run::{closure#0}::{closure#3}::{closure#2}, hyper::body::incoming::Incoming&gt;, hyper::body::incoming::Incoming&gt;, http_body_util::combinators::box_body::BoxBody&lt;bytes::bytes::Bytes, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;, hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;, hyper::proto::h1::role::Server&gt;&gt;::poll_write (20,408,163 samples, 0.93%)</title><rect x="294.1" y="741" width="10.9" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="297.07" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="453" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="405" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="415.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="556.3" y="565" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="559.30" y="575.5" ></text>
+</g>
+<g >
+<title>prost::encoding::bytes::merge::&lt;alloc::vec::Vec&lt;u8&gt;, &amp;mut &amp;mut tonic::codec::buffer::DecodeBuf&gt; (40,816,326 samples, 1.85%)</title><rect x="600.0" y="533" width="21.9" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="603.00" y="543.5" >p..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (40,816,326 samples, 1.85%)</title><rect x="905.9" y="421" width="21.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="908.93" y="431.5" >&lt;..</text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="370.6" y="629" width="10.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="373.56" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;tracing_subscriber::fmt::time::SystemTime as tracing_subscriber::fmt::time::FormatTime&gt;::format_time (20,408,163 samples, 0.93%)</title><rect x="1113.5" y="645" width="10.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1116.52" y="655.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="149" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="159.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="373" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="383.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="613" width="21.8" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1061.89" y="623.5" >n..</text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="581" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::insert (20,408,163 samples, 0.93%)</title><rect x="654.6" y="437" width="11.0" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="657.63" y="447.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="1048.0" y="597" width="10.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1050.96" y="607.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (20,408,163 samples, 0.93%)</title><rect x="1113.5" y="597" width="10.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1116.52" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="677" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;h2::proto::connection::Connection&lt;hyper::common::io::compat::Compat&lt;tonic::transport::channel::service::io::BoxedIo&gt;, h2::client::Peer, hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll (244,897,956 samples, 11.11%)</title><rect x="97.4" y="725" width="131.1" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="100.41" y="735.5" >&lt;h2::proto::conn..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="905.9" y="405" width="11.0" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="908.93" y="415.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;tonic::transport::service::grpc_timeout::ResponseFuture&lt;tower::util::either::EitherResponseFuture&lt;tower::limit::concurrency::future::ResponseFuture&lt;tower::util::either::EitherResponseFuture&lt;tonic::transport::channel::service::reconnect::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;&gt;, tonic::transport::channel::service::reconnect::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;&gt;&gt;&gt;, tower::util::either::EitherResponseFuture&lt;tonic::transport::channel::service::reconnect::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;&gt;, tonic::transport::channel::service::reconnect::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;&gt;&gt;&gt;&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="1026.1" y="613" width="10.9" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1029.11" y="623.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codegen::resolve_message_ref (40,816,326 samples, 1.85%)</title><rect x="905.9" y="501" width="21.9" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="908.93" y="511.5" >n..</text>
+</g>
+<g >
+<title>recv (20,408,163 samples, 0.93%)</title><rect x="195.7" y="597" width="11.0" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="198.74" y="607.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="490.7" y="581" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="493.74" y="591.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::unwrap_unknown (20,408,163 samples, 0.93%)</title><rect x="545.4" y="581" width="10.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="548.37" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="245" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="255.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::boxed::Box&lt;alloc::collections::btree::node::LeafNode&lt;alloc::vec::Vec&lt;u8&gt;, nodeapiserver::cacher::store::CacheEntry&gt;&gt;&gt;::new_uninit_in (20,408,163 samples, 0.93%)</title><rect x="785.7" y="517" width="11.0" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="788.74" y="527.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="982.4" y="501" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="985.41" y="511.5" ></text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="837" width="1180.0" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0}, </text>
+</g>
+<g >
+<title>core::fmt::write (40,816,326 samples, 1.85%)</title><rect x="709.3" y="549" width="21.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="712.26" y="559.5" >c..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="1091.7" y="613" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1094.67" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="725" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="735.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="517" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::dying_next (20,408,163 samples, 0.93%)</title><rect x="414.3" y="421" width="10.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="417.26" y="431.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="403.3" y="517" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="406.33" y="527.5" ></text>
+</g>
+<g >
+<title>syscall (20,408,163 samples, 0.93%)</title><rect x="272.2" y="693" width="10.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="275.22" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="469" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::client::TlsStream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt; as hyper::rt::io::Write&gt;::poll_write_vectored (122,448,978 samples, 5.56%)</title><rect x="119.3" y="693" width="65.5" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="122.26" y="703.5" >&lt;hyper_..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="1058.9" y="565" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1061.89" y="575.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="773" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="783.5" >[..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (163,265,304 samples, 7.41%)</title><rect x="840.4" y="533" width="87.4" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="843.37" y="543.5" >nodeapiser..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1179.1" y="661" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1182.07" y="671.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="796.7" y="549" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="799.67" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;h2::frame::headers::HeaderBlock&gt;::load (20,408,163 samples, 0.93%)</title><rect x="217.6" y="693" width="10.9" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="220.59" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="677" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="687.5" >[..</text>
+</g>
+<g >
+<title>&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="853" width="1180.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" >&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0}, </text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="436.1" y="565" width="10.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="439.11" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="479.8" y="597" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="482.81" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="163.0" y="277" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="165.96" y="287.5" >[..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decrypt_and_decode_with_rotation::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="661" width="21.8" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1061.89" y="671.5" >n..</text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::client::StorageClient&gt;::current_revision::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="490.7" y="645" width="21.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="493.74" y="655.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="277" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="287.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="245" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="255.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="389" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="399.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (102,040,815 samples, 4.63%)</title><rect x="971.5" y="581" width="54.6" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="974.48" y="591.5" >nodea..</text>
+</g>
+<g >
+<title>malloc (40,816,326 samples, 1.85%)</title><rect x="709.3" y="485" width="21.8" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="712.26" y="495.5" >m..</text>
+</g>
+<g >
+<title>&lt;&amp;serde_json::value::Value as serde_core::ser::Serialize&gt;::serialize::&lt;serde_json::value::ser::Serializer&gt; (81,632,652 samples, 3.70%)</title><rect x="632.8" y="597" width="43.7" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="635.78" y="607.5" >&lt;&amp;se..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="479.8" y="613" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="482.81" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;h2::proto::streams::prioritize::Prioritize&gt;::schedule_send (20,408,163 samples, 0.93%)</title><rect x="250.4" y="709" width="10.9" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="253.37" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;hashbrown::map::HashMap&lt;core::any::TypeId, alloc::boxed::Box&lt;dyn http::extensions::AnyClone + core::marker::Send + core::marker::Sync&gt;, core::hash::BuildHasherDefault&lt;http::extensions::IdHasher&gt;&gt;&gt;::insert (20,408,163 samples, 0.93%)</title><rect x="326.9" y="693" width="10.9" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="329.85" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::borrow::Cow&lt;str&gt;&gt;::into_owned (20,408,163 samples, 0.93%)</title><rect x="818.5" y="533" width="10.9" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="821.52" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::Value as serde_core::de::Deserialize&gt;::deserialize::&lt;&amp;mut serde_json::de::Deserializer&lt;serde_json::read::SliceRead&gt;&gt; (61,224,489 samples, 2.78%)</title><rect x="873.1" y="469" width="32.8" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="876.15" y="479.5" >&lt;s..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (61,224,489 samples, 2.78%)</title><rect x="982.4" y="549" width="32.8" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="985.41" y="559.5" >no..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="501" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="511.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (20,408,163 samples, 0.93%)</title><rect x="1004.3" y="533" width="10.9" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1007.26" y="543.5" ></text>
+</g>
+<g >
+<title>writev (102,040,815 samples, 4.63%)</title><rect x="130.2" y="613" width="54.6" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="133.19" y="623.5" >writev</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::schedule::&lt;alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="75.6" y="709" width="10.9" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="78.56" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="901" width="1180.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (102,040,815 samples, 4.63%)</title><rect x="392.4" y="645" width="54.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="395.41" y="655.5" >&lt;allo..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="645" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="655.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="357" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="293" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="303.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;serde_json::value::Value&gt; (81,632,652 samples, 3.70%)</title><rect x="403.3" y="613" width="43.7" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="406.33" y="623.5" >core..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::list_at_revision::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="677" width="21.8" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1061.89" y="687.5" >n..</text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCommon&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::read_tls (20,408,163 samples, 0.93%)</title><rect x="195.7" y="677" width="11.0" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="198.74" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::insert (20,408,163 samples, 0.93%)</title><rect x="785.7" y="549" width="11.0" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="788.74" y="559.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="796.7" y="533" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="799.67" y="543.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="949.6" y="517" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="952.63" y="527.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="665.6" y="517" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="668.56" y="527.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="589.1" y="565" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="592.07" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="818.5" y="485" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="821.52" y="495.5" ></text>
+</g>
+<g >
+<title>syscall (20,408,163 samples, 0.93%)</title><rect x="75.6" y="693" width="10.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="78.56" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::client::conn::http2::Connection&lt;tonic::transport::channel::service::io::BoxedIo, tonic::body::Body, tonic::transport::channel::service::executor::SharedExec&gt; as core::future::future::Future&gt;::poll (40,816,326 samples, 1.85%)</title><rect x="261.3" y="741" width="21.8" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="264.30" y="751.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="414.3" y="453" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="417.26" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;h2::frame::headers::HeaderBlock&gt;::load::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="217.6" y="677" width="10.9" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="220.59" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="549" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (40,816,326 samples, 1.85%)</title><rect x="709.3" y="501" width="21.8" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="712.26" y="511.5" >&lt;..</text>
+</g>
+<g >
+<title>bytes::bytes_mut::release_shared (20,408,163 samples, 0.93%)</title><rect x="610.9" y="501" width="11.0" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="613.93" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;bytes::bytes_mut::BytesMut&gt;::reserve_inner (20,408,163 samples, 0.93%)</title><rect x="206.7" y="693" width="10.9" height="15.0" fill="rgb(243,174,41)" rx="2" ry="2" />
+<text  x="209.67" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="309" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="53.7" y="613" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="56.70" y="623.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="490.7" y="565" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="493.74" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="589.1" y="581" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="592.07" y="591.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (20,408,163 samples, 0.93%)</title><rect x="687.4" y="581" width="10.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="690.41" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h2::client::H2ClientFuture&lt;tonic::body::Body, tonic::transport::channel::service::io::BoxedIo, tonic::transport::channel::service::executor::SharedExec&gt; as core::future::future::Future&gt;::poll (244,897,956 samples, 11.11%)</title><rect x="97.4" y="757" width="131.1" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="100.41" y="767.5" >&lt;hyper::proto::h..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (102,040,815 samples, 4.63%)</title><rect x="392.4" y="629" width="54.6" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="395.41" y="639.5" >&lt;allo..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (81,632,652 samples, 3.70%)</title><rect x="403.3" y="581" width="43.7" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="406.33" y="591.5" >&lt;all..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="665.6" y="501" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="668.56" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;tracing_subscriber::fmt::time::datetime::DateTime as core::fmt::Display&gt;::fmt (20,408,163 samples, 0.93%)</title><rect x="1113.5" y="613" width="10.9" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="1116.52" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::entry::VacantEntry&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::insert_entry (20,408,163 samples, 0.93%)</title><rect x="665.6" y="549" width="10.9" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="668.56" y="559.5" ></text>
+</g>
+<g >
+<title>all (2,204,081,604 samples, 100%)</title><rect x="10.0" y="933" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="392.4" y="517" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="395.41" y="527.5" ></text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="567.2" y="565" width="10.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="570.22" y="575.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;nodeapiserver::server::listener::run::{closure#0}::{closure#3}, alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (1,591,836,714 samples, 72.22%)</title><rect x="294.1" y="773" width="852.2" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="297.07" y="783.5" >tokio::runtime::task::raw::poll::&lt;nodeapiserver::server::listener::run::{closure#0}::{closure#3}, alloc::sync::Arc&lt;tok..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="206.7" y="565" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="209.67" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="206.7" y="613" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="209.67" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="501" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="511.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="840.4" y="501" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="843.37" y="511.5" ></text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="392.4" y="501" width="10.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="395.41" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="600.0" y="501" width="10.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="603.00" y="511.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decrypt_and_decode_with_rotation::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="545.4" y="613" width="10.9" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="548.37" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (20,408,163 samples, 0.93%)</title><rect x="206.7" y="661" width="10.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="209.67" y="671.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decode_stored_object (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="629" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1040.04" y="639.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="676.5" y="517" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="679.48" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;tower::util::either::Either&lt;tower::limit::rate::service::RateLimit&lt;tonic::transport::channel::service::reconnect::Reconnect&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, http::uri::Uri&gt;&gt;, tonic::transport::channel::service::reconnect::Reconnect&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, http::uri::Uri&gt;&gt; as tower_service::Service&lt;http::request::Request&lt;tonic::body::Body&gt;&gt;&gt;::poll_ready (20,408,163 samples, 0.93%)</title><rect x="283.1" y="741" width="11.0" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="286.15" y="751.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="565" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="567.2" y="549" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="570.22" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="597" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="607.5" >[[ker..</text>
+</g>
+<g >
+<title>tokio-rt-worker (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="917" width="1180.0" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" >tokio-rt-worker</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="905.9" y="389" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="908.93" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="741" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="751.5" >[..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="206.7" y="597" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="209.67" y="607.5" ></text>
+</g>
+<g >
+<title>serde_json::read::as_str::&lt;serde_json::read::SliceRead&gt; (40,816,326 samples, 1.85%)</title><rect x="884.1" y="437" width="21.8" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="887.07" y="447.5" >s..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="414.3" y="437" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="417.26" y="447.5" ></text>
+</g>
+<g >
+<title>asn1_rs::asn1_types::any::parse_der_any (20,408,163 samples, 0.93%)</title><rect x="1124.4" y="725" width="11.0" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="1127.44" y="735.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="437" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="447.5" >[[ker..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::schedule::&lt;alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="534.4" y="565" width="11.0" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="537.44" y="575.5" ></text>
+</g>
+<g >
+<title>malloc (40,816,326 samples, 1.85%)</title><rect x="927.8" y="469" width="21.8" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="930.78" y="479.5" >m..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::insert (20,408,163 samples, 0.93%)</title><rect x="665.6" y="565" width="10.9" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="668.56" y="575.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="840.4" y="517" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="843.37" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (20,408,163 samples, 0.93%)</title><rect x="206.7" y="645" width="10.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="209.67" y="655.5" ></text>
+</g>
+<g >
+<title>syscall (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="789" width="21.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1171.15" y="799.5" >s..</text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="549" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;http::response::Builder&gt;::and_then::&lt;&lt;http::response::Builder&gt;::header&lt;&amp;str, &amp;str&gt;::{closure#0}&gt; (20,408,163 samples, 0.93%)</title><rect x="359.6" y="677" width="11.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="362.63" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="53.7" y="629" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="56.70" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::SerializeMap as serde_core::ser::SerializeMap&gt;::serialize_value::&lt;serde_json::value::Value&gt; (81,632,652 samples, 3.70%)</title><rect x="632.8" y="581" width="43.7" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="635.78" y="591.5" >&lt;ser..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (367,346,934 samples, 16.67%)</title><rect x="731.1" y="565" width="196.7" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="734.11" y="575.5" >nodeapiserver::codec::pro..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="133" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="143.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="578.1" y="533" width="11.0" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="581.15" y="543.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;serde_json::value::Value&gt; (20,408,163 samples, 0.93%)</title><rect x="392.4" y="581" width="10.9" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="395.41" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::vecbuf::ChunkVecBuffer&gt;::write_to (122,448,978 samples, 5.56%)</title><rect x="119.3" y="661" width="65.5" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="122.26" y="671.5" >&lt;rustls..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="709" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="719.5" >[..</text>
+</g>
+<g >
+<title>&lt;tonic::codec::decode::Streaming&lt;nodebootstrap::e2e::grpc::etcdserverpb::RangeResponse&gt; as futures_core::stream::Stream&gt;::poll_next (40,816,326 samples, 1.85%)</title><rect x="600.0" y="613" width="21.9" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="603.00" y="623.5" >&lt;..</text>
+</g>
+<g >
+<title>nodeapiserver::server::listener::handle::{closure#0} (1,408,163,247 samples, 63.89%)</title><rect x="348.7" y="693" width="753.9" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="351.70" y="703.5" >nodeapiserver::server::listener::handle::{closure#0}</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (20,408,163 samples, 0.93%)</title><rect x="687.4" y="533" width="10.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="690.41" y="543.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="597" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="469" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="479.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="938.7" y="453" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="941.70" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 2.78%)</title><rect x="152.0" y="373" width="32.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="155.04" y="383.5" >[[..</text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="578.1" y="517" width="11.0" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="581.15" y="527.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="597" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="565" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="575.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::authz::resolve::rules_for::{closure#0} (1,204,081,617 samples, 54.63%)</title><rect x="381.5" y="661" width="644.6" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="384.48" y="671.5" >nodeapiserver::authz::resolve::rules_for::{closure#0}</text>
+</g>
+<g >
+<title>&lt;tokio::sync::broadcast::Shared&lt;kube_runtime::watcher::Event&lt;k8s_openapi::v1_34::api::certificates::v1::certificate_signing_request::CertificateSigningRequest&gt;&gt;&gt;::notify_rx (20,408,163 samples, 0.93%)</title><rect x="75.6" y="741" width="10.9" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="78.56" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="757" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="767.5" >[..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="581" width="11.0" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1040.04" y="591.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="916.9" y="389" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="919.85" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="101" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="111.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (40,816,326 samples, 1.85%)</title><rect x="905.9" y="469" width="21.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="908.93" y="479.5" >c..</text>
+</g>
+<g >
+<title>&lt;hyper::client::dispatch::SendWhen&lt;tonic::body::Body, tonic::transport::channel::service::executor::SharedExec&gt; as core::future::future::Future&gt;::poll (20,408,163 samples, 0.93%)</title><rect x="86.5" y="757" width="10.9" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="89.48" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;serde_json::value::Value as serde_core::ser::Serialize&gt;::serialize::&lt;serde_json::value::ser::Serializer&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="565" width="21.9" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="646.70" y="575.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (61,224,489 samples, 2.78%)</title><rect x="556.3" y="613" width="32.8" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="559.30" y="623.5" >&lt;a..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;_, _, _&gt; as core::clone::Clone&gt;::clone::clone_subtree::&lt;alloc::string::String, serde_json::value::Value, alloc::alloc::Global&gt; (61,224,489 samples, 2.78%)</title><rect x="447.0" y="629" width="32.8" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="450.04" y="639.5" >&lt;a..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;serde_json::value::Value&gt; (20,408,163 samples, 0.93%)</title><rect x="414.3" y="533" width="10.9" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="417.26" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="392.4" y="533" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="395.41" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;hyper_util::rt::tokio::TokioExecutor as hyper::rt::Executor&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output =  (40,816,326 samples, 1.85%)</title><rect x="261.3" y="709" width="21.8" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="264.30" y="719.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (40,816,326 samples, 1.85%)</title><rect x="403.3" y="549" width="21.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="406.33" y="559.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (40,816,326 samples, 1.85%)</title><rect x="927.8" y="485" width="21.8" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="930.78" y="495.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt; (20,408,163 samples, 0.93%)</title><rect x="698.3" y="597" width="11.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="701.33" y="607.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;[nodeapiserver::authz::rbac::PolicyRule]&gt; (20,408,163 samples, 0.93%)</title><rect x="370.6" y="645" width="10.9" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="373.56" y="655.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="600.0" y="453" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="603.00" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::role::Server as hyper::proto::h1::Http1Transaction&gt;::encode (20,408,163 samples, 0.93%)</title><rect x="315.9" y="693" width="11.0" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="318.93" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::msgs::deframer::buffers::DeframerVecBuffer&gt;::read (20,408,163 samples, 0.93%)</title><rect x="195.7" y="661" width="11.0" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="198.74" y="671.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="517" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::thread::unix::Thread&gt;::new::thread_start (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="869" width="1180.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" >&lt;std::sys::thread::unix::Thread&gt;::new::thread_start</text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="613" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="623.5" ></text>
+</g>
+<g >
+<title>realloc (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="469" width="11.0" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1040.04" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::clone::Clone&gt;::clone (20,408,163 samples, 0.93%)</title><rect x="458.0" y="597" width="10.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="460.96" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;serde_core::de::impls::StringVisitor as serde_core::de::Visitor&gt;::visit_str::&lt;serde_json::error::Error&gt; (20,408,163 samples, 0.93%)</title><rect x="873.1" y="453" width="11.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="876.15" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::conn::Conn&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;, bytes::bytes::Bytes, hyper::proto::h1::role::Server&gt;&gt;::force_io_read (20,408,163 samples, 0.93%)</title><rect x="305.0" y="725" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="308.00" y="735.5" ></text>
+</g>
+<g >
+<title>alloc::fmt::format::format_inner (40,816,326 samples, 1.85%)</title><rect x="709.3" y="565" width="21.8" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="712.26" y="575.5" >a..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::wire::decode_field (20,408,163 samples, 0.93%)</title><rect x="1015.2" y="565" width="10.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1018.19" y="575.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::authz::resolve::accumulate_binding::{closure#0} (81,632,652 samples, 3.70%)</title><rect x="512.6" y="645" width="43.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="515.59" y="655.5" >node..</text>
+</g>
+<g >
+<title>realloc (20,408,163 samples, 0.93%)</title><rect x="687.4" y="517" width="10.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="690.41" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::Serializer as serde_core::ser::Serializer&gt;::collect_seq::&lt;&amp;alloc::vec::Vec&lt;serde_json::value::Value&gt;&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="533" width="21.9" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="646.70" y="543.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="645" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="523.5" y="549" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="526.52" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="533" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="543.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="621.9" y="613" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="624.85" y="623.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="206.7" y="581" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="209.67" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="613" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="581" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="206.7" y="677" width="10.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="209.67" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="485" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::vec::Vec&lt;u8&gt; as prost::encoding::sealed::BytesAdapter&gt;::replace_with::&lt;bytes::bytes::Bytes&gt; (40,816,326 samples, 1.85%)</title><rect x="600.0" y="517" width="21.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="603.00" y="527.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="117" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="127.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="458.0" y="581" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="460.96" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 2.78%)</title><rect x="152.0" y="341" width="32.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="155.04" y="351.5" >[[..</text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="565" width="10.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1072.81" y="575.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codegen::expand_openapi_refs (20,408,163 samples, 0.93%)</title><rect x="1080.7" y="645" width="11.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1083.74" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (40,816,326 samples, 1.85%)</title><rect x="709.3" y="517" width="21.8" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="712.26" y="527.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="469" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="479.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="720.2" y="469" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="723.19" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;tokio::runtime::task::list::OwnedTasks&lt;alloc::sync::Arc&lt;tokio::runtime::scheduler::current_thread::Handle&gt;&gt;&gt;::bind_inner (20,408,163 samples, 0.93%)</title><rect x="261.3" y="693" width="10.9" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="264.30" y="703.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (61,224,489 samples, 2.78%)</title><rect x="927.8" y="533" width="32.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="930.78" y="543.5" >co..</text>
+</g>
+<g >
+<title>&lt;tonic_prost::codec::ProstDecoder&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt; as tonic::codec::Decoder&gt;::decode (40,816,326 samples, 1.85%)</title><rect x="600.0" y="597" width="21.9" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="603.00" y="607.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (20,408,163 samples, 0.93%)</title><rect x="600.0" y="469" width="10.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="603.00" y="479.5" ></text>
+</g>
+<g >
+<title>prost::encoding::message::merge::&lt;nodeapiserver::storage::pb::mvccpb::KeyValue, &amp;mut &amp;mut tonic::codec::buffer::DecodeBuf&gt; (40,816,326 samples, 1.85%)</title><rect x="600.0" y="549" width="21.9" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="603.00" y="559.5" >p..</text>
+</g>
+<g >
+<title>&lt;tracing_core::event::Event&gt;::dispatch (40,816,326 samples, 1.85%)</title><rect x="1102.6" y="677" width="21.8" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1105.59" y="687.5" >&lt;..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="818.5" y="501" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="821.52" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;tonic::codec::decode::Streaming&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt;&gt;::new::&lt;tonic::body::Body, tonic_prost::codec::ProstDecoder&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="589.1" y="613" width="10.9" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="592.07" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::Value&gt;::pointer (20,408,163 samples, 0.93%)</title><rect x="676.5" y="597" width="10.9" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="679.48" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;h2::codec::framed_write::FramedWrite&lt;hyper::common::io::compat::Compat&lt;tonic::transport::channel::service::io::BoxedIo&gt;, h2::proto::streams::prioritize::Prioritized&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;&gt;::flush (122,448,978 samples, 5.56%)</title><rect x="119.3" y="709" width="65.5" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="122.26" y="719.5" >&lt;h2::co..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h2::client::PipeMap&lt;tonic::body::Body&gt; as core::future::future::Future&gt;::poll (61,224,489 samples, 2.78%)</title><rect x="228.5" y="757" width="32.8" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="231.52" y="767.5" >&lt;h..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="414.3" y="517" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="417.26" y="527.5" ></text>
+</g>
+<g >
+<title>realloc (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="453" width="10.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1072.81" y="463.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (142,857,141 samples, 6.48%)</title><rect x="851.3" y="517" width="76.5" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="854.30" y="527.5" >nodeapis..</text>
+</g>
+<g >
+<title>realloc (20,408,163 samples, 0.93%)</title><rect x="206.7" y="629" width="10.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="209.67" y="639.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="589.1" y="597" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="592.07" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="325" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="335.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::get_at_revision::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="661" width="11.0" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="1040.04" y="671.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::get_at_revision::{closure#0} (81,632,652 samples, 3.70%)</title><rect x="512.6" y="629" width="43.7" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="515.59" y="639.5" >node..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="370.6" y="613" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="373.56" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (40,816,326 samples, 1.85%)</title><rect x="905.9" y="437" width="21.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="908.93" y="447.5" >&lt;..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="578.1" y="501" width="11.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="581.15" y="511.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::task::waker::wake_by_val (20,408,163 samples, 0.93%)</title><rect x="75.6" y="725" width="10.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="78.56" y="735.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="501.7" y="613" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="504.67" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::read::SliceRead as serde_json::read::Read&gt;::parse_str (40,816,326 samples, 1.85%)</title><rect x="884.1" y="453" width="21.8" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="887.07" y="463.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="437" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (20,408,163 samples, 0.93%)</title><rect x="676.5" y="549" width="10.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="679.48" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;h2::codec::framed_write::Encoder&lt;h2::proto::streams::prioritize::Prioritized&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;&gt;::buffer (40,816,326 samples, 1.85%)</title><rect x="97.4" y="709" width="21.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="100.41" y="719.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="565" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="575.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="581" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse as prost::message::Message&gt;::merge_field::&lt;&amp;mut &amp;mut tonic::codec::buffer::DecodeBuf&gt; (40,816,326 samples, 1.85%)</title><rect x="600.0" y="581" width="21.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="603.00" y="591.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="69" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="79.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="687.4" y="501" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="690.41" y="511.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="437" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (61,224,489 samples, 2.78%)</title><rect x="403.3" y="565" width="32.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="406.33" y="575.5" >&lt;a..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="533" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="543.5" >[[ker..</text>
+</g>
+<g >
+<title>alloc::fmt::format::format_inner (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="533" width="10.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="1072.81" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::io::Buffered&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;, hyper::proto::h1::encode::EncodedBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll_read_from_io (20,408,163 samples, 0.93%)</title><rect x="305.0" y="709" width="10.9" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="308.00" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::client::StorageClient&gt;::range::{closure#0} (81,632,652 samples, 3.70%)</title><rect x="589.1" y="629" width="43.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="592.07" y="639.5" >&lt;nod..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="501" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;tonic::transport::channel::service::add_origin::AddOrigin&lt;tonic::transport::channel::service::user_agent::UserAgent&lt;tonic::transport::service::grpc_timeout::GrpcTimeout&lt;tower::util::either::Either&lt;tower::limit::concurrency::service::ConcurrencyLimit&lt;tower::util::either::Either&lt;tower::limit::rate::service::RateLimit&lt;tonic::transport::channel::service::reconnect::Reconnect&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;tonic::transport::channel::uds_connector::UdsConnector&gt;&gt;, http::uri::Uri&gt;&gt;, tonic::transport::channel::service::reconnect::Reconnect&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;tonic::transport::channel::uds_connector::UdsConnector&gt;&gt;, http::uri::Uri&gt;&gt;&gt;, tower::util::either::Either&lt;tower::limit::rate::service::RateLimit&lt;tonic::transport::channel::service::reconnect::Reconnect&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;tonic::transport::channel::uds_connector::UdsConnector&gt;&gt;, http::uri::Uri&gt;&gt;, tonic::transport::channel::service::reconnect::Reconnect&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;tonic::transport::channel::uds_connector::UdsConnector&gt;&gt;, http::uri::Uri&gt;&gt;&gt;&gt;&gt;&gt; as tower_service::Service&lt;http::request::Request&lt;tonic::body::Body&gt;&gt;&gt;::call::{closure#1} (20,408,163 samples, 0.93%)</title><rect x="1026.1" y="629" width="10.9" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="1029.11" y="639.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="523.5" y="581" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="526.52" y="591.5" ></text>
+</g>
+<g >
+<title>alloc::fmt::format::format_inner (20,408,163 samples, 0.93%)</title><rect x="687.4" y="597" width="10.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="690.41" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;std::io::stdio::Stdout as std::io::Write&gt;::write_all (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="645" width="10.9" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1105.59" y="655.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="549" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="559.5" >[[ker..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;nodeapiserver::authz::resolve::Resolved&gt; (20,408,163 samples, 0.93%)</title><rect x="370.6" y="661" width="10.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="373.56" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;tonic::transport::channel::ResponseFuture as core::future::future::Future&gt;::poll (20,408,163 samples, 0.93%)</title><rect x="1026.1" y="645" width="10.9" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="1029.11" y="655.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (20,408,163 samples, 0.93%)</title><rect x="1069.8" y="517" width="10.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1072.81" y="527.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_message (469,387,749 samples, 21.30%)</title><rect x="709.3" y="597" width="251.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="712.26" y="607.5" >nodeapiserver::codec::protobuf::d..</text>
+</g>
+<g >
+<title>&lt;tokio_util::codec::length_delimited::LengthDelimitedCodec as tokio_util::codec::decoder::Decoder&gt;::decode (20,408,163 samples, 0.93%)</title><rect x="206.7" y="709" width="10.9" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="209.67" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCommon&lt;rustls::server::server_conn::ServerConnectionData&gt;&gt;::read_tls (20,408,163 samples, 0.93%)</title><rect x="305.0" y="645" width="10.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="308.00" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::SerializeVec as serde_core::ser::SerializeSeq&gt;::serialize_element::&lt;&amp;serde_json::value::Value&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="517" width="21.9" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="646.70" y="527.5" >&lt;..</text>
+</g>
+<g >
+<title>cfree (20,408,163 samples, 0.93%)</title><rect x="862.2" y="501" width="10.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="865.22" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;tonic::transport::channel::service::connection::MakeSendRequestService&lt;tonic::transport::channel::service::connector::Connector&lt;tonic::transport::channel::uds_connector::UdsConnector&gt;&gt; as tower_service::Service&lt;http::uri::Uri&gt;&gt;::call::{closure#0}::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="261.3" y="757" width="21.8" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="264.30" y="767.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="392.4" y="549" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="395.41" y="559.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::authz::request_allowed::{closure#0} (1,224,489,780 samples, 55.56%)</title><rect x="370.6" y="677" width="655.5" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="373.56" y="687.5" >nodeapiserver::authz::request_allowed::{closure#0}</text>
+</g>
+<g >
+<title>tokio::runtime::task::waker::wake_by_val (20,408,163 samples, 0.93%)</title><rect x="534.4" y="581" width="11.0" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="537.44" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="581" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;str&gt;::replace::&lt;&amp;str&gt; (20,408,163 samples, 0.93%)</title><rect x="676.5" y="581" width="10.9" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="679.48" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="581" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="591.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="1168.1" y="693" width="21.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1171.15" y="703.5" >[..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::get::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="677" width="11.0" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1040.04" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (61,224,489 samples, 2.78%)</title><rect x="556.3" y="629" width="32.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="559.30" y="639.5" >&lt;a..</text>
+</g>
+<g >
+<title>&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::server::TlsStream&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt; as hyper::rt::io::Read&gt;::poll_read (20,408,163 samples, 0.93%)</title><rect x="305.0" y="693" width="10.9" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="308.00" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::borrow::Cow&lt;str&gt;&gt;::into_owned (20,408,163 samples, 0.93%)</title><rect x="851.3" y="501" width="10.9" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="854.30" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (81,632,652 samples, 3.70%)</title><rect x="403.3" y="597" width="43.7" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="406.33" y="607.5" >&lt;all..</text>
+</g>
+<g >
+<title>&lt;alloc::vec::Vec&lt;&amp;str&gt; as alloc::vec::spec_from_iter_nested::SpecFromIterNested&lt;&amp;str, core::str::iter::Split&lt;char&gt;&gt;&gt;::from_iter (20,408,163 samples, 0.93%)</title><rect x="1037.0" y="533" width="11.0" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="1040.04" y="543.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="468.9" y="549" width="10.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="471.89" y="559.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="119.3" y="613" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="122.26" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="677" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,204,081,604 samples, 100.00%)</title><rect x="10.0" y="885" width="1180.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>&lt;tonic::transport::channel::Channel as tower_service::Service&lt;http::request::Request&lt;tonic::body::Body&gt;&gt;&gt;::call (20,408,163 samples, 0.93%)</title><rect x="534.4" y="597" width="11.0" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="537.44" y="607.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="436.1" y="549" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="439.11" y="559.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="661" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="671.5" >[..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (20,408,163 samples, 0.93%)</title><rect x="600.0" y="485" width="10.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="603.00" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::client::StorageClient&gt;::range::{closure#0} (40,816,326 samples, 1.85%)</title><rect x="523.5" y="613" width="21.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="526.52" y="623.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task (2,020,408,137 samples, 91.67%)</title><rect x="64.6" y="789" width="1081.7" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="67.63" y="799.5" >&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (20,408,163 samples, 0.93%)</title><rect x="676.5" y="565" width="10.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="679.48" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;core::option::Option&lt;&amp;serde_json::value::Value&gt;&gt;::cloned (20,408,163 samples, 0.93%)</title><rect x="960.6" y="581" width="10.9" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="963.56" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (20,408,163 samples, 0.93%)</title><rect x="676.5" y="533" width="10.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="679.48" y="543.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;&lt;tonic::transport::channel::service::connection::SendRequest as tower_service::Service&lt;http::request::Request&lt;tonic::body::Body&gt;&gt;&gt;::call::{closure#0}&gt; (20,408,163 samples, 0.93%)</title><rect x="1026.1" y="597" width="10.9" height="15.0" fill="rgb(211,29,6)" rx="2" ry="2" />
+<text  x="1029.11" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="565" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="575.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::listener::log_audit_event_with_objects (40,816,326 samples, 1.85%)</title><rect x="1102.6" y="693" width="21.8" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1105.59" y="703.5" >n..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="581" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1105.59" y="591.5" ></text>
+</g>
+<g >
+<title>write (20,408,163 samples, 0.93%)</title><rect x="1102.6" y="597" width="10.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1105.59" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::vec::Vec&lt;serde_json::value::Value&gt; as core::clone::Clone&gt;::clone (20,408,163 samples, 0.93%)</title><rect x="468.9" y="597" width="10.9" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="471.89" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="741" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="751.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="534.4" y="517" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="537.44" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;tonic::codec::decode::Streaming&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt;&gt;::new::&lt;tonic::body::Body, tonic_prost::codec::ProstDecoder&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="523.5" y="597" width="10.9" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="526.52" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::boxed::Box&lt;alloc::collections::btree::node::LeafNode&lt;alloc::vec::Vec&lt;u8&gt;, nodeapiserver::cacher::store::CacheEntry&gt;&gt;&gt;::new_uninit_in (20,408,163 samples, 0.93%)</title><rect x="665.6" y="533" width="10.9" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="668.56" y="543.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="565" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="575.5" ></text>
+</g>
+<g >
+<title>serde_json::de::from_trait::&lt;serde_json::read::SliceRead, serde_json::value::Value&gt; (61,224,489 samples, 2.78%)</title><rect x="873.1" y="485" width="32.8" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="876.15" y="495.5" >se..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="53" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="63.5" ></text>
+</g>
+<g >
+<title>&lt;tokio::process::imp::GlobalOrphanQueue&gt;::reap_orphans (20,408,163 samples, 0.93%)</title><rect x="10.0" y="757" width="10.9" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::entry (20,408,163 samples, 0.93%)</title><rect x="982.4" y="517" width="10.9" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="985.41" y="527.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::listener::handle_with_audit::{closure#0} (1,489,795,899 samples, 67.59%)</title><rect x="326.9" y="709" width="797.5" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="329.85" y="719.5" >nodeapiserver::server::listener::handle_with_audit::{closure#0}</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 3.70%)</title><rect x="141.1" y="405" width="43.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="144.11" y="415.5" >[[ke..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="197" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="207.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="337.8" y="693" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="340.78" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 2.78%)</title><rect x="152.0" y="309" width="32.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="155.04" y="319.5" >[[..</text>
+</g>
+<g >
+<title>&lt;hyper_util::rt::tokio::TokioIo&lt;tokio_rustls::client::TlsStream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt; as hyper::rt::io::Read&gt;::poll_read (20,408,163 samples, 0.93%)</title><rect x="195.7" y="709" width="11.0" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="198.74" y="719.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decode_stored_object (40,816,326 samples, 1.85%)</title><rect x="1058.9" y="645" width="21.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1061.89" y="655.5" >n..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 2.78%)</title><rect x="152.0" y="325" width="32.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="155.04" y="335.5" >[[..</text>
+</g>
+<g >
+<title>&lt;tokio::net::tcp::stream::TcpStream as tokio::io::async_write::AsyncWrite&gt;::poll_write_vectored (122,448,978 samples, 5.56%)</title><rect x="119.3" y="629" width="65.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="122.26" y="639.5" >&lt;tokio:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="517" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="527.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt;&gt;::insert (20,408,163 samples, 0.93%)</title><rect x="982.4" y="533" width="10.9" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="985.41" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;tokio::net::tcp::stream::TcpStream, rustls::server::server_conn::connection::ServerConnection&gt;&gt;::read_io (20,408,163 samples, 0.93%)</title><rect x="305.0" y="661" width="10.9" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="308.00" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="1135.4" y="741" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1138.37" y="751.5" ></text>
+</g>
+<g >
+<title>pow (20,408,163 samples, 0.93%)</title><rect x="1157.2" y="789" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1160.22" y="799.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="53.7" y="597" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="56.70" y="607.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.85%)</title><rect x="42.8" y="757" width="21.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="45.78" y="767.5" >[..</text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::fmt::Write&gt;::write_str.10221 (20,408,163 samples, 0.93%)</title><rect x="1113.5" y="581" width="10.9" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="1116.52" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::clone::Clone&gt;::clone (20,408,163 samples, 0.93%)</title><rect x="468.9" y="565" width="10.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="471.89" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;h2::proto::connection::DynConnection&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::recv_frame (20,408,163 samples, 0.93%)</title><rect x="184.8" y="709" width="10.9" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="187.81" y="719.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decode_stored_object (20,408,163 samples, 0.93%)</title><rect x="545.4" y="597" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="548.37" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;tonic::codec::decode::Streaming&lt;nodeapiserver::storage::pb::etcdserverpb::TxnResponse&gt;&gt;::new::&lt;tonic::body::Body, tonic_prost::codec::ProstDecoder&lt;nodeapiserver::storage::pb::etcdserverpb::TxnResponse&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="1091.7" y="629" width="10.9" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1094.67" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;nodeapiserver::cacher::registry::CacheRegistry&gt;::spawn::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="75.6" y="757" width="10.9" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="78.56" y="767.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 4.63%)</title><rect x="130.2" y="485" width="54.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="133.19" y="495.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;tonic::codec::decode::Streaming&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt;&gt;::new::&lt;tonic::body::Body, tonic_prost::codec::ProstDecoder&lt;nodeapiserver::storage::pb::etcdserverpb::RangeResponse&gt;&gt; (20,408,163 samples, 0.93%)</title><rect x="490.7" y="613" width="11.0" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="493.74" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;h2::proto::streams::streams::StreamRef&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::send_data (61,224,489 samples, 2.78%)</title><rect x="228.5" y="725" width="32.8" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="231.52" y="735.5" >&lt;h..</text>
+</g>
+<g >
+<title>&lt;x509_parser::certificate::X509Certificate as asn1_rs::traits::FromDer&lt;x509_parser::error::X509Error&gt;&gt;::from_der (20,408,163 samples, 0.93%)</title><rect x="1124.4" y="741" width="11.0" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1127.44" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="421" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="272.2" y="661" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="275.22" y="671.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::codec::protobuf::decode_one (61,224,489 samples, 2.78%)</title><rect x="982.4" y="565" width="32.8" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="985.41" y="575.5" >no..</text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::SerializeMap as serde_core::ser::SerializeMap&gt;::serialize_value::&lt;serde_json::value::Value&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="485" width="21.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="646.70" y="495.5" >&lt;..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::get_at_revision::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1048.0" y="677" width="10.9" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="1050.96" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="173.9" y="181" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="176.89" y="191.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="414.3" y="501" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="417.26" y="511.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="75.6" y="661" width="10.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="78.56" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::BTreeMap&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="414.3" y="485" width="10.9" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="417.26" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::deallocate (20,408,163 samples, 0.93%)</title><rect x="556.3" y="549" width="10.9" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="559.30" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;hyper::proto::h2::client::ClientTask&lt;tonic::body::Body, tonic::transport::channel::service::executor::SharedExec, tonic::transport::channel::service::io::BoxedIo&gt;&gt;::poll_pipe (40,816,326 samples, 1.85%)</title><rect x="261.3" y="725" width="21.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="264.30" y="735.5" >&lt;..</text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::decode_stored_object (612,244,890 samples, 27.78%)</title><rect x="698.3" y="613" width="327.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="701.33" y="623.5" >nodeapiserver::server::rest::decode_stored_o..</text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::SerializeVec as serde_core::ser::SerializeSeq&gt;::serialize_element::&lt;&amp;serde_json::value::Value&gt; (81,632,652 samples, 3.70%)</title><rect x="632.8" y="613" width="43.7" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="635.78" y="623.5" >&lt;ser..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.93%)</title><rect x="195.7" y="389" width="11.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.74" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;h2::client::Connection&lt;hyper::common::io::compat::Compat&lt;tonic::transport::channel::service::io::BoxedIo&gt;, hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt; as core::future::future::Future&gt;::poll (244,897,956 samples, 11.11%)</title><rect x="97.4" y="741" width="131.1" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="100.41" y="751.5" >&lt;h2::client::Con..</text>
+</g>
+<g >
+<title>&lt;h2::frame::headers::Headers&gt;::encode (40,816,326 samples, 1.85%)</title><rect x="97.4" y="693" width="21.9" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="100.41" y="703.5" >&lt;..</text>
+</g>
+<g >
+<title>alloc::fmt::format::format_inner (40,816,326 samples, 1.85%)</title><rect x="905.9" y="485" width="21.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="908.93" y="495.5" >a..</text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.93%)</title><rect x="490.7" y="597" width="11.0" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="493.74" y="607.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.93%)</title><rect x="468.9" y="533" width="10.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="471.89" y="543.5" ></text>
+</g>
+<g >
+<title>&lt;serde_json::value::ser::SerializeMap as serde_core::ser::SerializeMap&gt;::serialize_value::&lt;serde_json::value::Value&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="549" width="21.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="646.70" y="559.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::btree::map::IntoIter&lt;alloc::string::String, serde_json::value::Value&gt; as core::ops::drop::Drop&gt;::drop (20,408,163 samples, 0.93%)</title><rect x="392.4" y="597" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="395.41" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;serde_json::value::Value as serde_core::ser::Serialize&gt;::serialize::&lt;serde_json::value::ser::Serializer&gt; (40,816,326 samples, 1.85%)</title><rect x="643.7" y="501" width="21.9" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="646.70" y="511.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::string::String as core::fmt::Write&gt;::write_str.10 (20,408,163 samples, 0.93%)</title><rect x="687.4" y="565" width="10.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="690.41" y="575.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::server::rest::apply_prepare::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1026.1" y="677" width="10.9" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1029.11" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;nodeapiserver::storage::client::StorageClient&gt;::txn::{closure#0} (20,408,163 samples, 0.93%)</title><rect x="1091.7" y="645" width="10.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1094.67" y="655.5" ></text>
+</g>
+<g >
+<title>nodeapiserver::cacher::selector::object_matches (20,408,163 samples, 0.93%)</title><rect x="676.5" y="629" width="10.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="679.48" y="639.5" ></text>
+</g>
+</g>
+</svg>
