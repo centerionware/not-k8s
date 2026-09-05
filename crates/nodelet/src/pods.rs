@@ -594,7 +594,7 @@ impl PodController {
     fn finish_reconcile_worker(&self, key: &str, id: u64) {
         self.reconcile_workers.running.fetch_sub(1, Ordering::AcqRel);
         let mut active = self.reconcile_workers.active.lock().unwrap();
-        let mut _pending = self.reconcile_workers.pending.lock().unwrap();
+        let mut pending = self.reconcile_workers.pending.lock().unwrap();
         let mut remove = false;
         if let Some(worker) = active.get_mut(key) {
             if worker.id == id {
@@ -610,7 +610,7 @@ impl PodController {
         if remove {
             active.remove(key);
         }
-        drop(_pending);
+        drop(pending);
         drop(active);
         self.start_reconcile_workers();
     }
