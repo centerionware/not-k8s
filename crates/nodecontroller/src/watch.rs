@@ -212,6 +212,16 @@ where
     }
 
     fn apply(&self, event: &Event<T>) {
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Namespace>() {
+            match event {
+                Event::Apply(object) | Event::InitApply(object) | Event::Delete(object) => {
+                    tracing::debug!(target: "nk_watch_trace", boundary = "http_to_informer",
+                        name = %object.name_any(), revision = ?object.resource_version(),
+                        deleted = matches!(event, Event::Delete(_)), "namespace watch event");
+                }
+                _ => {}
+            }
+        }
         // Publish under the snapshot lock. A subscriber must see an event
         // either in its snapshot or in its new receiver, never an older
         // buffered event replayed after a newer snapshot.

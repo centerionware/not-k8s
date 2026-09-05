@@ -231,6 +231,15 @@ pub fn apply_watch_response(cache: &mut WatchCache, resp: &WatchResponse) {
 /// `SharedCache` (readers need concurrent access to the same cache while
 /// this loop drives it — see `SharedCache`'s own doc comment).
 pub fn apply_watch_response_shared(cache: &crate::cacher::store::SharedCache, resp: &WatchResponse) {
+    for event in &resp.events {
+        if let Some(kv) = &event.kv {
+            if kv.key.starts_with(b"/registry/namespaces/") {
+                tracing::debug!(target: "nk_watch_trace", boundary = "storage_to_cache",
+                    key = %String::from_utf8_lossy(&kv.key), revision = kv.mod_revision,
+                    cache_revision = cache.revision(), "namespace watch event");
+            }
+        }
+    }
     cache.apply_batch(decode_applies(resp, cache.revision()));
 }
 
