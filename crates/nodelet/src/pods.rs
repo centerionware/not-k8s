@@ -25,13 +25,13 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::Duration;
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -106,7 +106,6 @@ pub struct PodController {
 /// Work delivered to a per-Pod reconciler. A refresh asks the worker to GET
 /// the current object, which coalesces bursts of runtime events without
 /// carrying stale Pod snapshots through the queue.
-#[derive(Clone)]
 enum ReconcileRequest {
     Pod(Pod),
     Refresh,
@@ -114,8 +113,9 @@ enum ReconcileRequest {
 
 struct ReconcileWorker {
     id: u64,
-    updates: watch::Sender<ReconcileRequest>,
+    request: Option<ReconcileRequest>,
     cancel: Arc<WorkerCancellation>,
+    running: bool,
 }
 
 struct WorkerCancellation {
@@ -123,9 +123,9 @@ struct WorkerCancellation {
 }
 
 impl WorkerCancellation {
-    fn new() -> (Self, watch::Receiver<bool>) {
-        let (tx, rx) = watch::channel(false);
-        (Self { tx }, rx)
+    fn new() -> Self {
+        let (tx, _) = watch::channel(false);
+        Self { tx }
     }
 
     fn cancel(&self) {
@@ -136,32 +136,19 @@ impl WorkerCancellation {
 struct ReconcileWorkers {
     next_id: AtomicU64,
     active: Mutex<HashMap<String, ReconcileWorker>>,
-    /// Keep a broken runtime or apiserver from allowing an unbounded number
-    /// of concurrently-starting Pods to overload the node.
-    permits: Arc<Semaphore>,
+    pending: Mutex<VecDeque<(String, u64)>>,
+    running: AtomicU64,
 }
 
-struct ReconcileWorkerGuard {
-    workers: Arc<ReconcileWorkers>,
-    key: String,
-    id: u64,
-}
-
-impl Drop for ReconcileWorkerGuard {
-    fn drop(&mut self) {
-        let mut active = self.workers.active.lock().unwrap();
-        if active.get(&self.key).is_some_and(|worker| worker.id == self.id) {
-            active.remove(&self.key);
-        }
-    }
-}
+const MAX_CONCURRENT_RECONCILES: u64 = 16;
 
 impl ReconcileWorkers {
     fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
             active: Mutex::new(HashMap::new()),
-            permits: Arc::new(Semaphore::new(16)),
+            pending: Mutex::new(VecDeque::new()),
+            running: AtomicU64::new(0),
         }
     }
 }
@@ -437,8 +424,8 @@ impl PodController {
     }
 
     /// Enqueue the newest desired Pod state without waiting for runtime or
-    /// apiserver I/O. One worker owns a key at a time; `watch` keeps only the
-    /// newest update while that worker is busy.
+    /// apiserver I/O. One worker owns a key at a time; a newer event cancels
+    /// and replaces older queued or running work for that key.
     fn enqueue_pod_reconcile(&self, pod: Pod) {
         let Some((namespace, name)) = key_parts(&pod) else { return };
         self.enqueue_reconcile_request(pod_key(&namespace, &name), ReconcileRequest::Pod(pod));
@@ -453,30 +440,75 @@ impl PodController {
     }
 
     fn enqueue_reconcile_request(&self, key: String, request: ReconcileRequest) {
-        let (id, receiver, cancel, cancel_receiver) = {
+        {
             let mut active = self.reconcile_workers.active.lock().unwrap();
-            if let Some(existing) = active.get(&key) {
-                if existing.updates.send(request.clone()).is_ok() {
-                    return;
-                }
-            }
-            // A worker whose receiver was dropped is no longer able to make
-            // progress. Remove and cancel it before replacing the entry.
+            // A newer event supersedes both queued and running work for this
+            // key. Cancellation makes stale API/CRI work stop promptly; the
+            // replacement is appended at the current FIFO position.
             if let Some(stale) = active.remove(&key) {
                 stale.cancel.cancel();
             }
-            let id = self.reconcile_workers.next_id.fetch_add(1, Ordering::Relaxed);
-            let (updates, receiver) = watch::channel(request);
-            let (cancel, cancel_receiver) = WorkerCancellation::new();
-            let cancel = Arc::new(cancel);
-            active.insert(key.clone(), ReconcileWorker { id, updates, cancel: cancel.clone() });
-            (id, receiver, cancel, cancel_receiver)
-        };
+            self.insert_reconcile_worker(&mut active, key, request);
+        }
+        self.start_reconcile_workers();
+    }
 
-        let controller = self.clone();
-        tokio::spawn(async move {
-            controller.reconcile_worker(key, id, receiver, cancel, cancel_receiver).await;
-        });
+    fn insert_reconcile_worker(
+        &self,
+        active: &mut HashMap<String, ReconcileWorker>,
+        key: String,
+        request: ReconcileRequest,
+    ) {
+        let id = self.reconcile_workers.next_id.fetch_add(1, Ordering::Relaxed);
+        let cancel = Arc::new(WorkerCancellation::new());
+        active.insert(
+            key.clone(),
+            ReconcileWorker {
+                id,
+                request: Some(request),
+                cancel,
+                running: false,
+            },
+        );
+        self.reconcile_workers.pending.lock().unwrap().push_back((key, id));
+    }
+
+    /// Start queued workers strictly in arrival order. Pending entries carry
+    /// their worker id, so a canceled older entry cannot accidentally start a
+    /// replacement worker for the same key.
+    fn start_reconcile_workers(&self) {
+        loop {
+            let next = {
+                let mut active = self.reconcile_workers.active.lock().unwrap();
+                let mut pending = self.reconcile_workers.pending.lock().unwrap();
+                if self.reconcile_workers.running.load(Ordering::Acquire) >= MAX_CONCURRENT_RECONCILES {
+                    None
+                } else {
+                    let mut next = None;
+                    while let Some((key, id)) = pending.pop_front() {
+                        let Some(worker) = active.get_mut(&key) else { continue };
+                        if worker.id != id {
+                            continue;
+                        }
+                        if worker.running {
+                            continue;
+                        }
+                        let Some(request) = worker.request.take() else { continue };
+                        worker.running = true;
+                        self.reconcile_workers.running.fetch_add(1, Ordering::AcqRel);
+                        next = Some((key, worker.id, request, worker.cancel.clone()));
+                        break;
+                    }
+                    next
+                }
+            };
+            let Some((key, id, request, cancel)) = next else { return };
+            let cancel_receiver = cancel.tx.subscribe();
+            let controller = self.clone();
+            tokio::spawn(async move {
+                controller.reconcile_worker(key, id, request, cancel, cancel_receiver).await;
+            });
+        }
     }
 
     /// Stop normal reconciliation before teardown starts. The cancellation
@@ -492,50 +524,41 @@ impl PodController {
         self,
         key: String,
         id: u64,
-        mut updates: watch::Receiver<ReconcileRequest>,
+        request: ReconcileRequest,
         _cancel: Arc<WorkerCancellation>,
         mut cancel_receiver: watch::Receiver<bool>,
     ) {
-        let _guard = ReconcileWorkerGuard { workers: self.reconcile_workers.clone(), key: key.clone(), id };
-        loop {
-            if *cancel_receiver.borrow() {
-                return;
-            }
-            let request = updates.borrow_and_update().clone();
+        if !*cancel_receiver.borrow() {
             let pod = tokio::select! {
-                _ = cancel_receiver.changed() => return,
+                _ = cancel_receiver.changed() => None,
                 pod = self.resolve_reconcile_request(&key, request) => pod,
             };
-            let Some(pod) = pod else { break };
-
-            let permit = tokio::select! {
-                _ = cancel_receiver.changed() => return,
-                permit = self.reconcile_workers.permits.clone().acquire_owned() => {
-                    match permit {
-                        Ok(permit) => permit,
-                        Err(_) => return,
-                    }
+            if let Some(pod) = pod {
+                tokio::select! {
+                    _ = cancel_receiver.changed() => {}
+                    _ = self.reconcile_with_timeout(pod) => {}
                 }
-            };
-            tokio::select! {
-                _ = cancel_receiver.changed() => return,
-                _ = self.reconcile_with_timeout(pod) => {}
             }
-            drop(permit);
-
-            // Serialize updates for a key, but do not keep the worker alive
-            // once it has caught up. The active-map lock closes the small
-            // race between checking `has_changed()` and removing this worker:
-            // enqueue_reconcile_request() cannot insert an update in between.
-            let _active = self.reconcile_workers.active.lock().unwrap();
-            if *cancel_receiver.borrow() {
-                return;
-            }
-            if updates.has_changed().unwrap_or(false) {
-                continue;
-            }
-            break;
         }
+        self.finish_reconcile_worker(&key, id);
+    }
+
+    fn finish_reconcile_worker(&self, key: &str, id: u64) {
+        self.reconcile_workers.running.fetch_sub(1, Ordering::AcqRel);
+        let mut active = self.reconcile_workers.active.lock().unwrap();
+        let _pending = self.reconcile_workers.pending.lock().unwrap();
+        let mut remove = false;
+        if let Some(worker) = active.get_mut(key) {
+            if worker.id == id {
+                remove = true;
+            }
+        }
+        if remove {
+            active.remove(key);
+        }
+        drop(_pending);
+        drop(active);
+        self.start_reconcile_workers();
     }
 
     async fn resolve_reconcile_request(&self, key: &str, request: ReconcileRequest) -> Option<Pod> {
