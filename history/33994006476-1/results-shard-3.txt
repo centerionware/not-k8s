@@ -1,0 +1,9 @@
+commit: 099d841ce7f863230c86c06ca90bc88332e7e659
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/33994006476
+timestamp (UTC): 2026-09-05T21:58:50Z
+shard: 3/5
+exit code: 0
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 3/5
+▶ 2026-09-05T21:58:20.254Z test_scheduler_schedules_pods_that_get_default_spread_constraints ... PASS (30280ms)
+Results: 1 passed, 0 skipped, 0 failed
