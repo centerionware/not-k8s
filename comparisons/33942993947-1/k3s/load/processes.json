@@ -1,0 +1,17 @@
+{
+  "k3s@2422": {
+    "pid": 2422,
+    "exe": "/var/lib/rancher/k3s/data/5a9973ddf4c7ec074f657c06287e0e6a07a24ecafd6d326827f70ef1e95bdd2d/bin/k3s",
+    "start_ticks": "4588"
+  },
+  "containerd@2454": {
+    "pid": 2454,
+    "exe": "/var/lib/rancher/k3s/data/5a9973ddf4c7ec074f657c06287e0e6a07a24ecafd6d326827f70ef1e95bdd2d/bin/k3s",
+    "start_ticks": "5040"
+  },
+  "coredns@2937": {
+    "pid": 2937,
+    "exe": "/coredns",
+    "start_ticks": "6457"
+  }
+}
