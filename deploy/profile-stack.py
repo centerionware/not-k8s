@@ -244,6 +244,7 @@ def run(args):
     }, indent=2))
     watcher = None
     watch_log = None
+    failure = None
     try:
         workload.setup()
         capture(output, "idle", args.seconds, args.backend, args.components, args.whole_stack, not args.metrics_only)
@@ -275,6 +276,23 @@ def run(args):
             "metrics_only": args.metrics_only, "preset": args.workload,
             "replicas": args.replicas, "api_workers": args.workers, "seconds_per_phase": args.seconds,
             "http_successes": traffic.count("request-ok")}, indent=2))
+    except Exception as error:
+        failure = error
+        (output / "failure.txt").write_text(f"{type(error).__name__}: {error}\n")
+        # Inspect before namespace deletion triggers GC and destroys the
+        # evidence. Diagnostic errors must not replace the workload failure.
+        for filename, command in (
+            ("failure-pods.json", ("get", "pods", "-o", "json")),
+            ("failure-events.json", ("get", "events", "-o", "json")),
+            ("failure-client.txt", ("describe", "pod/profile-client")),
+            ("failure-client-log.txt", ("logs", "profile-client")),
+        ):
+            try:
+                diagnostic = workload.kubectl(*command, timeout=35)
+            except Exception as diagnostic_error:
+                diagnostic = f"diagnostic unavailable: {diagnostic_error}\n"
+            (output / filename).write_text(diagnostic)
+        raise
     finally:
         workload.stop.set()
         if watcher is not None:
@@ -288,6 +306,10 @@ def run(args):
             watch_log.close()
         try:
             workload.kubectl("delete", "namespace", workload.namespace, "--ignore-not-found", "--wait=false")
+        except Exception as cleanup_error:
+            if failure is None:
+                raise
+            (output / "cleanup-error.txt").write_text(str(cleanup_error) + "\n")
         finally:
             workload.save()
 

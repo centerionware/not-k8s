@@ -72,7 +72,14 @@ runs:
         set -euo pipefail
         mkdir -p profile-data
         {
-          sudo journalctl --no-pager -n 200 -u nodeapiserver -u nodelet -u k3s -u kubelet -u containerd || true
+          # Separate unit histories: a busy apiserver audit stream must not
+          # consume the shared tail and hide nodelet/scheduler failures.
+          for unit in nodelet nodescheduler nodecontroller nodestore nodeproxy k3s kubelet containerd; do
+            sudo journalctl -b --no-pager -u "$unit" > "profile-data/$unit-journal.txt" || true
+            tail -200 "profile-data/$unit-journal.txt"
+          done
+          sudo journalctl -b --no-pager -u nodeapiserver --grep='WARN|ERROR|panic|failed|exited' > profile-data/nodeapiserver-errors.txt || true
+          cat profile-data/nodeapiserver-errors.txt
           kubectl get pods -A -o wide || true
           kubectl get events -A --sort-by=.metadata.creationTimestamp | tail -100 || true
         } 2>&1 | tee profile-data/failure-diagnostics.txt

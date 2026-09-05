@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,27 @@ CHART_SPEC.loader.exec_module(charts)
 
 
 class ProfileStackTests(unittest.TestCase):
+    def test_failure_is_captured_before_cleanup_without_masking_original_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = []
+            def kubectl(_workload, *args, **kwargs):
+                calls.append(args)
+                if args[0] == 'delete':
+                    raise RuntimeError('cleanup failed too')
+                return 'pod state before deletion'
+            args = SimpleNamespace(output=temporary, replicas=10, workers=4, workload='heavy',
+                                   seconds=300, backend='notk8s', components=stack.COMPONENTS,
+                                   whole_stack=True, metrics_only=True)
+            with patch.object(stack.Workload, 'setup'), patch.object(stack, 'capture'), \
+                 patch.object(stack.Workload, 'start_client', side_effect=RuntimeError('client not Ready')), \
+                 patch.object(stack.Workload, 'kubectl', kubectl):
+                with self.assertRaisesRegex(RuntimeError, '^client not Ready$'):
+                    stack.run(args)
+            self.assertEqual([call[0] for call in calls], ['get', 'get', 'describe', 'logs', 'delete'])
+            self.assertIn('client not Ready', (Path(temporary) / 'failure.txt').read_text())
+            self.assertEqual((Path(temporary) / 'failure-pods.json').read_text(), 'pod state before deletion')
+            self.assertFalse((Path(temporary) / 'workload.json').exists())
+
     def test_heavy_job_requires_completion_and_foreground_gc(self):
         workload = stack.Workload(Path("unused"), 10, 4, "heavy")
         calls = []
