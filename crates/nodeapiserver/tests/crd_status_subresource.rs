@@ -7,7 +7,10 @@
 mod support;
 use nodeapiserver::server::rest;
 use serde_json::json;
-use support::{a_crd, find_nodestore_binary, spawn_nodestore};
+use support::{find_nodestore_binary, spawn_nodestore};
+#[path = "support/crd.rs"]
+mod crd;
+use crd::a_crd;
 
 /// The `status` subresource only exists for a CRD version that actually
 /// declares `subresources.status` — `a_crd()`'s own shared schema never
