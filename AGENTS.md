@@ -52,6 +52,20 @@ Do not ask again for permission already given. Do not infer authority to merge,
 publish a release, restart an unrelated host, or send a message from a request
 to investigate a failure.
 
+## Commit messages
+
+Use Conventional Commits: `type(scope): description` (scope is optional),
+for example `fix(gc): preserve owner edges during relists`. The entire subject
+line, including type, scope, punctuation, and spaces, must be **under 100
+characters** (99 maximum), or the automated commit-convention check fails.
+Put additional explanation in the body after a blank line. Apply the same
+convention to squash-merge subjects and PR titles used as commit subjects.
+Use a specific description of at least 10 characters, starting in lowercase
+(acronyms are allowed), with no repeated whitespace or trailing period.
+Check locally with `python3 .github/scripts/commit_subjects.py --subject
+'fix(gc): preserve owner edges during relists'`; the same validator checks
+both PR titles and commits in CI.
+
 ## Find the implementation
 
 | Concern | Start here |
@@ -150,12 +164,23 @@ Control iteration cost: reuse matching SHA/target results, specify changed
 crates, use the test host's architecture, and avoid release builds while
 debugging correctness. Do not launch duplicate runs, read remote logs repeatedly,
 or load entire historical documents to answer a narrow code question. Cost
-savings must not remove the final full-suite gate.
+savings must not remove the final full-suite gate. The current e2e workflow
+deliberately uses stripped release binaries to keep artifacts small; do not
+switch it to debug just to shorten compilation without measuring artifact size
+and checking the user's storage budget. Quick-check remains the debug loop.
 
 Do not merge automatically during stabilization. If merging is authorized,
 require the applicable gates, squash-merge, then rebase other authorized open
 PRs onto the new base and rerun their gates. Honor any user-specified ordering.
 Do not force-push a shared branch without the required authority.
+
+After a successful PR merge, delete that PR's source/head branch so merged
+branches do not accumulate. Use `gh pr merge --squash --delete-branch` when
+appropriate, or delete the verified remote head branch after confirming the
+merge succeeded. Never delete the destination/base branch. Remove the local
+source branch too when it is not checked out or needed by another worktree;
+preserve uncommitted work and report any blocked cleanup rather than forcing
+worktree removal. Do not delete an open/unmerged PR's branch as cleanup.
 
 Completion reports must distinguish: changed, checked, passed, failed, skipped,
 and still unverified. Include the tested SHA/run links and any remaining gate.

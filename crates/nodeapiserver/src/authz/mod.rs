@@ -90,7 +90,7 @@ pub async fn request_allowed(
             vec!["system:unauthenticated".to_string()],
         ),
     };
-    let resolved = resolve::rules_for(storage, user_name, &user_groups, &info.namespace, cache_registry).await;
+    let resolved = resolve::rules_for(storage, user_name, &user_groups, &info.namespace).await;
     let attrs = rbac::RequestAttributes {
         is_resource_request: info.is_resource_request,
         verb: &info.verb,

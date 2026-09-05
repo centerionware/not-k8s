@@ -445,10 +445,6 @@ struct NodeapiserverAuditWebhookOverride {
 }
 
 impl NodeapiserverAuditWebhookOverride {
-    fn install(url: &str) -> Result<Self> {
-        Self::install_with_policy(url, None)
-    }
-
     fn install_with_policy(url: &str, policy: Option<&str>) -> Result<Self> {
         if !systemd_service_available("nodeapiserver.service") {
             return Err(skip_test(
@@ -2543,11 +2539,6 @@ pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
         "metadata": {"name": "one-pod", "namespace": &namespace_name},
         "spec": {"hard": {"pods": "1"}}
     }))?;
-    let service_account: ServiceAccount = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "ServiceAccount",
-        "metadata": {"name": "default", "namespace": &namespace_name}
-    }))?;
     let pod = |name: &str| -> Result<Pod> {
         Ok(serde_json::from_value(json!({
             "apiVersion": "v1",
@@ -2567,10 +2558,19 @@ pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
             .create(&PostParams::default(), &namespace)
             .await
             .context("creating the ResourceQuota namespace")?;
-        service_accounts
-            .create(&PostParams::default(), &service_account)
-            .await
-            .context("creating the ResourceQuota ServiceAccount")?;
+        // `default` is created asynchronously by nodecontroller. Creating it
+        // in this fixture races the controller and fails with an incidental
+        // AlreadyExists when the controller wins the race.
+        context
+            .wait_until(
+                "the ResourceQuota namespace's default ServiceAccount",
+                Duration::from_secs(30),
+                || {
+                    let service_accounts = service_accounts.clone();
+                    async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+                },
+            )
+            .await?;
         quotas
             .create(&PostParams::default(), &quota)
             .await
@@ -2591,9 +2591,6 @@ pub(super) async fn nodeapiserver_serializes_resource_quota_creates(
     let _ = pods.delete("quota-first", &DeleteParams::default()).await;
     let _ = pods.delete("quota-second", &DeleteParams::default()).await;
     let _ = quotas.delete("one-pod", &DeleteParams::default()).await;
-    let _ = service_accounts
-        .delete("default", &DeleteParams::default())
-        .await;
     let _ = namespaces
         .delete(&namespace_name, &DeleteParams::default())
         .await;
@@ -3090,18 +3087,33 @@ pub(super) async fn nodeapiserver_serves_workload_scale_subresource(context: &E2
         anyhow::ensure!(initial["spec"]["replicas"] == 1, "scale GET returned the wrong desired replica count: {initial}");
         let resource_version = initial["metadata"]["resourceVersion"].as_str().context("scale GET returned no resourceVersion")?.to_string();
 
-        let replacement = json!({
+        let mut replacement = json!({
             "apiVersion": "autoscaling/v1",
             "kind": "Scale",
             "metadata": {"name": name.clone(), "namespace": context.namespace.clone(), "resourceVersion": resource_version},
             "spec": {"replicas": 2}
         });
-        let put = Request::builder()
-            .method("PUT")
-            .uri(&scale_uri)
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_vec(&replacement)?)?;
-        let updated: Value = context.client.request(put).await.context("updating the Deployment Scale")?;
+        // Scale shares its resourceVersion with Deployment status writers.
+        // A conditional PUT must refresh that precondition after a 409.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let updated: Value = loop {
+            let put = Request::builder()
+                .method("PUT")
+                .uri(&scale_uri)
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_vec(&replacement)?)?;
+            match context.client.request::<Value>(put).await {
+                Ok(updated) => break updated,
+                Err(kube::Error::Api(status)) if status.code == 409 && tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let latest: Value = context.client.request(
+                        Request::builder().method("GET").uri(&scale_uri).body(Vec::new())?
+                    ).await.context("refreshing the Scale resourceVersion after a conflict")?;
+                    replacement["metadata"]["resourceVersion"] = latest["metadata"]["resourceVersion"].clone();
+                }
+                Err(error) => return Err(error).context("updating the Deployment Scale"),
+            }
+        };
         anyhow::ensure!(updated["spec"]["replicas"] == 2, "scale PUT returned the wrong desired replica count: {updated}");
 
         let parent: Value = context
@@ -3111,13 +3123,18 @@ pub(super) async fn nodeapiserver_serves_workload_scale_subresource(context: &E2
             .context("reading the scaled Deployment")?;
         anyhow::ensure!(parent["spec"]["replicas"] == 2, "scale PUT did not update the parent Deployment: {parent}");
 
-        let patch = Request::builder()
-            .method("PATCH")
-            .uri(&scale_uri)
-            .header("Content-Type", "application/merge-patch+json")
-            .body(br#"{"spec":{"replicas":1}}"#.to_vec())?;
-        let patched: Value = context.client.request(patch).await.context("patching the Deployment Scale")?;
-        anyhow::ensure!(patched["spec"]["replicas"] == 1, "scale PATCH returned the wrong desired replica count: {patched}");
+        // Deliberately do not retry these unconditional PATCH requests in
+        // the client. The server must merge against fresh parent state when
+        // controller status updates race its internal compare-and-swap.
+        for _ in 0..16 {
+            let patch = Request::builder()
+                .method("PATCH")
+                .uri(&scale_uri)
+                .header("Content-Type", "application/merge-patch+json")
+                .body(br#"{"spec":{"replicas":1}}"#.to_vec())?;
+            let patched: Value = context.client.request(patch).await.context("patching the Deployment Scale")?;
+            anyhow::ensure!(patched["spec"]["replicas"] == 1, "scale PATCH returned the wrong desired replica count: {patched}");
+        }
 
         let final_parent: Value = context
             .client
@@ -6962,6 +6979,7 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     let roles: Api<ClusterRole> = Api::all(context.client.clone());
     let bindings: Api<ClusterRoleBinding> = Api::all(context.client.clone());
     let csrs: Api<CertificateSigningRequest> = Api::all(context.client.clone());
+    let nodes: Api<Node> = Api::all(context.client.clone());
     let service_account: ServiceAccount = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "ServiceAccount",
@@ -7125,6 +7143,24 @@ pub(super) async fn tls_bootstrap_issues_a_real_client_certificate(
     .await;
     let _ = nodelet.kill();
     let _ = nodelet.wait();
+    // The temporary nodelet registers a real Node before this fixture can
+    // prove the issued kubeconfig.  Killing the process does not remove that
+    // Node, and the scheduler is allowed to place later Pods on it.  Such a
+    // stale Node has no kubelet behind it, so every later Pod assigned there
+    // remains Pending and makes unrelated tests look flaky.
+    if nodes
+        .delete(&node_name, &DeleteParams::default())
+        .await
+        .is_ok()
+    {
+        let _ = context
+            .wait_until("temporary TLS bootstrap Node to disappear", Duration::from_secs(30), || {
+                let nodes = nodes.clone();
+                let node_name = node_name.clone();
+                async move { Ok(nodes.get_opt(&node_name).await?.is_none()) }
+            })
+            .await;
+    }
     if let Some(csr_name) = csr_name_for_cleanup {
         let _ = csrs.delete(&csr_name, &DeleteParams::default()).await;
     }

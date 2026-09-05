@@ -2,7 +2,7 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Secret};
 use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, PostParams};
 use kube::core::{GroupVersionKind, ObjectMeta};
 use kube::discovery::ApiResource;
@@ -68,6 +68,77 @@ fn run_kubectl(args: &[&str]) -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
+}
+
+fn print_cert_manager_diagnostics() {
+    for args in [
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "get",
+            "pods,deployments,replicasets",
+            "-o",
+            "wide",
+        ][..],
+        &["-n", CERT_MANAGER_NAMESPACE, "describe", "pods"][..],
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "logs",
+            "--all-containers",
+            "--prefix",
+            "--tail=200",
+            "-l",
+            "app.kubernetes.io/instance=cert-manager",
+        ][..],
+        &[
+            "get",
+            "clusterrole",
+            "cert-manager-cainjector",
+            "-o",
+            "yaml",
+        ][..],
+        &[
+            "get",
+            "clusterrolebinding",
+            "cert-manager-cainjector",
+            "-o",
+            "yaml",
+        ][..],
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "get",
+            "role",
+            "cert-manager-webhook:dynamic-serving",
+            "-o",
+            "yaml",
+        ][..],
+        &[
+            "-n",
+            CERT_MANAGER_NAMESPACE,
+            "get",
+            "rolebinding",
+            "cert-manager-webhook:dynamic-serving",
+            "-o",
+            "yaml",
+        ][..],
+    ] {
+        let output = Command::new("kubectl").args(args).output();
+        match output {
+            Ok(output) => {
+                eprintln!("cert-manager diagnostics: kubectl {}", args.join(" "));
+                eprint!("{}", String::from_utf8_lossy(&output.stdout));
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            Err(error) => {
+                eprintln!(
+                    "cert-manager diagnostics: kubectl {} could not run: {error}",
+                    args.join(" ")
+                );
+            }
+        }
+    }
 }
 
 fn cert_manager_manifest_url() -> String {
@@ -155,17 +226,88 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
     );
     let deployments: Api<Deployment> =
         Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
+    let namespaces: Api<Namespace> = Api::all(context.client.clone());
+    let cert_manager_configmaps: Api<ConfigMap> =
+        Api::namespaced(context.client.clone(), CERT_MANAGER_NAMESPACE);
     let secrets: Api<Secret> = Api::namespaced(context.client.clone(), &context.namespace);
     let configmaps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
 
     let result = async {
+        // This test uses cert-manager's upstream fixed namespace because the
+        // manifest and its admission webhooks refer to it by name. A prior
+        // interrupted run can leave that Namespace Active or Terminating;
+        // applying into it then mixes old Deployments and ServiceAccounts with
+        // this run and makes readiness failures look like CRD-discovery bugs.
+        if namespaces
+            .get_opt(CERT_MANAGER_NAMESPACE)
+            .await?
+            .is_some()
+        {
+            match namespaces
+                .delete(CERT_MANAGER_NAMESPACE, &DeleteParams::default())
+                .await
+            {
+                Ok(_) => {}
+                Err(kube::Error::Api(error)) if error.is_not_found() => {}
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "deleting the stale cert-manager Namespace: {error}"
+                    ));
+                }
+            }
+            context
+                .wait_until(
+                    "the stale cert-manager Namespace to disappear",
+                    Duration::from_secs(120),
+                    || {
+                        let namespaces = namespaces.clone();
+                        async move {
+                            Ok(namespaces.get_opt(CERT_MANAGER_NAMESPACE).await?.is_none())
+                        }
+                    },
+                )
+                .await?;
+        }
+        namespaces
+            .create(
+                &PostParams::default(),
+                &Namespace {
+                    metadata: ObjectMeta {
+                        name: Some(CERT_MANAGER_NAMESPACE.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("creating the cert-manager Namespace before its workloads")?;
+        // cert-manager Pods use the namespace's projected service-account
+        // volume. Applying the Deployments before the root-CA publisher has
+        // materialized this ConfigMap races nodelet's first sandbox setup;
+        // the containers can then fail before their normal readiness checks
+        // ever have a chance to run.
+        context
+            .wait_until(
+                "cert-manager Namespace to receive kube-root-ca.crt",
+                Duration::from_secs(60),
+                || {
+                    let cert_manager_configmaps = cert_manager_configmaps.clone();
+                    async move {
+                        Ok(cert_manager_configmaps
+                            .get_opt("kube-root-ca.crt")
+                            .await?
+                            .is_some())
+                    }
+                },
+            )
+            .await?;
         run_kubectl(["apply", "-f", manifest_url.as_str()].as_slice())
             .context("installing cert-manager and its CRDs")?;
 
         context
             .wait_until(
                 "cert-manager deployments to become ready",
-                Duration::from_secs(120),
+                Duration::from_secs(180),
                 || {
                     let deployments = deployments.clone();
                     async move {
@@ -244,28 +386,53 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
             )
             .await?;
 
-        let applied_issuer = issuers
-            .patch(
-                &issuer_name,
-                &PatchParams::apply("nodebootstrap-e2e"),
-                &Patch::Apply(json!({
-                    "apiVersion": "cert-manager.io/v1",
-                    "kind": "ClusterIssuer",
-                    "metadata": {"name": issuer_name},
-                    "spec": {"selfSigned": {}}
-                })),
-            )
-            .await
-            .context("applying a CRD-backed ClusterIssuer through server-side apply")?;
+        let applied_issuer = {
+            let mut applied = None;
+            for attempt in 0..30 {
+                match issuers
+                    .patch(
+                        &issuer_name,
+                        &PatchParams::apply("nodebootstrap-e2e"),
+                        &Patch::Apply(json!({
+                            "apiVersion": "cert-manager.io/v1",
+                            "kind": "ClusterIssuer",
+                            "metadata": {"name": issuer_name},
+                            "spec": {"selfSigned": {}}
+                        })),
+                    )
+                    .await
+                {
+                    Ok(value) => {
+                        applied = Some(value);
+                        break;
+                    }
+                    Err(kube::Error::Api(error))
+                        if error.code == 409 && attempt + 1 < 30 =>
+                    {
+                        // cert-manager updates the issuer status immediately
+                        // after creation. Re-run the Apply against the latest
+                        // object when that status write wins the optimistic
+                        // concurrency race, just as an informer-backed client
+                        // would retry its reconciliation.
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .context("applying a CRD-backed ClusterIssuer through server-side apply");
+                    }
+                }
+            }
+            applied.context("timed out retrying a CRD-backed ClusterIssuer server-side apply")?
+        };
         anyhow::ensure!(
             applied_issuer.data.pointer("/spec/selfSigned").is_some(),
             "server-side apply did not preserve the CRD-backed ClusterIssuer spec"
         );
         if nodeapiserver_target {
+            let applied_metadata = serde_json::to_value(&applied_issuer.metadata)?;
             anyhow::ensure!(
-                applied_issuer
-                    .data
-                    .pointer("/metadata/managedFields")
+                applied_metadata
+                    .pointer("/managedFields")
                     .and_then(Value::as_array)
                     .is_some_and(|entries| {
                         entries.iter().any(|entry| {
@@ -367,6 +534,10 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
         Ok::<(), anyhow::Error>(())
     }
     .await;
+
+    if result.is_err() {
+        print_cert_manager_diagnostics();
+    }
 
     let _ = issuers.delete(&issuer_name, &DeleteParams::default()).await;
     let _ = configmaps

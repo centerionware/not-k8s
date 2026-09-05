@@ -140,25 +140,31 @@ where
                 .acquire_owned()
                 .await
                 .expect("nodecontroller watch startup semaphore was closed"));
-            let stream = watcher(api, watch_config()).backoff(WatchBackoffPolicy::default());
-            futures::pin_mut!(stream);
-            while let Some(result) = stream.next().await {
-                let Ok(event) = result else {
-                    tracing::warn!("shared nodecontroller watch received an error; kube-rs will retry it");
-                    continue;
-                };
+            loop {
+                let stream = watcher(api.clone(), watch_config()).backoff(WatchBackoffPolicy::default());
+                futures::pin_mut!(stream);
+                while let Some(result) = stream.next().await {
+                    let event = match result {
+                        Ok(event) => event,
+                        Err(error) => {
+                            tracing::warn!(resource = %std::any::type_name::<T>(), error = ?error,
+                                "shared nodecontroller watch received an error; kube-rs will retry it");
+                            continue;
+                        }
+                    };
 
-                let initial_done = matches!(&event, Event::InitDone);
-                task_shared.apply(&event);
-                let _ = task_shared.events.send(event);
-                if initial_done && startup_permit.is_some() {
-                    // Only the initial snapshot is admission-controlled. The
-                    // live watch remains active after this point, like an
-                    // upstream shared informer.
-                    drop(startup_permit.take());
+                    let initial_done = matches!(&event, Event::InitDone);
+                    task_shared.apply(&event);
+                    let _ = task_shared.events.send(event);
+                    if initial_done && startup_permit.is_some() {
+                        // Only the initial snapshot is admission-controlled.
+                        // Steady-state watches remain independent.
+                        drop(startup_permit.take());
+                    }
                 }
+                tracing::warn!(resource = %std::any::type_name::<T>(), "shared nodecontroller watch ended; restarting");
+                tokio::time::sleep(WATCH_MAX_BACKOFF).await;
             }
-            tracing::warn!("shared nodecontroller watch ended");
         });
 
         shared
@@ -172,7 +178,7 @@ where
         match event {
             Event::Init => {
                 self.objects.lock().expect("shared watch object store poisoned").clear();
-                let _ = self.ready.send(false);
+                self.ready.send_replace(false);
             }
             Event::InitApply(object) | Event::Apply(object) => {
                 self.objects
@@ -187,7 +193,7 @@ where
                     .remove(&Self::object_key(object));
             }
             Event::InitDone => {
-                let _ = self.ready.send(true);
+                self.ready.send_replace(true);
             }
         }
     }
@@ -502,6 +508,21 @@ pub fn watch_resource_claim_templates(
     watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
+/// Watch a discovered resource through its metadata representation. Discovery
+/// can expose many CRD kinds, so these streams must use the same start-failure
+/// backoff as the shared typed informers. Without it, an apiserver restart or
+/// a relist after HTTP 410 makes every GC stream immediately retry its LIST,
+/// creating a request storm that starves the ordinary controllers.
+pub fn watch_dynamic_metadata_resource(
+    client: &Client,
+    resource: &ApiResource,
+) -> BoxStream<'static, watcher::Result<Event<PartialObjectMeta<DynamicObject>>>> {
+    let api: Api<PartialObjectMeta<DynamicObject>> = Api::all_with(client.clone(), resource);
+    watcher(api, watch_config())
+        .backoff(WatchBackoffPolicy::default())
+        .boxed()
+}
+
 /// Return the shared typed watch for a built-in namespaced resource in the
 /// shape the generic garbage collector consumes. Keeping this conversion
 /// here lets GC reuse the same underlying watch as the typed controllers
@@ -537,6 +558,31 @@ pub fn watch_dynamic_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_late_subscriber_receives_the_completed_snapshot() {
+        let (ready, _) = ready_watch::channel(false);
+        let (events, _) = broadcast::channel(2);
+        let shared = Arc::new(SharedWatch::<Namespace> {
+            objects: Mutex::new(HashMap::new()), ready, events,
+        });
+        let mut namespace = Namespace::default();
+        namespace.metadata.name = Some("after-restart".into());
+        shared.apply(&Event::Init);
+        shared.apply(&Event::InitApply(namespace));
+        // There are no subscribers yet. send() would lose this readiness
+        // value, parking a subsequent GC subscription forever.
+        shared.apply(&Event::InitDone);
+        let mut subscription = shared.subscribe();
+        let events = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut events = Vec::new();
+            for _ in 0..3 { events.push(subscription.next().await.unwrap().unwrap()); }
+            events
+        }).await.expect("late subscribers must not wait for another relist");
+        assert!(matches!(&events[0], Event::Init));
+        assert!(matches!(&events[1], Event::InitApply(ns) if ns.name_any() == "after-restart"));
+        assert!(matches!(&events[2], Event::InitDone));
+    }
 
     #[test]
     fn no_failures_means_no_wait() {

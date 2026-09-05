@@ -186,8 +186,18 @@ fn build_from_source(cfg: &Config) -> Result<()> {
             }
         }
     }
-    cargo_build(cfg, &repo_root, &["-p", "nodebootstrap"])?;
-    stage("nodebootstrap")?;
+    if matches!(cfg.layout, Layout::Combined) {
+        // The default combined target already links the installer applet.
+        // Do not pay for a second fat-LTO executable with the same code.
+        let link = dest_dir.join("nodebootstrap");
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("notk8s", &link)
+            .with_context(|| format!("symlinking {}", link.display()))?;
+    } else {
+        cargo_build(cfg, &repo_root, &["-p", "nodebootstrap"])?;
+        stage("nodebootstrap")?;
+    }
     Ok(())
 }
 

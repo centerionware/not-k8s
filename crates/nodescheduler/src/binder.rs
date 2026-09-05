@@ -45,6 +45,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, PartialEq, Eq)]
 pub enum BindOutcome {
     Bound,
+    /// The Pod was deleted or began deletion while this bind was in flight.
+    /// Release the assumption, but do not put the dead object back in the
+    /// queue.
+    Cancelled { reason: String },
     /// Rejected in a way that means "try again later" rather than "this is
     /// broken" — the pod goes back through the normal unschedulable path.
     Rejected { reason: String, plugins: Vec<&'static str> },
@@ -62,6 +66,7 @@ pub enum BindOutcome {
 /// plugin's registered events could fix it.
 pub fn classify_failure(status: &Status) -> BindOutcome {
     match status.code {
+        Code::Cancelled => BindOutcome::Cancelled { reason: status.to_string() },
         Code::Unschedulable | Code::UnschedulableAndUnresolvable | Code::Pending => {
             BindOutcome::Rejected {
                 reason: status.to_string(),
@@ -177,6 +182,16 @@ pub fn handle_outcome(
             // pod — see cache/assume.rs for why releasing here would be wrong.
             assumed.lock().unwrap().finish_binding(&pod.uid);
         }
+        BindOutcome::Cancelled { reason } => {
+            tracing::info!(pod = %pod.key(), %reason, "binding cycle cancelled for deleted pod");
+            release(&pod, assumed, cache);
+            queue.remove(&pod.uid);
+            queue.move_all_to_active_or_backoff(
+                ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE),
+                None,
+                None,
+            );
+        }
         BindOutcome::Rejected { reason, plugins } => {
             tracing::info!(pod = %pod.key(), %reason, "binding cycle rejected the pod");
             release(&pod, assumed, cache);
@@ -269,6 +284,15 @@ mod tests {
         match out {
             BindOutcome::Failed { reason } => assert!(reason.contains("connection refused")),
             other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cancelled_bind_is_not_requeued() {
+        let out = classify_failure(&Status::cancelled("DefaultBinder", "pod is terminating"));
+        match out {
+            BindOutcome::Cancelled { reason } => assert!(reason.contains("terminating")),
+            other => panic!("expected Cancelled, got {other:?}"),
         }
     }
 

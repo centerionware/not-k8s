@@ -41,6 +41,7 @@ p256 = { version = "0.13", features = ["pem", "pkcs8"] }
 x509-parser = "0.16"
 pem = "3"
 base64 = "0.22"
+chrono = { workspace = true }
 
 # HTTP fetch (pkg.rs::fetch_url, targets/upstream.rs's readyz check) is a
 # real Rust client, not a `curl`/`wget` subprocess -- `ureq` because it's

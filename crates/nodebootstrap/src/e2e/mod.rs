@@ -5,9 +5,8 @@
 //! they exercise so each file remains focused as the shell suite is migrated.
 
 use anyhow::{bail, Context, Result};
-use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node, ServiceAccount};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::api::{Api, DeleteParams, ListParams, PostParams};
+use k8s_openapi::api::core::v1::{Endpoints, Namespace, Node};
+use kube::api::{Api, ListParams};
 use kube::{Client, Config as KubeConfig};
 use std::error::Error;
 use std::fmt;
@@ -1521,7 +1520,9 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     let mut skipped = 0;
     for name in selected {
         let started = Instant::now();
-        print!("▶ {name} ... ");
+        let started_at = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        print!("▶ {started_at} {name} ... ");
         let _ = std::io::stdout().flush();
         // The shell harness gave every test a fresh namespace and removed it
         // before the next test started. Reusing one namespace here left every
@@ -1753,7 +1754,7 @@ fn reorder_environment_reconfiguring_tests(selected: Vec<&'static str>) -> Vec<&
 fn is_environment_reconfiguring_test(name: &str) -> bool {
     matches!(
         name,
-        "test_pending_pod_recovers_after_the_node_failure_is_fixed"
+        "test_a_pending_pod_recovers_after_the_node_failure_is_fixed"
             | "test_config_file_sets_a_value_env_did_not_override"
             | "test_config_file_precedence_a_real_env_var_still_wins"
             | "test_config_dir_merges_files_in_filename_order"
@@ -2898,6 +2899,13 @@ mod tests {
                  but is missing from is_environment_reconfiguring_test()"
             );
         }
+    }
+
+    #[test]
+    fn node_recovery_fixture_is_deferred_with_other_environment_changes() {
+        assert!(is_environment_reconfiguring_test(
+            "test_a_pending_pod_recovers_after_the_node_failure_is_fixed"
+        ));
     }
 
     #[test]

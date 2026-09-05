@@ -69,7 +69,7 @@ macro_rules! handle_reviews {
         // namespace naturally restricts to just those, no separate branch
         // needed.
         let resolve_namespace = if review.is_resource { review.namespace.as_str() } else { "" };
-        let resolved = authz::resolve::rules_for(&mut client, &review.user_name, &review.user_groups, resolve_namespace, None).await;
+        let resolved = authz::resolve::rules_for(&mut client, &review.user_name, &review.user_groups, resolve_namespace).await;
         let attrs = authz::rbac::RequestAttributes {
             is_resource_request: review.is_resource,
             verb: &review.verb,
@@ -111,7 +111,7 @@ macro_rules! handle_reviews {
             None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
         let review_namespace = body_value.pointer("/spec/namespace").and_then(serde_json::Value::as_str).unwrap_or("");
-        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, review_namespace, None).await;
+        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, review_namespace).await;
         let mut response_body = body_value;
         response_body["status"] = authz::sar::build_rules_status(&resolved.rules, &resolved.errors);
         return Ok(json_response(StatusCode::CREATED, &response_body));

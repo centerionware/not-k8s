@@ -509,13 +509,4 @@ async fn compare_managed_fields_in_recorded_versions(
     Ok(comparisons)
 }
 
-/// The "prepare" half of [`server_side_apply`]: resolves the resource,
-/// reads the current object (if any), runs the real `updater::apply`
-/// orchestration, rebuilds `managedFields`, and validates/defaults the
-/// result — everything short of the actual `Txn` write, so a caller can
-/// run Group J admission against the real candidate object in between
-/// (`server::listener`'s own `PATCH` branch does exactly this for
-/// `LimitRanger`, mirroring how [`patch_prepare`]/[`patch_persist`]
-/// already split for the same reason).
-
 include!("apply_prepare.rs");

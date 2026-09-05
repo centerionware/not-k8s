@@ -19,11 +19,12 @@
 //!   always captured for `list`/`watch`/`deletecollection`, matching what
 //!   that gate does once *enabled* (real upstream still guards it because
 //!   this project has no larger feature-gate system yet to hang a gate on).
-//! - No `ListOptions` field-selector-driven `metadata.name` extraction for
-//!   a `list` whose selector happens to pin one name exactly — real
-//!   upstream's `NewRequestInfo` does this via a full
-//!   `metainternalversion.ListOptions` decode; this crate has no such type
-//!   yet (Group F). `Name` on a nameless `list`/`watch` stays empty here.
+//! - List/watch selector parsing is intentionally kept to this crate's small
+//!   field-selector parser rather than pulling in upstream's full
+//!   `metainternalversion.ListOptions` type. The one
+//!   authorization-critical part of that decode — an exact `metadata.name`
+//!   selector — is still reflected in `Name`, matching upstream's
+//!   `RequestInfoFactory`.
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestInfo {
@@ -170,6 +171,25 @@ pub fn parse(method: &str, path: &str, query: &str) -> RequestInfo {
         if let Some((_, v)) = params.iter().find(|(k, _)| k == "labelSelector") {
             info.label_selector = v.clone();
         }
+
+        // Upstream turns a list/watch filtered by exactly
+        // `metadata.name=<name>` into a request with `RequestInfo.Name` set.
+        // This matters to RBAC: a Role rule with `resourceNames` authorizes a
+        // named list/watch, but must not authorize an unfiltered collection.
+        // The reflector used by cert-manager's webhook relies on precisely
+        // this behavior for its `cert-manager-webhook-ca` Secret.
+        if info.name.is_empty() && matches!(info.verb.as_str(), "list" | "watch") {
+            if let Ok(requirements) = crate::cacher::selector::parse_field_selector(&info.field_selector) {
+                if let [requirement] = requirements.as_slice() {
+                    if requirement.field == "metadata.name"
+                        && !requirement.negated
+                        && is_valid_path_segment_name(&requirement.value)
+                    {
+                        info.name = requirement.value.clone();
+                    }
+                }
+            }
+        }
     }
 
     // `limit`/`continue` are `LIST`-only — real upstream's own
@@ -221,6 +241,13 @@ pub(crate) fn parse_query(query: &str) -> Vec<(String, String)> {
             (percent_decode(k), percent_decode(v))
         })
         .collect()
+}
+
+/// The upstream `content.IsPathSegmentName` check used while copying an
+/// exact `metadata.name` selector into `RequestInfo.Name`. A selector value
+/// is not allowed to smuggle a second path segment into authorization.
+fn is_valid_path_segment_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/')
 }
 
 fn percent_decode(s: &str) -> String {
@@ -392,6 +419,29 @@ mod tests {
         assert_eq!(i.verb, "list");
         assert_eq!(i.field_selector, "metadata.name=foo");
         assert_eq!(i.label_selector, "app=web");
+    }
+
+    #[test]
+    fn an_exact_metadata_name_selector_populates_name_for_list_and_watch() {
+        for (query, verb) in [("fieldSelector=metadata.name%3Dfoo", "list"), ("watch=true&fieldSelector=metadata.name%3Dfoo", "watch"), ("fieldSelector=metadata.name%3D%3Dfoo", "list")] {
+            let i = parse("GET", "/api/v1/namespaces/default/secrets", query);
+            assert_eq!(i.verb, verb);
+            assert_eq!(i.name, "foo");
+            assert_eq!(i.resource, "secrets");
+        }
+    }
+
+    #[test]
+    fn a_non_exact_metadata_name_selector_does_not_populate_name() {
+        for query in [
+            "fieldSelector=metadata.name%3Dfoo%2Cstatus.phase%3DRunning",
+            "fieldSelector=metadata.name!%3Dfoo",
+            "fieldSelector=metadata.namespace%3Dfoo",
+            "fieldSelector=metadata.name%3Dfoo%2Fbar",
+        ] {
+            let i = parse("GET", "/api/v1/namespaces/default/secrets", query);
+            assert!(i.name.is_empty(), "selector {query:?} must remain a collection request");
+        }
     }
 
     #[test]

@@ -122,8 +122,25 @@ mod tests {
         // really did take the {seconds, nanos} message path, not fall
         // back to string encoding.
         assert!(!bytes.is_empty());
-        let decoded = decode_time_message("Time", &bytes).unwrap();
+        let decoded = decode_time_message(
+            "io.k8s.apimachinery.pkg.apis.meta.v1.Time",
+            "Time",
+            &bytes,
+        )
+        .unwrap();
         assert_eq!(decoded, json!("2024-01-15T10:30:00Z"));
+    }
+
+    #[test]
+    fn micro_time_round_trips_with_the_precision_required_by_go_clients() {
+        let bytes = encode_time_string("MicroTime", "2024-01-15T10:30:00.123456Z").unwrap();
+        let decoded = decode_time_message(
+            "io.k8s.apimachinery.pkg.apis.meta.v1.MicroTime",
+            "MicroTime",
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(decoded, json!("2024-01-15T10:30:00.123456Z"));
     }
 
     /// Real bug, found live: `tests/aggregator_proxy_roundtrip.rs`'s own
@@ -243,7 +260,12 @@ mod tests {
         // convention this codec already established elsewhere.
         let bytes = encode_time_string("Time", "1970-01-01T00:00:00Z").unwrap();
         assert!(bytes.is_empty());
-        let decoded = decode_time_message("Time", &bytes).unwrap();
+        let decoded = decode_time_message(
+            "io.k8s.apimachinery.pkg.apis.meta.v1.Time",
+            "Time",
+            &bytes,
+        )
+        .unwrap();
         assert_eq!(decoded, json!("1970-01-01T00:00:00Z"));
     }
 

@@ -92,10 +92,6 @@ pub const MAGIC: [u8; 4] = *b"k8s\0";
 
 const UNKNOWN_MESSAGE: &str = "io.k8s.apimachinery.pkg.runtime.Unknown";
 
-/// Encode `value` (a JSON object shaped like `message`'s fields) as a raw
-/// protobuf message body — no envelope, no magic bytes. Use
-/// [`wrap_unknown`] to produce the full wire payload the apiserver
-/// actually sends.
 include!("protobuf_encode.rs");
 include!("protobuf_decode.rs");
 include!("protobuf_envelope.rs");

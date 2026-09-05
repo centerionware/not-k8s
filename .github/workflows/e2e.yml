@@ -112,8 +112,10 @@ jobs:
           NOTK8S_BUILD_LAYOUT=combined \
           NOTK8S_BUILD_PROFILE=release \
             ./target/debug/nodebootstrap fetch
-          install -m0755 "$stage/bin/nodebootstrap" e2e-bin/nodebootstrap
           install -m0755 "$stage/bin/notk8s" e2e-bin/notk8s
+          # The installer is already an applet. Upload one release binary,
+          # not a second copy dereferenced from its nodebootstrap symlink.
+          e2e-bin/notk8s components | grep -Fx nodebootstrap
 
       - uses: actions/upload-artifact@v4
         with:
@@ -146,7 +148,8 @@ jobs:
           ONLY: ${{ inputs.only }}
         run: |
           set -euo pipefail
-          chmod +x dist-bin/nodebootstrap
+          chmod +x dist-bin/notk8s
+          ln -s notk8s dist-bin/nodebootstrap
           args=(--e2e-list)
           [[ -z "$ONLY" ]] || args+=("--only=$ONLY")
           matrix='{"include":[]}'
@@ -216,7 +219,8 @@ jobs:
           mkdir -p "$no_kubectl"
           printf '#!/bin/sh\necho "unexpected install-time kubectl invocation" >&2\nexit 127\n' > "$no_kubectl/kubectl"
           chmod +x "$no_kubectl/kubectl"
-          chmod +x dist-bin/nodebootstrap dist-bin/notk8s
+          chmod +x dist-bin/notk8s
+          ln -s notk8s dist-bin/nodebootstrap
           PATH="$no_kubectl:$PATH" sudo -E env PATH="$no_kubectl:$PATH" \
             NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
             NOTK8S_BUILD_LAYOUT=combined \

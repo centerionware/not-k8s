@@ -211,8 +211,8 @@ async fn validate_pod(
     storage: &mut StorageClient,
     node_name: &str,
     operation: Operation,
-    namespace: &str,
-    name: &str,
+    _namespace: &str,
+    _name: &str,
     object: Option<&Value>,
     old_object: Option<&Value>,
 ) -> Result<(), Error> {

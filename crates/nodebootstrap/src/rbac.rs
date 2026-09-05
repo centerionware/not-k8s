@@ -643,6 +643,19 @@ rules:
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:discovery
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:authenticated
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: system:public-info-viewer
@@ -831,6 +844,7 @@ mod tests {
             "name: cluster-admin",
             "name: system:kube-scheduler",
             "name: system:kube-controller-manager",
+            "name: system:discovery",
             "name: \"system:controller:replicaset-controller\"",
             "name: system:public-info-viewer",
             "name: system:monitoring",

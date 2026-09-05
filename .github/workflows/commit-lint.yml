@@ -17,39 +17,17 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Test the subject validator
+        run: python3 .github/scripts/test_commit_subjects.py
+
       - name: Check commit subjects
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          validate() {
-            local header="$1" description
-            [[ "$header" =~ ^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([A-Za-z0-9._/-]+\))?!?:[[:space:]].{10,}$ ]] || return 1
-            (( ${#header} <= 100 )) || return 1
-            [[ "$header" != *'  '* && "$header" != *. ]] || return 1
-            description="${header#*: }"
-            [[ ! "$description" =~ ^[A-Z][a-z] ]] || return 1
-            [[ ! "$description" =~ ^(wip|stuff|things|updates?|changes?|fixes?|misc|cleanup|minor|tweaks?)$ ]] || return 1
-          }
-          failed=0
-          while read -r sha; do
-            header="$(git log -1 --format=%s "$sha")"
-            if validate "$header"; then
-              echo "✔ ${sha:0:8} $header"
-            else
-              echo "✘ ${sha:0:8} $header"
-              failed=$((failed + 1))
-            fi
-          done < <(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA")
-          (( failed == 0 )) || exit 1
+        run: python3 .github/scripts/commit_subjects.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
       - name: Check the PR title
         if: always()
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          set -euo pipefail
-          [[ "$PR_TITLE" =~ ^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([A-Za-z0-9._/-]+\))?!?:[[:space:]].{10,}$ ]]
-          (( ${#PR_TITLE} <= 100 ))
-          [[ "$PR_TITLE" != *'  '* && "$PR_TITLE" != *. ]]
+        run: python3 .github/scripts/commit_subjects.py --subject "$PR_TITLE"

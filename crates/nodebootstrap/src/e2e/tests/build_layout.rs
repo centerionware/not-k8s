@@ -61,6 +61,12 @@ pub(super) async fn combined_binary_contains_every_component(
     };
 
     let components = component_names(&run_binary(&binary, &["components"])?)?;
+    anyhow::ensure!(
+        components.iter().any(|name| name == "nodebootstrap"),
+        "the combined source build must contain its installer applet"
+    );
+    let installer_help = run_binary(&binary, &["nodebootstrap", "--help"])?;
+    anyhow::ensure!(installer_help.status.success(), "combined installer --help failed");
     for component in crate::components::COMPONENTS {
         anyhow::ensure!(
             components.iter().any(|name| name == component.name),

@@ -55,8 +55,9 @@ pub async fn delete_with_options(
     // transaction is still the safety boundary, but surfacing its first
     // failed compare as a user-visible 409 leaves the object stuck in the
     // exact state the caller asked us to tear down. Re-read and retry only
-    // when the caller did not supply an explicit identity or resourceVersion
-    // precondition; those conflicts are intentional and must remain 409s.
+    // when the caller did not pin a resourceVersion. A UID identifies the
+    // incarnation, not its version: checking it again on each attempt is
+    // safe and allows GC to delete objects with concurrent status writers.
     let retries = if may_retry_delete_conflict(preconditions, dry_run) {
         DELETE_CONFLICT_RETRIES
     } else {
@@ -92,7 +93,7 @@ fn may_retry_delete_conflict(
 ) -> bool {
     !dry_run
         && preconditions.is_none_or(|preconditions| {
-            preconditions.resource_version.is_none() && preconditions.uid.is_none()
+            preconditions.resource_version.is_none()
         })
 }
 
@@ -453,7 +454,7 @@ mod delete_conflict_tests {
             }),
             false,
         ));
-        assert!(!may_retry_delete_conflict(
+        assert!(may_retry_delete_conflict(
             Some(&DeletePreconditions {
                 resource_version: None,
                 uid: Some("uid".to_string()),

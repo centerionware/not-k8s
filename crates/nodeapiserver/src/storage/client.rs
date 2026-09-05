@@ -142,6 +142,23 @@ impl StorageClient {
         Ok(self.kv.range(req).await?.into_inner())
     }
 
+    /// Reads the store's current MVCC revision without depending on any
+    /// particular Kubernetes resource. Callers that need a consistent
+    /// multi-resource snapshot use this revision on each subsequent range.
+    pub async fn current_revision(&mut self) -> Result<i64> {
+        Ok(self
+            .range(RangeRequest {
+                key: vec![0],
+                range_end: vec![1],
+                count_only: true,
+                ..Default::default()
+            })
+            .await?
+            .header
+            .map(|header| header.revision)
+            .unwrap_or(0))
+    }
+
     /// Performs a small read-only RPC against a key range that this server
     /// never uses.  The result is deliberately reduced to a boolean so the
     /// health endpoint cannot expose storage errors to an unauthenticated

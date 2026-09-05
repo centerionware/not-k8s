@@ -30,6 +30,11 @@ use std::time::Duration;
 
 const NAMESPACE_FINALIZER: &str = "kubernetes";
 const RETRY_PERIOD: Duration = Duration::from_secs(5);
+/// Every cleanup request is bounded so one unavailable API call cannot park
+/// the namespace controller's only reconciliation task forever. The retry
+/// timer below will enqueue the terminating Namespace again after a transient
+/// apiserver outage.
+const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Issue #557: a backstop, not the primary mechanism -- normal namespace
 /// deletion is finalizer-gated (#541) and cleans up contents before the
 /// Namespace object itself goes away, so this should almost never find
@@ -111,10 +116,10 @@ async fn delete_namespace_contents(
     for resource in resources {
         let api: Api<DynamicObject> =
             Api::namespaced_with(client.clone(), namespace, &resource.api_resource);
-        let objects = match api.list(&ListParams::default()).await {
-            Ok(objects) => objects,
-            Err(kube::Error::Api(status)) if status.is_not_found() => continue,
-            Err(error) => {
+        let objects = match tokio::time::timeout(API_REQUEST_TIMEOUT, api.list(&ListParams::default())).await {
+            Ok(Ok(objects)) => objects,
+            Ok(Err(kube::Error::Api(status))) if status.is_not_found() => continue,
+            Ok(Err(error)) => {
                 needs_retry = true;
                 tracing::warn!(
                     namespace,
@@ -125,12 +130,23 @@ async fn delete_namespace_contents(
                 );
                 continue;
             }
+            Err(_) => {
+                needs_retry = true;
+                tracing::warn!(
+                    namespace,
+                    kind = %resource.api_resource.kind,
+                    api_version = %resource.api_resource.api_version,
+                    timeout_secs = API_REQUEST_TIMEOUT.as_secs(),
+                    "namespace-controller timed out listing namespaced objects"
+                );
+                continue;
+            }
         };
 
         for object in objects.items {
             let name = object.name_any();
-            match api.delete(&name, &delete_params).await {
-                Ok(_) => {
+            match tokio::time::timeout(API_REQUEST_TIMEOUT, api.delete(&name, &delete_params)).await {
+                Ok(Ok(_)) => {
                     needs_retry = true;
                     tracing::debug!(
                         namespace,
@@ -139,8 +155,8 @@ async fn delete_namespace_contents(
                         "namespace-controller requested deletion of namespaced object"
                     );
                 }
-                Err(kube::Error::Api(status)) if status.is_not_found() => {}
-                Err(error) => {
+                Ok(Err(kube::Error::Api(status))) if status.is_not_found() => {}
+                Ok(Err(error)) => {
                     needs_retry = true;
                     tracing::warn!(
                         namespace,
@@ -148,6 +164,16 @@ async fn delete_namespace_contents(
                         name = %name,
                         error = ?error,
                         "namespace-controller failed to delete namespaced object"
+                    );
+                }
+                Err(_) => {
+                    needs_retry = true;
+                    tracing::warn!(
+                        namespace,
+                        kind = %resource.api_resource.kind,
+                        name = %name,
+                        timeout_secs = API_REQUEST_TIMEOUT.as_secs(),
+                        "namespace-controller timed out deleting namespaced object"
                     );
                 }
             }
@@ -170,13 +196,15 @@ async fn finalize_namespace(client: &Client, namespace: &Namespace) {
     });
 
     let api: Api<Namespace> = Api::all(client.clone());
-    if let Err(error) = api
-        .replace_subresource("finalize", &name, &PostParams::default(), &finalized)
-        .await
+    match tokio::time::timeout(
+        API_REQUEST_TIMEOUT,
+        api.replace_subresource("finalize", &name, &PostParams::default(), &finalized),
+    )
+    .await
     {
-        tracing::warn!(namespace = %name, error = ?error, "namespace-controller failed to remove the kubernetes finalizer");
-    } else {
-        tracing::info!(namespace = %name, "namespace-controller finalized Namespace");
+        Ok(Ok(_)) => tracing::info!(namespace = %name, "namespace-controller finalized Namespace"),
+        Ok(Err(error)) => tracing::warn!(namespace = %name, error = ?error, "namespace-controller failed to remove the kubernetes finalizer"),
+        Err(_) => tracing::warn!(namespace = %name, timeout_secs = API_REQUEST_TIMEOUT.as_secs(), "namespace-controller timed out removing the kubernetes finalizer"),
     }
 }
 
@@ -201,10 +229,14 @@ fn is_orphaned(pod_namespace: &str, namespaces: &HashMap<String, Namespace>) -> 
 
 async fn sweep_orphaned_pods(client: &Client, namespaces: &HashMap<String, Namespace>) {
     let api: Api<Pod> = Api::all(client.clone());
-    let pods = match api.list(&ListParams::default()).await {
-        Ok(pods) => pods,
-        Err(error) => {
+    let pods = match tokio::time::timeout(API_REQUEST_TIMEOUT, api.list(&ListParams::default())).await {
+        Ok(Ok(pods)) => pods,
+        Ok(Err(error)) => {
             tracing::warn!(error = ?error, "namespace-controller: orphan sweep failed to list Pods");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(timeout_secs = API_REQUEST_TIMEOUT.as_secs(), "namespace-controller: orphan sweep timed out listing Pods");
             return;
         }
     };
@@ -218,10 +250,16 @@ async fn sweep_orphaned_pods(client: &Client, namespaces: &HashMap<String, Names
             continue;
         }
         let name = pod.name_any();
-        match Api::<Pod>::namespaced(client.clone(), namespace).delete(&name, &delete_params).await {
-            Ok(_) => tracing::info!(namespace, name = %name, "namespace-controller: orphan sweep deleted a Pod whose namespace no longer exists"),
-            Err(kube::Error::Api(status)) if status.is_not_found() => {}
-            Err(error) => tracing::warn!(namespace, name = %name, error = ?error, "namespace-controller: orphan sweep failed to delete a Pod"),
+        match tokio::time::timeout(
+            API_REQUEST_TIMEOUT,
+            Api::<Pod>::namespaced(client.clone(), namespace).delete(&name, &delete_params),
+        )
+        .await
+        {
+            Ok(Ok(_)) => tracing::info!(namespace, name = %name, "namespace-controller: orphan sweep deleted a Pod whose namespace no longer exists"),
+            Ok(Err(kube::Error::Api(status))) if status.is_not_found() => {}
+            Ok(Err(error)) => tracing::warn!(namespace, name = %name, error = ?error, "namespace-controller: orphan sweep failed to delete a Pod"),
+            Err(_) => tracing::warn!(namespace, name = %name, timeout_secs = API_REQUEST_TIMEOUT.as_secs(), "namespace-controller: orphan sweep timed out deleting a Pod"),
         }
     }
 }
