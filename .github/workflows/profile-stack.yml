@@ -40,9 +40,11 @@ jobs:
       FLAMEGRAPH_DIR: ${{ github.workspace }}/.bootstrap/flamegraph-tools
       RUSTFLAGS: '-C force-frame-pointers=yes'
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/profile-stack-run
+      - name: Stack flamegraphs
+        uses: ./.github/actions/profile-stack-run
         with:
           source_ref: ${{ inputs.source_ref }}

@@ -1,4 +1,4 @@
-name: Capture and publish stack flamegraphs
+name: Stack flamegraphs
 description: Shared profiling steps for source and published binaries.
 inputs:
   source_ref:
@@ -10,14 +10,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Check out the exact source to profile
+    - name: Check out source
       if: inputs.release_tag == ''
       uses: actions/checkout@v7
       with:
         ref: ${{ inputs.source_ref }}
         path: profile-source
         persist-credentials: false
-    - name: Validate inputs and record source identity
+    - name: Record inputs
       shell: bash
       run: |
         set -euo pipefail
@@ -40,9 +40,10 @@ runs:
           lscpu
           free -h
         } > profile-data/metadata.txt
-    - uses: ./.github/actions/setup-toolchain
+    - name: Setup toolchain
+      uses: ./.github/actions/setup-toolchain
       if: inputs.release_tag == ''
-    - name: Install and verify profiling tools
+    - name: Install perf tools
       shell: bash
       run: |
         set -euo pipefail
@@ -63,7 +64,7 @@ runs:
         curl --fail --location --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl.sha256 -o /tmp/profile-kubectl.sha256
         echo "$(cat /tmp/profile-kubectl.sha256)  /tmp/profile-kubectl" | sha256sum --check
         sudo install -m 0755 /tmp/profile-kubectl /usr/local/bin/kubectl
-    - name: Build symbolized combined runtime locally on the runner
+    - name: Build profile binary
       id: build
       if: inputs.release_tag == ''
       working-directory: profile-source
@@ -88,7 +89,7 @@ runs:
           sha256sum "$binary" Cargo.lock
           "$binary" components
         } >> "$GITHUB_WORKSPACE/profile-data/metadata.txt"
-    - name: Download the published symbolized runtime
+    - name: Get release binary
       id: released
       if: inputs.release_tag != ''
       env:
@@ -100,7 +101,7 @@ runs:
         bash deploy/download-release-runtime.sh "$RELEASE_TAG" profiling "$GITHUB_WORKSPACE/profile-bin"
         echo "PROFILE_BINARY=$GITHUB_WORKSPACE/profile-bin/notk8s" >> "$GITHUB_ENV"
         { echo "release_tag=$RELEASE_TAG"; cat profile-bin/SHA256SUMS; } >> profile-data/metadata.txt
-    - name: Profile bootstrap and verify the cluster
+    - name: Profile bootstrap
       id: bootstrap
       shell: bash
       run: |
@@ -113,13 +114,13 @@ runs:
         kubectl version -o json > profile-data/kubernetes-version.json
         kubectl get nodes -o json > profile-data/nodes.json
         kubectl -n kube-system get pods -o json > profile-data/system-pods.json
-    - name: Capture idle and realistic bounded load
+    - name: Capture idle/load
       id: capture
       shell: bash
       run: |
         set -euo pipefail
         sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
-    - name: Preserve diagnostics and render after captures stop
+    - name: Render diagnostics
       id: render
       if: ${{ always() && (steps.build.outcome == 'success' || steps.released.outcome == 'success') }}
       shell: bash
@@ -149,14 +150,14 @@ runs:
         if [[ '${{ steps.capture.outcome }}' == success ]]; then
           python3 deploy/lib/render-stack-charts.py --output profile-data/charts --series not-k8s=profile-data
         fi
-    - name: Publish full compressed results without Actions artifacts
+    - name: Publish results
       if: ${{ always() && (steps.build.outcome == 'success' || steps.released.outcome == 'success') }}
       env:
         GH_TOKEN: ${{ github.token }}
         PROFILE_RESULT: capture=${{ steps.capture.outcome }},render=${{ steps.render.outcome }}
       shell: bash
       run: bash deploy/publish-stack-profile.sh "$GITHUB_WORKSPACE/profile-data"
-    - name: Stop disposable cluster services
+    - name: Stop services
       if: always()
       shell: bash
       run: sudo systemctl stop nodelet nodeproxy nodecontroller nodescheduler nodeapiserver nodestore flanneld containerd || true

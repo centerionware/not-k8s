@@ -1,4 +1,4 @@
-name: Component and whole-stack comparison
+name: Profile comparison
 on:
   workflow_call:
     inputs:
@@ -35,7 +35,8 @@ jobs:
       backends: ${{ steps.plan.outputs.backends }}
       components: ${{ steps.plan.outputs.components }}
     steps:
-      - id: plan
+      - name: Plan comparison
+        id: plan
         env:
           BASELINE: ${{ inputs.baseline }}
           COMPONENTS: ${{ inputs.components }}
@@ -83,18 +84,22 @@ jobs:
       PROFILE_K8S_VERSION: ${{ inputs.k8s_version }}
       KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         if: matrix.backend == 'notk8s'
         with:
           ref: ${{ inputs.source_ref }}
           path: profile-source
           persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
         if: matrix.backend == 'notk8s'
-      - uses: ./.github/actions/profile-compare-leg
+      - name: Measure comparison
+        uses: ./.github/actions/profile-compare-leg
 
   report:
     needs: [plan, measure]
@@ -110,7 +115,9 @@ jobs:
       PROFILE_COMPONENTS: ${{ needs.plan.outputs.components }}
       PROFILE_WHOLE: ${{ inputs.whole_stack }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/profile-compare-report
+      - name: Render comparison
+        uses: ./.github/actions/profile-compare-report

@@ -1,4 +1,4 @@
-name: Profiling — comparison or full-stack load
+name: Profiling
 
 # Manual trigger only, same conservative posture as e2e.yml — this job is
 # slow and its numbers are only meaningful once things have settled, not
@@ -192,12 +192,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
 
-      - name: Build the Rust bootstrap applet
+      - name: Build bootstrap
         run: cargo build --features cri -p notk8s
 
-      - name: Bootstrap the shared stack with Rust (stripped control plane + containerd${{ matrix.agent == 'nodelet' && ' + nodelet' || '' }})
+      - name: Bootstrap cluster
         env:
           SKIP_NODELET: ${{ matrix.skip_nodelet }}
         run: |
@@ -206,16 +207,16 @@ jobs:
           [[ "$SKIP_NODELET" == true ]] && args+=(--skip-nodelet)
           sudo -E ./target/debug/notk8s "${args[@]}"
 
-      - name: Start a real upstream kubelet (same control plane, same containerd — nodelet was never installed on this runner)
+      - name: Start kubelet
         if: matrix.agent == 'kubelet'
         run: |
           set -e
           sudo bash deploy/lib/upstream-kubelet.sh start
 
-      - name: Settle before measuring idle steady-state
+      - name: Settle cluster
         run: sleep 30
 
-      - name: Measure ${{ matrix.agent }} replicate ${{ matrix.replicate }} (idle, ${{ env.SAMPLE_SECS }}s, 1 sample/sec)
+      - name: Measure idle usage
         run: |
           set -e
           sudo ./deploy/measure.sh "$SAMPLE_SECS" /tmp/measure-out "${{ matrix.agent_pattern }}" | tee /tmp/measure-out-console.txt
@@ -250,15 +251,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download all measurements
+      - name: Get measurements
         uses: actions/download-artifact@v4
         with:
           path: /tmp/artifacts
 
-      - name: Install matplotlib/numpy
+      - name: Install chart tools
         run: python3 -m pip install --quiet --break-system-packages matplotlib numpy
 
-      - name: Render charts + aggregated stats
+      - name: Render charts
         run: |
           set -e
           mkdir -p /tmp/profiling-report
@@ -272,7 +273,7 @@ jobs:
             --summary "nodelet=$nodelet_summaries" \
             --summary "upstream kubelet=$kubelet_summaries"
 
-      - name: Build comparison report
+      - name: Build report
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
@@ -284,7 +285,7 @@ jobs:
             > /tmp/profiling-report/README.md
           cat /tmp/profiling-report/README.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish results to the profiling-results branch
+      - name: Publish results
         env:
           COMMIT_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

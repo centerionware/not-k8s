@@ -1,4 +1,4 @@
-name: Measure a comparison leg
+name: Measure comparison
 description: Shared profiling steps for source and published binaries.
 inputs:
   release_tag:
@@ -7,7 +7,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Record host and install not-k8s workload client
+    - name: Prepare client
       shell: bash
       run: |
         set -euo pipefail
@@ -19,7 +19,7 @@ runs:
         curl -fL --retry 3 https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl.sha256 -o /tmp/profile-kubectl.sha256
         echo "$(cat /tmp/profile-kubectl.sha256)  /tmp/profile-kubectl" | sha256sum -c
         sudo install -m 0755 /tmp/profile-kubectl /usr/local/bin/kubectl
-    - name: Obtain optimized not-k8s and bootstrap on the same runner
+    - name: Build and bootstrap
       env:
         RELEASE_TAG: ${{ inputs.release_tag }}
         GH_TOKEN: ${{ github.token }}
@@ -41,11 +41,11 @@ runs:
         sudo -E env NOTK8S_COMBINED_PREBUILT="$binary" NOTK8S_BUILD_LAYOUT=combined \
           "$binary" nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
         sudo chmod 644 "$KUBECONFIG"
-    - name: Install a genuine upstream stack
+    - name: Install upstream
       if: env.PROFILE_BACKEND != 'notk8s'
       shell: bash
       run: bash deploy/setup-profile-baseline.sh "$PROFILE_BACKEND"
-    - name: Capture metrics without perf overhead
+    - name: Capture metrics
       shell: bash
       run: |
         set -euo pipefail
@@ -58,7 +58,7 @@ runs:
         if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
         sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py "${args[@]}"
         sudo chown -R "$(id -u):$(id -g)" profile-data
-    - name: Publish validated measurements directly to results branch
+    - name: Publish measurements
       env:
         GH_TOKEN: ${{ github.token }}
       shell: bash

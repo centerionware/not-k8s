@@ -1,4 +1,4 @@
-name: Run a real e2e shard
+name: Run e2e shard
 description: Shared bootstrap, reference drivers, tests and result publication for prebuilt binaries.
 inputs:
   shard:
@@ -37,7 +37,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Bootstrap a real cluster with Rust
+    - name: Bootstrap cluster
       env:
         PROXY: ${{ inputs.proxy }}
         APISERVER: ${{ inputs.apiserver }}
@@ -77,11 +77,11 @@ runs:
           NOTK8S_BUILD_LAYOUT=combined \
           ./dist-bin/nodebootstrap "${args[@]:1}"
 
-    - name: Make the admin kubeconfig readable
+    - name: Allow admin access
       shell: bash
       run: sudo chmod 644 /etc/nodebootstrap/admin.kubeconfig
 
-    - name: Reserve huge pages for e2e tests
+    - name: Reserve huge pages
       shell: bash
       run: |
         set -euo pipefail
@@ -95,7 +95,7 @@ runs:
           exit 1
         fi
 
-    - name: Install reference CSI and DRA drivers on shards 1 and 2
+    - name: Install CSI and DRA
       if: inputs.needs_drivers == 'true'
       env:
         KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
@@ -110,7 +110,7 @@ runs:
         chmod +x /tmp/nodebootstrap-e2e-full-setup.sh
         sudo -E timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
 
-    - name: Run bootstrap-native e2e checks
+    - name: Run e2e tests
       id: e2e
       env:
         KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
@@ -139,7 +139,7 @@ runs:
         echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
         exit 0
 
-    - name: Validate worker bootstrap without flannel or proxy
+    - name: Test worker setup
       if: inputs.shard == '5' && steps.e2e.outputs.exit_code == '0'
       shell: bash
       run: |
@@ -154,7 +154,7 @@ runs:
             --proxy=none \
             --skip-nodelet
 
-    - name: Dump all service state and logs on failure
+    - name: Dump failure logs
       if: failure() || steps.e2e.outputs.exit_code != '0'
       shell: bash
       run: |
@@ -263,7 +263,7 @@ runs:
         echo "all service state and logs on failure: end"
         echo "=========================================="
 
-    - name: Preserve the full controller and datastore failure timeline
+    - name: Save controller logs
       if: failure() || steps.e2e.outputs.exit_code != '0'
       shell: bash
       run: |
@@ -274,7 +274,7 @@ runs:
           > /tmp/e2e-controller-journal.txt
         cat /tmp/e2e-controller-journal.txt
 
-    - name: Publish this shard's e2e results
+    - name: Publish e2e results
       if: always()
       env:
         RESULTS_BRANCH: ${{ inputs.results_branch }}
@@ -302,7 +302,7 @@ runs:
         fi
         bash deploy/publish-validation-results.sh "$payload" "$RESULTS_BRANCH" "$RESULTS_PREFIX"
 
-    - name: Fail the job if the e2e suite failed
+    - name: Check e2e result
       if: steps.e2e.outputs.exit_code != '0'
       shell: bash
       run: exit 1

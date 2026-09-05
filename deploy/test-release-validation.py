@@ -17,6 +17,25 @@ spec.loader.exec_module(summary)
 
 
 class ReleaseValidationTests(unittest.TestCase):
+    def test_ci_display_names_fit_the_actions_ui(self):
+        paths = sorted((ROOT / '.github/workflows').glob('*.yml'))
+        paths += sorted((ROOT / '.github/actions').glob('*/action.yml'))
+        for path in paths:
+            document = yaml.safe_load(path.read_text())
+            labels = [('title', document.get('name'))]
+            groups = document.get('jobs', {'action': document.get('runs', {})})
+            for job_id, job in groups.items():
+                if 'name' in job:
+                    labels.append((job_id, job['name']))
+                for index, step in enumerate(job.get('steps', [])):
+                    labels.append((f'{job_id} step {index + 1}', step.get('name')))
+            for location, label in labels:
+                with self.subTest(path=str(path.relative_to(ROOT)), location=location):
+                    self.assertIsInstance(label, str, 'Explicit display name required')
+                    self.assertTrue(label.strip())
+                    self.assertNotIn('${{', label, 'Use a bounded, static display name')
+                    self.assertLessEqual(len(label), 20, label)
+
     def test_concurrent_result_writers_preserve_every_shard(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

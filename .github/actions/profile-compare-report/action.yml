@@ -1,9 +1,9 @@
-name: Render the three-way comparison
+name: Render comparison
 description: Shared profiling steps for source and published binaries.
 runs:
   using: composite
   steps:
-    - name: Fetch published measurements and draw component and combined pictures
+    - name: Fetch and render
       shell: bash
       run: |
         set -euo pipefail
@@ -13,6 +13,6 @@ runs:
         git -C profile-results checkout "$PROFILE_RESULTS_BRANCH"
         python3 -m pip install --quiet --break-system-packages matplotlib numpy
         python3 deploy/render-profile-comparison.py --input "profile-results/comparisons/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --output comparison-report
-    - name: Publish README with embedded charts
+    - name: Publish report
       shell: bash
       run: bash deploy/publish-profile-comparison.sh report "$GITHUB_WORKSPACE/comparison-report"

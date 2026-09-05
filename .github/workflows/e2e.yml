@@ -52,10 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check out repository for results reset
+      - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Clear the e2e-results branch for this run
+      - name: Reset e2e results
         env:
           RESULTS_BRANCH: e2e-results
         run: |
@@ -87,19 +87,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
 
-      - name: Build the host bootstrapper
+      - name: Build bootstrap
         run: cargo build -p nodebootstrap
 
-      - name: Prepare the x86_64 static musl target
+      - name: Prepare musl
         run: |
           set -euo pipefail
           rustup target add x86_64-unknown-linux-musl
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools musl-dev linux-libc-dev
 
-      - name: Build the combined release runtime through nodebootstrap
+      - name: Build runtime
         run: |
           set -euo pipefail
           stage="$GITHUB_WORKSPACE/e2e-source-stage"
@@ -117,7 +118,8 @@ jobs:
           # not a second copy dereferenced from its nodebootstrap symlink.
           e2e-bin/notk8s components | grep -Fx nodebootstrap
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: e2e-bin/
@@ -137,12 +139,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: dist-bin
 
-      - name: Plan only non-empty shards
+      - name: Plan e2e shards
         id: plan
         env:
           ONLY: ${{ inputs.only }}
@@ -182,12 +185,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           name: nodebootstrap-e2e-source-${{ github.run_id }}
           path: dist-bin
 
-      - uses: ./.github/actions/e2e-run
+      - name: Run e2e shard
+        uses: ./.github/actions/e2e-run
         with:
           shard: ${{ matrix.shard }}
           needs_drivers: ${{ matrix.needs_drivers }}
@@ -206,7 +211,7 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Delete the run-scoped source artifact
+      - name: Delete artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

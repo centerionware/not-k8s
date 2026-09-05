@@ -1,4 +1,4 @@
-name: Profiling script checks
+name: Profiling checks
 on:
   workflow_dispatch:
   pull_request:
@@ -7,9 +7,7 @@ on:
       - 'deploy/*profil*.sh'
       - 'deploy/lib/render-perf.sh'
       - 'deploy/lib/render-stack-charts.py'
-      - '.github/workflows/*profil*.yml'
-      - '.github/workflows/release.yml'
-      - '.github/workflows/e2e.yml'
+      - '.github/workflows/*.yml'
       - '.github/actions/**'
       - 'deploy/*release*.py'
       - 'deploy/*release*.sh'
@@ -21,11 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: bash -n deploy/profile-process.sh deploy/lib/render-perf.sh deploy/publish-stack-profile.sh deploy/setup-profile-baseline.sh deploy/publish-profile-comparison.sh
-      - run: bash -n deploy/download-release-runtime.sh deploy/publish-validation-results.sh
-      - run: python3 -m pip install --quiet --break-system-packages matplotlib numpy pyyaml
-      - run: python3 -B deploy/test-profile-stack.py
-      - run: python3 -B deploy/test-release-validation.py
+      - name: Check profile shell
+        run: bash -n deploy/profile-process.sh deploy/lib/render-perf.sh deploy/publish-stack-profile.sh deploy/setup-profile-baseline.sh deploy/publish-profile-comparison.sh
+      - name: Check release shell
+        run: bash -n deploy/download-release-runtime.sh deploy/publish-validation-results.sh
+      - name: Install test tools
+        run: python3 -m pip install --quiet --break-system-packages matplotlib numpy pyyaml
+      - name: Test profiling
+        run: python3 -B deploy/test-profile-stack.py
+      - name: Test release checks
+        run: python3 -B deploy/test-release-validation.py

@@ -23,7 +23,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - id: version
+      - name: Freeze version
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -36,11 +37,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - name: Build the Rust bootstrapper for the unit-test stage
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+      - name: Build bootstrap
         run: |
           set -euo pipefail
           cargo build -p nodebootstrap
@@ -80,11 +83,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - name: Add musl target and C toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+      - name: Prepare musl
         run: |
           set -euo pipefail
           rustup target add "${{ matrix.target }}"
@@ -160,9 +165,9 @@ jobs:
           echo "$cc_var=$cc_bin" >> "$GITHUB_ENV"
           echo "MUSL_C_COMPILER=$cc_bin" >> "$GITHUB_ENV"
           echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
-      - name: Build the host bootstrap builder
+      - name: Build bootstrap
         run: cargo build -p nodebootstrap
-      - name: Build release artifacts through nodebootstrap
+      - name: Build release assets
         run: |
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/nodebootstrap-stage" dist
@@ -182,7 +187,7 @@ jobs:
               cp "$stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
             done
           done
-      - name: Verify the builder stamped the frozen release version
+      - name: Check asset version
         run: |
           python3 - <<'PY'
           import os, tomllib
@@ -190,7 +195,7 @@ jobs:
               actual = tomllib.load(stream)['workspace']['package']['version']
           assert actual == os.environ['RELEASE_VERSION'], (actual, os.environ['RELEASE_VERSION'])
           PY
-      - name: Build the additional symbolized x86_64 diagnostic asset
+      - name: Build profile asset
         if: matrix.arch == 'x86_64'
         run: |
           set -euo pipefail
@@ -199,7 +204,7 @@ jobs:
           readelf -SW dist/notk8s-linux-x86_64-profiling > /tmp/profiling-sections.txt
           grep -q '\.debug_info' /tmp/profiling-sections.txt
           grep -q '\.symtab' /tmp/profiling-sections.txt
-      - name: Stage and verify static binaries
+      - name: Verify static assets
         run: |
           set -euo pipefail
           bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
@@ -219,7 +224,8 @@ jobs:
             fi
           done
           (( failed == 0 ))
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: notk8s-${{ matrix.arch }}-${{ github.run_id }}
           path: dist/
@@ -235,20 +241,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           path: dist
           pattern: notk8s-*-${{ github.run_id }}
           merge-multiple: true
-      - name: Use the release version frozen before the builds
+      - name: Read frozen version
         id: version
         env:
           RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
         run: echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
-      - name: Rename release assets and generate notes
+      - name: Prepare assets
         id: assets
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -276,7 +284,7 @@ jobs:
               git log -10 --format='- %s'
             fi
           } > release-notes.md
-      - name: Tag and publish binaries
+      - name: Publish release
         id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -291,7 +299,7 @@ jobs:
           [[ "${#assets[@]}" -gt 0 ]]
           gh release create "$tag" --title "$tag" --notes-file release-notes.md "${assets[@]}"
           echo "published=true" >> "$GITHUB_OUTPUT"
-      - name: Advance VERSION for the next release
+      - name: Advance VERSION
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -314,7 +322,7 @@ jobs:
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/VERSION" \
             -f message="chore(release): advance version to $next" \
             -f content="$content" -f sha="$sha" -f branch=version >/dev/null
-      - name: Update README install command to the published release
+      - name: Update install docs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -384,7 +392,7 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Delete run-scoped release build artifacts
+      - name: Delete artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -407,11 +415,12 @@ jobs:
       RELEASE_TAG: ${{ needs.publish-release.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
-      - name: Create the release-scoped results index
+      - name: Create results index
         id: identity
         run: |
           set -euo pipefail
@@ -436,9 +445,9 @@ jobs:
           release-performance ratio. Failed/partial captures are not passes.
           EOF
           bash deploy/publish-validation-results.sh "$payload" "$branch"
-      - name: Download and verify the published runtime
+      - name: Get release runtime
         run: bash deploy/download-release-runtime.sh "$RELEASE_TAG" release "$GITHUB_WORKSPACE/dist-bin"
-      - name: Plan the full registry from the released applet
+      - name: Plan e2e shards
         id: plan
         run: |
           set -euo pipefail
@@ -464,13 +473,15 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.publish-release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
-      - name: Download and verify the published runtime
+      - name: Get release runtime
         run: bash deploy/download-release-runtime.sh "$RELEASE_TAG" release "$GITHUB_WORKSPACE/dist-bin"
-      - uses: ./.github/actions/e2e-run
+      - name: Run e2e shard
+        uses: ./.github/actions/e2e-run
         with:
           shard: ${{ matrix.shard }}
           needs_drivers: ${{ matrix.needs_drivers }}
@@ -493,11 +504,13 @@ jobs:
       KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
       FLAMEGRAPH_DIR: ${{ github.workspace }}/.bootstrap/flamegraph-tools
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
-      - uses: ./.github/actions/profile-stack-run
+      - name: Stack flamegraphs
+        uses: ./.github/actions/profile-stack-run
         with:
           release_tag: ${{ needs.publish-release.outputs.tag }}
 
@@ -522,11 +535,13 @@ jobs:
       PROFILE_RESULTS_BRANCH: ${{ needs.prepare-validation.outputs.branch }}
       KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
-      - uses: ./.github/actions/profile-compare-leg
+      - name: Measure comparison
+        uses: ./.github/actions/profile-compare-leg
         with:
           release_tag: ${{ needs.publish-release.outputs.tag }}
 
@@ -542,11 +557,13 @@ jobs:
       PROFILE_COMPONENTS: nodestore,nodeapiserver,nodescheduler,nodecontroller,nodelet,nodeproxy
       PROFILE_WHOLE: 'true'
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
-      - uses: ./.github/actions/profile-compare-report
+      - name: Render comparison
+        uses: ./.github/actions/profile-compare-report
 
   validation-summary:
     needs: [publish-release, prepare-validation, release-e2e, release-flamegraphs, release-comparison, release-comparison-report]
@@ -558,14 +575,15 @@ jobs:
       RELEASE_TAG: ${{ needs.publish-release.outputs.tag }}
       VALIDATION_RESULTS: ${{ toJSON(needs) }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
-      - name: Write final status without hiding failed or skipped jobs
+      - name: Write final status
         run: python3 deploy/release-validation-summary.py
-      - name: Publish the final index
+      - name: Publish final index
         if: always()
         run: bash deploy/publish-validation-results.sh validation-summary "e2e-prof-$RELEASE_TAG"
-      - name: Require every validation job to pass
+      - name: Check validation
         run: test "$(cat validation-summary/conclusion.txt)" = success
