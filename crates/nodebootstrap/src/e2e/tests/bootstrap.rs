@@ -967,6 +967,46 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
     Ok(())
 }
 
+pub(super) async fn kubectl_apply_uses_openapi_schema(context: &E2eContext) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let cfg = crate::config::Config::from_env()?;
+    let kubeconfig = std::env::var_os("KUBECONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cfg.kubeconfig_dir().join("admin.kubeconfig"));
+    let mut manifest = json!({
+        "apiVersion":"apps/v1", "kind":"Deployment",
+        "metadata":{"name":"openapi-apply", "namespace":context.namespace},
+        "spec":{"replicas":0, "selector":{"matchLabels":{"app":"openapi-apply"}},
+            "template":{"metadata":{"labels":{"app":"openapi-apply"}},
+                "spec":{"containers":[{"name":"web", "image":"busybox:1.36"}]}}}
+    });
+    // Use kubectl's default validation and client-side apply on both CREATE
+    // and PATCH. A JSON-only /openapi/v2 endpoint fails its gnostic decoder.
+    for image in ["busybox:1.36", "busybox:1.37"] {
+        manifest["spec"]["template"]["spec"]["containers"][0]["image"] = json!(image);
+        let mut child = tokio::process::Command::new("kubectl")
+            .env("KUBECONFIG", &kubeconfig)
+            .args(["apply", "--request-timeout=30s", "-f", "-"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .kill_on_drop(true).spawn().context("starting kubectl apply")?;
+        let mut stdin = child.stdin.take().context("kubectl stdin missing")?;
+        stdin.write_all(&serde_json::to_vec(&manifest)?).await?;
+        drop(stdin);
+        let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+            .await.context("kubectl apply timed out")??;
+        anyhow::ensure!(output.status.success(), "kubectl apply failed: {}{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
+        let deployed = deployments.get("openapi-apply").await?;
+        let containers = deployed.spec.context("Deployment spec missing")?
+            .template.spec.context("Pod template spec missing")?.containers;
+        anyhow::ensure!(containers.len() == 1 && containers[0].image.as_deref() == Some(image),
+            "kubectl apply did not preserve and update the named container");
+    }
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_enforces_node_restriction(context: &E2eContext) -> Result<()> {
     let cfg = crate::config::Config::from_env()?;
     if !matches!(cfg.target, crate::config::Target::NodeApiserver) {

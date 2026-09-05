@@ -47,7 +47,7 @@ use tokio::sync::{broadcast, watch as ready_watch, Semaphore};
 /// not the much heavier full NodeStatus push.
 pub const NODE_LEASE_NAMESPACE: &str = "kube-node-lease";
 
-const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Shared informer startup admission. An initial LIST can make the apiserver
@@ -126,6 +126,10 @@ where
     T: Resource + ResourceExt + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
 {
     fn new(api: Api<T>) -> Arc<Self> {
+        Self::with_startup_semaphore(api, startup_semaphore())
+    }
+
+    fn with_startup_semaphore(api: Api<T>, startup: Arc<Semaphore>) -> Arc<Self> {
         let (ready, _) = ready_watch::channel(false);
         let (events, _) = broadcast::channel(512);
         let shared = Arc::new(Self {
@@ -136,19 +140,40 @@ where
 
         let task_shared = shared.clone();
         tokio::spawn(async move {
-            let mut startup_permit = Some(startup_semaphore()
-                .acquire_owned()
-                .await
-                .expect("nodecontroller watch startup semaphore was closed"));
+            let mut initialized = false;
+            let mut initial_failures: u32 = 0;
             loop {
-                let stream = watcher(api.clone(), watch_config()).backoff(WatchBackoffPolicy::default());
-                futures::pin_mut!(stream);
-                while let Some(result) = stream.next().await {
+                let mut startup_permit = if initialized { None } else {
+                    Some(startup.clone().acquire_owned().await
+                        .expect("nodecontroller watch startup semaphore was closed"))
+                };
+                if !initialized {
+                    tracing::info!(resource = %std::any::type_name::<T>(), "shared informer starting initial LIST");
+                }
+                let mut stream = Box::pin(watcher(api.clone(), watch_config()).backoff(WatchBackoffPolicy::default()));
+                loop {
+                    // Bound a stalled initial page, not a healthy idle watch.
+                    // On failure release admission before sleeping/retrying so
+                    // one unavailable kind cannot park every later informer.
+                    let next = if initialized { stream.next().await } else {
+                        // Start with a one-second request budget, then allow
+                        // slower snapshots progressively more time (max 30s).
+                        let deadline = watch_backoff(initial_failures.saturating_add(1));
+                        match tokio::time::timeout(deadline, stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                tracing::warn!(resource = %std::any::type_name::<T>(), "shared informer initial LIST stalled; releasing startup slot");
+                                break;
+                            }
+                        }
+                    };
+                    let Some(result) = next else { break };
                     let event = match result {
                         Ok(event) => event,
                         Err(error) => {
                             tracing::warn!(resource = %std::any::type_name::<T>(), error = ?error,
                                 "shared nodecontroller watch received an error; kube-rs will retry it");
+                            if !initialized { break; }
                             continue;
                         }
                     };
@@ -160,10 +185,17 @@ where
                         // Only the initial snapshot is admission-controlled.
                         // Steady-state watches remain independent.
                         drop(startup_permit.take());
+                        initialized = true;
+                        initial_failures = 0;
+                        tracing::info!(resource = %std::any::type_name::<T>(), "shared informer installed initial snapshot");
                     }
                 }
+                // Cancel any pending request before admitting another LIST.
+                drop(stream);
+                drop(startup_permit);
                 tracing::warn!(resource = %std::any::type_name::<T>(), "shared nodecontroller watch ended; restarting");
-                tokio::time::sleep(WATCH_MAX_BACKOFF).await;
+                initial_failures = initial_failures.saturating_add(1);
+                tokio::time::sleep(watch_backoff(initial_failures)).await;
             }
         });
 
@@ -559,6 +591,39 @@ pub fn watch_dynamic_resource(
 mod tests {
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn stalled_initial_list_releases_admission_before_retry_backoff() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let observed = entered.clone();
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let entered = entered.clone();
+            async move {
+                if request.uri().path().ends_with("/namespaces") {
+                    entered.notify_one();
+                    futures::future::pending::<()>().await;
+                }
+                if request.uri().query().is_some_and(|query| query.contains("watch=true")) {
+                    futures::future::pending::<()>().await;
+                }
+                Ok::<_, std::convert::Infallible>(http::Response::new(kube::client::Body::from(
+                    r#"{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[]}"#
+                )))
+            }
+        });
+        let client = Client::new(service, "default");
+        let admission = Arc::new(Semaphore::new(1));
+        let _stalled = SharedWatch::<Namespace>::with_startup_semaphore(Api::all(client.clone()), admission.clone());
+        observed.notified().await; // Prove the first request owns the only slot.
+        let healthy = SharedWatch::<Pod>::with_startup_semaphore(Api::all(client), admission);
+        let started = tokio::time::Instant::now();
+        let mut subscription = healthy.subscribe();
+        tokio::time::timeout(WATCH_INITIAL_BACKOFF * 2, async {
+            assert!(matches!(subscription.next().await, Some(Ok(Event::Init))));
+            assert!(matches!(subscription.next().await, Some(Ok(Event::InitDone))));
+        }).await.expect("a failed kind must release admission before its retry");
+        assert_eq!(started.elapsed(), WATCH_INITIAL_BACKOFF);
+    }
+
     #[tokio::test]
     async fn a_late_subscriber_receives_the_completed_snapshot() {
         let (ready, _) = ready_watch::channel(false);
@@ -591,9 +656,12 @@ mod tests {
 
     #[test]
     fn backoff_doubles_up_to_the_ceiling() {
-        assert_eq!(watch_backoff(1), std::time::Duration::from_millis(500));
-        assert_eq!(watch_backoff(2), std::time::Duration::from_millis(1000));
-        assert_eq!(watch_backoff(3), std::time::Duration::from_millis(2000));
+        let mut policy = WatchBackoffPolicy::default();
+        for seconds in [1, 2, 4, 8, 16, 30, 30] {
+            assert_eq!(policy.next(), Some(std::time::Duration::from_secs(seconds)));
+        }
+        policy.reset();
+        assert_eq!(policy.next(), Some(WATCH_INITIAL_BACKOFF));
     }
 
     #[test]

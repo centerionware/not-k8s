@@ -199,6 +199,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_kubectl_apply_uses_openapi_schema",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_enforces_node_restriction",
         group: TestGroup::General,
     },
@@ -1842,6 +1846,7 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
         "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
+        "test_kubectl_apply_uses_openapi_schema" => bootstrap::kubectl_apply_uses_openapi_schema(context).await,
         "test_nodeapiserver_enforces_node_restriction" => {
             bootstrap::nodeapiserver_enforces_node_restriction(context).await
         },

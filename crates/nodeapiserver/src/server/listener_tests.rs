@@ -211,6 +211,16 @@ mod tests {
     }
 
     #[test]
+    fn openapi_v2_honors_kubectl_protobuf_accept_and_quality_exclusions() {
+        let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_CONTENT_TYPE), &[], &[]);
+        let DiscoveryRoute::FoundOpenApiProtobuf(bytes) = route else { panic!("kubectl requires gnostic protobuf") };
+        assert!(!bytes.starts_with(b"{") && !bytes.starts_with(b"k8s\0"));
+        assert_eq!(openapi::negotiate_v2(Some("application/json;q=0,*/*;q=1")), Some(true));
+        assert_eq!(openapi::negotiate_v2(Some("application/xml")), None);
+        assert!(matches!(route_discovery(&parts("/openapi/v2"), Some("application/xml"), &[], &[]), DiscoveryRoute::NotAcceptable));
+    }
+
+    #[test]
     fn openapi_v3_a_multi_segment_path_serves_the_raw_vendored_document() {
         let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[], &[]);
         let DiscoveryRoute::FoundRaw(bytes) = route else {

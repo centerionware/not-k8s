@@ -187,6 +187,21 @@ async fn handle(
                     .body(body_from_bytes(bytes.to_vec()))
                     .unwrap());
             }
+            DiscoveryRoute::FoundOpenApiProtobuf(bytes) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", openapi::V2_PROTOBUF_CONTENT_TYPE)
+                    .header("Vary", "Accept")
+                    .body(body_from_bytes(bytes.to_vec()))
+                    .unwrap());
+            }
+            DiscoveryRoute::NotAcceptable => {
+                return Ok(json_response(StatusCode::NOT_ACCEPTABLE, &serde_json::json!({
+                    "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                    "reason": "NotAcceptable", "code": 406,
+                    "message": "OpenAPI v2 supports application/json and the gnostic v2 protobuf media type"
+                })));
+            }
             DiscoveryRoute::NotFound => {
                 // Group L Phase 3's own last named gap, closed: a real
                 // `GET /apis/{group}/{version}` for an aggregated group
