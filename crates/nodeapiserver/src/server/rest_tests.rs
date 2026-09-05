@@ -3,6 +3,30 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn finalizer_patch_uses_the_mvcc_revision_not_the_persisted_deletion_revision() {
+        let deleted = json!({"metadata":{"name":"test", "resourceVersion":"7",
+            "deletionTimestamp":"2026-09-05T07:00:00Z", "finalizers":["example.com/hold"]}});
+        let mut existing = deleted.clone();
+        let patched = apply_patch(PatchKind::Merge, None, None, &mut existing,
+            &json!({"metadata":{"finalizers":[]}}), 9).unwrap();
+        assert_eq!(patched["metadata"]["resourceVersion"], "9");
+        assert_eq!(patched["metadata"]["finalizers"], json!([]));
+        assert_eq!(patched["metadata"]["deletionTimestamp"], deleted["metadata"]["deletionTimestamp"]);
+
+        let patched = apply_patch(PatchKind::Merge, None, None, &mut existing,
+            &json!({"metadata":{"resourceVersion":"8", "finalizers":[]}}), 9).unwrap();
+        assert_eq!(patched["metadata"]["resourceVersion"], "8",
+            "a caller's stale precondition must remain visible to persistence");
+
+        let patched = apply_patch(PatchKind::Json, None, None, &mut existing,
+            &json!([{"op":"test", "path":"/metadata/resourceVersion", "value":"9"},
+                {"op":"replace", "path":"/metadata/finalizers", "value":[]}]), 9).unwrap();
+        assert_eq!(patched["metadata"]["finalizers"], json!([]));
+        assert!(apply_patch(PatchKind::Json, None, None, &mut existing,
+            &json!([{"op":"test", "path":"/metadata/resourceVersion", "value":"7"}]), 9).is_err());
+    }
+
     #[tokio::test]
     async fn ordinary_patch_rejects_a_stale_version_before_writing() {
         let mut storage = StorageClient::connect_lazy(&crate::config::Config::default()).unwrap();

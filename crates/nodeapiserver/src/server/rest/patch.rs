@@ -153,9 +153,15 @@ fn apply_patch(
     kind_of_patch: PatchKind,
     schema: Option<&str>,
     open_api_schema: Option<&Value>,
-    existing: &Value,
+    existing: &mut Value,
     patch_doc: &Value,
+    revision: i64,
 ) -> Result<Value, String> {
+    // The MVCC row, not a revision embedded in its serialized payload, is
+    // authoritative. Deferred deletion can persist the pre-delete RV. Stamp
+    // the current RV before applying the request so inherited metadata does
+    // not become a false precondition, and JSON Patch tests see the live RV.
+    set_metadata_field(existing, "resourceVersion", Value::String(revision.to_string()));
     match kind_of_patch {
         PatchKind::Json => {
             let mut object = existing.clone();
@@ -214,7 +220,7 @@ pub async fn patch_prepare(
         existing_kv.mod_revision,
     )
     .await?;
-    let existing_object_for_request = convert_to_requested_version(
+    let mut existing_object_for_request = convert_to_requested_version(
         storage,
         group,
         version,
@@ -228,8 +234,9 @@ pub async fn patch_prepare(
         kind_of_patch,
         resolved.schema,
         resolved.open_api_schema.as_ref(),
-        &existing_object_for_request,
+        &mut existing_object_for_request,
         patch_doc,
+        existing_kv.mod_revision,
     ) {
         Ok(object) => object,
         Err(msg) => return Ok(PatchPrepareOutcome::Invalid(vec![msg])),
@@ -525,7 +532,7 @@ async fn patch_status_once(
         existing_kv.mod_revision,
     )
     .await?;
-    let existing_object_for_request = convert_to_requested_version(
+    let mut existing_object_for_request = convert_to_requested_version(
         storage,
         group,
         version,
@@ -539,8 +546,9 @@ async fn patch_status_once(
         kind_of_patch,
         resolved.schema,
         resolved.open_api_schema.as_ref(),
-        &existing_object_for_request,
+        &mut existing_object_for_request,
         patch_doc,
+        existing_kv.mod_revision,
     ) {
         Ok(object) => object,
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
