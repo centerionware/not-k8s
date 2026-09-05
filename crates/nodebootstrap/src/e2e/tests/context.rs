@@ -128,7 +128,7 @@ impl E2eContext {
             let uri = format!("{prefix}/namespaces/{}/{resource}", self.namespace);
             let read = async {
                 let request = http::Request::builder().uri(&uri)
-                    .body(kube::client::Body::from(Vec::new()))?;
+                    .body(Vec::new())?;
                 let mut value = self.client.request::<serde_json::Value>(request).await?;
                 if resource == "pods" {
                     // Status plus scheduling identity suffice; don't dump
