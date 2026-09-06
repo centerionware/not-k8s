@@ -56,7 +56,7 @@ use k8s_openapi::api::core::v1::{
     PersistentVolumeStatus,
 };
 use k8s_openapi::api::storage::v1::StorageClass;
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{HashMap, HashSet};
@@ -314,12 +314,49 @@ async fn reconcile_claim(
     client: &Client,
     pvc: &PersistentVolumeClaim,
     pvs: &mut HashMap<String, PersistentVolume>,
-    storage_classes: &HashMap<String, StorageClass>,
+    cached_storage_classes: &HashMap<String, StorageClass>,
 ) -> bool {
     let namespace = pvc.namespace().unwrap_or_default();
     let name = pvc.name_any();
     let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &namespace);
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
+    let mut storage_classes = cached_storage_classes.clone();
+    let mut named_class_missing = false;
+
+    // A PVC event can be delivered before its StorageClass event, and a
+    // shared informer can lose a live event while it is relisting. Resolve a
+    // missing named class from the apiserver before deciding that there is
+    // nothing to do. The periodic PVC resync below covers the case where the
+    // PVC event itself was missed.
+    if let Some(class_name) = pvc
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.storage_class_name.as_deref())
+        .filter(|name| !name.is_empty())
+    {
+        if !storage_classes.contains_key(class_name) {
+            match lookup_uncached_storage_class(class_name).await {
+                Ok(Some(class)) => {
+                    storage_classes.insert(class_name.to_string(), class);
+                }
+                Ok(None) => {
+                    // A nonexistent StorageClass does not prevent the
+                    // static PV path from matching by name.
+                    named_class_missing = true;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        namespace = %namespace,
+                        pvc = %name,
+                        storage_class = %class_name,
+                        error = ?e,
+                        "failed to resolve StorageClass during PVC reconcile; will retry"
+                    );
+                    return true;
+                }
+            }
+        }
+    }
 
     // The shared PVC informer already delivered the current object. Do not
     // turn every watch event into a second GET; that was both redundant and
@@ -328,54 +365,14 @@ async fn reconcile_claim(
         return false;
     }
     let Some(pv) = pv_for_claim(pvc, pvs).cloned() else {
-        if let Some(provisioner) = provisioner_for_claim(pvc, storage_classes) {
+        if let Some(provisioner) = provisioner_for_claim(pvc, &storage_classes) {
             return request_dynamic_provisioning(&pvc_api, pvc, provisioner).await;
         }
         return false;
     };
-    let uncached_named_class = is_unclaimed(&pv)
-        && pvc
-            .spec
-            .as_ref()
-            .and_then(|spec| spec.storage_class_name.as_deref())
-            .is_some_and(|class| {
-                !class.is_empty() && !storage_classes.contains_key(class)
-            });
-    if uncached_named_class {
-        let class_name = pvc
-            .spec
-            .as_ref()
-            .and_then(|spec| spec.storage_class_name.as_deref())
-            .expect("uncached_named_class implies a named StorageClass");
-        match lookup_uncached_storage_class(class_name).await {
-            Ok(Some(class)) => {
-                let selected = pvc
-                    .metadata
-                    .annotations
-                    .as_ref()
-                    .and_then(|annotations| annotations.get(SELECTED_NODE_ANNOTATION));
-                if class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
-                    && !selected.is_some_and(|node| !node.is_empty())
-                {
-                    return false;
-                }
-            }
-            Ok(None) => {
-                // No StorageClass means there is no delayed-binding policy
-                // to honor. Continue with the static PV match.
-            }
-            Err(e) => {
-                tracing::warn!(
-                    namespace = %namespace,
-                    pvc = %name,
-                    storage_class = %class_name,
-                    error = ?e,
-                    "failed to resolve uncached StorageClass before static binding; will retry"
-                );
-                return true;
-            }
-        }
-    } else if defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, storage_classes) {
+    if !named_class_missing
+        && defer_unclaimed_wait_for_first_consumer_pv(pvc, &pv, &storage_classes)
+    {
         return false;
     }
     let pv_name = pv.name_any();
@@ -508,6 +505,54 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let state = Arc::new(Mutex::new(BinderState::default()));
     let queue: Arc<KeyedWorkQueue<(String, String)>> = Arc::new(KeyedWorkQueue::default());
+
+    // Watches are the fast path, but a watch restart or broadcast lag must
+    // not leave a PVC permanently unprocessed. Periodically refresh the PVC
+    // cache and enqueue every current claim; reconciliation is keyed and
+    // deduplicated, so this is a bounded safety net rather than a second
+    // reconcile loop.
+    {
+        let client = client.clone();
+        let state = state.clone();
+        let queue = queue.clone();
+        tokio::spawn(async move {
+            let api: Api<PersistentVolumeClaim> = Api::all(client);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match tokio::time::timeout(
+                    API_WRITE_TIMEOUT,
+                    api.list(&ListParams::default()),
+                )
+                .await
+                {
+                    Ok(Ok(list)) => {
+                        let claims = list
+                            .items
+                            .into_iter()
+                            .map(|pvc| ((ns_of(&pvc), pvc.name_any()), pvc))
+                            .collect::<HashMap<_, _>>();
+                        let keys = claims.keys().cloned().collect::<Vec<_>>();
+                        {
+                            let mut current =
+                                state.lock().expect("PV binder state mutex poisoned");
+                            current.claims = claims;
+                        }
+                        for key in keys {
+                            queue.enqueue(key);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = ?e, "PVC safety resync failed");
+                    }
+                    Err(_) => {
+                        tracing::warn!("PVC safety resync timed out");
+                    }
+                }
+            }
+        });
+    }
 
     // Keep watch delivery in the foreground while bounded workers perform
     // reconciliation. A single worker lets one slow storage-class lookup or

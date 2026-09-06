@@ -2466,11 +2466,6 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
             }
         }
     }))?;
-    let service_account: ServiceAccount = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "ServiceAccount",
-        "metadata": {"name": "default", "namespace": &namespace_name}
-    }))?;
     let pod: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -2486,10 +2481,16 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
             .create(&PostParams::default(), &namespace)
             .await
             .context("creating the PodNodeSelector namespace")?;
-        service_accounts
-            .create(&PostParams::default(), &service_account)
-            .await
-            .context("creating the PodNodeSelector ServiceAccount")?;
+        context
+            .wait_until(
+                "the PodNodeSelector namespace's default ServiceAccount",
+                Duration::from_secs(30),
+                || {
+                    let service_accounts = service_accounts.clone();
+                    async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+                },
+            )
+            .await?;
         let created = pods
             .create(&PostParams::default(), &pod)
             .await
