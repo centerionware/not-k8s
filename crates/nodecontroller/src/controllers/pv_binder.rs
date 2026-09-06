@@ -65,6 +65,12 @@ const STORAGE_PROVISIONER_ANNOTATION: &str = "volume.kubernetes.io/storage-provi
 const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
 const BIND_COMPLETED_ANNOTATION: &str = "pv.kubernetes.io/bind-completed";
 const BOUND_BY_CONTROLLER_ANNOTATION: &str = "pv.kubernetes.io/bound-by-controller";
+/// A PV/PVC write must never stop this controller from consuming the other
+/// informer streams.  In particular, a disconnected apiserver can leave one
+/// kube client future pending long enough for newly-created claims to miss the
+/// external provisioner's normal hand-off window.
+const API_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 fn is_fully_bound(pvc: &PersistentVolumeClaim) -> bool {
     let has_volume = pvc
@@ -497,8 +503,25 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             ev = pv_stream.next() => {
                 match ev {
                     Some(Ok(Event::Apply(pv))) | Some(Ok(Event::InitApply(pv))) => {
+                        // Publishing `Available` is advisory.  Do not await
+                        // it in the same select loop that must consume PVC
+                        // events; a stalled PATCH otherwise starves every
+                        // newly-created claim behind one old PV.
                         let mut pv = pv;
-                        publish_available_if_needed(&client, &mut pv).await;
+                        if needs_available_phase(&pv) {
+                            let publish_client = client.clone();
+                            let publish_name = pv.name_any();
+                            tokio::spawn(async move {
+                                let result = tokio::time::timeout(
+                                    API_WRITE_TIMEOUT,
+                                    publish_available_if_needed(&publish_client, &mut pv),
+                                )
+                                .await;
+                                if result.is_err() {
+                                    tracing::warn!(pv = %publish_name, "timed out publishing Available phase for PersistentVolume");
+                                }
+                            });
+                        }
                         pvs.insert(pv.name_any(), pv);
                         for pvc in claims.values() {
                             queue.enqueue((ns_of(pvc), pvc.name_any()));
@@ -542,7 +565,24 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             }
             key = queue.pop() => {
                 if let Some(pvc) = claims.get(&key).cloned() {
-                    if reconcile_claim(&client, &pvc, &mut pvs, &storage_classes).await {
+                    let retry = match tokio::time::timeout(
+                        RECONCILE_TIMEOUT,
+                        reconcile_claim(&client, &pvc, &mut pvs, &storage_classes),
+                    )
+                    .await
+                    {
+                        Ok(retry) => retry,
+                        Err(_) => {
+                            tracing::warn!(
+                                namespace = %key.0,
+                                pvc = %key.1,
+                                timeout_secs = RECONCILE_TIMEOUT.as_secs(),
+                                "timed out reconciling PersistentVolumeClaim; will retry"
+                            );
+                            true
+                        }
+                    };
+                    if retry {
                         schedule_retry(&queue, key);
                     }
                 }
