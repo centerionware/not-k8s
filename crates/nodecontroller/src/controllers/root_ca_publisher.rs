@@ -76,6 +76,15 @@ fn is_terminating(ns: &k8s_openapi::api::core::v1::Namespace) -> bool {
 /// falling back to a `certificate-authority` file path. `None` if neither
 /// is present, so the caller can log and simply not run rather than guess.
 fn load_root_ca_pem() -> Result<Option<Vec<u8>>> {
+    // nodebootstrap passes the CA it actually uses to nodecontroller for CSR
+    // signing. Prefer that canonical file over re-decoding a kubeconfig: it
+    // cannot accidentally select a stale k3s config or publish an encoded
+    // blob into kube-root-ca.crt during a control-plane transition.
+    if let Ok(path) = std::env::var("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH") {
+        if !path.is_empty() {
+            return Ok(Some(std::fs::read(&path).with_context(|| format!("reading configured cluster CA file {path}"))?));
+        }
+    }
     let kubeconfig = kube::config::Kubeconfig::read().context("reading kubeconfig for root-ca-cert-publisher-controller")?;
     let context_name = match &kubeconfig.current_context {
         Some(c) => c.clone(),
@@ -89,7 +98,9 @@ fn load_root_ca_pem() -> Result<Option<Vec<u8>>> {
     };
     if let Some(data) = &cluster.certificate_authority_data {
         use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD.decode(data).context("decoding certificate-authority-data")?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .context("decoding certificate-authority-data")?;
         return Ok(Some(decoded));
     }
     if let Some(path) = &cluster.certificate_authority {
@@ -97,6 +108,13 @@ fn load_root_ca_pem() -> Result<Option<Vec<u8>>> {
         return Ok(Some(bytes));
     }
     Ok(None)
+}
+
+fn validate_ca_pem(bytes: &[u8]) -> Result<()> {
+    let pem = std::str::from_utf8(bytes).context("cluster CA data is not UTF-8 PEM")?;
+    rcgen::CertificateParams::from_ca_cert_pem(pem)
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("parsing cluster CA certificate: {error}"))
 }
 
 async fn reconcile_namespace(
@@ -139,6 +157,10 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         tracing::warn!("root-ca-cert-publisher-controller found no CA data in the ambient kubeconfig — not publishing kube-root-ca.crt anywhere");
         return Ok(());
     };
+    if let Err(error) = validate_ca_pem(&ca_bytes) {
+        tracing::error!(error = ?error, "root-ca-cert-publisher-controller found unusable CA data — refusing to publish kube-root-ca.crt");
+        return Ok(());
+    }
     let ca_pem = String::from_utf8(ca_bytes).context("cluster CA data is not valid UTF-8 PEM")?;
 
     let mut namespaces: HashMap<String, k8s_openapi::api::core::v1::Namespace> = HashMap::new();

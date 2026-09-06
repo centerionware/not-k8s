@@ -13,6 +13,14 @@ use std::time::Duration;
 
 const CERT_MANAGER_VERSION: &str = "v1.18.2";
 const CERT_MANAGER_NAMESPACE: &str = "cert-manager";
+const CERT_MANAGER_CRDS: &[&str] = &[
+    "certificates.cert-manager.io",
+    "certificaterequests.cert-manager.io",
+    "challenges.acme.cert-manager.io",
+    "clusterissuers.cert-manager.io",
+    "issuers.cert-manager.io",
+    "orders.acme.cert-manager.io",
+];
 
 fn kubectl_available() -> bool {
     Command::new("kubectl")
@@ -328,15 +336,18 @@ pub(super) async fn cert_manager_crds_are_usable_without_nodecontroller_restart(
 
         context
             .wait_until(
-                "cert-manager CRDs to be established",
+                "all cert-manager CRDs to be established",
                 Duration::from_secs(90),
                 || {
                     let crd_api = crd_api.clone();
                     async move {
-                        Ok(crd_api
-                            .get_opt("clusterissuers.cert-manager.io")
-                            .await?
-                            .is_some_and(|crd| crd_is_established(&crd)))
+                        let crds = crd_api.list(&Default::default()).await?;
+                        Ok(CERT_MANAGER_CRDS.iter().all(|name| {
+                            crds.items.iter().any(|crd| {
+                                crd.metadata.name.as_deref() == Some(*name)
+                                    && crd_is_established(crd)
+                            })
+                        }))
                     }
                 },
             )

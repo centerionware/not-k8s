@@ -49,6 +49,10 @@ pub const NODE_LEASE_NAMESPACE: &str = "kube-node-lease";
 
 const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+/// A healthy LIST is not a retry delay.  It can legitimately take longer
+/// than the first reconnect backoff when the apiserver is applying a large
+/// snapshot, so do not turn ordinary startup work into a cancel/relist loop.
+const WATCH_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Shared informer startup admission. An initial LIST can make the apiserver
 /// do substantial work. Keeping only a small number of snapshots in flight
@@ -158,9 +162,13 @@ where
                     // On failure release admission before sleeping/retrying so
                     // one unavailable kind cannot park every later informer.
                     let next = if !listing { stream.next().await } else {
-                        // Start with a one-second request budget, then allow
-                        // slower snapshots progressively more time (max 30s).
-                        let deadline = watch_backoff(initial_failures.saturating_add(1));
+                        // The one-second value is the reconnect *backoff*,
+                        // not a valid deadline for a normal LIST.  Keep the
+                        // first snapshot and a slow relist alive for a
+                        // bounded 30s request window; once it actually fails,
+                        // the outer retry still starts at 1s and doubles to
+                        // WATCH_MAX_BACKOFF.
+                        let deadline = WATCH_LIST_TIMEOUT;
                         match tokio::time::timeout(deadline, stream.next()).await {
                             Ok(next) => next,
                             Err(_) => {
@@ -696,7 +704,7 @@ mod tests {
         // Reconnects must not compete for initial startup slots.
         let _held = admission.try_acquire().expect("initial snapshot released admission");
         let mut subscription = shared.subscribe();
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::time::timeout(std::time::Duration::from_secs(40), async {
             while let Some(Ok(event)) = subscription.next().await {
                 if matches!(event, Event::InitApply(ref pod) if pod.name_any() == "after") {
                     return;
@@ -735,11 +743,15 @@ mod tests {
         let healthy = SharedWatch::<Pod>::with_startup_semaphore(Api::all(client), admission);
         let started = tokio::time::Instant::now();
         let mut subscription = healthy.subscribe();
-        tokio::time::timeout(WATCH_INITIAL_BACKOFF * 2, async {
+        // A stalled LIST has a bounded request window of its own.  The
+        // healthy informer can acquire the slot after that window, before
+        // the failed watch's first reconnect backoff elapses; keep this
+        // assertion virtual-time based so the unit test remains fast.
+        tokio::time::timeout(WATCH_LIST_TIMEOUT + WATCH_INITIAL_BACKOFF * 2, async {
             assert!(matches!(subscription.next().await, Some(Ok(Event::Init))));
             assert!(matches!(subscription.next().await, Some(Ok(Event::InitDone))));
         }).await.expect("a failed kind must release admission before its retry");
-        assert_eq!(started.elapsed(), WATCH_INITIAL_BACKOFF);
+        assert!(started.elapsed() >= WATCH_LIST_TIMEOUT);
     }
 
     #[tokio::test]
