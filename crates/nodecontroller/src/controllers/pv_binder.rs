@@ -84,6 +84,10 @@ struct BinderState {
     pvs: HashMap<String, PersistentVolume>,
     claims: HashMap<(String, String), PersistentVolumeClaim>,
     storage_classes: HashMap<String, StorageClass>,
+    /// Safety relists are only needed while the PVC watch is recovering.
+    /// Healthy informer delivery already provides the event edge and should
+    /// not generate a second periodic LIST against the apiserver.
+    pvc_watch_healthy: bool,
     /// A key can be re-enqueued while its API writes are in flight. Keep that
     /// follow-up queued, but never reconcile the same claim concurrently.
     in_flight: HashSet<(String, String)>,
@@ -159,7 +163,9 @@ fn is_unclaimed(pv: &PersistentVolume) -> bool {
 fn needs_available_phase(pv: &PersistentVolume) -> bool {
     is_unclaimed(pv)
         && matches!(
-            pv.status.as_ref().and_then(|status| status.phase.as_deref()),
+            pv.status
+                .as_ref()
+                .and_then(|status| status.phase.as_deref()),
             None | Some("Pending")
         )
 }
@@ -176,7 +182,9 @@ async fn publish_available_if_needed(client: &Client, pv: &mut PersistentVolume)
         .await
     {
         Ok(updated) => *pv = updated,
-        Err(e) => tracing::warn!(pv = %name, error = ?e, "failed to publish Available phase for PersistentVolume"),
+        Err(e) => {
+            tracing::warn!(pv = %name, error = ?e, "failed to publish Available phase for PersistentVolume")
+        }
     }
 }
 
@@ -252,11 +260,15 @@ fn defer_unclaimed_wait_for_first_consumer_pv(
         return !class_name.is_empty();
     };
     class.volume_binding_mode.as_deref() == Some("WaitForFirstConsumer")
-        && !pvc.metadata.annotations.as_ref().is_some_and(|annotations| {
-            annotations
-                .get(SELECTED_NODE_ANNOTATION)
-                .is_some_and(|node| !node.is_empty())
-        })
+        && !pvc
+            .metadata
+            .annotations
+            .as_ref()
+            .is_some_and(|annotations| {
+                annotations
+                    .get(SELECTED_NODE_ANNOTATION)
+                    .is_some_and(|node| !node.is_empty())
+            })
 }
 
 /// Resolve a named StorageClass through the authoritative shared informer
@@ -521,11 +533,15 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                match tokio::time::timeout(
-                    API_WRITE_TIMEOUT,
-                    api.list(&ListParams::default()),
-                )
-                .await
+                let watch_healthy = state
+                    .lock()
+                    .expect("PV binder state mutex poisoned")
+                    .pvc_watch_healthy;
+                if watch_healthy {
+                    continue;
+                }
+                match tokio::time::timeout(API_WRITE_TIMEOUT, api.list(&ListParams::default()))
+                    .await
                 {
                     Ok(Ok(list)) => {
                         let claims = list
@@ -535,8 +551,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             .collect::<HashMap<_, _>>();
                         let keys = claims.keys().cloned().collect::<Vec<_>>();
                         {
-                            let mut current =
-                                state.lock().expect("PV binder state mutex poisoned");
+                            let mut current = state.lock().expect("PV binder state mutex poisoned");
                             current.claims = claims;
                         }
                         for key in keys {
@@ -698,8 +713,25 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             .claims
                             .remove(&(ns_of(&pvc), pvc.name_any()));
                     }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
-                    Some(Err(e)) => tracing::warn!(error = ?e, "pvc watch error in persistentvolume-binder-controller"),
+                    Some(Ok(Event::Init)) => {
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .pvc_watch_healthy = false;
+                    }
+                    Some(Ok(Event::InitDone)) => {
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .pvc_watch_healthy = true;
+                    }
+                    Some(Err(e)) => {
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .pvc_watch_healthy = false;
+                        tracing::warn!(error = ?e, "pvc watch error in persistentvolume-binder-controller");
+                    }
                     None => return Ok(()),
                 }
             }
@@ -742,10 +774,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 /// already created its PV.
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn schedule_retry(
-    queue: &std::sync::Arc<KeyedWorkQueue<(String, String)>>,
-    key: (String, String),
-) {
+fn schedule_retry(queue: &std::sync::Arc<KeyedWorkQueue<(String, String)>>, key: (String, String)) {
     let queue = queue.clone();
     tokio::spawn(async move {
         tokio::time::sleep(RETRY_DELAY).await;
@@ -820,7 +849,9 @@ mod tests {
             "delayed".to_string(),
             storage_class("delayed", "WaitForFirstConsumer"),
         )]);
-        assert!(defer_unclaimed_wait_for_first_consumer_pv(&claim, &pv, &classes));
+        assert!(defer_unclaimed_wait_for_first_consumer_pv(
+            &claim, &pv, &classes
+        ));
 
         let mut prebound = pv;
         prebound.spec.as_mut().unwrap().claim_ref = Some(ObjectReference {
@@ -828,7 +859,9 @@ mod tests {
             name: Some(claim.name_any()),
             ..Default::default()
         });
-        assert!(!defer_unclaimed_wait_for_first_consumer_pv(&claim, &prebound, &classes));
+        assert!(!defer_unclaimed_wait_for_first_consumer_pv(
+            &claim, &prebound, &classes
+        ));
     }
 
     #[test]
