@@ -77,6 +77,35 @@ fn systemd_service_available(name: &str) -> bool {
         })
 }
 
+/// A systemd restart returning successfully only means the new process was
+/// spawned.  Keep the next e2e case from racing the apiserver's listener and
+/// storage initialization (especially after a guard is dropped between
+/// cases).
+fn wait_for_nodeapiserver() -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        let ready = Command::new("curl")
+            .args([
+                "-k",
+                "-sS",
+                "-f",
+                "--max-time",
+                "2",
+                "https://127.0.0.1:6443/readyz?verbose",
+            ])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("[+]storage ok")
+            });
+        if ready {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    anyhow::bail!("nodeapiserver did not become ready within 60 seconds after restart")
+}
+
 fn crd_is_established(crd: &CustomResourceDefinition) -> bool {
     crd.status.as_ref().is_some_and(|status| {
         status.conditions.as_ref().is_some_and(|conditions| {
@@ -130,6 +159,7 @@ impl NodeapiserverAdmissionPluginOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -140,6 +170,7 @@ impl Drop for NodeapiserverAdmissionPluginOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
     }
 }
 
@@ -193,6 +224,7 @@ impl NodeapiserverPodNodeSelectorOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -205,6 +237,7 @@ impl Drop for NodeapiserverPodNodeSelectorOverride {
         let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
     }
 }
 
@@ -247,6 +280,7 @@ impl NodeapiserverAuthenticationOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 
@@ -288,6 +322,7 @@ impl NodeapiserverAuthenticationOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -298,6 +333,7 @@ impl Drop for NodeapiserverAuthenticationOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
         let _ = fs::remove_file(&self.token_file);
     }
 }
@@ -356,6 +392,7 @@ impl NodeapiserverAuthorizationWebhookOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -368,6 +405,7 @@ impl Drop for NodeapiserverAuthorizationWebhookOverride {
         let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
     }
 }
 
@@ -420,6 +458,7 @@ impl NodeapiserverAuditLogOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -430,6 +469,7 @@ impl Drop for NodeapiserverAuditLogOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
         let _ = fs::remove_file(&self.audit_log);
         for index in 1..=self.max_backups {
             let backup = PathBuf::from(format!("{}.{}", self.audit_log.display(), index));
@@ -484,6 +524,7 @@ impl NodeapiserverAuditWebhookOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 
@@ -531,6 +572,7 @@ impl Drop for NodeapiserverAuditWebhookOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
         if let Some(policy_file) = &self.policy_file {
             let _ = fs::remove_file(policy_file);
         }
