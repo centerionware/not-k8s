@@ -153,12 +153,17 @@ async fn delete_once(
     let pod_grace_period_seconds =
         is_pod.then(|| effective_pod_grace_period(&object, grace_period_seconds));
 
-    // Pods use the same two-phase deletion contract as upstream: preserve
-    // the object while the node agent stops its containers, then let the
-    // node agent issue a second grace=0 delete. Other resources only defer
-    // deletion when they have finalizers.
-    let defer_delete =
-        has_finalizers(&object) || pod_grace_period_seconds.is_some_and(|seconds| seconds > 0);
+    // Pods use the same two-phase deletion contract as upstream when they
+    // have been assigned to a node: preserve the object while the node agent
+    // stops its containers, then let the node agent issue a second grace=0
+    // delete. An unassigned Pod has no node agent that can perform that
+    // second phase, so upstream forces its grace period to zero and removes it
+    // synchronously. Leaving the normal 30-second grace marker on an
+    // unassigned Pod strands it forever because nodelet's informer is scoped
+    // to `spec.nodeName=<this node>` and can never observe it.
+    let assigned_pod = is_pod && pod_is_assigned(&object);
+    let defer_delete = has_finalizers(&object)
+        || (assigned_pod && pod_grace_period_seconds.is_some_and(|seconds| seconds > 0));
     if defer_delete {
         if has_deletion_timestamp(&object) {
             let object = convert_to_requested_version(
@@ -339,6 +344,13 @@ fn effective_pod_grace_period(object: &Value, requested: Option<i64>) -> i64 {
     requested.map_or(current, |seconds| current.min(seconds.max(0)))
 }
 
+fn pod_is_assigned(object: &Value) -> bool {
+    object
+        .pointer("/spec/nodeName")
+        .and_then(Value::as_str)
+        .is_some_and(|node| !node.is_empty())
+}
+
 #[derive(Debug, PartialEq)]
 pub enum DeleteCollectionOutcome {
     /// The `<Kind>List` of every object that matched, exactly as it
@@ -442,6 +454,19 @@ pub async fn delete_collection(
 #[cfg(test)]
 mod delete_conflict_tests {
     use super::*;
+
+    #[test]
+    fn only_assigned_pods_use_graceful_two_phase_delete() {
+        let unassigned = serde_json::json!({
+            "spec": {"nodeName": ""}
+        });
+        let assigned = serde_json::json!({
+            "spec": {"nodeName": "node-a"}
+        });
+
+        assert!(!pod_is_assigned(&unassigned));
+        assert!(pod_is_assigned(&assigned));
+    }
 
     #[test]
     fn retries_plain_deletes_but_preserves_explicit_precondition_conflicts() {

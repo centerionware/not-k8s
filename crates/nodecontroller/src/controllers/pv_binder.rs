@@ -59,7 +59,8 @@ use k8s_openapi::api::storage::v1::StorageClass;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 const STORAGE_PROVISIONER_ANNOTATION: &str = "volume.kubernetes.io/storage-provisioner";
 const SELECTED_NODE_ANNOTATION: &str = "volume.kubernetes.io/selected-node";
@@ -71,6 +72,22 @@ const BOUND_BY_CONTROLLER_ANNOTATION: &str = "pv.kubernetes.io/bound-by-controll
 /// external provisioner's normal hand-off window.
 const API_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Claims are independent work items. A single FIFO worker lets one slow
+/// storage-class lookup or apiserver write hold every later claim behind it;
+/// keep ordering per key through `KeyedWorkQueue`, but let unrelated claims
+/// make progress concurrently. Sixteen matches the scheduler's normal
+/// admission width while keeping this controller bounded on small nodes.
+const BINDER_WORKERS: usize = 16;
+
+#[derive(Default)]
+struct BinderState {
+    pvs: HashMap<String, PersistentVolume>,
+    claims: HashMap<(String, String), PersistentVolumeClaim>,
+    storage_classes: HashMap<String, StorageClass>,
+    /// A key can be re-enqueued while its API writes are in flight. Keep that
+    /// follow-up queued, but never reconcile the same claim concurrently.
+    in_flight: HashSet<(String, String)>,
+}
 
 fn is_fully_bound(pvc: &PersistentVolumeClaim) -> bool {
     let has_volume = pvc
@@ -489,10 +506,79 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 }
 
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
-    let mut pvs: HashMap<String, PersistentVolume> = HashMap::new();
-    let mut claims: HashMap<(String, String), PersistentVolumeClaim> = HashMap::new();
-    let mut storage_classes: HashMap<String, StorageClass> = HashMap::new();
-    let queue = std::sync::Arc::new(KeyedWorkQueue::default());
+    let state = Arc::new(Mutex::new(BinderState::default()));
+    let queue: Arc<KeyedWorkQueue<(String, String)>> = Arc::new(KeyedWorkQueue::default());
+
+    // Keep watch delivery in the foreground while bounded workers perform
+    // reconciliation. A single worker lets one slow storage-class lookup or
+    // apiserver write delay every later claim long enough for its test (or
+    // workload) to time out. Each worker snapshots state before awaiting API
+    // calls, so it never holds the state mutex across the network.
+    for worker in 0..BINDER_WORKERS {
+        let client = client.clone();
+        let state = state.clone();
+        let queue = queue.clone();
+        tokio::spawn(async move {
+            loop {
+                let key = queue.pop().await;
+                let already_in_flight = {
+                    let mut state = state.lock().expect("PV binder state mutex poisoned");
+                    !state.in_flight.insert(key.clone())
+                };
+                if already_in_flight {
+                    // A newer event for this key is already queued behind the
+                    // active reconciliation. Put this pass back so it is
+                    // handled after the current one completes.
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    queue.enqueue(key);
+                    continue;
+                }
+                let (pvc, pvs, storage_classes) = {
+                    let state = state.lock().expect("PV binder state mutex poisoned");
+                    (
+                        state.claims.get(&key).cloned(),
+                        state.pvs.clone(),
+                        state.storage_classes.clone(),
+                    )
+                };
+                let Some(pvc) = pvc else {
+                    state
+                        .lock()
+                        .expect("PV binder state mutex poisoned")
+                        .in_flight
+                        .remove(&key);
+                    continue;
+                };
+                let mut pvs = pvs;
+                let retry = match tokio::time::timeout(
+                    RECONCILE_TIMEOUT,
+                    reconcile_claim(&client, &pvc, &mut pvs, &storage_classes),
+                )
+                .await
+                {
+                    Ok(retry) => retry,
+                    Err(_) => {
+                        tracing::warn!(
+                            worker,
+                            namespace = %key.0,
+                            pvc = %key.1,
+                            timeout_secs = RECONCILE_TIMEOUT.as_secs(),
+                            "timed out reconciling PersistentVolumeClaim; will retry"
+                        );
+                        true
+                    }
+                };
+                if retry {
+                    schedule_retry(&queue, key.clone());
+                }
+                state
+                    .lock()
+                    .expect("PV binder state mutex poisoned")
+                    .in_flight
+                    .remove(&key);
+            }
+        });
+    }
 
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
@@ -507,7 +593,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         // it in the same select loop that must consume PVC
                         // events; a stalled PATCH otherwise starves every
                         // newly-created claim behind one old PV.
-                        let mut pv = pv;
+                        let pv = pv;
                         if needs_available_phase(&pv) {
                             let publish_client = client.clone();
                             let publish_name = pv.name_any();
@@ -523,12 +609,26 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                                 }
                             });
                         }
-                        pvs.insert(pv.name_any(), pv);
-                        for pvc in claims.values() {
-                            queue.enqueue((ns_of(pvc), pvc.name_any()));
+                        let keys = {
+                            let mut state = state.lock().expect("PV binder state mutex poisoned");
+                            state.pvs.insert(pv.name_any(), pv);
+                            state
+                                .claims
+                                .values()
+                                .map(|pvc| (ns_of(pvc), pvc.name_any()))
+                                .collect::<Vec<_>>()
+                        };
+                        for key in keys {
+                            queue.enqueue(key);
                         }
                     }
-                    Some(Ok(Event::Delete(pv))) => { pvs.remove(&pv.name_any()); }
+                    Some(Ok(Event::Delete(pv))) => {
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .pvs
+                            .remove(&pv.name_any());
+                    }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pv watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
@@ -539,10 +639,20 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Apply(pvc))) | Some(Ok(Event::InitApply(pvc))) => {
                         let ns = ns_of(&pvc);
                         let name = pvc.name_any();
-                        claims.insert((ns, name), pvc.clone());
-                        queue.enqueue((ns_of(&pvc), pvc.name_any()));
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .claims
+                            .insert((ns.clone(), name.clone()), pvc);
+                        queue.enqueue((ns, name));
                     }
-                    Some(Ok(Event::Delete(pvc))) => { claims.remove(&(ns_of(&pvc), pvc.name_any())); }
+                    Some(Ok(Event::Delete(pvc))) => {
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .claims
+                            .remove(&(ns_of(&pvc), pvc.name_any()));
+                    }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pvc watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
@@ -551,41 +661,29 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
             ev = storage_class_stream.next() => {
                 match ev {
                     Some(Ok(Event::Apply(class))) | Some(Ok(Event::InitApply(class))) => {
-                        storage_classes.insert(class.name_any(), class);
-                        for pvc in claims.values() {
-                            queue.enqueue((ns_of(pvc), pvc.name_any()));
+                        let keys = {
+                            let mut state = state.lock().expect("PV binder state mutex poisoned");
+                            state.storage_classes.insert(class.name_any(), class);
+                            state
+                                .claims
+                                .values()
+                                .map(|pvc| (ns_of(pvc), pvc.name_any()))
+                                .collect::<Vec<_>>()
+                        };
+                        for key in keys {
+                            queue.enqueue(key);
                         }
                     }
                     Some(Ok(Event::Delete(class))) => {
-                        storage_classes.remove(&class.name_any());
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .storage_classes
+                            .remove(&class.name_any());
                     }
                     Some(Ok(Event::Init | Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "StorageClass watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
-                }
-            }
-            key = queue.pop() => {
-                if let Some(pvc) = claims.get(&key).cloned() {
-                    let retry = match tokio::time::timeout(
-                        RECONCILE_TIMEOUT,
-                        reconcile_claim(&client, &pvc, &mut pvs, &storage_classes),
-                    )
-                    .await
-                    {
-                        Ok(retry) => retry,
-                        Err(_) => {
-                            tracing::warn!(
-                                namespace = %key.0,
-                                pvc = %key.1,
-                                timeout_secs = RECONCILE_TIMEOUT.as_secs(),
-                                "timed out reconciling PersistentVolumeClaim; will retry"
-                            );
-                            true
-                        }
-                    };
-                    if retry {
-                        schedule_retry(&queue, key);
-                    }
                 }
             }
         }
