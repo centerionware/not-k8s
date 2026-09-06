@@ -88,15 +88,25 @@ fn wait_for_nodeapiserver() -> Result<()> {
             .args([
                 "-k",
                 "-sS",
-                "-f",
                 "--max-time",
                 "2",
+                "-w",
+                "\n%{http_code}",
                 "https://127.0.0.1:6443/readyz?verbose",
             ])
             .output()
             .is_ok_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("[+]storage ok")
+                if !output.status.success() {
+                    return false;
+                }
+                let response = String::from_utf8_lossy(&output.stdout);
+                let Some((body, status)) = response.rsplit_once('\n') else {
+                    return false;
+                };
+                // Authentication-focused overrides deliberately return 401
+                // before the health checks run.  For the normal case require
+                // the storage check, not merely an accepting listener.
+                status.trim() == "401" || body.contains("[+]storage ok")
             });
         if ready {
             return Ok(());
