@@ -572,9 +572,99 @@ pub fn watch_dynamic_metadata_resource(
     resource: &ApiResource,
 ) -> BoxStream<'static, watcher::Result<Event<PartialObjectMeta<DynamicObject>>>> {
     let api: Api<PartialObjectMeta<DynamicObject>> = Api::all_with(client.clone(), resource);
-    watcher(api, watch_config())
-        .backoff(WatchBackoffPolicy::default())
-        .boxed()
+    type MetadataEvent = watcher::Result<Event<PartialObjectMeta<DynamicObject>>>;
+    type MetadataStream = BoxStream<'static, MetadataEvent>;
+
+    // A discovered CRD watch has no shared informer owner to enforce the
+    // initial LIST deadline. Without a bound, one dead pooled HTTP connection
+    // can leave the GC's resource graph waiting forever for InitDone, so an
+    // owner deleted before recovery cannot cascade to its child.
+    let resource_kind = format!("{}/{}", resource.group, resource.kind);
+    futures::stream::unfold(
+        (
+            api,
+            None::<MetadataStream>,
+            WatchBackoffPolicy::default(),
+            None::<std::time::Duration>,
+            true,
+        ),
+        move |(api, mut stream, mut backoff, mut retry_delay, mut listing)| {
+            let resource_kind = resource_kind.clone();
+            async move {
+                loop {
+                    if let Some(delay) = retry_delay.take() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    if stream.is_none() {
+                        stream = Some(watcher(api.clone(), watch_config()).boxed());
+                        listing = true;
+                    }
+
+                    let next = if listing {
+                        match tokio::time::timeout(
+                            WATCH_LIST_TIMEOUT,
+                            stream
+                                .as_mut()
+                                .expect("dynamic metadata watcher was just initialized")
+                                .next(),
+                        )
+                        .await
+                        {
+                            Ok(next) => next,
+                            Err(_) => {
+                                tracing::warn!(
+                                    resource = %resource_kind,
+                                    "dynamic metadata LIST stalled; restarting with bounded backoff"
+                                );
+                                stream = None;
+                                retry_delay = Some(
+                                    backoff.next().unwrap_or(WATCH_MAX_BACKOFF),
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        stream
+                            .as_mut()
+                            .expect("dynamic metadata watcher was just initialized")
+                            .next()
+                            .await
+                    };
+
+                    match next {
+                        Some(Ok(event)) => {
+                            if matches!(event, Event::Init) {
+                                listing = true;
+                            }
+                            if matches!(event, Event::InitDone) {
+                                listing = false;
+                                backoff.reset();
+                            }
+                            return Some((Ok(event), (api, stream, backoff, retry_delay, listing)));
+                        }
+                        Some(Err(error)) => {
+                            tracing::warn!(
+                                resource = %resource_kind,
+                                error = ?error,
+                                "dynamic metadata watch failed; restarting with bounded backoff"
+                            );
+                            stream = None;
+                            retry_delay = Some(backoff.next().unwrap_or(WATCH_MAX_BACKOFF));
+                            return Some((
+                                Err(error),
+                                (api, stream, backoff, retry_delay, listing),
+                            ));
+                        }
+                        None => {
+                            stream = None;
+                            retry_delay = Some(backoff.next().unwrap_or(WATCH_MAX_BACKOFF));
+                        }
+                    }
+                }
+            }
+        },
+    )
+    .boxed()
 }
 
 /// Return the shared typed watch for a built-in namespaced resource in the
