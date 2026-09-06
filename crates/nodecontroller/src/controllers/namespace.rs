@@ -25,7 +25,8 @@ use kube::discovery::{verbs, ApiCapabilities, ApiResource, Discovery, Scope};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use k8s_openapi::api::core::v1::{Namespace, NamespaceSpec, Pod};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 const NAMESPACE_FINALIZER: &str = "kubernetes";
@@ -143,6 +144,12 @@ async fn delete_namespace_contents(
             }
         };
 
+        // A terminating namespace can have a large discovered-resource
+        // surface.  Do not let a long run of immediately-ready list/delete
+        // futures monopolize the executor that also drives the shared
+        // namespace informer.
+        tokio::task::yield_now().await;
+
         for object in objects.items {
             let name = object.name_any();
             match tokio::time::timeout(API_REQUEST_TIMEOUT, api.delete(&name, &delete_params)).await {
@@ -177,6 +184,7 @@ async fn delete_namespace_contents(
                     );
                 }
             }
+            tokio::task::yield_now().await;
         }
     }
 
@@ -328,6 +336,10 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pending_namespaces = Some(HashMap::new());
     let mut crds: HashMap<String, CustomResourceDefinition> = HashMap::new();
     let queue: crate::workqueue::KeyedWorkQueue<String> = Default::default();
+    let cleanup_permits = Arc::new(tokio::sync::Semaphore::new(2));
+    let mut cleanup_tasks = tokio::task::JoinSet::new();
+    let mut cleanup_in_flight = HashSet::new();
+    let mut cleanup_dirty = HashSet::new();
     let mut stream = crate::watch::watch_namespaces(&client);
     let mut crd_stream = crate::watch::watch_custom_resource_definitions(&client);
     let (refresh_sender, mut refresh_receiver) = tokio::sync::mpsc::channel(1);
@@ -348,7 +360,16 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         tokio::select! {
             ev = stream.next() => match ev {
                 Some(Ok(event)) => {
+                    let changed = match &event {
+                        Event::Apply(namespace) | Event::InitApply(namespace) | Event::Delete(namespace) => Some(namespace.name_any()),
+                        Event::Init | Event::InitDone => None,
+                    };
                     apply_namespace_event(&mut namespaces, &mut pending_namespaces, &queue, event);
+                    if let Some(name) = changed {
+                        if cleanup_in_flight.contains(&name) {
+                            cleanup_dirty.insert(name);
+                        }
+                    }
                 }
                 Some(Err(error)) => tracing::warn!(error = ?error, "namespace watch error in namespace-controller"),
                 None => return Ok(()),
@@ -407,8 +428,34 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 }
             }
             name = queue.pop() => {
-                if let Some(namespace) = namespaces.get(&name) {
-                    reconcile_namespace(&client, namespace, &resources).await;
+                if cleanup_in_flight.contains(&name) {
+                    cleanup_dirty.insert(name);
+                } else if let Some(namespace) = namespaces.get(&name) {
+                    let namespace = namespace.clone();
+                    let resources = resources.clone();
+                    let client = client.clone();
+                    let permits = cleanup_permits.clone();
+                    cleanup_in_flight.insert(name.clone());
+                    cleanup_tasks.spawn(async move {
+                        let _permit = permits
+                            .acquire_owned()
+                            .await
+                            .expect("namespace cleanup semaphore was closed");
+                        reconcile_namespace(&client, &namespace, &resources).await;
+                        name
+                    });
+                }
+            }
+            result = cleanup_tasks.join_next(), if !cleanup_tasks.is_empty() => {
+                match result {
+                    Some(Ok(name)) => {
+                        cleanup_in_flight.remove(&name);
+                        if cleanup_dirty.remove(&name) {
+                            queue.enqueue(name);
+                        }
+                    }
+                    Some(Err(error)) => tracing::warn!(error = ?error, "namespace cleanup task failed"),
+                    None => {}
                 }
             }
             _ = retry.tick() => {
@@ -419,7 +466,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 }
             }
             _ = orphan_sweep.tick(), if pending_namespaces.is_none() => {
-                sweep_orphaned_pods(&client, &namespaces).await;
+                let client = client.clone();
+                let namespaces = namespaces.clone();
+                tokio::spawn(async move {
+                    sweep_orphaned_pods(&client, &namespaces).await;
+                });
             }
         }
     }

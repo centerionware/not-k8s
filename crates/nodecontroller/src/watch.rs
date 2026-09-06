@@ -53,19 +53,6 @@ const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30
 /// than the first reconnect backoff when the apiserver is applying a large
 /// snapshot, so do not turn ordinary startup work into a cancel/relist loop.
 const WATCH_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Namespace events are part of the admission path for every e2e namespace:
-/// the service-account controller cannot create its `default` account until
-/// the namespace informer delivers the object. kube-rs normally relies on the
-/// apiserver's 290s watch timeout to reconnect, but a response can remain open
-/// past that deadline when the HTTP body or connection is half-closed. That
-/// turns one lost namespace watch into a five-minute outage and makes a burst
-/// of otherwise unrelated tests fail in sequence. Namespace watches are tiny
-/// and receive a fresh LIST on reconnect, so bound an idle live stream well
-/// below the harness' namespace setup timeout. Other resources retain kube-rs'
-/// bookmark/timeout behavior; relisting all 20 informers every few seconds
-/// would cost more CPU than it saves.
-const NAMESPACE_LIVE_WATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
-
 /// Shared informer startup admission. An initial LIST can make the apiserver
 /// do substantial work. Keeping only a small number of snapshots in flight
 /// prevents all controller domains from becoming ready in one synchronized
@@ -174,21 +161,7 @@ where
                     // On failure release admission before sleeping/retrying so
                     // one unavailable kind cannot park every later informer.
                     let next = if !listing {
-                        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Namespace>() {
-                            match tokio::time::timeout(NAMESPACE_LIVE_WATCH_TIMEOUT, stream.next()).await {
-                                Ok(next) => next,
-                                Err(_) => {
-                                    tracing::warn!(
-                                        resource = %std::any::type_name::<T>(),
-                                        timeout_secs = NAMESPACE_LIVE_WATCH_TIMEOUT.as_secs(),
-                                        "shared informer live watch stalled; reconnecting"
-                                    );
-                                    break;
-                                }
-                            }
-                        } else {
-                            stream.next().await
-                        }
+                        stream.next().await
                     } else {
                         // The one-second value is the reconnect *backoff*,
                         // not a valid deadline for a normal LIST.  Keep the
