@@ -237,7 +237,13 @@ pub async fn run() -> Result<()> {
         .context("building apiserver client")?
         .build();
     watch::set_base_client(base_client.clone());
-    let election_client = base_client;
+    // Election renewals must not share the informer/watch connection pool.
+    // A reconnect storm in the shared informer fleet must not delay the
+    // controller-manager Lease GET/replace pair long enough to lose
+    // leadership (or make the process retain it after the transport died).
+    let election_client = kube::client::ClientBuilder::try_from(kube_config.clone())
+        .context("building controller-manager election client")?
+        .build();
 
     // One impersonated client per controller -- see impersonated_client's
     // doc comment. Built once, up front, so a startup-time HeaderValue

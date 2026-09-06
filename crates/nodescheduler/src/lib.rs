@@ -69,11 +69,23 @@ pub async fn run() -> Result<()> {
 
     let cfg = config::Config::from_env().context("loading configuration")?;
 
-    let client = kube::Client::try_default()
+    // Keep leader-election traffic on its own HTTP connection pool.  The
+    // scheduler opens one long-lived watch per informer after it acquires the
+    // lease.  Sharing that pool with the lease renewer lets a burst of watch
+    // handshakes starve the tiny GET/replace pair that protects leadership;
+    // the failure is especially nasty because the scheduler keeps scheduling
+    // while its renewal future is waiting on a request that never reaches the
+    // apiserver.  Both clients use the same inferred credentials and TLS
+    // configuration, but their transports are deliberately independent.
+    let kube_config = kube::Config::infer()
         .await
-        .context("building kube client (is KUBECONFIG set and the apiserver reachable?)")?;
+        .context("inferring kube client config (is KUBECONFIG set and the apiserver reachable?)")?;
+    let client = kube::Client::try_from(kube_config.clone())
+        .context("building scheduler watch client")?;
+    let election_client = kube::Client::try_from(kube_config)
+        .context("building scheduler leader-election client")?;
 
-    election::run_as_leader(client.clone(), &cfg, || schedule_forever(client.clone(), &cfg)).await
+    election::run_as_leader(election_client, &cfg, || schedule_forever(client.clone(), &cfg)).await
 }
 
 /// The leader's work: watch, and place pods until stopped.
