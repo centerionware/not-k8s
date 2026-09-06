@@ -73,6 +73,7 @@
 //! and standing that up twice is a race, not redundancy — the same
 //! reasoning `nodescheduler`'s leader election documents for `Binding`.
 
+mod api_budget;
 pub mod config;
 pub mod controllers;
 pub mod cron_schedule;
@@ -95,7 +96,10 @@ where
     F: Future<Output = Result<()>>,
 {
     if cfg.controller_disabled(name) {
-        tracing::info!(controller = name, "nodecontroller controller disabled by configuration");
+        tracing::info!(
+            controller = name,
+            "nodecontroller controller disabled by configuration"
+        );
         return Ok(());
     }
     tracing::debug!(controller = name, "starting nodecontroller controller");
@@ -198,7 +202,11 @@ fn upstream_controller_sa(name: &str) -> &'static str {
 /// grant -- since RBAC authorizes every actual request as whichever
 /// identity is impersonated, and its own built-in read-heavy role (which
 /// backs the shared informer factory, same as upstream) covers reads.
-fn impersonated_client(base: &kube::Config, controller_name: &str) -> Result<kube::Client> {
+fn impersonated_client(
+    base: &kube::Config,
+    controller_name: &str,
+    budget: &api_budget::ApiBudgetLayer,
+) -> Result<kube::Client> {
     let mut cfg = base.clone();
     let sa = upstream_controller_sa(controller_name);
     cfg.headers.push((
@@ -206,11 +214,20 @@ fn impersonated_client(base: &kube::Config, controller_name: &str) -> Result<kub
         http::header::HeaderValue::from_str(&format!("system:serviceaccount:kube-system:{sa}"))
             .with_context(|| format!("building Impersonate-User header for {controller_name}"))?,
     ));
-    for group in ["system:serviceaccounts", "system:serviceaccounts:kube-system"] {
-        cfg.headers.push((http::header::HeaderName::from_static("impersonate-group"), http::header::HeaderValue::from_static(group)));
+    for group in [
+        "system:serviceaccounts",
+        "system:serviceaccounts:kube-system",
+    ] {
+        cfg.headers.push((
+            http::header::HeaderName::from_static("impersonate-group"),
+            http::header::HeaderValue::from_static(group),
+        ));
     }
     Ok(kube::client::ClientBuilder::try_from(cfg)
-        .with_context(|| format!("building impersonated client for controller {controller_name} (sa {sa})"))?
+        .with_context(|| {
+            format!("building impersonated client for controller {controller_name} (sa {sa})")
+        })?
+        .with_layer(budget)
         .build())
 }
 
@@ -224,7 +241,11 @@ pub async fn run() -> Result<()> {
     // signatures to stop borrowing `&Config`.
     let cfg = std::sync::Arc::new(config::Config::from_env()?);
     watch::configure_startup_concurrency(cfg.watch_startup_concurrency);
-    let kube_config = kube::Config::infer().await.context("loading apiserver configuration")?;
+    let api_budget =
+        api_budget::ApiBudgetLayer::new(cfg.api_general_concurrency, cfg.api_reserved_concurrency);
+    let kube_config = kube::Config::infer()
+        .await
+        .context("loading apiserver configuration")?;
     // The base (non-impersonated) identity -- system:kube-controller-
     // manager. Used for election (leader-election is nodecontroller's own
     // concern, not any single controller's) and, as of this fix, for
@@ -235,6 +256,7 @@ pub async fn run() -> Result<()> {
     // story (docs/E2E_FINDINGS.md finding 22's follow-up).
     let base_client = kube::client::ClientBuilder::try_from(kube_config.clone())
         .context("building apiserver client")?
+        .with_layer(&api_budget)
         .build();
     watch::set_base_client(base_client.clone());
     // Election renewals must not share the informer/watch connection pool.
@@ -243,6 +265,7 @@ pub async fn run() -> Result<()> {
     // leadership (or make the process retain it after the transport died).
     let election_client = kube::client::ClientBuilder::try_from(kube_config.clone())
         .context("building controller-manager election client")?
+        .with_layer(&api_budget)
         .build();
 
     // One impersonated client per controller -- see impersonated_client's
@@ -251,7 +274,7 @@ pub async fn run() -> Result<()> {
     // controller's own error handling.
     macro_rules! client_for {
         ($name:literal) => {
-            impersonated_client(&kube_config, $name)?
+            impersonated_client(&kube_config, $name, &api_budget)?
         };
     }
     let node_ipam_client = client_for!("node-ipam");
@@ -323,16 +346,36 @@ pub async fn run() -> Result<()> {
         spawn_controller!("deployment", deployment_client, deployment);
         spawn_controller!("daemon-set", daemon_set_client, daemon_set);
         spawn_controller!("stateful-set", stateful_set_client, stateful_set);
-        spawn_controller!("garbage-collector", garbage_collector_client, garbage_collector);
+        spawn_controller!(
+            "garbage-collector",
+            garbage_collector_client,
+            garbage_collector
+        );
         spawn_controller!("job", job_client, job);
         spawn_controller!("cron-job", cron_job_client, cron_job);
-        spawn_controller!("ttl-after-finished", ttl_after_finished_client, ttl_after_finished);
+        spawn_controller!(
+            "ttl-after-finished",
+            ttl_after_finished_client,
+            ttl_after_finished
+        );
         spawn_controller!("attach-detach", attach_detach_client, attach_detach);
         spawn_controller!("pv-binder", pv_binder_client, pv_binder);
-        spawn_controller!("storage-protection", storage_protection_client, storage_protection);
-        spawn_controller!("root-ca-publisher", root_ca_publisher_client, root_ca_publisher);
+        spawn_controller!(
+            "storage-protection",
+            storage_protection_client,
+            storage_protection
+        );
+        spawn_controller!(
+            "root-ca-publisher",
+            root_ca_publisher_client,
+            root_ca_publisher
+        );
         spawn_controller!("resource-claim", resource_claim_client, resource_claim);
-        spawn_controller!("ephemeral-volume", ephemeral_volume_client, ephemeral_volume);
+        spawn_controller!(
+            "ephemeral-volume",
+            ephemeral_volume_client,
+            ephemeral_volume
+        );
         spawn_controller!("csr", csr_client, csr);
         spawn_controller!("disruption", disruption_client, disruption);
 

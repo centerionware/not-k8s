@@ -10,7 +10,7 @@
 //! different range than the rest of the cluster expects is not a
 //! replacement for it.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::time::Duration;
 
 mod defaults {
@@ -58,8 +58,10 @@ mod defaults {
     /// single hardcoded default, since a future non-k3s control plane needs
     /// a different path without this becoming a bigger refactor: add its
     /// pair here.
-    pub const CSR_SIGNING_CA_CANDIDATES: &[(&str, &str)] =
-        &[("/var/lib/rancher/k3s/server/tls/server-ca.crt", "/var/lib/rancher/k3s/server/tls/server-ca.key")];
+    pub const CSR_SIGNING_CA_CANDIDATES: &[(&str, &str)] = &[(
+        "/var/lib/rancher/k3s/server/tls/server-ca.crt",
+        "/var/lib/rancher/k3s/server/tls/server-ca.key",
+    )];
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +89,10 @@ pub struct Config {
     /// not a cap on steady-state watches: a permit is returned after that
     /// resource's initial snapshot is complete.
     pub watch_startup_concurrency: usize,
+    /// Maximum concurrent ordinary API requests across all controllers.
+    pub api_general_concurrency: usize,
+    /// Capacity reserved for leases and watch establishment/recovery.
+    pub api_reserved_concurrency: usize,
 
     /// Explicit override for both the CA cert and key path — both `None`
     /// (the default) means "search `defaults::CSR_SIGNING_CA_CANDIDATES`
@@ -114,6 +120,8 @@ impl Default for Config {
             tick_period: Duration::from_millis(defaults::TICK_PERIOD_MILLIS),
             jitter_fraction: defaults::JITTER_FRACTION,
             watch_startup_concurrency: 2,
+            api_general_concurrency: 32,
+            api_reserved_concurrency: 4,
             csr_signing_ca_cert_path: None,
             csr_signing_ca_key_path: None,
         }
@@ -141,12 +149,17 @@ where
 {
     match var(name) {
         None => Ok(default),
-        Some(v) => v.parse::<T>().map_err(|e| anyhow::anyhow!("{name}={v}: {e}")),
+        Some(v) => v
+            .parse::<T>()
+            .map_err(|e| anyhow::anyhow!("{name}={v}: {e}")),
     }
 }
 
 fn secs_env(name: &str, default: Duration) -> Result<Duration> {
-    Ok(Duration::from_secs(parse_env::<u64>(name, default.as_secs())?))
+    Ok(Duration::from_secs(parse_env::<u64>(
+        name,
+        default.as_secs(),
+    )?))
 }
 
 fn millis_env(name: &str, default: Duration) -> Result<Duration> {
@@ -193,10 +206,7 @@ impl Config {
                 "NODECONTROLLER_LEADER_RENEW_DEADLINE_SECONDS",
                 d.renew_deadline,
             )?,
-            retry_period: secs_env(
-                "NODECONTROLLER_LEADER_RETRY_PERIOD_SECONDS",
-                d.retry_period,
-            )?,
+            retry_period: secs_env("NODECONTROLLER_LEADER_RETRY_PERIOD_SECONDS", d.retry_period)?,
             lease_name: var("NODECONTROLLER_LEADER_LEASE_NAME").unwrap_or(d.lease_name),
             lease_namespace: var("NODECONTROLLER_LEADER_LEASE_NAMESPACE")
                 .unwrap_or(d.lease_namespace),
@@ -206,6 +216,14 @@ impl Config {
             watch_startup_concurrency: parse_env(
                 "NODECONTROLLER_WATCH_STARTUP_CONCURRENCY",
                 d.watch_startup_concurrency,
+            )?,
+            api_general_concurrency: parse_env(
+                "NODECONTROLLER_API_GENERAL_CONCURRENCY",
+                d.api_general_concurrency,
+            )?,
+            api_reserved_concurrency: parse_env(
+                "NODECONTROLLER_API_RESERVED_CONCURRENCY",
+                d.api_reserved_concurrency,
             )?,
             csr_signing_ca_cert_path: var("NODECONTROLLER_CSR_SIGNING_CA_CERT_PATH"),
             csr_signing_ca_key_path: var("NODECONTROLLER_CSR_SIGNING_CA_KEY_PATH"),
@@ -234,6 +252,12 @@ impl Config {
         }
         if self.watch_startup_concurrency == 0 {
             bail!("NODECONTROLLER_WATCH_STARTUP_CONCURRENCY must be at least 1.");
+        }
+        if self.api_general_concurrency == 0 {
+            bail!("NODECONTROLLER_API_GENERAL_CONCURRENCY must be at least 1.");
+        }
+        if self.api_reserved_concurrency == 0 {
+            bail!("NODECONTROLLER_API_RESERVED_CONCURRENCY must be at least 1.");
         }
         if self.csr_signing_ca_cert_path.is_some() != self.csr_signing_ca_key_path.is_some() {
             bail!(
@@ -270,10 +294,16 @@ impl Config {
     /// `validate()` to be all-or-nothing), otherwise every well-known
     /// candidate in `defaults::CSR_SIGNING_CA_CANDIDATES`.
     pub fn csr_signing_ca_candidates(&self) -> Vec<(String, String)> {
-        if let (Some(cert), Some(key)) = (&self.csr_signing_ca_cert_path, &self.csr_signing_ca_key_path) {
+        if let (Some(cert), Some(key)) = (
+            &self.csr_signing_ca_cert_path,
+            &self.csr_signing_ca_key_path,
+        ) {
             return vec![(cert.clone(), key.clone())];
         }
-        defaults::CSR_SIGNING_CA_CANDIDATES.iter().map(|(c, k)| (c.to_string(), k.to_string())).collect()
+        defaults::CSR_SIGNING_CA_CANDIDATES
+            .iter()
+            .map(|(c, k)| (c.to_string(), k.to_string()))
+            .collect()
     }
 
     pub fn election(&self) -> node_leaderelection::ElectionConfig {
@@ -289,7 +319,9 @@ impl Config {
     }
 
     pub fn controller_disabled(&self, name: &str) -> bool {
-        self.disabled_controllers.iter().any(|disabled| disabled == name)
+        self.disabled_controllers
+            .iter()
+            .any(|disabled| disabled == name)
     }
 
     fn log_summary(&self) {
@@ -301,6 +333,8 @@ impl Config {
             lease = %format!("{}/{}", self.lease_namespace, self.lease_name),
             tick_period_ms = self.tick_period.as_millis() as u64,
             watch_startup_concurrency = self.watch_startup_concurrency,
+            api_general_concurrency = self.api_general_concurrency,
+            api_reserved_concurrency = self.api_reserved_concurrency,
             disabled_controllers = ?self.disabled_controllers,
             "nodecontroller starting"
         );
@@ -340,7 +374,8 @@ mod tests {
     #[test]
     fn recognizes_disabled_controllers() {
         let mut cfg = Config::default();
-        cfg.disabled_controllers.push("garbage-collector".to_string());
+        cfg.disabled_controllers
+            .push("garbage-collector".to_string());
         assert!(cfg.controller_disabled("garbage-collector"));
         assert!(!cfg.controller_disabled("pv-binder"));
     }
