@@ -511,10 +511,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         if needs_available_phase(&pv) {
                             let publish_client = client.clone();
                             let publish_name = pv.name_any();
+                            let mut publish_pv = pv.clone();
                             tokio::spawn(async move {
                                 let result = tokio::time::timeout(
                                     API_WRITE_TIMEOUT,
-                                    publish_available_if_needed(&publish_client, &mut pv),
+                                    publish_available_if_needed(&publish_client, &mut publish_pv),
                                 )
                                 .await;
                                 if result.is_err() {
