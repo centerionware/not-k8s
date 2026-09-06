@@ -421,6 +421,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let mut pv_stream = crate::watch::watch_persistent_volumes(&client);
     let mut pvc_stream = crate::watch::watch_persistent_volume_claims(&client);
     let mut storage_class_stream = crate::watch::watch_storage_classes(&client);
+    let mut pv_initialized = false;
+    let mut pvc_initialized = false;
+    let mut storage_classes_initialized = false;
 
     loop {
         tokio::select! {
@@ -435,7 +438,8 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         }
                     }
                     Some(Ok(Event::Delete(pv))) => { pvs.remove(&pv.name_any()); }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::Init)) => { pv_initialized = false; }
+                    Some(Ok(Event::InitDone)) => { pv_initialized = true; }
                     Some(Err(e)) => tracing::warn!(error = ?e, "pv watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
                 }
@@ -449,7 +453,8 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         queue.enqueue((ns_of(&pvc), pvc.name_any()));
                     }
                     Some(Ok(Event::Delete(pvc))) => { claims.remove(&(ns_of(&pvc), pvc.name_any())); }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::Init)) => { pvc_initialized = false; }
+                    Some(Ok(Event::InitDone)) => { pvc_initialized = true; }
                     Some(Err(e)) => tracing::warn!(error = ?e, "pvc watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
                 }
@@ -465,12 +470,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     Some(Ok(Event::Delete(class))) => {
                         storage_classes.remove(&class.name_any());
                     }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::Init)) => { storage_classes_initialized = false; }
+                    Some(Ok(Event::InitDone)) => { storage_classes_initialized = true; }
                     Some(Err(e)) => tracing::warn!(error = ?e, "StorageClass watch error in persistentvolume-binder-controller"),
                     None => return Ok(()),
                 }
             }
-            key = queue.pop() => {
+            key = queue.pop(), if pv_initialized && pvc_initialized && storage_classes_initialized => {
                 if let Some(pvc) = claims.get(&key).cloned() {
                     reconcile_claim(&client, &pvc, &mut pvs, &storage_classes).await;
                 }

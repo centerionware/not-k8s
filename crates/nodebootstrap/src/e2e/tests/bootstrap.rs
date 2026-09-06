@@ -2375,10 +2375,16 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
             .create(&PostParams::default(), &namespace)
             .await
             .context("creating the PodNodeSelector namespace")?;
-        service_accounts
+        match service_accounts
             .create(&PostParams::default(), &service_account)
             .await
-            .context("creating the PodNodeSelector ServiceAccount")?;
+        {
+            Ok(_) => {}
+            Err(kube::Error::Api(error)) if error.code == 409 => {}
+            Err(error) => {
+                return Err(error).context("creating the PodNodeSelector ServiceAccount");
+            }
+        }
         let created = pods
             .create(&PostParams::default(), &pod)
             .await
