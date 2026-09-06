@@ -47,7 +47,22 @@ use crate::command::{
 use crate::error::{Error, Result};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params_from_iter, Connection, OptionalExtension, Transaction};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
+
+const RBAC_LIST_PREFIXES: [&[u8]; 4] = [
+    b"/registry/clusterrolebindings/",
+    b"/registry/clusterroles/",
+    b"/registry/rolebindings/",
+    b"/registry/roles/",
+];
+
+#[derive(Clone)]
+struct CachedRbacRange {
+    revision: i64,
+    result: RangeResult,
+}
 
 /// A key/value pair as etcd reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -124,6 +139,70 @@ pub struct Applied {
 
 pub struct Store {
     conn: Connection,
+    /// The four full RBAC lists are read for nearly every authenticated API
+    /// request. SQLite's page cache avoids disk I/O, but not rebuilding and
+    /// copying the same result. This small application cache is invalidated
+    /// by `apply_at` when the state machine touches an RBAC key, so replicas
+    /// share the same correctness boundary as their replicated writes.
+    rbac_cache: RefCell<HashMap<Vec<u8>, CachedRbacRange>>,
+}
+
+fn rbac_list_prefix(range: &KeyRange) -> Option<&'static [u8]> {
+    let KeyRange::Between { from, to } = range else {
+        return None;
+    };
+    RBAC_LIST_PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| from.as_slice() == *prefix && to.as_slice() == prefix_range_end(prefix))
+}
+
+fn prefix_range_end(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    while end.last() == Some(&0xff) {
+        end.pop();
+    }
+    if let Some(last) = end.last_mut() {
+        *last += 1;
+        end
+    } else {
+        vec![0]
+    }
+}
+
+fn rbac_key(key: &[u8]) -> bool {
+    RBAC_LIST_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
+
+fn rbac_range(range: &KeyRange) -> bool {
+    match range {
+        KeyRange::Single(key) => rbac_key(key),
+        KeyRange::Between { from, to } => RBAC_LIST_PREFIXES.iter().any(|prefix| {
+            let prefix_end = prefix_range_end(prefix);
+            from.as_slice() < prefix_end.as_slice() && *prefix < to.as_slice()
+        }),
+        KeyRange::From(from) => RBAC_LIST_PREFIXES.iter().any(|prefix| {
+            from.as_slice() < prefix_range_end(prefix).as_slice()
+        }),
+        KeyRange::All => true,
+    }
+}
+
+fn command_touches_rbac(command: &Command) -> bool {
+    fn request_touches(request: &RequestOp) -> bool {
+        match request {
+            RequestOp::Range(_) => false,
+            RequestOp::Put(op) => rbac_key(&op.key),
+            RequestOp::Delete(op) => rbac_range(&op.range),
+        }
+    }
+
+    match command {
+        Command::Put(op) => rbac_key(&op.key),
+        Command::Delete(op) => rbac_range(&op.range),
+        Command::Txn(op) => op.success.iter().any(request_touches) || op.failure.iter().any(request_touches),
+        _ => false,
+    }
 }
 
 impl Store {
@@ -140,7 +219,7 @@ impl Store {
             }
             Connection::open(path)?
         };
-        let store = Store { conn };
+        let store = Store { conn, rbac_cache: RefCell::new(HashMap::new()) };
         store.init_schema()?;
         Ok(store)
     }
@@ -250,9 +329,31 @@ impl Store {
                 return Err(Error::FutureRevision { requested: q.revision, current });
             }
         }
+        if let Some(prefix) = rbac_list_prefix(&q.range) {
+            if q.limit == 0 && !q.keys_only && !q.count_only && q.sort.is_none() {
+                if let Some(cached) = self.rbac_cache.borrow().get(prefix) {
+                    // A cache populated at an older revision is still valid
+                    // for a newer snapshot when no RBAC mutation has
+                    // invalidated it. It is not valid for a historical read
+                    // older than the cached result.
+                    if at >= cached.revision {
+                        return Ok(cached.result.clone());
+                    }
+                }
+            }
+        }
         // Same code path a transaction's own Range op takes, so a read is
         // answered identically whether or not it is inside a txn.
-        range_in(&self.conn, &q.range, at, q)
+        let result = range_in(&self.conn, &q.range, at, q)?;
+        if let Some(prefix) = rbac_list_prefix(&q.range) {
+            if q.limit == 0 && !q.keys_only && !q.count_only && q.sort.is_none() {
+                self.rbac_cache.borrow_mut().insert(
+                    prefix.to_vec(),
+                    CachedRbacRange { revision: at, result: result.clone() },
+                );
+            }
+        }
+        Ok(result)
     }
 
     /// Events strictly after `since`, in apply order — the watch replay path.
@@ -544,6 +645,7 @@ impl Store {
             [snapshot.applied_index as i64],
         )?;
         tx.commit()?;
+        self.rbac_cache.borrow_mut().clear();
         Ok(())
     }
 
@@ -686,6 +788,9 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        if command_touches_rbac(cmd) {
+            self.rbac_cache.borrow_mut().clear();
+        }
         Ok(Applied { revision, response, events: w.events })
     }
 }
@@ -1410,6 +1515,21 @@ mod tests {
         let keys: Vec<_> = r.kvs.iter().map(|kv| kv.key.clone()).collect();
         assert_eq!(keys, vec![b"/registry/pods/a".to_vec(), b"/registry/pods/b".to_vec()]);
         assert_eq!(r.count, 2);
+    }
+
+    #[test]
+    fn rbac_list_cache_survives_unrelated_writes_and_invalidates_on_policy_writes() {
+        let mut s = store();
+        put(&mut s, "/registry/roles/admin", "v1");
+        let query = RangeQuery::current(KeyRange::Between {
+            from: b"/registry/roles/".to_vec(),
+            to: b"/registry/roles0".to_vec(),
+        });
+        let first = s.range(&query).unwrap();
+        put(&mut s, "/registry/pods/p1", "unrelated");
+        assert_eq!(s.range(&query).unwrap().kvs, first.kvs);
+        put(&mut s, "/registry/roles/admin", "v2");
+        assert_eq!(s.range(&query).unwrap().kvs[0].value, b"v2");
     }
 
     #[test]

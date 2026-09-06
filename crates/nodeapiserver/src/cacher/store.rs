@@ -92,6 +92,10 @@ pub struct WatchCache {
     /// exactly the same relist path as [`Error::TooOld`], not a silent
     /// gap in what it sees.
     events: broadcast::Sender<WatchEvent>,
+    /// Revision of the most recent actual object mutation. Progress
+    /// bookmarks advance `revision` for watch resumption, but must not
+    /// invalidate consumers when this resource's contents did not change.
+    content_revision: i64,
     /// Publishes `revision` on every apply, independent of `events`'
     /// capacity — this is what [`wait_for_revision`] (the free function
     /// below) waits on for consistent reads (`docs/APISERVER_PLAN.md` finding 3:
@@ -117,12 +121,18 @@ impl WatchCache {
             history_floor: revision,
             revision,
             events,
+            content_revision: revision,
             revision_tx,
         }
     }
 
     pub fn revision(&self) -> i64 {
         self.revision
+    }
+
+    /// Revision of the most recent add/modify/delete, excluding bookmarks.
+    pub fn content_revision(&self) -> i64 {
+        self.content_revision
     }
 
     /// A cloneable, independently-owned handle on `revision` — the
@@ -163,9 +173,11 @@ impl WatchCache {
         match kind {
             EventKind::Added | EventKind::Modified => {
                 self.items.insert(key.clone(), CacheEntry { value: value.clone(), mod_revision: revision });
+                self.content_revision = revision;
             }
             EventKind::Deleted => {
                 self.items.remove(&key);
+                self.content_revision = revision;
             }
             EventKind::Bookmark => {}
         }
@@ -345,6 +357,10 @@ impl SharedCache {
         self.read().revision()
     }
 
+    pub fn content_revision(&self) -> i64 {
+        self.read().content_revision()
+    }
+
     pub fn revision_watch(&self) -> watch::Receiver<i64> {
         self.read().revision_watch()
     }
@@ -437,6 +453,16 @@ mod tests {
         cache.apply(EventKind::Deleted, b"a".to_vec(), Vec::new(), 4);
         assert!(cache.list().0.is_empty());
         assert_eq!(cache.revision(), 4);
+    }
+
+    #[test]
+    fn bookmarks_advance_watch_revision_without_invalidating_content() {
+        let mut cache = WatchCache::new(vec![], 1, 16, 16);
+        cache.apply(EventKind::Bookmark, Vec::new(), Vec::new(), 9);
+        assert_eq!(cache.revision(), 9);
+        assert_eq!(cache.content_revision(), 1);
+        cache.apply(EventKind::Added, b"a".to_vec(), b"v".to_vec(), 10);
+        assert_eq!(cache.content_revision(), 10);
     }
 
     #[test]

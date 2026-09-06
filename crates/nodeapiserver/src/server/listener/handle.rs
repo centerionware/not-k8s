@@ -283,6 +283,7 @@ async fn handle(
         return Ok(proxy_resource(
             req,
             storage,
+            &cache_registry,
             &info,
             &method,
             &path_str,
