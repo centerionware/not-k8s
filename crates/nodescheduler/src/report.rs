@@ -52,7 +52,6 @@
 //! will report again.
 
 use crate::cache::PodInfo;
-use anyhow::Context;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, Patch, PatchParams};
 
@@ -201,12 +200,7 @@ async fn emit_event(
 
     let mut last_error = None;
     for attempt in 0..3 {
-        match client
-            .request::<serde_json::Value>(
-                req.try_clone().context("event request is not cloneable")?,
-            )
-            .await
-        {
+        match client.request::<serde_json::Value>(req.clone()).await {
             Ok(_) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
