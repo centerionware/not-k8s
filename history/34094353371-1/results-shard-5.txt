@@ -1,0 +1,120 @@
+commit: 815e258e18693a9b7c6766aee138ab4eb3e1774d
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/34094353371
+timestamp (UTC): 2026-09-07T07:44:59Z
+shard: 5/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 62 test(s), shard 5/5
+▶ 2026-09-07T07:23:09.625Z test_coredns_is_a_healthy_deployment ... PASS (27067ms)
+▶ 2026-09-07T07:23:36.693Z test_nodeapiserver_rejects_invalid_builtin_schema_constraints ... PASS (5022ms)
+▶ 2026-09-07T07:23:41.715Z test_nodeapiserver_applies_pure_admission_to_apply ... PASS (5039ms)
+▶ 2026-09-07T07:23:46.754Z test_nodeapiserver_defaults_storage_class_on_apply ... PASS (5025ms)
+▶ 2026-09-07T07:23:51.780Z test_nodeapiserver_applies_namespace_node_selector ... PASS (5049ms)
+▶ 2026-09-07T07:23:56.830Z test_nodeapiserver_advertises_subresources ... PASS (5014ms)
+▶ 2026-09-07T07:24:01.845Z test_nodeapiserver_apf_labels_requests ... PASS (5032ms)
+▶ 2026-09-07T07:24:06.877Z test_nodeapiserver_rejects_unsupported_field_selector ... PASS (5012ms)
+▶ 2026-09-07T07:24:11.890Z test_nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers ... PASS (33082ms)
+▶ 2026-09-07T07:24:44.972Z test_nodeapiserver_rejects_unsupported_resource_route ... PASS (2012ms)
+▶ 2026-09-07T07:24:46.985Z test_nodeapiserver_mutating_admission_policy_mutates_create ... PASS (31077ms)
+▶ 2026-09-07T07:25:18.063Z test_nodeapiserver_honors_finalizers ... PASS (4021ms)
+▶ 2026-09-07T07:25:22.085Z test_nodeapiserver_honors_dry_run_and_delete_preconditions ... PASS (5021ms)
+▶ 2026-09-07T07:25:27.107Z test_installed_component_binaries_are_runnable_whatever_the_layout ... PASS (5026ms)
+▶ 2026-09-07T07:25:32.133Z test_basic_pod_runs ... PASS (32070ms)
+▶ 2026-09-07T07:26:04.203Z test_crashing_container_restarts_and_increments_restart_count ... PASS (13040ms)
+▶ 2026-09-07T07:26:17.243Z test_disruption_controller_computes_pdb_status ... PASS (32074ms)
+▶ 2026-09-07T07:26:49.318Z test_eviction_priority_tiebreak_manual_procedure ... SKIP (priority-based eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 3010ms)
+▶ 2026-09-07T07:26:52.329Z test_pressure_conditions_are_present_and_normally_false ... PASS (5014ms)
+▶ 2026-09-07T07:26:57.343Z test_job_controller_runs_pods_to_completion ... PASS (5021ms)
+▶ 2026-09-07T07:27:02.365Z test_deployment_creates_replicaset_and_rolls_update ... PASS (64177ms)
+▶ 2026-09-07T07:28:06.543Z test_hugepages_limit_is_enforced_via_cgroup ... PASS (5028ms)
+▶ 2026-09-07T07:28:11.572Z test_env_resource_field_ref_reports_the_containers_own_limits ... PASS (5026ms)
+▶ 2026-09-07T07:28:16.599Z test_datastore_enforces_compare_and_swap ... PASS (5282ms)
+▶ 2026-09-07T07:28:21.881Z test_datastore_expires_a_lease_and_its_keys ... PASS (5283ms)
+▶ 2026-09-07T07:28:27.165Z test_datastore_refuses_a_cluster_it_cannot_be_part_of ... PASS (5016ms)
+▶ 2026-09-07T07:28:32.182Z test_the_cluster_keeps_serving_when_a_follower_dies ... PASS (9560ms)
+▶ 2026-09-07T07:28:41.742Z test_a_partitioned_leader_steps_down_and_the_majority_elects_another ... SKIP (partition tests require the isolated network-namespace harness; set NOTK8S_E2E_ENABLE_PACKET_SHAPING=1 on a disposable root test host; 5014ms)
+▶ 2026-09-07T07:28:46.757Z test_pod_cgroup_reflects_its_qos_class ... PASS (32068ms)
+▶ 2026-09-07T07:29:18.825Z test_host_network_pod_uses_the_node_network_namespace ... PASS (32076ms)
+▶ 2026-09-07T07:29:50.901Z test_cluster_dns_resolves_service_names ... PASS (6027ms)
+▶ 2026-09-07T07:29:56.929Z test_plugin_registry_directory_exists ... PASS (5013ms)
+▶ 2026-09-07T07:30:01.943Z test_scheduler_honours_a_node_selector_that_matches_nothing ... PASS (5025ms)
+▶ 2026-09-07T07:30:06.969Z test_scheduler_honours_topology_spread ... PASS (35084ms)
+▶ 2026-09-07T07:30:42.053Z test_restart_policy_never_exit_nonzero_is_failed ... PASS (5024ms)
+▶ 2026-09-07T07:30:47.077Z test_container_status_container_id_has_a_runtime_scheme_prefix ... PASS (32071ms)
+▶ 2026-09-07T07:31:19.148Z test_pod_status_reports_host_ips_plural ... PASS (32066ms)
+▶ 2026-09-07T07:31:51.215Z test_liveness_probe_failure_restarts_the_container ... PASS (64132ms)
+▶ 2026-09-07T07:32:55.347Z test_http_get_readiness_probe_against_a_real_server ... PASS (32065ms)
+▶ 2026-09-07T07:33:27.412Z test_downward_api_volume_writes_pod_metadata ... PASS (5023ms)
+▶ 2026-09-07T07:33:32.436Z test_host_aliases_still_work_under_host_users_false ... PASS (5023ms)
+▶ 2026-09-07T07:33:37.459Z test_host_path_directory_mounts_the_real_host_directory ... PASS (5023ms)
+▶ 2026-09-07T07:33:42.482Z test_mount_propagation_private_default_does_not_see_a_new_host_mount ... PASS (35123ms)
+▶ 2026-09-07T07:34:17.606Z test_host_path_directory_type_rejects_a_nonexistent_path ... PASS (4024ms)
+▶ 2026-09-07T07:34:21.631Z test_run_as_user_is_applied ... PASS (5021ms)
+▶ 2026-09-07T07:34:26.652Z test_host_users_volume_ownership_translation_is_correct ... PASS (5029ms)
+▶ 2026-09-07T07:34:31.682Z test_topology_manager_cross_provider_alignment_manual_note ... SKIP (cross-provider CPU/device NUMA alignment needs real multi-NUMA hardware and a device plugin advertising NUMA affinity; 5016ms)
+▶ 2026-09-07T07:34:36.698Z test_containers_get_isolated_pid_namespaces_by_default ... PASS (33075ms)
+▶ 2026-09-07T07:35:09.774Z test_lifecycle_stop_signal_is_honored_by_the_runtime ... PASS (7030ms)
+▶ 2026-09-07T07:35:16.805Z test_nodeapiserver_proxy_subresources_relay_requests ... PASS (63080ms)
+▶ 2026-09-07T07:36:19.885Z test_nodeproxy_runs_as_its_own_service_separate_from_nodelet ... PASS (2028ms)
+▶ 2026-09-07T07:36:21.914Z test_session_affinity_pins_a_client_to_one_backend ... PASS (34105ms)
+▶ 2026-09-07T07:36:56.019Z test_kubectl_logs_follow_streams_new_output ... PASS (33076ms)
+▶ 2026-09-07T07:37:29.095Z test_metrics_resource_returns_real_pod_usage ... PASS (32116ms)
+▶ 2026-09-07T07:38:01.211Z test_nodeapiserver_writes_audit_log ... FAIL (121908ms)
+    nodeapiserver did not become ready within 60 seconds after restart
+failure snapshot /api/v1/namespaces/nk-e2e-4202-bbb13957/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"1980"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4202-bbb13957/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"1980"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4202-bbb13957/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"1980"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-4202-bbb13957/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"1980"}}
+▶ 2026-09-07T07:40:12.154Z test_cert_manager_crds_are_usable_without_nodecontroller_restart ... Client Version: v1.37.0
+Kustomize Version: v5.8.1
+PASS (34798ms)
+▶ 2026-09-07T07:40:51.969Z test_log_rotation_creates_a_rotated_file ... PASS (42377ms)
+▶ 2026-09-07T07:41:37.361Z test_a_pending_pod_recovers_after_the_node_failure_is_fixed ... PASS (37188ms)
+▶ 2026-09-07T07:42:16.566Z test_config_file_precedence_a_real_env_var_still_wins ... PASS (5656ms)
+▶ 2026-09-07T07:42:27.240Z test_image_gc_removes_unreferenced_images_above_the_watermark ... # /etc/systemd/system/nodelet.service
+[Unit]
+Description=nodelet -- not-k8s node agent (kubelet replacement)
+After=network-online.target nodeapiserver.service
+Wants=network-online.target nodeapiserver.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/var/lib/nodebootstrap/toolchain/bin/nodelet'
+Restart=always
+RestartSec=5s
+Environment=KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
+Environment=NODELET_RUNTIME=cri
+Environment=NODELET_SERVER_CERT_DIR=/var/lib/nodelet/pki
+Environment=NODELET_NODE_NAME=runnervmejwal
+Environment=NOTK8S_COMPONENT=nodelet
+Environment=NOTK8S_COMPONENT_BINARY=/var/lib/nodebootstrap/toolchain/bin/nodelet
+Environment=NODELET_CLUSTER_DNS=10.43.0.10
+Environment=NODELET_CLUSTER_DOMAIN=cluster.local
+Environment=NODELET_CLIENT_CA_FILE=/var/lib/nodebootstrap/pki/ca.crt
+[Install]
+WantedBy=multi-user.target
+PASS (39348ms)
+▶ 2026-09-07T07:43:11.607Z test_scheduler_schedules_a_pod_an_http_extender_approves ... # /etc/systemd/system/nodescheduler.service
+[Unit]
+Description=nodescheduler -- not-k8s scheduler (kube-scheduler replacement)
+After=network-online.target nodeapiserver.service
+Wants=network-online.target nodeapiserver.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/var/lib/nodebootstrap/toolchain/bin/nodescheduler'
+Restart=always
+RestartSec=5s
+Environment=KUBECONFIG=/etc/nodebootstrap/kube-scheduler.kubeconfig
+Environment=NOTK8S_COMPONENT=nodescheduler
+Environment=NOTK8S_COMPONENT_BINARY=/var/lib/nodebootstrap/toolchain/bin/nodescheduler
+Environment=RUST_LOG=info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
+[Install]
+WantedBy=multi-user.target
+PASS (40756ms)
+▶ 2026-09-07T07:43:57.379Z test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers ... UNIT FILE       STATE   PRESET
+nodelet.service enabled enabled
+
+1 unit files listed.
+PASS (44139ms)
+Error: bootstrap e2e failed: 1 test(s): test_nodeapiserver_writes_audit_log
