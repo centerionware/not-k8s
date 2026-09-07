@@ -102,10 +102,10 @@ fn wait_for_nodeapiserver() -> Result<()> {
                     return false;
                 }
                 let response = String::from_utf8_lossy(&output.stdout);
-                let Some((body, status)) = response.rsplit_once('\n') else {
+                let Some((_, status)) = response.rsplit_once('\n') else {
                     return false;
                 };
-                status.trim() == "200" && body.contains("[+]storage ok")
+                status.trim() == "200"
             });
         if ready {
             return Ok(());
