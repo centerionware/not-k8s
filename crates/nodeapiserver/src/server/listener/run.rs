@@ -474,7 +474,21 @@ pub async fn run(cfg: Config) {
                 .and_then(|certs| certs.first())
                 .and_then(|leaf| crate::authn::x509::identity_from_der(leaf.as_ref()));
             let io = TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req| {
+            // Group E: per-connection kill switch for the watch idle
+            // watchdog (see `watch_idle`). Every request on this
+            // connection carries a clone via request extensions; a
+            // bookmark-negotiated watch whose body produces no frame for
+            // `WATCH_IDLE_SILENCE_LIMIT` fires the switch, and the select
+            // below drops the connection — ending whatever body (watch
+            // stream included) is still being served on it, so the client
+            // reconnects and relists. The select is what makes the bound
+            // work where an in-body timer could not: this connection task
+            // is always polled by tokio, even when hyper has parked the
+            // response body on a dead feed.
+            let (watch_kill_tx, mut watch_kill_rx) = tokio::sync::watch::channel(false);
+            let service = hyper::service::service_fn(move |mut req| {
+                req.extensions_mut()
+                    .insert(WatchConnectionKill(watch_kill_tx.clone()));
                 handle_with_audit(
                     req,
                     storage.clone(),
@@ -497,11 +511,26 @@ pub async fn run(cfg: Config) {
                     kubelet_tls.clone(),
                 )
             });
-            if let Err(e) = ConnBuilder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(io, service)
-                .await
-            {
-                tracing::debug!(%peer, error = ?e, "listener: connection ended");
+            // The builder must be bound, not a temporary: hyper-util's
+            // `serve_connection_with_upgrades` borrows `&self`, so the
+            // connection future needs the builder to outlive the select.
+            let builder = ConnBuilder::new(TokioExecutor::new());
+            let connection = builder.serve_connection_with_upgrades(io, service);
+            tokio::select! {
+                result = connection => {
+                    if let Err(e) = result {
+                        tracing::debug!(%peer, error = ?e, "listener: connection ended");
+                    }
+                }
+                killed = watch_kill_rx.changed() => {
+                    if killed.is_ok() {
+                        // Dropping `io` (by returning) closes the socket,
+                        // which ends every body still being served on this
+                        // connection — the client reconnects and relists
+                        // with a fresh RV, which is the recovery.
+                        tracing::warn!(%peer, "listener: closing connection after a bookmark watch produced no frame for the idle limit");
+                    }
+                }
             }
         });
     }

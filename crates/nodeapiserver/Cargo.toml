@@ -66,7 +66,11 @@ tonic-prost = { workspace = true }
 # The Watch RPC is bidirectional streaming: ReceiverStream adapts a
 # tokio::sync::mpsc::Receiver into the Stream tonic's generated client
 # needs for the request side. Same version nodestore's own Cargo.toml uses.
-tokio-stream = { version = "0.1", features = ["sync", "net", "time"] }
+# "sync" also gates `BroadcastStream` (watch responses) and "net" gates
+# `UnixListenerStream` (kms_roundtrip test server); "time" is not needed
+# since the in-body `StreamExt::timeout` idle cap was replaced by the
+# connection-level watchdog in `server::listener::watch_idle`.
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
 tower = { workspace = true, features = ["util"] }
 # storage/encryption.rs's AES-256-GCM encryption-at-rest provider. Not a
 # new dependency in the build graph — rustls (below, via its "ring"

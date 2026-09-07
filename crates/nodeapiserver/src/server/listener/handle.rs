@@ -43,6 +43,12 @@ async fn handle(
         })
         .filter(|value| !value.is_empty());
     let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
+    // Captured before any handler can consume `req` (CREATE/UPDATE/PATCH
+    // move it into `read_body_bytes`), so the watch idle watchdog's
+    // per-connection kill switch survives to `handle_watch!` below — it
+    // cannot be re-read from `$req` there, because `handle_crud!` may
+    // already have moved the request.
+    let watch_kill = req.extensions().get::<WatchConnectionKill>().cloned();
 
     let info = path::parse(&method, &path_str, &query);
 
@@ -630,6 +636,7 @@ async fn handle(
         is_watch,
         is_certificate_status_subresource,
         wants_partial_metadata,
-        has_body
+        has_body,
+        watch_kill
     );
 }
