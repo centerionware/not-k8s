@@ -81,6 +81,7 @@ pub(crate) fn pending_projected_volume_names(
 
 /// Backwards-compatible narrower helper for callers/tests that specifically
 /// need to identify projected ServiceAccount token failures.
+#[cfg(test)]
 pub(crate) fn pending_projected_token_volume_names(
     pod: &Pod,
     resolved: &HashMap<String, ResolvedVolume>,

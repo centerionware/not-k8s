@@ -787,8 +787,9 @@ impl Store {
                 [index as i64],
             )?;
         }
+        let committed_events_touch_rbac = w.events.iter().any(|event| rbac_key(&event.kv.key));
         tx.commit()?;
-        if command_touches_rbac(cmd) {
+        if command_touches_rbac(cmd) || committed_events_touch_rbac {
             self.rbac_cache.borrow_mut().clear();
         }
         Ok(Applied { revision, response, events: w.events })
@@ -1530,6 +1531,40 @@ mod tests {
         assert_eq!(s.range(&query).unwrap().kvs, first.kvs);
         put(&mut s, "/registry/roles/admin", "v2");
         assert_eq!(s.range(&query).unwrap().kvs[0].value, b"v2");
+    }
+
+    #[test]
+    fn lease_revoke_and_expiry_invalidate_rbac_list_cache() {
+        let query = RangeQuery::current(KeyRange::Between {
+            from: b"/registry/roles/".to_vec(),
+            to: b"/registry/roles0".to_vec(),
+        });
+        let mut s = store();
+        s.apply(&Command::LeaseGrant { id: 1, ttl_secs: 1, now_unix_secs: 0 }).unwrap();
+        s.apply(&Command::Put(PutOp {
+            key: b"/registry/roles/revoked".to_vec(),
+            value: b"x".to_vec(),
+            lease: 1,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        })).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 1);
+        s.apply(&Command::LeaseRevoke { id: 1 }).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 0);
+
+        s.apply(&Command::LeaseGrant { id: 2, ttl_secs: 1, now_unix_secs: 0 }).unwrap();
+        s.apply(&Command::Put(PutOp {
+            key: b"/registry/roles/expired".to_vec(),
+            value: b"x".to_vec(),
+            lease: 2,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        })).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 1);
+        s.apply(&Command::ExpireLeases { now_unix_secs: 2 }).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 0);
     }
 
     #[test]

@@ -312,14 +312,21 @@ jobs:
             # Keep published bytes immutable. Rerun-failed-jobs reuses the
             # same build artifacts; a rebuilt/mismatched bundle must fail.
             checks=$(mktemp -d)
-            if grep -Fxq SHA256SUMS <<< "$existing"; then
-              gh release download "$tag" --pattern SHA256SUMS --dir "$checks"
-              [[ "$(sha256sum < dist/SHA256SUMS)" == "$(sha256sum < "$checks/SHA256SUMS")" ]] || {
-                echo 'Published checksums differ; refusing to overwrite release assets' >&2; exit 1;
-              }
-            fi
+            grep -Fxq SHA256SUMS <<< "$existing" || {
+              echo 'Existing release is missing SHA256SUMS; refusing to publish' >&2; exit 1;
+            }
+            gh release download "$tag" --pattern SHA256SUMS --dir "$checks"
+            [[ "$(sha256sum < dist/SHA256SUMS)" == "$(sha256sum < "$checks/SHA256SUMS")" ]] || {
+              echo 'Published checksums differ; refusing to overwrite release assets' >&2; exit 1;
+            }
             for asset in "${assets[@]}"; do
-              if ! grep -Fxq "${asset##*/}" <<< "$existing"; then
+              name="${asset##*/}"
+              [[ "$name" == SHA256SUMS ]] && continue
+              if grep -Fxq "$name" <<< "$existing"; then
+                gh release download "$tag" --pattern "$name" --dir "$checks"
+                expected="$(awk -v name="$name" '$2 == name { print; found=1 } END { if (!found) exit 1 }' dist/SHA256SUMS)"
+                (cd "$checks" && printf '%s\n' "$expected" | sha256sum -c -)
+              else
                 gh release upload "$tag" "$asset"
               fi
             done

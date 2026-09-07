@@ -130,7 +130,7 @@ impl WorkerCancellation {
     }
 
     fn cancel(&self) {
-        let _ = self.tx.send(true);
+        let _ = self.tx.send_replace(true);
     }
 }
 

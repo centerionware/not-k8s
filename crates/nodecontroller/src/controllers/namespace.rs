@@ -338,6 +338,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let queue: crate::workqueue::KeyedWorkQueue<String> = Default::default();
     let cleanup_permits = Arc::new(tokio::sync::Semaphore::new(2));
     let mut cleanup_tasks = tokio::task::JoinSet::new();
+    let mut cleanup_task_names = HashMap::new();
     let mut cleanup_in_flight = HashSet::new();
     let mut cleanup_dirty = HashSet::new();
     let mut stream = crate::watch::watch_namespaces(&client);
@@ -436,14 +437,16 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     let client = client.clone();
                     let permits = cleanup_permits.clone();
                     cleanup_in_flight.insert(name.clone());
-                    cleanup_tasks.spawn(async move {
+                    let task_name = name.clone();
+                    let task = cleanup_tasks.spawn(async move {
                         let _permit = permits
                             .acquire_owned()
                             .await
                             .expect("namespace cleanup semaphore was closed");
                         reconcile_namespace(&client, &namespace, &resources).await;
-                        name
+                        task_name
                     });
+                    cleanup_task_names.insert(task.id(), name.clone());
                 }
             }
             result = cleanup_tasks.join_next(), if !cleanup_tasks.is_empty() => {
@@ -454,7 +457,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             queue.enqueue(name);
                         }
                     }
-                    Some(Err(error)) => tracing::warn!(error = ?error, "namespace cleanup task failed"),
+                    Some(Err(error)) => {
+                        if let Some(name) = cleanup_task_names.remove(&error.id()) {
+                            cleanup_in_flight.remove(&name);
+                            queue.enqueue(name);
+                        }
+                        tracing::warn!(error = ?error, "namespace cleanup task failed");
+                    }
                     None => {}
                 }
             }

@@ -198,21 +198,8 @@ async fn emit_event(
         .header("Content-Type", "application/json")
         .body(serde_json::to_vec(&event)?)?;
 
-    let mut last_error = None;
-    for attempt in 0..3 {
-        match client.request::<serde_json::Value>(req.clone()).await {
-            Ok(_) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                if attempt < 2 {
-                    tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt + 1))).await;
-                }
-            }
-        }
-    }
-    Err(last_error
-        .expect("event request must have attempted at least once")
-        .into())
+    client.request::<serde_json::Value>(req).await?;
+    Ok(())
 }
 
 #[cfg(test)]

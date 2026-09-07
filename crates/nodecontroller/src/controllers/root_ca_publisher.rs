@@ -113,8 +113,13 @@ fn load_root_ca_pem() -> Result<Option<Vec<u8>>> {
 fn validate_ca_pem(bytes: &[u8]) -> Result<()> {
     let pem = std::str::from_utf8(bytes).context("cluster CA data is not UTF-8 PEM")?;
     rcgen::CertificateParams::from_ca_cert_pem(pem)
-        .map(|_| ())
         .map_err(|error| anyhow::anyhow!("parsing cluster CA certificate: {error}"))
+        .and_then(|params| match params.is_ca {
+            rcgen::IsCa::Ca(_) => Ok(()),
+            _ => Err(anyhow::anyhow!(
+                "cluster CA certificate is a leaf certificate, not a CA"
+            )),
+        })
 }
 
 async fn reconcile_namespace(
@@ -216,5 +221,14 @@ mod tests {
     fn constants_match_the_well_known_name() {
         assert_eq!(CONFIGMAP_NAME, "kube-root-ca.crt");
         assert_eq!(CA_KEY, "ca.crt");
+    }
+
+    #[test]
+    fn rejects_leaf_certificate() {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("generate test certificate");
+        let error =
+            validate_ca_pem(cert.cert.pem().as_bytes()).expect_err("leaf must be rejected");
+        assert!(error.to_string().contains("leaf certificate"));
     }
 }

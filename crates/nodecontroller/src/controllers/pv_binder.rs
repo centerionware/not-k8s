@@ -628,6 +628,21 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         true
                     }
                 };
+                if !retry {
+                    if let Some(pv) = pvs.values().find(|pv| {
+                        pv.spec
+                            .as_ref()
+                            .and_then(|spec| spec.claim_ref.as_ref())
+                            .and_then(|claim| claim.uid.as_ref())
+                            == pvc.uid().as_ref()
+                    }) {
+                        state
+                            .lock()
+                            .expect("PV binder state mutex poisoned")
+                            .pvs
+                            .insert(pv.name_any(), pv.clone());
+                    }
+                }
                 if retry {
                     schedule_retry(&queue, key.clone());
                 }

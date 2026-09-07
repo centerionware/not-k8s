@@ -175,36 +175,61 @@ mod tests {
     #[tokio::test]
     async fn reserved_requests_progress_when_general_capacity_is_full() {
         let layer = ApiBudgetLayer::new(1, 1);
-        let service = service_fn(|_: Request<Body>| async {
-            sleep(Duration::from_millis(20)).await;
-            Ok::<_, Infallible>(Response::new(()))
+        let started = Arc::new(tokio::sync::Notify::new());
+        let service = service_fn({
+            let started = started.clone();
+            move |_: Request<Body>| {
+                let started = started.clone();
+                async move {
+                    started.notify_one();
+                    sleep(Duration::from_millis(20)).await;
+                    Ok::<_, Infallible>(Response::new(()))
+                }
+            }
         });
         let mut service = layer.layer(service);
 
-        let _general = service.call(request("/api/v1/pods"));
-        tokio::task::yield_now().await;
+        let general = service.call(request("/api/v1/pods"));
+        tokio::pin!(general);
+        tokio::select! {
+            _ = &mut general => panic!("general request completed before contention was tested"),
+            _ = started.notified() => {}
+        }
         let reserved = service.call(request(
-            "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases?watch=true",
+            "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases",
         ));
         tokio::time::timeout(Duration::from_millis(100), reserved)
             .await
             .expect("reserved request was blocked by general capacity")
             .unwrap();
+        general.await.unwrap();
     }
 
     #[tokio::test]
     async fn long_lived_watch_does_not_block_general_requests() {
         let layer = ApiBudgetLayer::new(1, 1);
-        let service = service_fn(|request: Request<Body>| async move {
-            if request.uri().query().is_some() {
-                sleep(Duration::from_millis(100)).await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let service = service_fn({
+            let started = started.clone();
+            move |request: Request<Body>| {
+                let started = started.clone();
+                async move {
+                    if request.uri().query().is_some() {
+                        started.notify_one();
+                        sleep(Duration::from_millis(100)).await;
+                    }
+                    Ok::<_, Infallible>(Response::new(()))
+                }
             }
-            Ok::<_, Infallible>(Response::new(()))
         });
         let mut service = layer.layer(service);
 
         let watch = service.call(request("/api/v1/pods?watch=true"));
-        tokio::task::yield_now().await;
+        tokio::pin!(watch);
+        tokio::select! {
+            _ = &mut watch => panic!("watch request completed before contention was tested"),
+            _ = started.notified() => {}
+        }
         let general = service.call(request("/api/v1/namespaces"));
         tokio::time::timeout(Duration::from_millis(50), general)
             .await

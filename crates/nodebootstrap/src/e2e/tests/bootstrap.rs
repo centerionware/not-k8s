@@ -90,6 +90,8 @@ fn wait_for_nodeapiserver() -> Result<()> {
                 "-sS",
                 "--max-time",
                 "2",
+                "-H",
+                "Authorization: Bearer nodeapiserver-e2e-token",
                 "-w",
                 "\n%{http_code}",
                 "https://127.0.0.1:6443/readyz?verbose",
@@ -103,10 +105,7 @@ fn wait_for_nodeapiserver() -> Result<()> {
                 let Some((body, status)) = response.rsplit_once('\n') else {
                     return false;
                 };
-                // Authentication-focused overrides deliberately return 401
-                // before the health checks run.  For the normal case require
-                // the storage check, not merely an accepting listener.
-                status.trim() == "401" || body.contains("[+]storage ok")
+                status.trim() == "200" && body.contains("[+]storage ok")
             });
         if ready {
             return Ok(());
@@ -572,6 +571,7 @@ impl NodeapiserverAuditWebhookOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }

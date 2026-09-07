@@ -135,7 +135,13 @@ impl E2eContext {
                     // container environment variables into a public CI log.
                     if let Some(items) = value["items"].as_array_mut() {
                         for pod in items {
-                            *pod = serde_json::json!({"metadata":pod["metadata"],
+                            let metadata = serde_json::json!({
+                                "name": pod["metadata"]["name"],
+                                "namespace": pod["metadata"]["namespace"],
+                                "uid": pod["metadata"]["uid"],
+                                "resourceVersion": pod["metadata"]["resourceVersion"],
+                            });
+                            *pod = serde_json::json!({"metadata":metadata,
                                 "nodeName":pod["spec"]["nodeName"], "status":pod["status"]});
                         }
                     }
