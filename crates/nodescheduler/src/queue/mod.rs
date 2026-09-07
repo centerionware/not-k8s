@@ -475,7 +475,7 @@ impl SchedulingQueue {
                         | EventResource::VolumeAttachment
                 ) && entry.unschedulable_plugins.contains(&"VolumeBinding")
                 {
-                    RequeueDecision::Immediately
+                    RequeueDecision::AfterBackoff
                 } else {
                     decision
                 };
