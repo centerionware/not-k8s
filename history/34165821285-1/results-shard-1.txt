@@ -1,0 +1,90 @@
+commit: d22c868ed4e72125a805b8487e647137184e80ea
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/34165821285
+timestamp (UTC): 2026-09-07T22:49:22Z
+shard: 1/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 72 test(s), shard 1/5
+▶ 2026-09-07T22:24:23.502Z external_cni_mode_disables_flannel ... SKIP (flannel is enabled for this bootstrap; run the external-cni workflow mode to exercise --without-flannel; 6017ms)
+▶ 2026-09-07T22:24:29.520Z test_nodeapiserver_target_is_serving ... PASS (4291ms)
+▶ 2026-09-07T22:24:33.812Z test_nodeapiserver_rejects_invalid_metadata_keys ... PASS (5015ms)
+▶ 2026-09-07T22:24:38.827Z test_nodeapiserver_adds_storage_protection_finalizer ... PASS (5025ms)
+▶ 2026-09-07T22:24:43.853Z test_nodeapiserver_serves_workload_scale_subresource ... PASS (5230ms)
+▶ 2026-09-07T22:24:49.084Z test_nodeapiserver_exposes_inflight_metrics ... PASS (5023ms)
+▶ 2026-09-07T22:24:54.107Z test_nodeapiserver_serves_generic_status_subresource ... PASS (5020ms)
+▶ 2026-09-07T22:24:59.128Z test_nodeapiserver_watches_an_uncommon_builtin_resource ... PASS (5055ms)
+▶ 2026-09-07T22:25:04.183Z test_nodeapiserver_rejects_oversized_request_body ... PASS (5022ms)
+▶ 2026-09-07T22:25:09.205Z test_nodeapiserver_validates_crd_status_subresource ... PASS (3063ms)
+▶ 2026-09-07T22:25:12.269Z test_graceful_node_shutdown_manual_note ... SKIP (graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case; 2009ms)
+▶ 2026-09-07T22:25:14.278Z test_a_failing_component_says_why_before_it_exits ... PASS (5017ms)
+▶ 2026-09-07T22:25:19.296Z test_init_containers_run_before_app_container ... PASS (37078ms)
+▶ 2026-09-07T22:25:56.374Z test_crash_loop_backoff_throttles_immediate_restarts ... PASS (23027ms)
+▶ 2026-09-07T22:26:19.402Z test_kubectl_debug_adds_and_starts_an_ephemeral_container ... PASS (33078ms)
+▶ 2026-09-07T22:26:52.480Z test_pod_mounts_a_generic_ephemeral_volume ... PASS (33081ms)
+▶ 2026-09-07T22:27:25.562Z test_eviction_exceeds_requests_tiebreak_manual_procedure ... SKIP (exceeds-requests eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 3010ms)
+▶ 2026-09-07T22:27:28.573Z test_node_reports_a_real_kernel_and_os_image ... PASS (5013ms)
+▶ 2026-09-07T22:27:33.586Z test_job_controller_fails_after_backoff_limit ... PASS (5022ms)
+▶ 2026-09-07T22:27:38.608Z test_replicaset_creates_and_scales_pods ... PASS (63145ms)
+▶ 2026-09-07T22:28:41.754Z test_resourcequota_used_pods_tracks_actual_pod_count ... PASS (7041ms)
+▶ 2026-09-07T22:28:48.795Z test_cpu_limit_is_enforced_via_cgroup ... PASS (5023ms)
+▶ 2026-09-07T22:28:53.819Z test_in_place_resize_updates_memory_limit_without_restarting ... PASS (32138ms)
+▶ 2026-09-07T22:29:25.957Z test_datastore_creates_a_key_only_if_absent ... PASS (3275ms)
+▶ 2026-09-07T22:29:29.233Z test_datastore_survives_a_restart_with_its_data ... PASS (4531ms)
+▶ 2026-09-07T22:29:33.765Z test_datastore_refuses_a_malformed_cluster_spec ... PASS (5017ms)
+▶ 2026-09-07T22:29:38.783Z test_the_cluster_survives_the_leader_being_killed ... PASS (10459ms)
+▶ 2026-09-07T22:29:49.242Z test_a_real_apiserver_starts_and_serves_against_nodestore ... PASS (5275ms)
+▶ 2026-09-07T22:29:54.518Z test_existing_pod_recreates_its_container_after_a_runtime_restart ... PASS (35830ms)
+▶ 2026-09-07T22:30:30.348Z test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods ... PASS (34093ms)
+▶ 2026-09-07T22:31:04.441Z test_allocated_resources_status_absent_without_device_resources ... PASS (32064ms)
+▶ 2026-09-07T22:31:36.506Z test_host_port_publishes_the_container_on_the_nodes_own_ip ... PASS (32069ms)
+▶ 2026-09-07T22:32:08.575Z test_spec_hostname_overrides_the_container_hostname ... PASS (5021ms)
+▶ 2026-09-07T22:32:13.597Z test_plugin_registry_watches_for_dra_drivers_too ... PASS (5011ms)
+▶ 2026-09-07T22:32:18.609Z test_dynamic_csi_registration_actually_registered_the_driver ... PASS (5013ms)
+▶ 2026-09-07T22:32:23.623Z test_credential_provider_config_unset_by_default ... PASS (5011ms)
+▶ 2026-09-07T22:32:28.634Z test_dra_claim_is_allocated_and_reserved_for_the_pod ... PASS (32088ms)
+▶ 2026-09-07T22:33:00.723Z test_pod_uses_a_raw_block_volume ... PASS (33081ms)
+▶ 2026-09-07T22:33:33.804Z test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown ... FAIL (60112ms)
+    creating the per-test namespace failed: timed out waiting for the e2e namespace's default ServiceAccount
+▶ 2026-09-07T22:34:33.916Z test_scheduler_honours_a_node_selector_that_matches ... FAIL (60118ms)
+    creating the per-test namespace failed: timed out waiting for the e2e namespace's default ServiceAccount
+▶ 2026-09-07T22:35:34.034Z test_scheduler_leaves_a_gated_pod_alone ... FAIL (60123ms)
+    creating the per-test namespace failed: timed out waiting for the e2e namespace's default ServiceAccount
+▶ 2026-09-07T22:36:34.158Z test_scheduler_respects_a_taint_and_its_toleration ... FAIL (60124ms)
+    creating the per-test namespace failed: timed out waiting for the e2e namespace's default ServiceAccount
+▶ 2026-09-07T22:37:34.282Z test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen ... PASS (68150ms)
+▶ 2026-09-07T22:38:42.433Z test_scheduler_retries_a_pod_through_late_pvc_and_pv_events ... PASS (34097ms)
+▶ 2026-09-07T22:39:16.530Z test_exited_container_reports_terminated_state_with_exit_code ... PASS (8029ms)
+▶ 2026-09-07T22:39:24.560Z test_crash_loop_backoff_reports_waiting_reason ... PASS (4020ms)
+▶ 2026-09-07T22:39:28.580Z test_pod_condition_reports_observed_generation ... PASS (32065ms)
+▶ 2026-09-07T22:40:00.646Z test_liveness_probes_own_grace_period_overrides_the_pods ... PASS (43089ms)
+▶ 2026-09-07T22:40:43.736Z test_wrong_port_readiness_probe_keeps_pod_not_ready ... PASS (32072ms)
+▶ 2026-09-07T22:41:15.809Z test_projected_volume_merges_configmap_and_downward_api ... PASS (3027ms)
+▶ 2026-09-07T22:41:18.836Z test_empty_dir_medium_memory_is_backed_by_tmpfs ... PASS (5023ms)
+▶ 2026-09-07T22:41:23.860Z test_host_path_directory_or_create_creates_a_missing_directory ... PASS (5024ms)
+▶ 2026-09-07T22:41:28.884Z test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... PASS (32127ms)
+▶ 2026-09-07T22:42:01.012Z test_fsgroup_never_applies_to_hostpath_volumes ... PASS (34082ms)
+▶ 2026-09-07T22:42:35.094Z test_container_status_reports_resolved_user ... PASS (32081ms)
+▶ 2026-09-07T22:43:07.176Z test_supplemental_groups_policy_strict_ignores_image_group_membership ... SKIP (the container runtime did not merge image-defined group membership; explicit and Strict groups passed (Merge=3000 5000
+, Strict=3000 5000
+); 7059ms)
+▶ 2026-09-07T22:43:14.235Z test_topology_manager_restricted_spread_manual_note ... SKIP (Topology Manager restricted spread needs real multi-NUMA hardware with providers constrained to different nodes; 5013ms)
+▶ 2026-09-07T22:43:19.248Z test_share_process_namespace_puts_every_container_in_one_pid_namespace ... PASS (5024ms)
+▶ 2026-09-07T22:43:24.272Z test_prestop_hook_runs_before_termination ... PASS (5044ms)
+▶ 2026-09-07T22:43:29.316Z test_nodeport_service_is_reachable_on_the_node_ip ... PASS (33073ms)
+▶ 2026-09-07T22:44:02.390Z test_a_pod_reaching_its_own_service_gets_hairpin_masquerade ... PASS (33135ms)
+▶ 2026-09-07T22:44:35.525Z test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion ... PASS (4027ms)
+▶ 2026-09-07T22:44:39.552Z test_pod_mounts_a_persistent_volume_claim ... PASS (33079ms)
+▶ 2026-09-07T22:45:12.632Z test_kubectl_exec_runs_a_command_and_returns_its_output ... PASS (32098ms)
+▶ 2026-09-07T22:45:44.731Z test_metrics_cadvisor_returns_real_container_usage ... PASS (32117ms)
+▶ 2026-09-07T22:46:16.849Z test_nodeapiserver_honors_always_pull_images ... PASS (7507ms)
+▶ 2026-09-07T22:46:29.373Z test_nodeapiserver_applies_configured_node_selector ... PASS (4208ms)
+▶ 2026-09-07T22:46:38.597Z test_nodeapiserver_audits_rejected_requests ... PASS (5169ms)
+▶ 2026-09-07T22:46:48.784Z test_nodeapiserver_honors_authorization_webhook_decisions ... PASS (5526ms)
+▶ 2026-09-07T22:46:59.327Z test_static_pod_creates_a_mirror_pod ... PASS (74406ms)
+▶ 2026-09-07T22:48:18.748Z test_config_dir_merges_files_in_filename_order ... PASS (5695ms)
+▶ 2026-09-07T22:48:29.465Z test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart ... UNIT FILE         STATE   PRESET
+nodeproxy.service enabled enabled
+
+1 unit files listed.
+PASS (33113ms)
+Error: bootstrap e2e failed: 4 test(s): test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown, test_scheduler_honours_a_node_selector_that_matches, test_scheduler_leaves_a_gated_pod_alone, test_scheduler_respects_a_taint_and_its_toleration
