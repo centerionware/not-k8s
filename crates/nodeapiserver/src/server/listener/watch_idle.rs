@@ -58,6 +58,18 @@
 // gives the time series of that state at 75s resolution, and the live
 // half of the body logs the one other silent way a watch can end
 // (`Lagged`/`Closed` on the broadcast receiver).
+//
+// The connection close is the *recovery*, and it can also be the mask: a
+// stall that is bounded and healed in ~75s never surfaces anywhere except
+// the `watch_idle_killed` warn. When tracing a real failure that the bound
+// keeps hiding, set [`WATCH_IDLE_KILL_DISABLED_ENV`] to `1`/`true` — the
+// e2e workflow does this by default. The watchdog then runs in
+// *observation mode*: identical sampling and heartbeats, plus a
+// `watch_idle_stall_observed` warn at every 75s stall boundary, but it
+// never flips the kill switch, so the feed failure plays out for real (the
+// client stalls until its own timeout, and e2e failures reproduce with
+// full diagnostics in the journals) instead of being healed invisibly.
+// Unset — the default for deployments — the kill stays enabled.
 
 // No `use std::sync::Arc` here: this file is `include!`d into
 // `server::listener`, which already imports `Arc` — a second import of
@@ -73,6 +85,16 @@ use tokio::sync::watch;
 /// How long a bookmark-negotiated watch may produce nothing before the
 /// connection is closed for the client to reconnect and relist.
 pub const WATCH_IDLE_SILENCE_LIMIT: Duration = Duration::from_secs(75);
+
+/// Environment variable that disables the idle watchdog's connection kill,
+/// leaving only its instrumentation. Set to `1` or `true` (the e2e
+/// workflow does this by default) to reproduce a real watch-feed stall
+/// instead of having the watchdog close the connection and heal it in
+/// ~75s: the `watch_idle_stall_observed` warns then mark every 75s of
+/// silence with the poll/frame diagnostics while the underlying failure
+/// plays out for the client to hit. Unset — the default — the watchdog
+/// kills as usual.
+pub const WATCH_IDLE_KILL_DISABLED_ENV: &str = "NODEAPISERVER_WATCH_IDLE_KILL_DISABLED";
 
 /// Outcome of a watch body's most recent poll, recorded so the watchdog's
 /// kill-time diagnostic can say whether the body was being driven at all.
@@ -192,7 +214,11 @@ impl Default for WatchIdleTracker {
 /// when the body ends or is dropped (which exits the watchdog, so a
 /// finished watch can never kill a still-live connection). The resource/
 /// client identity is handed to the watchdog task for its diagnostics and
-/// not retained here.
+/// not retained here. Whether the watchdog may actually close the
+/// connection is read once per watch from [`WATCH_IDLE_KILL_DISABLED_ENV`]
+/// (see [`kill_enabled_from_env`]): the e2e default of `1`/`true` runs it
+/// in observation-only mode so a real feed stall surfaces with the
+/// instrumentation, while unset keeps the kill — the deployment default.
 pub struct WatchIdleGuard {
     tracker: WatchIdleTracker,
     stop_tx: watch::Sender<bool>,
@@ -206,7 +232,8 @@ impl WatchIdleGuard {
     pub fn spawn(kill: WatchConnectionKill, resource: String, client: String) -> Self {
         let tracker = WatchIdleTracker::new();
         let (stop_tx, stop_rx) = watch::channel(false);
-        spawn_idle_watchdog(kill, tracker.clone(), stop_rx, resource, client);
+        let kill_enabled = kill_enabled_from_env();
+        spawn_idle_watchdog(kill, tracker.clone(), stop_rx, resource, client, kill_enabled);
         Self { tracker, stop_tx }
     }
 
@@ -226,17 +253,33 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Whether the watchdog may close the connection, read once per watch from
+/// [`WATCH_IDLE_KILL_DISABLED_ENV`]. The e2e workflow sets it to `true` so
+/// a real feed stall surfaces with the instrumentation instead of being
+/// healed by the kill; unset (or any value other than `1`/`true`) keeps
+/// the kill enabled — the default for deployments.
+fn kill_enabled_from_env() -> bool {
+    !matches!(
+        std::env::var(WATCH_IDLE_KILL_DISABLED_ENV).as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
 /// The watchdog loop behind [`spawn_idle_watchdog`], factored out with an
 /// explicit `limit` so a unit test can drive a short deadline instead of
 /// waiting the real 75 seconds. Spawns a fresh `limit` sleep on every
 /// iteration and re-checks the tracker after it: if no frame arrived since
-/// the iteration started, the feed is dead and the connection is killed.
-/// The sleep is a real tokio timer on this task's own waker, so it fires
-/// even when hyper has parked the response body and nothing is polling it.
-/// The `stop` receiver ends the loop the moment the body it guards is gone.
-/// Each iteration also samples the poll counters (see the module doc's
-/// "Root-cause instrumentation") and logs the healthy state as a debug
-/// heartbeat or the dead state as a warn at kill time.
+/// the iteration started, the feed is dead. With `kill_enabled` (the
+/// default) the connection is killed for the client to relist; without it
+/// (observation mode, [`WATCH_IDLE_KILL_DISABLED_ENV`] set) the loop logs
+/// the same diagnostics as a `watch_idle_stall_observed` warn and keeps
+/// sampling, so the underlying failure plays out while the journals
+/// capture it. The sleep is a real tokio timer on this task's own waker,
+/// so it fires even when hyper has parked the response body and nothing
+/// is polling it. The `stop` receiver ends the loop the moment the body
+/// it guards is gone. Each iteration also samples the poll counters (see
+/// the module doc's "Root-cause instrumentation") and logs the healthy
+/// state as a debug heartbeat or the dead state as a warn.
 pub async fn watch_idle_loop(
     kill: &watch::Sender<bool>,
     tracker: &WatchIdleTracker,
@@ -244,6 +287,7 @@ pub async fn watch_idle_loop(
     mut stop: watch::Receiver<bool>,
     resource: String,
     client: String,
+    kill_enabled: bool,
 ) {
     let mut last_polls = tracker.poll_count();
     let mut last_frames = tracker.frame_count();
@@ -261,9 +305,30 @@ pub async fn watch_idle_loop(
                     } else {
                         now_millis().saturating_sub(last_frame) / 1000
                     };
+                    if kill_enabled {
+                        tracing::warn!(
+                            target: "nk_watch_trace",
+                            boundary = "watch_idle_killed",
+                            resource = %resource,
+                            client = %client,
+                            silence_secs,
+                            polls_in_window,
+                            frames_in_window,
+                            polled_by_hyper = polls_in_window > 0,
+                            last_poll = poll_outcome_label(tracker.last_poll_outcome()),
+                            total_frames = frames,
+                            "watch idle: bookmark watch produced no frame for the silence limit; closing the connection so the client relists. polled_by_hyper=false means hyper stopped polling this body (connection-task stall); true means the body was polled but the event subscription yielded nothing"
+                        );
+                        // `false` -> `true` wakes the connection task's
+                        // `changed()` select arm; a subsequent send (or
+                        // the sender being dropped) is irrelevant because
+                        // the connection is already gone.
+                        let _ = kill.send(true);
+                        return;
+                    }
                     tracing::warn!(
                         target: "nk_watch_trace",
-                        boundary = "watch_idle_killed",
+                        boundary = "watch_idle_stall_observed",
                         resource = %resource,
                         client = %client,
                         silence_secs,
@@ -272,26 +337,25 @@ pub async fn watch_idle_loop(
                         polled_by_hyper = polls_in_window > 0,
                         last_poll = poll_outcome_label(tracker.last_poll_outcome()),
                         total_frames = frames,
-                        "watch idle: bookmark watch produced no frame for the silence limit; closing the connection so the client relists. polled_by_hyper=false means hyper stopped polling this body (connection-task stall); true means the body was polled but the event subscription yielded nothing"
+                        "watch idle: bookmark watch produced no frame for the silence limit (observation mode: the connection kill is disabled so the underlying failure can be traced). polled_by_hyper=false means hyper stopped polling this body (connection-task stall); true means the body was polled but the event subscription yielded nothing"
                     );
-                    // `false` -> `true` wakes the connection task's
-                    // `changed()` select arm; a subsequent send (or the
-                    // sender being dropped) is irrelevant because the
-                    // connection is already gone.
-                    let _ = kill.send(true);
-                    return;
+                    // Observation mode: do not close the connection — the
+                    // point is to let the feed failure play out while the
+                    // journals capture it. Keep sampling so the next
+                    // window reports a fresh baseline.
+                } else {
+                    tracing::debug!(
+                        target: "nk_watch_trace",
+                        boundary = "watch_idle_heartbeat",
+                        resource = %resource,
+                        client = %client,
+                        polls_in_window,
+                        frames_in_window,
+                        last_poll = poll_outcome_label(tracker.last_poll_outcome()),
+                        total_frames = frames,
+                        "watch idle watchdog healthy"
+                    );
                 }
-                tracing::debug!(
-                    target: "nk_watch_trace",
-                    boundary = "watch_idle_heartbeat",
-                    resource = %resource,
-                    client = %client,
-                    polls_in_window,
-                    frames_in_window,
-                    last_poll = poll_outcome_label(tracker.last_poll_outcome()),
-                    total_frames = frames,
-                    "watch idle watchdog healthy"
-                );
                 last_polls = polls;
                 last_frames = frames;
             }
@@ -316,9 +380,10 @@ pub fn spawn_idle_watchdog(
     stop: watch::Receiver<bool>,
     resource: String,
     client: String,
+    kill_enabled: bool,
 ) {
     tokio::spawn(async move {
-        watch_idle_loop(&kill.0, &tracker, WATCH_IDLE_SILENCE_LIMIT, stop, resource, client).await;
+        watch_idle_loop(&kill.0, &tracker, WATCH_IDLE_SILENCE_LIMIT, stop, resource, client, kill_enabled).await;
     });
 }
 
@@ -350,11 +415,12 @@ mod watch_idle_tests {
         stop: watch::Receiver<bool>,
         resource: String,
         client: String,
+        kill_enabled: bool,
     ) -> tokio::task::JoinHandle<()> {
         let kill = WatchConnectionKill(kill.clone());
         let tracker = tracker.clone();
         tokio::spawn(async move {
-            watch_idle_loop(&kill.0, &tracker, limit, stop, resource, client).await;
+            watch_idle_loop(&kill.0, &tracker, limit, stop, resource, client, kill_enabled).await;
         })
     }
 
@@ -372,6 +438,7 @@ mod watch_idle_tests {
             stop_rx,
             resource,
             client,
+            true,
         );
         let killed = tokio::time::timeout(Duration::from_secs(1), kill_rx.changed())
             .await
@@ -396,6 +463,7 @@ mod watch_idle_tests {
             stop_rx,
             resource,
             client,
+            true,
         );
         // Frames every 40ms — each far below the 100ms limit — for 320ms
         // total. A fixed-lifetime bound would have fired by now.
@@ -435,6 +503,7 @@ mod watch_idle_tests {
             stop_rx,
             resource,
             client,
+            true,
         );
         // One frame just past half the limit: the watchdog must not close
         // at the original deadline — it must wait a fresh full limit from
@@ -465,6 +534,7 @@ mod watch_idle_tests {
             stop_rx,
             resource,
             client,
+            true,
         );
         // The body ends (or is dropped) long before the idle limit; the
         // watchdog must exit without ever killing the connection.
@@ -474,6 +544,46 @@ mod watch_idle_tests {
         assert!(
             !*kill_rx.borrow(),
             "a finished watch must not kill its connection later"
+        );
+    }
+
+    #[tokio::test]
+    async fn observation_mode_never_kills_but_keeps_sampling_stalls() {
+        let (kill_tx, kill_rx) = watch::channel(false);
+        let tracker = WatchIdleTracker::new();
+        let (resource, client) = loop_args("v1/namespaces");
+        let (_stop_tx, stop_rx) = never_stop();
+        let task = spawn_loop(
+            &kill_tx,
+            &tracker,
+            Duration::from_millis(100),
+            stop_rx,
+            resource,
+            client,
+            false,
+        );
+        // Several consecutive silence windows: every one is an observed
+        // stall (`watch_idle_stall_observed`), and none may kill.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(
+            !*kill_rx.borrow(),
+            "observation mode must never fire the connection kill switch"
+        );
+        assert!(
+            !task.is_finished(),
+            "observation mode must keep sampling after observed stalls"
+        );
+        // A frame resumes the healthy path; still no kill.
+        tracker.note_poll();
+        tracker.note_frame();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !*kill_rx.borrow(),
+            "a resumed feed must not trip the kill even after observed stalls"
+        );
+        assert!(
+            !task.is_finished(),
+            "the watchdog must keep running after a stall is observed and the feed resumes"
         );
     }
 

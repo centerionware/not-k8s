@@ -200,6 +200,16 @@ fn install_service(
             values.push(("RUST_LOG", filter));
         }
     }
+    // Same for the watch idle-kill gate: the e2e workflow sets it to
+    // `true` so the apiserver's idle watchdog runs in observation-only
+    // mode — a real watch-feed stall surfaces with the instrumentation
+    // instead of being healed by the connection close — while unset keeps
+    // the default kill behavior for deployments.
+    if let Ok(value) = std::env::var("NODEAPISERVER_WATCH_IDLE_KILL_DISABLED") {
+        if !value.is_empty() {
+            values.push(("NODEAPISERVER_WATCH_IDLE_KILL_DISABLED", value));
+        }
+    }
     let env: Vec<(&str, &str)> = values
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
