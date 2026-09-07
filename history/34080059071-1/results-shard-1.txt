@@ -1,0 +1,91 @@
+commit: 556cf0018559863391ce11e0be455fa45af80a65
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/34080059071
+timestamp (UTC): 2026-09-07T04:10:03Z
+shard: 1/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 72 test(s), shard 1/5
+▶ 2026-09-07T03:46:23.515Z external_cni_mode_disables_flannel ... SKIP (flannel is enabled for this bootstrap; run the external-cni workflow mode to exercise --without-flannel; 2011ms)
+▶ 2026-09-07T03:46:25.526Z test_nodeapiserver_target_is_serving ... PASS (5317ms)
+▶ 2026-09-07T03:46:30.844Z test_nodeapiserver_rejects_invalid_metadata_keys ... PASS (5016ms)
+▶ 2026-09-07T03:46:35.860Z test_nodeapiserver_adds_storage_protection_finalizer ... PASS (5027ms)
+▶ 2026-09-07T03:46:40.888Z test_nodeapiserver_serves_workload_scale_subresource ... PASS (5214ms)
+▶ 2026-09-07T03:46:46.102Z test_nodeapiserver_exposes_inflight_metrics ... PASS (5024ms)
+▶ 2026-09-07T03:46:51.126Z test_nodeapiserver_serves_generic_status_subresource ... PASS (5020ms)
+▶ 2026-09-07T03:46:56.147Z test_nodeapiserver_watches_an_uncommon_builtin_resource ... PASS (5057ms)
+▶ 2026-09-07T03:47:01.205Z test_nodeapiserver_rejects_oversized_request_body ... PASS (5023ms)
+▶ 2026-09-07T03:47:06.228Z test_nodeapiserver_validates_crd_status_subresource ... PASS (3067ms)
+▶ 2026-09-07T03:47:09.296Z test_graceful_node_shutdown_manual_note ... SKIP (graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case; 6015ms)
+▶ 2026-09-07T03:47:15.311Z test_a_failing_component_says_why_before_it_exits ... PASS (5016ms)
+▶ 2026-09-07T03:47:20.328Z test_init_containers_run_before_app_container ... PASS (37079ms)
+▶ 2026-09-07T03:47:57.408Z test_crash_loop_backoff_throttles_immediate_restarts ... PASS (23028ms)
+▶ 2026-09-07T03:48:20.436Z test_kubectl_debug_adds_and_starts_an_ephemeral_container ... PASS (33077ms)
+▶ 2026-09-07T03:48:53.513Z test_pod_mounts_a_generic_ephemeral_volume ... PASS (33080ms)
+▶ 2026-09-07T03:49:26.594Z test_eviction_exceeds_requests_tiebreak_manual_procedure ... SKIP (exceeds-requests eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 4014ms)
+▶ 2026-09-07T03:49:30.608Z test_node_reports_a_real_kernel_and_os_image ... PASS (5014ms)
+▶ 2026-09-07T03:49:35.623Z test_job_controller_fails_after_backoff_limit ... PASS (5022ms)
+▶ 2026-09-07T03:49:40.645Z test_replicaset_creates_and_scales_pods ... PASS (63146ms)
+▶ 2026-09-07T03:50:43.792Z test_resourcequota_used_pods_tracks_actual_pod_count ... PASS (7039ms)
+▶ 2026-09-07T03:50:50.831Z test_cpu_limit_is_enforced_via_cgroup ... PASS (5023ms)
+▶ 2026-09-07T03:50:55.854Z test_in_place_resize_updates_memory_limit_without_restarting ... PASS (32136ms)
+▶ 2026-09-07T03:51:27.991Z test_datastore_creates_a_key_only_if_absent ... PASS (3275ms)
+▶ 2026-09-07T03:51:31.267Z test_datastore_survives_a_restart_with_its_data ... PASS (4532ms)
+▶ 2026-09-07T03:51:35.799Z test_datastore_refuses_a_malformed_cluster_spec ... PASS (5016ms)
+▶ 2026-09-07T03:51:40.815Z test_the_cluster_survives_the_leader_being_killed ... PASS (9818ms)
+▶ 2026-09-07T03:51:50.634Z test_a_real_apiserver_starts_and_serves_against_nodestore ... PASS (5077ms)
+▶ 2026-09-07T03:51:55.712Z test_existing_pod_recreates_its_container_after_a_runtime_restart ... PASS (35827ms)
+▶ 2026-09-07T03:52:31.539Z test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods ... PASS (54141ms)
+▶ 2026-09-07T03:53:25.681Z test_allocated_resources_status_absent_without_device_resources ... PASS (32071ms)
+▶ 2026-09-07T03:53:57.753Z test_host_port_publishes_the_container_on_the_nodes_own_ip ... PASS (32075ms)
+▶ 2026-09-07T03:54:29.828Z test_spec_hostname_overrides_the_container_hostname ... PASS (6028ms)
+▶ 2026-09-07T03:54:35.857Z test_plugin_registry_watches_for_dra_drivers_too ... PASS (5012ms)
+▶ 2026-09-07T03:54:40.870Z test_dynamic_csi_registration_actually_registered_the_driver ... PASS (5015ms)
+▶ 2026-09-07T03:54:45.886Z test_credential_provider_config_unset_by_default ... PASS (5017ms)
+▶ 2026-09-07T03:54:50.903Z test_dra_claim_is_allocated_and_reserved_for_the_pod ... PASS (32093ms)
+▶ 2026-09-07T03:55:22.997Z test_pod_uses_a_raw_block_volume ... PASS (33091ms)
+▶ 2026-09-07T03:55:56.089Z test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown ... PASS (10062ms)
+▶ 2026-09-07T03:56:06.151Z test_scheduler_honours_a_node_selector_that_matches ... PASS (32071ms)
+▶ 2026-09-07T03:56:38.223Z test_scheduler_leaves_a_gated_pod_alone ... PASS (37080ms)
+▶ 2026-09-07T03:57:15.304Z test_scheduler_respects_a_taint_and_its_toleration ... PASS (34132ms)
+▶ 2026-09-07T03:57:49.437Z test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen ... PASS (40089ms)
+▶ 2026-09-07T03:58:29.526Z test_scheduler_retries_a_pod_through_late_pvc_and_pv_events ... PASS (34101ms)
+▶ 2026-09-07T03:59:03.628Z test_exited_container_reports_terminated_state_with_exit_code ... PASS (7028ms)
+▶ 2026-09-07T03:59:10.656Z test_crash_loop_backoff_reports_waiting_reason ... PASS (5024ms)
+▶ 2026-09-07T03:59:15.681Z test_pod_condition_reports_observed_generation ... PASS (32071ms)
+▶ 2026-09-07T03:59:47.752Z test_liveness_probes_own_grace_period_overrides_the_pods ... PASS (43100ms)
+▶ 2026-09-07T04:00:30.853Z test_wrong_port_readiness_probe_keeps_pod_not_ready ... PASS (32075ms)
+▶ 2026-09-07T04:01:02.929Z test_projected_volume_merges_configmap_and_downward_api ... PASS (3025ms)
+▶ 2026-09-07T04:01:05.954Z test_empty_dir_medium_memory_is_backed_by_tmpfs ... PASS (5025ms)
+▶ 2026-09-07T04:01:10.980Z test_host_path_directory_or_create_creates_a_missing_directory ... PASS (5025ms)
+▶ 2026-09-07T04:01:16.005Z test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... PASS (32127ms)
+▶ 2026-09-07T04:01:48.133Z test_fsgroup_never_applies_to_hostpath_volumes ... PASS (34073ms)
+▶ 2026-09-07T04:02:22.206Z test_container_status_reports_resolved_user ... PASS (32072ms)
+▶ 2026-09-07T04:02:54.279Z test_supplemental_groups_policy_strict_ignores_image_group_membership ... SKIP (the container runtime did not merge image-defined group membership; explicit and Strict groups passed (Merge=3000 5000
+, Strict=3000 5000
+); 6058ms)
+▶ 2026-09-07T04:03:00.337Z test_topology_manager_restricted_spread_manual_note ... SKIP (Topology Manager restricted spread needs real multi-NUMA hardware with providers constrained to different nodes; 5014ms)
+▶ 2026-09-07T04:03:05.352Z test_share_process_namespace_puts_every_container_in_one_pid_namespace ... PASS (5023ms)
+▶ 2026-09-07T04:03:10.375Z test_prestop_hook_runs_before_termination ... PASS (5044ms)
+▶ 2026-09-07T04:03:15.420Z test_nodeport_service_is_reachable_on_the_node_ip ... FAIL (92128ms)
+    timed out waiting for NodePort service to route
+failure snapshot /api/v1/namespaces/nk-e2e-8756-86af2e02/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"2413"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8756-86af2e02/services: {"apiVersion":"v1","items":[{"apiVersion":"v1","kind":"Service","metadata":{"creationTimestamp":"2026-09-07T04:03:17Z","generation":1,"name":"nodeport-routing","namespace":"nk-e2e-8756-86af2e02","resourceVersion":"2362","uid":"c1753650-804b-4169-9f80-d61b76d47935"},"spec":{"clusterIP":"10.43.0.4","clusterIPs":["10.43.0.4"],"externalTrafficPolicy":"Cluster","internalTrafficPolicy":"Cluster","ports":[{"name":"http","nodePort":30080,"port":18091,"protocol":"TCP","targetPort":8080}],"selector":{"app":"nodeport-routing"},"sessionAffinity":"None","type":"NodePort"},"status":{"loadBalancer":{}}}],"kind":"ServiceList","metadata":{"resourceVersion":"2413"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8756-86af2e02/pods: {"apiVersion":"v1","items":[{"metadata":{"creationTimestamp":"2026-09-07T04:03:16Z","generation":1,"labels":{"app":"nodeport-routing"},"name":"nodeport-routing","namespace":"nk-e2e-8756-86af2e02","resourceVersion":"2361","uid":"7b447f7c-ba6e-46ee-b4bb-72824a99c5f6"},"nodeName":"runnervmejwal","status":{"conditions":[{"lastTransitionTime":"2026-09-07T04:03:16Z","message":"Successfully assigned nk-e2e-8756-86af2e02/nodeport-routing to runnervmejwal","reason":"Scheduled","status":"True","type":"PodScheduled"},{"lastTransitionTime":"2026-09-07T04:03:16Z","observedGeneration":1,"status":"True","type":"Initialized"},{"lastTransitionTime":"2026-09-07T04:03:16Z","observedGeneration":1,"status":"True","type":"ContainersReady"},{"lastTransitionTime":"2026-09-07T04:03:16Z","observedGeneration":1,"status":"True","type":"Ready"},{"lastTransitionTime":"2026-09-07T04:03:16Z","observedGeneration":1,"status":"False","type":"PodResizeInProgress"}],"containerStatuses":[{"containerID":"containerd://d1646ab21d37866aa49d8d409d81015c0e5324777feefa45612524032a799941","image":"busybox:latest","imageID":"sha256:c6348fa86ba0fb2108c9334f5fe913ddc6d853313e655891f133a0127c30099f","name":"app","ready":true,"resources":{},"restartCount":0,"started":true,"state":{"running":{"startedAt":"2026-09-07T04:03:16Z"}},"user":{"linux":{"gid":0,"supplementalGroups":[0,10],"uid":0}},"volumeMounts":[{"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount","name":"kube-api-access-d8ef5","readOnly":true,"recursiveReadOnly":"Disabled"}]}],"hostIP":"10.1.0.204","hostIPs":[{"ip":"10.1.0.204"}],"phase":"Running","podIP":"10.42.0.54","podIPs":[{"ip":"10.42.0.54"}],"qosClass":"BestEffort","startTime":"2026-09-07T04:03:16Z"}}],"kind":"PodList","metadata":{"resourceVersion":"2413"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-8756-86af2e02/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[{"addressType":"IPv4","apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"creationTimestamp":"2026-09-07T04:03:17Z","labels":{"endpointslice.kubernetes.io/managed-by":"nodecontroller","kubernetes.io/service-name":"nodeport-routing"},"managedFields":[{"apiVersion":"discovery.k8s.io/v1","fieldsType":"FieldsV1","fieldsV1":{"f:addressType":{},"f:apiVersion":{},"f:endpoints":{},"f:kind":{},"f:metadata":{"f:labels":{"f:endpointslice.kubernetes.io/managed-by":{},"f:kubernetes.io/service-name":{}},"f:name":{},"f:namespace":{},"f:ownerReferences":{"k:{\"uid\":\"c1753650-804b-4169-9f80-d61b76d47935\"}":{"f:apiVersion":{},"f:blockOwnerDeletion":{},"f:controller":{},"f:kind":{},"f:name":{},"f:uid":{}}}},"f:ports":{}},"manager":"nodecontroller","operation":"Apply","subresource":"","time":"2026-09-07T04:03:17Z"}],"name":"nodeport-routing-nc","namespace":"nk-e2e-8756-86af2e02","ownerReferences":[{"apiVersion":"v1","blockOwnerDeletion":true,"controller":true,"kind":"Service","name":"nodeport-routing","uid":"c1753650-804b-4169-9f80-d61b76d47935"}],"resourceVersion":"2363","uid":"41b1084e-3f40-4413-bf83-dcf4b109439a"},"ports":[{"name":"http","port":8080,"protocol":"TCP"}]}],"kind":"EndpointSliceList","metadata":{"resourceVersion":"2413"}}
+▶ 2026-09-07T04:05:17.607Z test_a_pod_reaching_its_own_service_gets_hairpin_masquerade ... PASS (33138ms)
+▶ 2026-09-07T04:05:50.746Z test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion ... PASS (5026ms)
+▶ 2026-09-07T04:05:55.773Z test_pod_mounts_a_persistent_volume_claim ... PASS (33078ms)
+▶ 2026-09-07T04:06:28.851Z test_kubectl_exec_runs_a_command_and_returns_its_output ... PASS (32090ms)
+▶ 2026-09-07T04:07:00.942Z test_metrics_cadvisor_returns_real_container_usage ... PASS (32108ms)
+▶ 2026-09-07T04:07:33.050Z test_nodeapiserver_honors_always_pull_images ... PASS (7368ms)
+▶ 2026-09-07T04:07:40.421Z test_nodeapiserver_applies_configured_node_selector ... PASS (5538ms)
+▶ 2026-09-07T04:07:45.961Z test_nodeapiserver_audits_rejected_requests ... PASS (4709ms)
+▶ 2026-09-07T04:07:50.673Z test_nodeapiserver_honors_authorization_webhook_decisions ... PASS (5367ms)
+▶ 2026-09-07T04:07:56.043Z test_static_pod_creates_a_mirror_pod ... PASS (74434ms)
+▶ 2026-09-07T04:09:10.480Z test_config_dir_merges_files_in_filename_order ... PASS (5717ms)
+▶ 2026-09-07T04:09:16.200Z test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart ... UNIT FILE         STATE   PRESET
+nodeproxy.service enabled enabled
+
+1 unit files listed.
+PASS (33124ms)
+Error: bootstrap e2e failed: 1 test(s): test_nodeport_service_is_reachable_on_the_node_ip
