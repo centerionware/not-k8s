@@ -303,7 +303,7 @@ pub(super) async fn projected_service_account_token_waits_for_service_account(
                         .and_then(|status| status.phase.as_deref())
                         == Some("Pending")
                         && pod.status.as_ref().and_then(|status| status.message.as_deref()).is_some_and(
-                            |message| message.starts_with("waiting for projected ServiceAccount token(s)"),
+                            |message| message.starts_with("waiting for projected volume(s)"),
                         ))
                 }
             })
