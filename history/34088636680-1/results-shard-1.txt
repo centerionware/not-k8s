@@ -1,0 +1,106 @@
+commit: 331b572b83276d8c64cc311fd0728dd8eefb5e43
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/34088636680
+timestamp (UTC): 2026-09-07T06:39:23Z
+shard: 1/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 72 test(s), shard 1/5
+▶ 2026-09-07T06:08:18.438Z external_cni_mode_disables_flannel ... SKIP (flannel is enabled for this bootstrap; run the external-cni workflow mode to exercise --without-flannel; 6020ms)
+▶ 2026-09-07T06:08:24.459Z test_nodeapiserver_target_is_serving ... PASS (5300ms)
+▶ 2026-09-07T06:08:29.759Z test_nodeapiserver_rejects_invalid_metadata_keys ... PASS (5016ms)
+▶ 2026-09-07T06:08:34.776Z test_nodeapiserver_adds_storage_protection_finalizer ... PASS (5028ms)
+▶ 2026-09-07T06:08:39.805Z test_nodeapiserver_serves_workload_scale_subresource ... PASS (5234ms)
+▶ 2026-09-07T06:08:45.039Z test_nodeapiserver_exposes_inflight_metrics ... PASS (5025ms)
+▶ 2026-09-07T06:08:50.065Z test_nodeapiserver_serves_generic_status_subresource ... PASS (5021ms)
+▶ 2026-09-07T06:08:55.086Z test_nodeapiserver_watches_an_uncommon_builtin_resource ... PASS (5056ms)
+▶ 2026-09-07T06:09:00.143Z test_nodeapiserver_rejects_oversized_request_body ... PASS (5019ms)
+▶ 2026-09-07T06:09:05.162Z test_nodeapiserver_validates_crd_status_subresource ... PASS (3071ms)
+▶ 2026-09-07T06:09:08.234Z test_graceful_node_shutdown_manual_note ... SKIP (graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case; 6016ms)
+▶ 2026-09-07T06:09:14.251Z test_a_failing_component_says_why_before_it_exits ... PASS (5016ms)
+▶ 2026-09-07T06:09:19.267Z test_init_containers_run_before_app_container ... PASS (36078ms)
+▶ 2026-09-07T06:09:55.346Z test_crash_loop_backoff_throttles_immediate_restarts ... PASS (24029ms)
+▶ 2026-09-07T06:10:19.375Z test_kubectl_debug_adds_and_starts_an_ephemeral_container ... PASS (33084ms)
+▶ 2026-09-07T06:10:52.459Z test_pod_mounts_a_generic_ephemeral_volume ... PASS (33080ms)
+▶ 2026-09-07T06:11:25.540Z test_eviction_exceeds_requests_tiebreak_manual_procedure ... SKIP (exceeds-requests eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 4014ms)
+▶ 2026-09-07T06:11:29.554Z test_node_reports_a_real_kernel_and_os_image ... PASS (5015ms)
+▶ 2026-09-07T06:11:34.570Z test_job_controller_fails_after_backoff_limit ... PASS (5023ms)
+▶ 2026-09-07T06:11:39.593Z test_replicaset_creates_and_scales_pods ... PASS (63156ms)
+▶ 2026-09-07T06:12:42.750Z test_resourcequota_used_pods_tracks_actual_pod_count ... PASS (7043ms)
+▶ 2026-09-07T06:12:49.793Z test_cpu_limit_is_enforced_via_cgroup ... PASS (5025ms)
+▶ 2026-09-07T06:12:54.818Z test_in_place_resize_updates_memory_limit_without_restarting ... PASS (32137ms)
+▶ 2026-09-07T06:13:26.955Z test_datastore_creates_a_key_only_if_absent ... PASS (2272ms)
+▶ 2026-09-07T06:13:29.228Z test_datastore_survives_a_restart_with_its_data ... PASS (5534ms)
+▶ 2026-09-07T06:13:34.762Z test_datastore_refuses_a_malformed_cluster_spec ... PASS (5020ms)
+▶ 2026-09-07T06:13:39.783Z test_the_cluster_survives_the_leader_being_killed ... PASS (9417ms)
+▶ 2026-09-07T06:13:49.200Z test_a_real_apiserver_starts_and_serves_against_nodestore ... PASS (5954ms)
+▶ 2026-09-07T06:13:55.155Z test_existing_pod_recreates_its_container_after_a_runtime_restart ... PASS (35845ms)
+▶ 2026-09-07T06:14:31.000Z test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods ... PASS (69169ms)
+▶ 2026-09-07T06:15:40.170Z test_allocated_resources_status_absent_without_device_resources ... PASS (32070ms)
+▶ 2026-09-07T06:16:12.240Z test_host_port_publishes_the_container_on_the_nodes_own_ip ... PASS (32077ms)
+▶ 2026-09-07T06:16:44.318Z test_spec_hostname_overrides_the_container_hostname ... PASS (5024ms)
+▶ 2026-09-07T06:16:49.343Z test_plugin_registry_watches_for_dra_drivers_too ... PASS (5014ms)
+▶ 2026-09-07T06:16:54.358Z test_dynamic_csi_registration_actually_registered_the_driver ... PASS (5016ms)
+▶ 2026-09-07T06:16:59.374Z test_credential_provider_config_unset_by_default ... PASS (5015ms)
+▶ 2026-09-07T06:17:04.390Z test_dra_claim_is_allocated_and_reserved_for_the_pod ... PASS (32092ms)
+▶ 2026-09-07T06:17:36.482Z test_pod_uses_a_raw_block_volume ... PASS (33085ms)
+▶ 2026-09-07T06:18:09.568Z test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown ... PASS (10063ms)
+▶ 2026-09-07T06:18:19.631Z test_scheduler_honours_a_node_selector_that_matches ... PASS (32073ms)
+▶ 2026-09-07T06:18:51.704Z test_scheduler_leaves_a_gated_pod_alone ... PASS (37079ms)
+▶ 2026-09-07T06:19:28.784Z test_scheduler_respects_a_taint_and_its_toleration ... PASS (34113ms)
+▶ 2026-09-07T06:20:02.898Z test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen ... PASS (40089ms)
+▶ 2026-09-07T06:20:42.987Z test_scheduler_retries_a_pod_through_late_pvc_and_pv_events ... PASS (34097ms)
+▶ 2026-09-07T06:21:17.084Z test_exited_container_reports_terminated_state_with_exit_code ... PASS (8030ms)
+▶ 2026-09-07T06:21:25.114Z test_crash_loop_backoff_reports_waiting_reason ... PASS (5024ms)
+▶ 2026-09-07T06:21:30.139Z test_pod_condition_reports_observed_generation ... PASS (32069ms)
+▶ 2026-09-07T06:22:02.209Z test_liveness_probes_own_grace_period_overrides_the_pods ... PASS (43095ms)
+▶ 2026-09-07T06:22:45.304Z test_wrong_port_readiness_probe_keeps_pod_not_ready ... PASS (32066ms)
+▶ 2026-09-07T06:23:17.371Z test_projected_volume_merges_configmap_and_downward_api ... PASS (7030ms)
+▶ 2026-09-07T06:23:24.402Z test_empty_dir_medium_memory_is_backed_by_tmpfs ... PASS (5027ms)
+▶ 2026-09-07T06:23:29.429Z test_host_path_directory_or_create_creates_a_missing_directory ... PASS (5025ms)
+▶ 2026-09-07T06:23:34.455Z test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... PASS (32133ms)
+▶ 2026-09-07T06:24:06.589Z test_fsgroup_never_applies_to_hostpath_volumes ... PASS (34076ms)
+▶ 2026-09-07T06:24:40.666Z test_container_status_reports_resolved_user ... PASS (32080ms)
+▶ 2026-09-07T06:25:12.746Z test_supplemental_groups_policy_strict_ignores_image_group_membership ... SKIP (the container runtime did not merge image-defined group membership; explicit and Strict groups passed (Merge=3000 5000
+, Strict=3000 5000
+); 7060ms)
+▶ 2026-09-07T06:25:19.806Z test_topology_manager_restricted_spread_manual_note ... SKIP (Topology Manager restricted spread needs real multi-NUMA hardware with providers constrained to different nodes; 5014ms)
+▶ 2026-09-07T06:25:24.821Z test_share_process_namespace_puts_every_container_in_one_pid_namespace ... PASS (5027ms)
+▶ 2026-09-07T06:25:29.849Z test_prestop_hook_runs_before_termination ... PASS (5044ms)
+▶ 2026-09-07T06:25:34.893Z test_nodeport_service_is_reachable_on_the_node_ip ... PASS (33079ms)
+▶ 2026-09-07T06:26:07.973Z test_a_pod_reaching_its_own_service_gets_hairpin_masquerade ... PASS (33133ms)
+▶ 2026-09-07T06:26:41.107Z test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion ... PASS (4028ms)
+▶ 2026-09-07T06:26:45.136Z test_pod_mounts_a_persistent_volume_claim ... PASS (33086ms)
+▶ 2026-09-07T06:27:18.222Z test_kubectl_exec_runs_a_command_and_returns_its_output ... PASS (32096ms)
+▶ 2026-09-07T06:27:50.318Z test_metrics_cadvisor_returns_real_container_usage ... PASS (32119ms)
+▶ 2026-09-07T06:28:22.438Z test_nodeapiserver_honors_always_pull_images ... FAIL (122142ms)
+    nodeapiserver did not become ready within 60 seconds after restart
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-8610-c95eb967/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"2838"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-c95eb967/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"2837"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-c95eb967/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"2837"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-c95eb967/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"2837"}}
+▶ 2026-09-07T06:30:34.614Z test_nodeapiserver_applies_configured_node_selector ... FAIL (122192ms)
+    nodeapiserver did not become ready within 60 seconds after restart
+failure snapshot /api/v1/namespaces/nk-e2e-8610-8fb181eb/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"3008"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-8fb181eb/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"3008"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-8fb181eb/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"3008"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-8610-8fb181eb/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"3008"}}
+▶ 2026-09-07T06:32:44.837Z test_nodeapiserver_audits_rejected_requests ... FAIL (122097ms)
+    nodeapiserver did not become ready within 60 seconds after restart
+failure snapshot /api/v1/namespaces/nk-e2e-8610-e19944aa/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"3177"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-e19944aa/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"3177"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-8610-e19944aa/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"3177"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-e19944aa/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"3177"}}
+▶ 2026-09-07T06:34:54.966Z test_nodeapiserver_honors_authorization_webhook_decisions ... FAIL (122200ms)
+    nodeapiserver did not become ready within 60 seconds after restart
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-8610-2de167e0/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"3360"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-2de167e0/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"3360"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-2de167e0/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"3360"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8610-2de167e0/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"3360"}}
+▶ 2026-09-07T06:37:04.191Z test_static_pod_creates_a_mirror_pod ... PASS (75440ms)
+▶ 2026-09-07T06:38:24.649Z test_config_dir_merges_files_in_filename_order ... PASS (4726ms)
+▶ 2026-09-07T06:38:34.392Z test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart ... UNIT FILE         STATE   PRESET
+nodeproxy.service enabled enabled
+
+1 unit files listed.
+PASS (33129ms)
+Error: bootstrap e2e failed: 4 test(s): test_nodeapiserver_honors_always_pull_images, test_nodeapiserver_applies_configured_node_selector, test_nodeapiserver_audits_rejected_requests, test_nodeapiserver_honors_authorization_webhook_decisions
