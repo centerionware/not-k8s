@@ -78,7 +78,7 @@ fn projected_service_account_token_waits_are_retried() {
     let status = RuntimeStatus {
         phase: Phase::Pending,
         message: Some(
-            "waiting for projected ServiceAccount token(s) to be materialized: api-token"
+            "waiting for projected volume(s) to be materialized: api-token"
                 .to_string(),
         ),
         started_at: None,

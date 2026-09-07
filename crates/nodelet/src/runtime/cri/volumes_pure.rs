@@ -56,11 +56,31 @@ pub(crate) fn pending_csi_volume_names(pod: &Pod, resolved: &HashMap<String, Res
         .collect()
 }
 
-/// Projected ServiceAccount tokens are required container inputs. If the
-/// TokenRequest raced ServiceAccount creation (or the API was briefly
-/// unavailable), `resolve_volumes()` records the failed projection as
-/// `Invalid` instead of starting a container with a missing token. This
-/// helper lets the pod controller retry that transient state.
+/// Required projected sources are container inputs. If a ConfigMap/Secret
+/// (including `kube-root-ca.crt`) or TokenRequest races namespace setup (or
+/// the API is briefly unavailable), `resolve_volumes()` records the failed
+/// projection as `Invalid` instead of starting a container with incomplete
+/// credentials. This helper lets the pod controller retry that transient
+/// state.
+pub(crate) fn pending_projected_volume_names(
+    pod: &Pod,
+    resolved: &HashMap<String, ResolvedVolume>,
+) -> Vec<String> {
+    let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else {
+        return Vec::new();
+    };
+    volumes
+        .iter()
+        .filter(|volume| {
+            volume.projected.is_some()
+                && matches!(resolved.get(&volume.name), Some(ResolvedVolume::Invalid(_)))
+        })
+        .map(|volume| volume.name.clone())
+        .collect()
+}
+
+/// Backwards-compatible narrower helper for callers/tests that specifically
+/// need to identify projected ServiceAccount token failures.
 pub(crate) fn pending_projected_token_volume_names(
     pod: &Pod,
     resolved: &HashMap<String, ResolvedVolume>,

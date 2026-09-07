@@ -2032,7 +2032,7 @@ fn is_waiting_for_external_resource(status: &RuntimeStatus) -> bool {
     if status.message.as_deref().is_some_and(|m| {
         m.starts_with("waiting for CSI volume(s) to be mounted")
             || m.starts_with("waiting for device plugin resource(s) to be available")
-            || m.starts_with("waiting for projected ServiceAccount token(s) to be materialized")
+            || m.starts_with("waiting for projected volume(s) to be materialized")
     }) {
         return true;
     }

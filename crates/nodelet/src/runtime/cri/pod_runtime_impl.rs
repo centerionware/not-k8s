@@ -119,13 +119,13 @@ impl PodRuntime for CriRuntime {
         let volumes = self.resolve_volumes(pod, &id, &pull_secrets).await;
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "ensure", stage = "volumes resolved", "pod runtime operation");
-        let pending_projected_tokens = pending_projected_token_volume_names(pod, &volumes);
-        if !pending_projected_tokens.is_empty() {
+        let pending_projected = pending_projected_volume_names(pod, &volumes);
+        if !pending_projected.is_empty() {
             return Ok(RuntimeStatus {
                 phase: Phase::Pending,
                 message: Some(format!(
-                    "waiting for projected ServiceAccount token(s) to be materialized: {}",
-                    pending_projected_tokens.join(", ")
+                    "waiting for projected volume(s) to be materialized: {}",
+                    pending_projected.join(", ")
                 )),
                 started_at: None,
                 pod_ip: None,
