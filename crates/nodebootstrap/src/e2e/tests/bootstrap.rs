@@ -81,32 +81,47 @@ fn systemd_service_available(name: &str) -> bool {
 /// spawned.  Keep the next e2e case from racing the apiserver's listener and
 /// storage initialization (especially after a guard is dropped between
 /// cases).
+///
+/// Authenticate with the cluster-admin client certificate rather than a
+/// bearer token: the `nodeapiserver-e2e-token` is only installed by the
+/// authentication overrides, and the RBAC override denies `/readyz` to it
+/// (audit logs show 401/403, never 200).  The admin certificate (x509,
+/// `system:masters`) is authorized under every override the suite installs.
+/// The probe runs through `run_privileged_output` because the private key is
+/// root-owned with mode 0600.
 fn wait_for_nodeapiserver() -> Result<()> {
+    let pki_dir = std::env::var("NODEBOOTSTRAP_PKI_DIR")
+        .unwrap_or_else(|_| "/var/lib/nodebootstrap/pki".to_string());
+    let cert = format!("{pki_dir}/admin.crt");
+    let key = format!("{pki_dir}/admin.key");
     let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
-        let ready = Command::new("curl")
-            .args([
+        let ready = run_privileged_output(
+            "curl",
+            &[
                 "-k",
                 "-sS",
                 "--max-time",
                 "2",
-                "-H",
-                "Authorization: Bearer nodeapiserver-e2e-token",
+                "--cert",
+                cert.as_str(),
+                "--key",
+                key.as_str(),
                 "-w",
                 "\n%{http_code}",
                 "https://127.0.0.1:6443/readyz?verbose",
-            ])
-            .output()
-            .is_ok_and(|output| {
-                if !output.status.success() {
-                    return false;
-                }
-                let response = String::from_utf8_lossy(&output.stdout);
-                let Some((_, status)) = response.rsplit_once('\n') else {
-                    return false;
-                };
-                status.trim() == "200"
-            });
+            ],
+        )
+        .is_ok_and(|output| {
+            if !output.status.success() {
+                return false;
+            }
+            let response = String::from_utf8_lossy(&output.stdout);
+            let Some((_, status)) = response.rsplit_once('\n') else {
+                return false;
+            };
+            status.trim() == "200"
+        });
         if ready {
             return Ok(());
         }
