@@ -1640,7 +1640,22 @@ async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) ->
             },
         )
         .await?;
-    fresh_e2e_client().await
+    let client = fresh_e2e_client().await?;
+    wait_for_service_account_controller(&client).await?;
+    Ok(client)
+}
+
+async fn wait_for_service_account_controller(client: &Client) -> Result<()> {
+    // An API list succeeding only proves that the listener is back. The
+    // namespace and ServiceAccount controllers may still be rebuilding their
+    // watches after the restart. Probe that actual dependency before the next
+    // test creates a namespace and turns a transient recovery window into a
+    // cascade of 60-second failures.
+    let probe = E2eContext::create(client.clone())
+        .await
+        .context("waiting for the ServiceAccount controller after an environment restart")?;
+    probe.cleanup().await;
+    Ok(())
 }
 
 async fn fresh_e2e_client() -> Result<Client> {
