@@ -126,6 +126,80 @@ fn watch_event_matches_selector(
     }
 }
 
+/// Server-side bound on how long a bookmark-negotiated `WATCH` response
+/// may go without producing a single frame. Such a connection is promised
+/// the cache's periodic progress heartbeat — the cacher's driver requests
+/// a progress notification from the datastore every
+/// `cacher::registry::DEFAULT_BOOKMARK_INTERVAL` (60s) and broadcasts the
+/// resulting `Bookmark` to every subscriber, which this listener forwards
+/// to exactly the clients that negotiated bookmarks — so one that stays
+/// silent past this limit has genuinely lost its feed (observed live: one
+/// informer's watch delivered nothing — not events, not bookmarks — for
+/// its whole 290s lifetime while sibling connections on the same cache
+/// flowed; nothing server-side ever ended it). Without this bound such a
+/// connection sits idle until the *client's* requested timeout
+/// (`timeoutSeconds`; kube-rs defaults to 290s and adds its own client-side
+/// idle margin on top), or until the socket dies if the client set none.
+/// Ending the body here makes the client reconnect (relisting when its RV
+/// has gone stale), bounding how stale an informer can get regardless of
+/// what the client asked for. Must stay comfortably above the bookmark
+/// interval so a healthy idle watch is not churned; on a cluster where the
+/// datastore revision stalls for that long, a quiet-but-healthy bookmark
+/// watch may be ended once and relist harmlessly, which is the intended
+/// price of bounding staleness.
+const WATCH_IDLE_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// Ends `events` after `limit` elapses with no item produced at all — the
+/// stream-level machinery behind [`WATCH_IDLE_SILENCE_LIMIT`]. The
+/// deadline is measured from the *last* item (a resettable idle timer,
+/// not a fixed lifetime), so a stream that is merely quiet between events
+/// is untouched while one that has gone completely dead is closed for the
+/// client to reconnect. Factored into a `limit` parameter so a unit test
+/// can drive a short deadline without waiting the real 75 seconds.
+fn cap_idle_silence(events: WatchEventStream, limit: std::time::Duration) -> WatchEventStream {
+    use tokio_stream::StreamExt as _;
+    struct IdleCapped {
+        events: WatchEventStream,
+        last_item: std::time::Instant,
+    }
+    Box::pin(tokio_stream::unfold(
+        IdleCapped {
+            events,
+            last_item: std::time::Instant::now(),
+        },
+        |mut state| async move {
+            let remaining = limit.saturating_sub(state.last_item.elapsed());
+            if remaining.is_zero() {
+                // Already silent past the limit on this poll (or the limit
+                // is zero in a test) — end now rather than racing a
+                // zero-duration `timeout`.
+                tracing::warn!(
+                    idle_secs = limit.as_secs(),
+                    "watch response produced no event; closing so the client reconnects"
+                );
+                return None;
+            }
+            match tokio::time::timeout(remaining, state.events.next()).await {
+                Ok(Some(item)) => {
+                    state.last_item = std::time::Instant::now();
+                    Some((item, state))
+                }
+                // The underlying stream ended (the client-requested
+                // `take_until` timeout, a `Lagged`/`Closed` receiver, ...)
+                // — propagate the end.
+                Ok(None) => None,
+                Err(_) => {
+                    tracing::warn!(
+                        idle_secs = limit.as_secs(),
+                        "watch response produced no event; closing so the client reconnects"
+                    );
+                    None
+                }
+            }
+        },
+    ))
+}
+
 /// The real streaming `watch` response body: every already-retained
 /// history event past `start_revision` (`replay`), then every live event
 /// as it arrives on `rx`, each filtered by [`watch_event_matches_selector`]
@@ -135,7 +209,10 @@ fn watch_event_matches_selector(
 /// the channel's bounded capacity) ends the stream rather than skipping
 /// silently past the gap — real kube-apiserver's own posture for a
 /// watcher that falls too far behind: close the connection, the client's
-/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
+/// own `client-go` Reflector relists. A bookmark-negotiated connection
+/// that produces nothing at all for [`WATCH_IDLE_SILENCE_LIMIT`] is
+/// likewise ended server-side (see that constant for why). `StreamBody`/
+/// `Frame` come from
 /// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
 /// trait object) is what lets this coexist with every other, non-streaming
 /// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
@@ -234,6 +311,17 @@ fn watch_response_body_with_initial_events(
         ))
     } else {
         Box::pin(events)
+    };
+    // Only a bookmark-negotiated watch is promised the cache's periodic
+    // progress heartbeat, so only it gets the bounded-silence recovery
+    // ([`WATCH_IDLE_SILENCE_LIMIT`]); a connection that never asked for
+    // bookmarks keeps the previous contract — open until its own
+    // `timeoutSeconds` or a `Lagged` end — rather than being churned on
+    // every quiet stretch.
+    let events: WatchEventStream = if allow_watch_bookmarks {
+        cap_idle_silence(events, WATCH_IDLE_SILENCE_LIMIT)
+    } else {
+        events
     };
     // Cloned once per closure (`StorageClient` wraps a cheap-to-clone
     // `tonic::transport::Channel`, same posture every other real call
