@@ -43,7 +43,7 @@ pub mod backoff;
 pub mod hints;
 
 use crate::cache::PodInfo;
-use crate::events::ClusterEvent;
+use crate::events::{ClusterEvent, EventResource};
 use crate::framework::status::Status;
 use crate::framework::ChangedObject;
 use backoff::BackoffQueue;
@@ -51,8 +51,8 @@ use hints::{HintRegistry, RequeueDecision};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::time::Instant;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 /// How long a pod may sit in `unschedulable` before it is retried regardless.
 ///
@@ -299,7 +299,9 @@ impl SchedulingQueue {
     pub fn done(&self, uid: &str) {
         let mut inner = self.inner.lock().unwrap();
         inner.in_flight_uids.retain(|u| u != uid);
-        inner.in_flight.retain(|e| !matches!(e, InFlight::PodMarker(u) if u == uid));
+        inner
+            .in_flight
+            .retain(|e| !matches!(e, InFlight::PodMarker(u) if u == uid));
 
         // Events ahead of the first surviving marker can never be replayed for
         // anyone, so they are dead weight. Without this the timeline grows
@@ -351,9 +353,7 @@ impl SchedulingQueue {
             inner.in_flight[after..]
                 .iter()
                 .filter_map(|e| match e {
-                    InFlight::Event { event, old, new } => {
-                        Some((*event, old.clone(), new.clone()))
-                    }
+                    InFlight::Event { event, old, new } => Some((*event, old.clone(), new.clone())),
                     InFlight::PodMarker(_) => None,
                 })
                 .collect()
@@ -460,6 +460,25 @@ impl SchedulingQueue {
                     old.as_ref(),
                     new.as_ref(),
                 );
+                // VolumeBinding is driven by informer state rather than a
+                // single field transition. A PVC/PV/StorageClass event can
+                // make a previously rejected pod schedulable even when the
+                // cache saw the object as an add, a relist update, or a
+                // delete/recreate pair. Do not let an event-shape mismatch
+                // strand storage-bound pods until the safety timeout.
+                let decision = if matches!(
+                    event.resource,
+                    EventResource::PersistentVolume
+                        | EventResource::PersistentVolumeClaim
+                        | EventResource::StorageClass
+                        | EventResource::CsiStorageCapacity
+                        | EventResource::VolumeAttachment
+                ) && entry.unschedulable_plugins.contains(&"VolumeBinding")
+                {
+                    RequeueDecision::Immediately
+                } else {
+                    decision
+                };
                 match decision {
                     RequeueDecision::Skip => {}
                     RequeueDecision::Immediately => {
@@ -552,7 +571,10 @@ impl SchedulingQueue {
     pub fn activate(&self, uids: &[String]) {
         let pods: Vec<Arc<PodInfo>> = {
             let mut inner = self.inner.lock().unwrap();
-            uids.iter().filter_map(|uid| inner.unschedulable.remove(uid)).map(|e| e.pod).collect()
+            uids.iter()
+                .filter_map(|uid| inner.unschedulable.remove(uid))
+                .map(|e| e.pod)
+                .collect()
         };
         for pod in pods {
             self.add(pod);

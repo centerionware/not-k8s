@@ -52,6 +52,7 @@
 //! will report again.
 
 use crate::cache::PodInfo;
+use anyhow::Context;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, Patch, PatchParams};
 
@@ -144,7 +145,8 @@ async fn write_condition(
         ..Default::default()
     };
     let api: Api<Pod> = Api::namespaced(client.clone(), &pod.namespace);
-    api.patch_status(&pod.name, &params, &Patch::Strategic(patch)).await?;
+    api.patch_status(&pod.name, &params, &Patch::Strategic(patch))
+        .await?;
     Ok(())
 }
 
@@ -197,8 +199,26 @@ async fn emit_event(
         .header("Content-Type", "application/json")
         .body(serde_json::to_vec(&event)?)?;
 
-    client.request::<serde_json::Value>(req).await?;
-    Ok(())
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match client
+            .request::<serde_json::Value>(
+                req.try_clone().context("event request is not cloneable")?,
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt + 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_error
+        .expect("event request must have attempted at least once")
+        .into())
 }
 
 #[cfg(test)]
