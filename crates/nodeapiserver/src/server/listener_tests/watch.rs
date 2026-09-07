@@ -249,7 +249,7 @@ async fn cap_idle_silence_does_not_end_a_stream_that_keeps_yielding() {
     use tokio_stream::StreamExt as _;
 
     let (tx, rx) = tokio::sync::broadcast::channel(16);
-    let mut capped = cap_idle_silence(live_stream(rx), std::time::Duration::from_millis(150));
+    let capped = cap_idle_silence(live_stream(rx), std::time::Duration::from_millis(150));
     let producer = tokio::spawn(async move {
         for revision in 0..10 {
             let _ = tx.send(watch_event(revision));

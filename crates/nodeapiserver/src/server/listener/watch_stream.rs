@@ -158,46 +158,23 @@ const WATCH_IDLE_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_
 /// can drive a short deadline without waiting the real 75 seconds.
 fn cap_idle_silence(events: WatchEventStream, limit: std::time::Duration) -> WatchEventStream {
     use tokio_stream::StreamExt as _;
-    struct IdleCapped {
-        events: WatchEventStream,
-        last_item: std::time::Instant,
-    }
-    Box::pin(tokio_stream::unfold(
-        IdleCapped {
-            events,
-            last_item: std::time::Instant::now(),
-        },
-        |mut state| async move {
-            let remaining = limit.saturating_sub(state.last_item.elapsed());
-            if remaining.is_zero() {
-                // Already silent past the limit on this poll (or the limit
-                // is zero in a test) — end now rather than racing a
-                // zero-duration `timeout`.
-                tracing::warn!(
-                    idle_secs = limit.as_secs(),
-                    "watch response produced no event; closing so the client reconnects"
-                );
-                return None;
-            }
-            match tokio::time::timeout(remaining, state.events.next()).await {
-                Ok(Some(item)) => {
-                    state.last_item = std::time::Instant::now();
-                    Some((item, state))
-                }
-                // The underlying stream ended (the client-requested
-                // `take_until` timeout, a `Lagged`/`Closed` receiver, ...)
-                // — propagate the end.
-                Ok(None) => None,
-                Err(_) => {
-                    tracing::warn!(
-                        idle_secs = limit.as_secs(),
-                        "watch response produced no event; closing so the client reconnects"
-                    );
-                    None
-                }
-            }
-        },
-    ))
+    // `StreamExt::timeout` is a resettable idle timer: its deadline is armed
+    // on creation, re-armed on every item, and fires `Elapsed` once the
+    // stream produces nothing for `limit`. `map_while` turns that single
+    // `Elapsed` into the end of the stream (the client reconnects and
+    // relists), while real items and the underlying stream's own end pass
+    // through untouched.
+    let idle_secs = limit.as_secs();
+    Box::pin(events.timeout(limit).map_while(move |result| match result {
+        Ok(item) => Some(item),
+        Err(_) => {
+            tracing::warn!(
+                idle_secs,
+                "watch response produced no event; closing so the client reconnects"
+            );
+            None
+        }
+    }))
 }
 
 /// The real streaming `watch` response body: every already-retained
