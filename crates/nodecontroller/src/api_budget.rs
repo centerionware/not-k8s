@@ -2,8 +2,8 @@ use http::{Request, Response};
 use kube::client::Body;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::Semaphore;
@@ -67,7 +67,15 @@ where
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        let priority = is_reserved_request(&request);
+        let class = request_class(&request);
+        let future = self.inner.call(request);
+        if class == RequestClass::Watch {
+            // A watch is a long-lived stream. Holding a concurrency permit
+            // until it closes turns the request budget into a watch-count
+            // limit and can starve every informer relist or write behind it.
+            return Box::pin(future);
+        }
+        let priority = class == RequestClass::Lease;
         let permit = if priority {
             self.reserved.clone().acquire_owned()
         } else {
@@ -78,7 +86,6 @@ where
         } else {
             self.general_active.clone()
         };
-        let future = self.inner.call(request);
         Box::pin(async move {
             let started = Instant::now();
             let _permit = permit
@@ -101,21 +108,34 @@ where
     }
 }
 
-fn is_reserved_request(request: &Request<Body>) -> bool {
-    request.uri().path().contains("/leases")
-        || request.uri().query().is_some_and(|query| {
-            query.split('&').any(|part| {
-                let mut fields = part.splitn(2, '=');
-                fields.next() == Some("watch") && fields.next() == Some("true")
-            })
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestClass {
+    General,
+    Lease,
+    Watch,
+}
+
+fn request_class(request: &Request<Body>) -> RequestClass {
+    let watch = request.uri().query().is_some_and(|query| {
+        query.split('&').any(|part| {
+            let mut fields = part.splitn(2, '=');
+            fields.next() == Some("watch") && fields.next() == Some("true")
         })
+    });
+    if watch {
+        RequestClass::Watch
+    } else if request.uri().path().contains("/leases") {
+        RequestClass::Lease
+    } else {
+        RequestClass::General
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::convert::Infallible;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
     use tower::service_fn;
 
     fn request(uri: &str) -> Request<Body> {
@@ -123,13 +143,33 @@ mod tests {
     }
 
     #[test]
-    fn only_exact_watch_query_values_are_reserved() {
-        assert!(is_reserved_request(&request("/api/v1/pods?watch=true")));
-        assert!(is_reserved_request(&request(
-            "/api/v1/pods?resourceVersion=1&watch=true"
-        )));
-        assert!(!is_reserved_request(&request("/api/v1/pods?watch=trueish")));
-        assert!(!is_reserved_request(&request("/api/v1/pods?watch=false")));
+    fn watch_requests_are_not_counted_against_the_request_budget() {
+        assert_eq!(
+            request_class(&request("/api/v1/pods?watch=true")),
+            RequestClass::Watch
+        );
+        assert_eq!(
+            request_class(&request("/api/v1/pods?resourceVersion=1&watch=true")),
+            RequestClass::Watch
+        );
+        assert_eq!(
+            request_class(&request("/api/v1/pods?watch=trueish")),
+            RequestClass::General
+        );
+        assert_eq!(
+            request_class(&request("/api/v1/pods?watch=false")),
+            RequestClass::General
+        );
+    }
+
+    #[test]
+    fn lease_requests_use_reserved_capacity() {
+        assert_eq!(
+            request_class(&request(
+                "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/runnervmejwal"
+            )),
+            RequestClass::Lease
+        );
     }
 
     #[tokio::test]
@@ -150,5 +190,26 @@ mod tests {
             .await
             .expect("reserved request was blocked by general capacity")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn long_lived_watch_does_not_block_general_requests() {
+        let layer = ApiBudgetLayer::new(1, 1);
+        let service = service_fn(|request: Request<Body>| async move {
+            if request.uri().query().is_some() {
+                sleep(Duration::from_millis(100)).await;
+            }
+            Ok::<_, Infallible>(Response::new(()))
+        });
+        let mut service = layer.layer(service);
+
+        let watch = service.call(request("/api/v1/pods?watch=true"));
+        tokio::task::yield_now().await;
+        let general = service.call(request("/api/v1/namespaces"));
+        tokio::time::timeout(Duration::from_millis(50), general)
+            .await
+            .expect("general request was blocked by a long-lived watch")
+            .unwrap();
+        watch.await.unwrap();
     }
 }
