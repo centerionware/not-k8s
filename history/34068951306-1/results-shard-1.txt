@@ -1,0 +1,91 @@
+commit: 8b1f647a883031c98337f2cb02e8e145403a2295
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/34068951306
+timestamp (UTC): 2026-09-07T00:46:32Z
+shard: 1/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 72 test(s), shard 1/5
+▶ 2026-09-07T00:22:55.342Z external_cni_mode_disables_flannel ... SKIP (flannel is enabled for this bootstrap; run the external-cni workflow mode to exercise --without-flannel; 4014ms)
+▶ 2026-09-07T00:22:59.357Z test_nodeapiserver_target_is_serving ... PASS (5341ms)
+▶ 2026-09-07T00:23:04.698Z test_nodeapiserver_rejects_invalid_metadata_keys ... PASS (5015ms)
+▶ 2026-09-07T00:23:09.714Z test_nodeapiserver_adds_storage_protection_finalizer ... PASS (5026ms)
+▶ 2026-09-07T00:23:14.740Z test_nodeapiserver_serves_workload_scale_subresource ... PASS (5184ms)
+▶ 2026-09-07T00:23:19.924Z test_nodeapiserver_exposes_inflight_metrics ... PASS (5024ms)
+▶ 2026-09-07T00:23:24.949Z test_nodeapiserver_serves_generic_status_subresource ... PASS (5019ms)
+▶ 2026-09-07T00:23:29.968Z test_nodeapiserver_watches_an_uncommon_builtin_resource ... PASS (4055ms)
+▶ 2026-09-07T00:23:34.024Z test_nodeapiserver_rejects_oversized_request_body ... PASS (5022ms)
+▶ 2026-09-07T00:23:39.047Z test_nodeapiserver_validates_crd_status_subresource ... PASS (3068ms)
+▶ 2026-09-07T00:23:42.115Z test_graceful_node_shutdown_manual_note ... SKIP (graceful node shutdown requires a real systemd-logind PrepareForShutdown signal; manual verification is documented in the archived graceful_shutdown case; 2008ms)
+▶ 2026-09-07T00:23:44.124Z test_a_failing_component_says_why_before_it_exits ... PASS (5017ms)
+▶ 2026-09-07T00:23:49.142Z test_init_containers_run_before_app_container ... PASS (36082ms)
+▶ 2026-09-07T00:24:25.224Z test_crash_loop_backoff_throttles_immediate_restarts ... PASS (24030ms)
+▶ 2026-09-07T00:24:49.255Z test_kubectl_debug_adds_and_starts_an_ephemeral_container ... PASS (33085ms)
+▶ 2026-09-07T00:25:22.340Z test_pod_mounts_a_generic_ephemeral_volume ... PASS (33090ms)
+▶ 2026-09-07T00:25:55.431Z test_eviction_exceeds_requests_tiebreak_manual_procedure ... SKIP (exceeds-requests eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 4014ms)
+▶ 2026-09-07T00:25:59.445Z test_node_reports_a_real_kernel_and_os_image ... PASS (5014ms)
+▶ 2026-09-07T00:26:04.460Z test_job_controller_fails_after_backoff_limit ... PASS (5024ms)
+▶ 2026-09-07T00:26:09.485Z test_replicaset_creates_and_scales_pods ... PASS (63158ms)
+▶ 2026-09-07T00:27:12.643Z test_resourcequota_used_pods_tracks_actual_pod_count ... PASS (7040ms)
+▶ 2026-09-07T00:27:19.683Z test_cpu_limit_is_enforced_via_cgroup ... PASS (5025ms)
+▶ 2026-09-07T00:27:24.709Z test_in_place_resize_updates_memory_limit_without_restarting ... PASS (32138ms)
+▶ 2026-09-07T00:27:56.848Z test_datastore_creates_a_key_only_if_absent ... PASS (2274ms)
+▶ 2026-09-07T00:27:59.122Z test_datastore_survives_a_restart_with_its_data ... PASS (5537ms)
+▶ 2026-09-07T00:28:04.659Z test_datastore_refuses_a_malformed_cluster_spec ... PASS (5017ms)
+▶ 2026-09-07T00:28:09.677Z test_the_cluster_survives_the_leader_being_killed ... PASS (9463ms)
+▶ 2026-09-07T00:28:19.141Z test_a_real_apiserver_starts_and_serves_against_nodestore ... PASS (4913ms)
+▶ 2026-09-07T00:28:24.054Z test_existing_pod_recreates_its_container_after_a_runtime_restart ... PASS (35834ms)
+▶ 2026-09-07T00:28:59.889Z test_garbage_collector_cascades_deployment_delete_to_replicaset_and_pods ... PASS (34104ms)
+▶ 2026-09-07T00:29:33.993Z test_allocated_resources_status_absent_without_device_resources ... PASS (32064ms)
+▶ 2026-09-07T00:30:06.057Z test_host_port_publishes_the_container_on_the_nodes_own_ip ... PASS (32083ms)
+▶ 2026-09-07T00:30:38.141Z test_spec_hostname_overrides_the_container_hostname ... PASS (6028ms)
+▶ 2026-09-07T00:30:44.170Z test_plugin_registry_watches_for_dra_drivers_too ... PASS (5015ms)
+▶ 2026-09-07T00:30:49.185Z test_dynamic_csi_registration_actually_registered_the_driver ... PASS (5014ms)
+▶ 2026-09-07T00:30:54.200Z test_credential_provider_config_unset_by_default ... PASS (5015ms)
+▶ 2026-09-07T00:30:59.215Z test_dra_claim_is_allocated_and_reserved_for_the_pod ... PASS (32100ms)
+▶ 2026-09-07T00:31:31.316Z test_pod_uses_a_raw_block_volume ... PASS (33085ms)
+▶ 2026-09-07T00:32:04.401Z test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown ... FAIL (122254ms)
+    timed out waiting for first fsGroup policy Pod
+failure snapshot /api/v1/namespaces/nk-e2e-8695-5318d500/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"1571"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8695-5318d500/events: {"apiVersion":"v1","items":[{"action":"","apiVersion":"v1","count":1,"eventTime":"1970-01-01T00:00:00.000000Z","firstTimestamp":"2026-09-07T00:32:05Z","involvedObject":{"apiVersion":"v1","fieldPath":"","kind":"PersistentVolumeClaim","name":"fsgroup-policy-check-claim","namespace":"nk-e2e-8695-5318d500","resourceVersion":"1465","uid":"79f4d076-104d-4188-91aa-ba2884c48cc0"},"kind":"Event","lastTimestamp":"2026-09-07T00:32:05Z","message":"External provisioner is provisioning volume for claim \"nk-e2e-8695-5318d500/fsgroup-policy-check-claim\"","metadata":{"creationTimestamp":"2026-09-07T00:32:05Z","generateName":"","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:action":{},"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:fieldPath":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generateName":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{},"f:host":{}},"f:type":{}},"manager":"csi-provisioner/v0.0.0 (linux/amd64) kubernetes/$Format","operation":"Update","subresource":"","time":"2026-09-07T00:32:05Z"}],"name":"fsgroup-policy-check-claim.18d2e2938faedfb5","namespace":"nk-e2e-8695-5318d500","resourceVersion":"1466","selfLink":"","uid":"f1a9d6cd-bb6b-4521-98cd-f1c8e23929cf"},"reason":"Provisioning","reportingComponent":"hostpath.csi.k8s.io_csi-hostpathplugin-0_0dc063ca-178d-4605-80b5-69103a5c2608","reportingInstance":"","source":{"component":"hostpath.csi.k8s.io_csi-hostpathplugin-0_0dc063ca-178d-4605-80b5-69103a5c2608","host":""},"type":"Normal"},{"action":"","apiVersion":"v1","count":1,"eventTime":"1970-01-01T00:00:00.000000Z","firstTimestamp":"2026-09-07T00:32:05Z","involvedObject":{"apiVersion":"v1","fieldPath":"","kind":"PersistentVolumeClaim","name":"fsgroup-policy-check-claim","namespace":"nk-e2e-8695-5318d500","resourceVersion":"1465","uid":"79f4d076-104d-4188-91aa-ba2884c48cc0"},"kind":"Event","lastTimestamp":"2026-09-07T00:32:05Z","message":"Successfully provisioned volume pvc-79f4d076-104d-4188-91aa-ba2884c48cc0","metadata":{"creationTimestamp":"2026-09-07T00:32:05Z","generateName":"","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:action":{},"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:fieldPath":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generateName":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{},"f:host":{}},"f:type":{}},"manager":"csi-provisioner/v0.0.0 (linux/amd64) kubernetes/$Format","operation":"Update","subresource":"","time":"2026-09-07T00:32:05Z"}],"name":"fsgroup-policy-check-claim.18d2e29390101cdb","namespace":"nk-e2e-8695-5318d500","resourceVersion":"1468","selfLink":"","uid":"efde7c32-f8ee-44b2-9f89-854aa46542e4"},"reason":"ProvisioningSucceeded","reportingComponent":"hostpath.csi.k8s.io_csi-hostpathplugin-0_0dc063ca-178d-4605-80b5-69103a5c2608","reportingInstance":"","source":{"component":"hostpath.csi.k8s.io_csi-hostpathplugin-0_0dc063ca-178d-4605-80b5-69103a5c2608","host":""},"type":"Normal"}],"kind":"EventList","metadata":{"resourceVersion":"1571"}}
+failure snapshot /api/v1/namespaces/nk-e2e-8695-5318d500/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"1609"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-8695-5318d500/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"1571"}}
+▶ 2026-09-07T00:34:09.669Z test_scheduler_honours_a_node_selector_that_matches ... PASS (32070ms)
+▶ 2026-09-07T00:34:41.739Z test_scheduler_leaves_a_gated_pod_alone ... PASS (37084ms)
+▶ 2026-09-07T00:35:18.824Z test_scheduler_respects_a_taint_and_its_toleration ... PASS (34125ms)
+▶ 2026-09-07T00:35:52.950Z test_scheduler_delays_binding_a_wait_for_first_consumer_pvc_until_a_node_is_chosen ... PASS (40083ms)
+▶ 2026-09-07T00:36:33.033Z test_scheduler_retries_a_pod_through_late_pvc_and_pv_events ... PASS (34103ms)
+▶ 2026-09-07T00:37:07.137Z test_exited_container_reports_terminated_state_with_exit_code ... PASS (7028ms)
+▶ 2026-09-07T00:37:14.165Z test_crash_loop_backoff_reports_waiting_reason ... PASS (5024ms)
+▶ 2026-09-07T00:37:19.189Z test_pod_condition_reports_observed_generation ... PASS (32068ms)
+▶ 2026-09-07T00:37:51.258Z test_liveness_probes_own_grace_period_overrides_the_pods ... PASS (43098ms)
+▶ 2026-09-07T00:38:34.356Z test_wrong_port_readiness_probe_keeps_pod_not_ready ... PASS (32073ms)
+▶ 2026-09-07T00:39:06.430Z test_projected_volume_merges_configmap_and_downward_api ... PASS (3025ms)
+▶ 2026-09-07T00:39:09.456Z test_empty_dir_medium_memory_is_backed_by_tmpfs ... PASS (5024ms)
+▶ 2026-09-07T00:39:14.481Z test_host_path_directory_or_create_creates_a_missing_directory ... PASS (5026ms)
+▶ 2026-09-07T00:39:19.508Z test_recursive_read_only_enabled_blocks_writes_in_a_nested_mount_too ... PASS (32136ms)
+▶ 2026-09-07T00:39:51.644Z test_fsgroup_never_applies_to_hostpath_volumes ... PASS (34075ms)
+▶ 2026-09-07T00:40:25.720Z test_container_status_reports_resolved_user ... PASS (32083ms)
+▶ 2026-09-07T00:40:57.803Z test_supplemental_groups_policy_strict_ignores_image_group_membership ... SKIP (the container runtime did not merge image-defined group membership; explicit and Strict groups passed (Merge=3000 5000
+, Strict=3000 5000
+); 7060ms)
+▶ 2026-09-07T00:41:04.864Z test_topology_manager_restricted_spread_manual_note ... SKIP (Topology Manager restricted spread needs real multi-NUMA hardware with providers constrained to different nodes; 5013ms)
+▶ 2026-09-07T00:41:09.877Z test_share_process_namespace_puts_every_container_in_one_pid_namespace ... PASS (5026ms)
+▶ 2026-09-07T00:41:14.904Z test_prestop_hook_runs_before_termination ... PASS (5045ms)
+▶ 2026-09-07T00:41:19.950Z test_nodeport_service_is_reachable_on_the_node_ip ... PASS (33075ms)
+▶ 2026-09-07T00:41:53.026Z test_a_pod_reaching_its_own_service_gets_hairpin_masquerade ... PASS (33138ms)
+▶ 2026-09-07T00:42:26.164Z test_pv_binder_binds_a_static_pv_and_protection_finalizers_gate_deletion ... PASS (3025ms)
+▶ 2026-09-07T00:42:29.190Z test_pod_mounts_a_persistent_volume_claim ... PASS (33085ms)
+▶ 2026-09-07T00:43:02.275Z test_kubectl_exec_runs_a_command_and_returns_its_output ... PASS (32100ms)
+▶ 2026-09-07T00:43:34.375Z test_metrics_cadvisor_returns_real_container_usage ... PASS (32110ms)
+▶ 2026-09-07T00:44:06.485Z test_nodeapiserver_honors_always_pull_images ... PASS (3469ms)
+▶ 2026-09-07T00:44:09.957Z test_nodeapiserver_applies_configured_node_selector ... PASS (4537ms)
+▶ 2026-09-07T00:44:14.498Z test_nodeapiserver_audits_rejected_requests ... PASS (4734ms)
+▶ 2026-09-07T00:44:19.234Z test_nodeapiserver_honors_authorization_webhook_decisions ... PASS (5467ms)
+▶ 2026-09-07T00:44:24.705Z test_static_pod_creates_a_mirror_pod ... PASS (74473ms)
+▶ 2026-09-07T00:45:39.181Z test_config_dir_merges_files_in_filename_order ... PASS (5734ms)
+▶ 2026-09-07T00:45:44.918Z test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart ... UNIT FILE         STATE   PRESET
+nodeproxy.service enabled enabled
+
+1 unit files listed.
+PASS (33127ms)
+Error: bootstrap e2e failed: 1 test(s): test_fsgroup_change_policy_on_root_mismatch_skips_the_second_chown
