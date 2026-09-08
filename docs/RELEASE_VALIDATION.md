@@ -28,6 +28,13 @@ version, and passes the published tag through job outputs. Validation never
 reads the subsequently advanced VERSION branch or downloads `latest` not-k8s.
 The workflow is serialized against another release to protect version mutation.
 
+If publication succeeds but post-publication validation needs to be retried,
+dispatch the workflow with `reuse_release_tag=vX.Y.Z`. That mode verifies and
+reuses the existing GitHub Release, skips unit tests and normal release-asset
+build/publication, and still builds/uploads the unstripped x86_64 profiling
+artifact for flamegraphs. It does not advance the `version` branch or rewrite
+install documentation; the normal path advances VERSION only after publishing.
+
 Every validation runner downloads the exact tagged asset and verifies its entry
 in the release's `SHA256SUMS` before execution. E2e and comparison use the normal
 optimized, stripped combined release binary and its nodebootstrap applet.

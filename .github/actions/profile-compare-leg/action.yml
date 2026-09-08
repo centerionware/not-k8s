@@ -93,7 +93,7 @@ runs:
         printf '%s\n' "$MEASURE_STATUS" > profile-data/measurement-status.txt
     - name: Upload measurements
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: comparison-metrics-${{ github.run_attempt }}-${{ env.PROFILE_BACKEND }}
         path: profile-data/

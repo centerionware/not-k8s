@@ -35,6 +35,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FG_DIR="$REPO_ROOT/.bootstrap/flamegraph-tools"
 FG_DIR="${FLAMEGRAPH_DIR:-$FG_DIR}"
 FG_REVISION=41fee1f99f9276008b7cd112fca19dc3ea84ac32
+PERF_BIN="${PERF_BIN:-perf}"
 
 usage() {
     cat <<'EOF'
@@ -153,10 +154,10 @@ run_perf_record() {
     if [[ -z "$STOP_FILE" ]]; then
         local timeout_cmd=()
         command -v timeout >/dev/null 2>&1 && timeout_cmd=(timeout "$((DURATION + 15))")
-        "${timeout_cmd[@]}" perf record "$@" -o "$perf_data" -- sleep "$DURATION"
+        "${timeout_cmd[@]}" "$PERF_BIN" record "$@" -o "$perf_data" -- sleep "$DURATION"
         return $?
     fi
-    perf record "$@" -o "$perf_data" &
+    "$PERF_BIN" record "$@" -o "$perf_data" &
     local perf_pid=$!
     local waited=0
     while [[ $waited -lt $DURATION ]]; do
@@ -175,7 +176,7 @@ run_perf_record() {
 }
 
 capture_with_perf() {
-    command -v perf >/dev/null 2>&1 || return 1
+    command -v "$PERF_BIN" >/dev/null 2>&1 || return 1
     local perf_data="$OUT_DIR/perf.data"
 
     echo "==> perf available; recording DWARF call stacks"
@@ -207,11 +208,11 @@ capture_with_perf() {
     # on a nearby symbol instead of the true call site) for a capture that
     # actually completes. Re-enable --inline only on a box with real memory
     # headroom relative to the binary's debug-info size.
-    perf report --stdio --no-inline -i "$perf_data" --sort comm,dso,symbol --percent-limit 0 \
+    "$PERF_BIN" report --stdio --no-inline -i "$perf_data" --sort comm,dso,symbol --percent-limit 0 \
         > "$OUT_DIR/perf-report.txt" 2>&1 || true
-    perf report --stdio --no-children --no-inline -i "$perf_data" --percent-limit 0 \
+    "$PERF_BIN" report --stdio --no-children --no-inline -i "$perf_data" --percent-limit 0 \
         > "$OUT_DIR/perf-self-report.txt" 2>&1 || true
-    perf script --no-inline -i "$perf_data" > "$OUT_DIR/perf.script" 2> "$OUT_DIR/perf-script.txt" || true
+    "$PERF_BIN" script --no-inline -i "$perf_data" > "$OUT_DIR/perf.script" 2> "$OUT_DIR/perf-script.txt" || true
     if command -v rustfilt >/dev/null 2>&1; then
         rustfilt < "$OUT_DIR/perf.script" > "$OUT_DIR/perf-rustfilt.script" 2> "$OUT_DIR/rustfilt.txt" || true
     fi

@@ -313,6 +313,11 @@ sudo() {
         self.assertNotIn('profile_after_release', text)
         self.assertFalse(any('uses' in job for job in jobs.values()))
         self.assertEqual(jobs['build-release']['needs'], ['build-and-test', 'release-identity'])
+        self.assertIn('reuse_release_tag', text)
+        self.assertIn("inputs.reuse_release_tag == ''", jobs['build-and-test']['if'])
+        self.assertIn("inputs.reuse_release_tag == ''", jobs['build-release']['if'])
+        self.assertEqual(jobs['build-profile-artifact']['needs'], ['build-and-test', 'release-identity'])
+        self.assertIn('inputs.reuse_release_tag != \'\'', jobs['build-profile-artifact']['if'])
         for name in ('release-e2e', 'release-flamegraphs', 'release-comparison'):
             self.assertIn('prepare-validation', jobs[name]['needs'])
             self.assertIn('publish-release', jobs[name]['needs'])
@@ -327,10 +332,16 @@ sudo() {
         self.assertIn('needs.cleanup-release-artifacts.result == \'success\'', jobs['prepare-validation']['if'])
         self.assertIn('Build profile asset', text)
         self.assertIn('profile-dist/notk8s-linux-x86_64-profiling', text)
-        profile_upload = next(step for step in jobs['build-release']['steps']
+        profile_upload = next(step for step in jobs['build-profile-artifact']['steps']
                               if step.get('name') == 'Upload profile')
         self.assertEqual(profile_upload['with']['name'], 'profiling-${{ github.run_id }}')
         self.assertEqual(profile_upload['with']['path'], 'profile-dist/')
+        self.assertIn('build-profile-artifact', jobs['publish-release']['needs'])
+        self.assertIn('reuse_release_tag', jobs['publish-release']['if'])
+        publish_script = next(step['run'] for step in jobs['publish-release']['steps']
+                              if step.get('id') == 'publish')
+        self.assertIn('REUSE_RELEASE_TAG', publish_script)
+        self.assertIn('gh release view "$REUSE_RELEASE_TAG"', publish_script)
         cleanup_script = next(step['run'] for step in jobs['cleanup-release-artifacts']['steps']
                               if step.get('name') == 'Delete artifacts')
         self.assertIn('remaining=', cleanup_script)

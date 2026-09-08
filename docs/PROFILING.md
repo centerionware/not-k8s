@@ -36,6 +36,11 @@ still builds source; release flamegraphs consume the run-scoped symbolized
 profiling artifact from the release build. A post-publication failure does not
 undo the published release.
 
+For a validation-only retry after publication, dispatch `release.yml` with
+`reuse_release_tag=vX.Y.Z`. Normal release assets are downloaded from that
+existing tag by e2e and comparison jobs; the profiling binary is rebuilt and
+passed as a temporary Actions artifact to flamegraphs.
+
 ## What is measured
 
 - The short-lived `nodebootstrap` applet and its child commands during setup,

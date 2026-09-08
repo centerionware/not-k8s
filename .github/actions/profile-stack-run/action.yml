@@ -56,6 +56,7 @@ runs:
         # Ubuntu's versioned kernel directory contains symlinks to the real tool.
         perf_bin=$(find -L /usr/lib/linux-tools -type f -name perf | sort -V | tail -1)
         [[ -n "$perf_bin" && -x "$perf_bin" ]] || { echo 'No usable perf executable installed' >&2; exit 1; }
+        echo "PERF_BIN=$perf_bin" >> "$GITHUB_ENV"
         echo "$(dirname "$perf_bin")" >> "$GITHUB_PATH"
         sudo sysctl kernel.perf_event_paranoid=-1
         sudo "$perf_bin" stat -e cpu-clock -- sleep 1
@@ -105,7 +106,7 @@ runs:
           exit 1
         }
         binary="$PROFILE_BINARY_INPUT"
-        [[ -f "$binary" ]] || { echo "profiling artifact is missing: $binary" >&2; exit 1; }
+        [[ -f "$binary" && -x "$binary" ]] || { echo "profiling artifact is missing or not executable: $binary" >&2; exit 1; }
         readelf -SW "$binary" > /tmp/profiling-sections.txt
         grep -q '\.debug_info' /tmp/profiling-sections.txt
         grep -q '\.symtab' /tmp/profiling-sections.txt
@@ -117,7 +118,7 @@ runs:
       run: |
         set -euo pipefail
         sudo -E env "PATH=$PATH" NOTK8S_COMBINED_PREBUILT="$PROFILE_BINARY" NOTK8S_BUILD_LAYOUT=combined \
-          perf record -e cpu-clock -F 49 --call-graph fp -o "$GITHUB_WORKSPACE/profile-data/bootstrap/perf.data" -- \
+          "$PERF_BIN" record -e cpu-clock -F 49 --call-graph fp -o "$GITHUB_WORKSPACE/profile-data/bootstrap/perf.data" -- \
           "$PROFILE_BINARY" nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
         sudo chmod 644 "$KUBECONFIG"
         kubectl wait nodes --all --for=condition=Ready --timeout=180s
@@ -129,7 +130,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
+        sudo -E env "PATH=$PATH" PERF_BIN="$PERF_BIN" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
     - name: Render diagnostics
       id: render
       if: ${{ always() && (steps.build.outcome == 'success' || steps.artifact.outcome == 'success') }}
