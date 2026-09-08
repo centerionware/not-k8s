@@ -56,6 +56,9 @@ patch below has passed runtime validation.
   connection errors because both resource watches retried without backoff.
   Apply kube-runtime's default backoff to both streams and test a refused
   API connection. A bounded retry warning during downtime is still expected.
+- Build logs warned that the artifact actions still targeted deprecated
+  Node 20. Update build/e2e upload and download actions to their supported
+  Node 24 versions, preserving artifact names and archive behavior.
 
 Sources for Secret behavior:
 [Kubernetes Secret strategy](https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/registry/core/secret/strategy.go),
