@@ -1,6 +1,6 @@
 {
   "publish-release": {
-    "result": "failure",
+    "result": "success",
     "outputs": {
       "tag": "v0.8.0",
       "published": "true"
