@@ -672,6 +672,18 @@ jobs:
         with:
           name: profiling-${{ github.run_id }}
           path: profile-bin
+      - name: Prepare profile
+        run: |
+          set -euo pipefail
+          binary="$GITHUB_WORKSPACE/profile-bin/notk8s-linux-x86_64-profiling"
+          if [[ ! -f "$binary" ]]; then
+            candidate="$(find "$GITHUB_WORKSPACE/profile-bin" -type f -name "$(basename "$binary")" -print -quit)"
+            [[ -n "$candidate" ]] || { echo "profile artifact is missing: $binary" >&2; exit 1; }
+            cp "$candidate" "$binary"
+          fi
+          # Artifact extraction does not guarantee executable permissions.
+          chmod 0755 "$binary"
+          [[ -x "$binary" ]] || { echo "profile artifact is not executable: $binary" >&2; exit 1; }
       - name: Stack flamegraphs
         uses: ./.github/actions/profile-stack-run
         with:
