@@ -1,7 +1,10 @@
 name: Commit convention
 
 on:
-  pull_request:
+  # Run the validator from the base repository, not from the pull request's
+  # merge ref. This keeps a PR from replacing this workflow or its validator
+  # before its own commit messages are checked.
+  pull_request_target:
     types: [opened, edited, reopened, synchronize]
 
 permissions:
@@ -12,11 +15,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check out repository
+      - name: Check out base
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Fetch PR commits
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Fetch commit objects only; no file from the PR is checked out or
+          # executed. The validator below is the copy from the trusted base.
+          ref="refs/remotes/origin/pr-${PR_NUMBER}"
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:${ref}"
+          test "$(git rev-parse "${ref}")" = "$HEAD_SHA"
 
       - name: Test validator
         run: python3 .github/scripts/test_commit_subjects.py
