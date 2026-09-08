@@ -2,13 +2,16 @@ Started because I wanted to run a dev cluster on my phone without destroying the
 
 # not-k8s
 
-**A drop-in kubelet replacement small enough to run where kubelet won't fit.**
-**Another Rust-based Kubernetes clone.**
+**A complete Kubernetes distribution in Rust, small enough to run where kubelet won't fit.**
+**A full, modular Kubernetes stack for real workloads on small devices.**
 
-`not-k8s` is a Kubernetes distro in active development. The `nodeapiserver`
-integration branch replaces the upstream API server with the repository's
-Rust implementation; it is kept separate from `main` until its final
-full-cluster acceptance gate is complete.
+`not-k8s` is a Kubernetes distribution in active development. It includes its
+own API server (`nodeapiserver`), datastore (`nodestore`), scheduler
+(`nodescheduler`), controller manager (`nodecontroller`), node agent
+(`nodelet`), service proxy (`nodeproxy`), and bootstrap/update tool
+(`nodebootstrap`). It targets compatibility with real Kubernetes workloads
+while keeping resource usage low; upstream Kubernetes remains an explicit
+comparison target.
 
 Older Measured idle, no pods scheduled, 120s window, 3 replicates per agent:
 
@@ -21,7 +24,7 @@ Some profiling results:
 both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/latest),
 [ARM phone](https://github.com/centerionware/not-k8s/tree/profiling-results/history/2026-08-09_00-59-17-arm64-phone).
 
-## Running enkates stack on KVM on my phone with 2GB of ram.
+## Running the not-k8s stack on KVM on my phone with 2 GB of RAM
 
 
 ![image](https://raw.githubusercontent.com/centerionware/not-k8s/refs/heads/profiling-results/Screenshot_20260828-105055.png)
@@ -32,13 +35,15 @@ both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/l
 It's going to be something like
 
 ```
-wget https://github.com/centerionware/not-k8s/releases/latest/download/notk8s-VERSION-linux-aarch64-release
-chmod +x notk8s-VERSION-linux-aarch64-release
-ln -s ./notk8s-VERSION-linux-aarch64-release bootstrap
+wget https://github.com/centerionware/not-k8s/releases/download/v0.8.0/notk8s-0.8.0-linux-aarch64-release
+chmod +x notk8s-0.8.0-linux-aarch64-release
+ln -s ./notk8s-0.8.0-linux-aarch64-release bootstrap
 ./bootstrap
 ```
 
-Replace `VERSION` with the version in the release asset for your architecture.
+This example downloads the `v0.8.0` aarch64 release. The release tag includes
+the `v` prefix, while the asset filename uses the bare version (`0.8.0`);
+choose the matching architecture asset when installing on another platform.
 The combined binary dispatches through `argv[0]`, so the `bootstrap` symlink
 and the component names use the same executable.
 
@@ -111,15 +116,16 @@ migration.
 
 ## Scope
 
-The `nodeapiserver` integration branch contains the replacement API server;
-see [`docs/APISERVER.md`](docs/APISERVER.md) for the live compatibility
-checklist and its explicit current-scope boundaries.
+The `main` branch contains the Rust API server and the rest of the control
+plane and node components as one cohesive distribution. See
+[`docs/APISERVER.md`](docs/APISERVER.md) for the live compatibility checklist
+and its explicit current-scope boundaries.
 
 ## Testing
 
 The workspace has extensive unit regression coverage and a bootstrap-native
-real-infrastructure e2e suite. The final `nodeapiserver` cutover requires the
-full unfiltered suite against a fresh cluster with no k3s installation.
+real-infrastructure e2e suite. The release gate runs the full unfiltered suite
+against a fresh cluster with no k3s installation.
 
 ## Profiling
 
