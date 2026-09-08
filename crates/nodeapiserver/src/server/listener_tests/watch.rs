@@ -8,14 +8,14 @@ async fn watch_eof_is_flushed_when_the_body_finishes_on_the_write_recheck() {
     #[derive(Default)]
     struct EndOnRecheck(u8);
     impl http_body::Body for EndOnRecheck {
-        type Data = bytes::Bytes;
+        type Data = hyper::body::Bytes;
         type Error = Infallible;
         fn poll_frame(mut self: std::pin::Pin<&mut Self>, _: &mut Context<'_>)
             -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>>
         {
             self.0 += 1;
             match self.0 {
-                1 => Poll::Ready(Some(Ok(http_body::Frame::data(bytes::Bytes::from_static(b"{}\n"))))),
+                1 => Poll::Ready(Some(Ok(http_body::Frame::data(hyper::body::Bytes::from_static(b"{}\n"))))),
                 // Arrange readiness changing between the two write polls.
                 2 => Poll::Pending,
                 _ => Poll::Ready(None),
