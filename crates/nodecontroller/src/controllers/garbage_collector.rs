@@ -63,6 +63,7 @@
 use anyhow::Result;
 use futures::stream::{select_all, BoxStream, FuturesUnordered, StreamExt};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, DeleteParams, DynamicObject, Preconditions, PropagationPolicy};
 use kube::core::PartialObjectMeta;
 use kube::discovery::{verbs, Discovery, Scope};
@@ -140,18 +141,26 @@ struct ObjRecord {
     name: String,
     owner_uids: Vec<String>,
     owner_kinds: Vec<String>,
+    /// The full owner references (not just UIDs/kinds): enough identity to
+    /// re-check an owner with a direct GET before deleting, so a stale
+    /// watch graph can never be the sole evidence a live owner is dead.
+    owner_refs: Vec<OwnerReference>,
     deleting: bool,
 }
 
-fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
+fn owner_refs_of(obj: &DynamicObject) -> Vec<OwnerReference> {
     obj.metadata
         .owner_references
         .as_ref()
         .into_iter()
         .flatten()
         .filter(|o| !o.uid.is_empty())
-        .map(|o| o.uid.clone())
+        .cloned()
         .collect()
+}
+
+fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
+    owner_refs_of(obj).into_iter().map(|o| o.uid).collect()
 }
 
 /// An object with no owner references is not an orphan. `Iterator::all()` is
@@ -165,6 +174,103 @@ fn all_owners_dead(owner_uids: &[String], exists: &HashSet<String>) -> bool {
 
 fn should_delete_orphan(record: &ObjRecord, ready: bool, exists: &HashSet<String>) -> bool {
     ready && !record.deleting && all_owners_dead(&record.owner_uids, exists)
+}
+
+/// An owner to re-check directly before deleting a child: its name plus the
+/// `ApiResource` needed to GET it. Owners are same-namespace by the API's
+/// own rule (`OwnerReference` carries no namespace field — see this
+/// module's doc comment), so the child's namespace is the owner's.
+#[derive(Debug, Clone)]
+struct OwnerTarget {
+    namespace: String,
+    name: String,
+    ar: kube::discovery::ApiResource,
+}
+
+/// Result of re-checking a child's owners against the apiserver itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerCheck {
+    /// At least one owner still exists — the child must not be deleted.
+    Alive,
+    /// Every owner is confirmed gone — safe to delete.
+    AllGone,
+    /// The check itself failed (a transient error): never delete on
+    /// uncertain evidence; requeue and re-check on the next retry.
+    Uncertain,
+}
+
+/// Re-checks every owner of the child with a direct GET. The watch graph
+/// (`exists`) is rebuilt from watch events and can miss an owner event — a
+/// lagging or selectively-missed informer leaves a live owner looking dead
+/// (observed live in e2e: a healthy Service's EndpointSlice was deleted as
+/// an "orphan" repeatedly because the Service UID never reached `exists`
+/// even though the watch connection itself was healthy). A direct GET is
+/// the same final authority upstream's real GC consults before deleting.
+async fn check_owners_dead(client: &Client, owners: &[OwnerTarget]) -> OwnerCheck {
+    for owner in owners {
+        let api: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), &owner.namespace, &owner.ar);
+        match api.get(&owner.name).await {
+            Ok(_) => return OwnerCheck::Alive,
+            Err(kube::Error::Api(status)) if status.is_not_found() => {}
+            Err(error) => {
+                tracing::warn!(
+                    api_version = %owner.ar.api_version, kind = %owner.ar.kind,
+                    namespace = %owner.namespace, name = %owner.name, error = ?error,
+                    "garbage-collector-controller could not confirm an owner is gone; deferring the orphan deletion"
+                );
+                return OwnerCheck::Uncertain;
+            }
+        }
+    }
+    OwnerCheck::AllGone
+}
+
+/// Runs the owner re-check and, only when every owner is confirmed gone,
+/// deletes the orphan. Returns whether another attempt is needed (the
+/// existing delete-retry contract). A live owner cancels the deletion for
+/// good — the owner's own eventual Delete event re-enqueues the child
+/// through the normal cascade — and an uncertain check requeues for a fresh
+/// re-check after backoff rather than deleting on uncertain evidence.
+async fn attempt_orphan_delete(
+    client: &Client,
+    ar: &kube::discovery::ApiResource,
+    record: &ObjRecord,
+    owners: &[OwnerTarget],
+) -> bool {
+    match check_owners_dead(client, owners).await {
+        OwnerCheck::Alive => {
+            tracing::info!(
+                kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+                uid = %record.uid,
+                "garbage-collector-controller cancelled orphan deletion: an owner still exists (the watch graph was stale; the owner's own Delete event will re-enqueue this child)"
+            );
+            return false;
+        }
+        OwnerCheck::Uncertain => {
+            tracing::warn!(
+                kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+                uid = %record.uid,
+                "garbage-collector-controller deferred orphan deletion: owners not confirmed gone; will re-check on the next retry"
+            );
+            return true;
+        }
+        OwnerCheck::AllGone => {}
+    }
+    tracing::debug!(
+        kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+        uid = %record.uid, "garbage-collector-controller attempting orphan deletion"
+    );
+    match tokio::time::timeout(Duration::from_secs(15), delete_object(client, ar, record)).await {
+        Ok(retry) => retry,
+        Err(_) => {
+            tracing::warn!(
+                kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+                uid = %record.uid, "garbage-collector-controller orphan deletion timed out; retry queued"
+            );
+            true
+        }
+    }
 }
 
 /// Deletes `record`, background-propagated. Silently ignores "already
@@ -282,16 +388,18 @@ impl State {
     ) {
         let Some(uid) = obj.uid() else { return };
         let owner_uids = owner_uids_of(&obj);
+        let owner_refs = owner_refs_of(&obj);
         let record = ObjRecord {
             uid: uid.clone(),
             gvk_key: kind_key.to_string(),
             namespace: obj.namespace().unwrap_or_default(),
             name: obj.name_any(),
             owner_uids: owner_uids.clone(),
-            owner_kinds: obj.metadata.owner_references.as_ref().into_iter().flatten()
-                .filter(|owner| !owner.uid.is_empty())
+            owner_kinds: owner_refs
+                .iter()
                 .map(|owner| format!("{}/{}", owner.api_version, owner.kind))
                 .collect(),
+            owner_refs,
             deleting: obj.metadata.deletion_timestamp.is_some(),
         };
         if staged {
@@ -391,6 +499,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     fn empty_state() -> State {
         State {
@@ -418,8 +527,65 @@ mod tests {
             name: uid.into(),
             owner_uids: owners.iter().map(|owner| (*owner).into()).collect(),
             owner_kinds: owners.iter().map(|_| "apps/v1/Deployment".into()).collect(),
+            owner_refs: owners
+                .iter()
+                .map(|owner| OwnerReference {
+                    api_version: "apps/v1".into(),
+                    kind: "Deployment".into(),
+                    name: (*owner).into(),
+                    uid: (*owner).into(),
+                    controller: None,
+                    block_owner_deletion: None,
+                })
+                .collect(),
             deleting: false,
         }
+    }
+
+    fn deployment_ar() -> kube::discovery::ApiResource {
+        kube::discovery::ApiResource::from_gvk(&kube::core::GroupVersionKind::gvk(
+            "apps", "v1", "Deployment",
+        ))
+    }
+
+    /// A kube client whose GETs and DELETEs come from `get_status` (a
+    /// `200` response body, a `404`, or a transient error) and
+    /// `delete_status` (an HTTP status code). GETs are identified by the
+    /// path ending in `/deployment` (the owner name the helpers GET);
+    /// anything else on the GET path is unexpected. DELETEs return the
+    /// configured status.
+    fn gc_client(
+        get_status: u16,
+        get_body: serde_json::Value,
+        delete_status: u16,
+        deleted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Client {
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let deleted = deleted.clone();
+            let get_body = get_body.clone();
+            async move {
+                let (status, body) = if request.method() == http::Method::GET {
+                    (
+                        get_status,
+                        serde_json::to_vec(&get_body).unwrap_or_default(),
+                    )
+                } else {
+                    assert_eq!(request.method(), http::Method::DELETE);
+                    deleted.fetch_add(1, Ordering::Relaxed);
+                    (
+                        delete_status,
+                        serde_json::to_vec(&serde_json::json!({
+                            "apiVersion": "v1", "kind": "Status", "status": "Success", "code": 200,
+                        })).unwrap_or_default(),
+                    )
+                };
+                Ok::<_, std::convert::Infallible>(http::Response::builder()
+                    .status(status)
+                    .body(kube::client::Body::from(body))
+                    .unwrap())
+            }
+        });
+        Client::new(service, "default")
     }
 
     #[test]
@@ -582,9 +748,84 @@ mod tests {
             name: "child".to_string(),
             owner_uids: vec!["dead-owner".to_string()],
             owner_kinds: vec!["apps/v1/Deployment".to_string()],
+            owner_refs: Vec::new(),
             deleting: true,
         };
         assert!(!should_delete_orphan(&record, true, &HashSet::new()));
+    }
+
+    #[tokio::test]
+    async fn delete_is_cancelled_when_an_owner_still_exists() {
+        // The watch graph claims the owner is dead (`exists` lacks it), but
+        // a direct GET finds the owner alive — the live e2e failure (a
+        // healthy Service's EndpointSlice deleted as an "orphan"). The
+        // deletion must be cancelled, not attempted.
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner_body = serde_json::json!({
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": "deployment", "uid": "deployment"},
+        });
+        let client = gc_client(200, owner_body, 200, deleted.clone());
+        let child = record("child", "apps/v1/ReplicaSet", &["deployment"]);
+        let owner = OwnerTarget {
+            namespace: "default".into(),
+            name: "deployment".into(),
+            ar: deployment_ar(),
+        };
+        let retry = attempt_orphan_delete(&client, &deployment_ar(), &child, &[owner]).await;
+        assert!(
+            !retry,
+            "a live owner must cancel the deletion outright, not requeue it"
+        );
+        assert_eq!(
+            deleted.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a live owner must never reach the DELETE call"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_proceeds_when_every_owner_is_confirmed_gone() {
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let not_found = serde_json::json!({
+            "apiVersion": "v1", "kind": "Status", "status": "Failure",
+            "reason": "NotFound", "message": "deployments.apps \"deployment\" not found", "code": 404,
+        });
+        let client = gc_client(404, not_found, 200, deleted.clone());
+        let child = record("child", "apps/v1/ReplicaSet", &["deployment"]);
+        let owner = OwnerTarget {
+            namespace: "default".into(),
+            name: "deployment".into(),
+            ar: deployment_ar(),
+        };
+        let retry = attempt_orphan_delete(&client, &deployment_ar(), &child, &[owner]).await;
+        assert!(!retry, "a confirmed orphan should delete once and not retry");
+        assert_eq!(deleted.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_is_deferred_when_the_owner_check_cannot_confirm() {
+        // A transient GET error is not evidence the owner is dead: never
+        // delete on uncertain evidence — requeue for a fresh re-check.
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_error = serde_json::json!({
+            "apiVersion": "v1", "kind": "Status", "status": "Failure",
+            "message": "temporary", "code": 500,
+        });
+        let client = gc_client(500, server_error, 200, deleted.clone());
+        let child = record("child", "apps/v1/ReplicaSet", &["deployment"]);
+        let owner = OwnerTarget {
+            namespace: "default".into(),
+            name: "deployment".into(),
+            ar: deployment_ar(),
+        };
+        let retry = attempt_orphan_delete(&client, &deployment_ar(), &child, &[owner]).await;
+        assert!(retry, "an uncertain owner check must requeue for re-checking");
+        assert_eq!(
+            deleted.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "an uncertain owner check must never reach the DELETE call"
+        );
     }
 }
 
@@ -754,20 +995,28 @@ async fn run_generation(
                     state.deletes.remove(&uid);
                     continue;
                 };
+                // Resolve each owner to a direct GET target before moving
+                // into the spawned future. The watch graph can be stale
+                // (see `check_owners_dead`), so the future re-checks every
+                // owner against the apiserver and only deletes when all
+                // are confirmed gone.
+                let owner_targets: Vec<OwnerTarget> = record
+                    .owner_refs
+                    .iter()
+                    .filter_map(|owner| {
+                        let key = format!("{}/{}", owner.api_version, owner.kind);
+                        let owner_ar = state.resources.get(&key).cloned()?;
+                        Some(OwnerTarget {
+                            namespace: record.namespace.clone(),
+                            name: owner.name.clone(),
+                            ar: owner_ar,
+                        })
+                    })
+                    .collect();
                 let client = client.clone();
                 deleting.push(Box::pin(async move {
-                    tracing::debug!(kind = %record.gvk_key, namespace = %record.namespace,
-                        name = %record.name, uid = %uid, "garbage-collector-controller attempting orphan deletion");
-                    let retry = match tokio::time::timeout(
-                        Duration::from_secs(15), delete_object(&client, &ar, &record),
-                    ).await {
-                        Ok(retry) => retry,
-                        Err(_) => {
-                            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace,
-                                name = %record.name, uid = %uid, "garbage-collector-controller orphan deletion timed out; retry queued");
-                            true
-                        }
-                    };
+                    let retry =
+                        attempt_orphan_delete(&client, &ar, &record, &owner_targets).await;
                     (uid, retry)
                 }));
             }
