@@ -63,7 +63,7 @@ const WATCH_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 // starts across a 56s window. The process id prevents the independently
 // compiled components from choosing the same sequence at startup.
 const WATCH_TIMEOUT_MIN_SECS: u32 = 240;
-const WATCH_TIMEOUT_MAX_SECS: u32 = 295;
+const WATCH_TIMEOUT_MAX_SECS: u32 = 294;
 const WATCH_TIMEOUT_SPAN: u32 = WATCH_TIMEOUT_MAX_SECS - WATCH_TIMEOUT_MIN_SECS + 1;
 static WATCH_CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 /// Shared informer startup admission. An initial LIST can make the apiserver

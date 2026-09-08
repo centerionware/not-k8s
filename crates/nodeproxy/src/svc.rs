@@ -144,7 +144,7 @@ const SVC_NAME_LABEL: &str = "kubernetes.io/service-name";
 // starts across a 56s window. The process id prevents the independently
 // compiled components from choosing the same sequence at startup.
 const WATCH_TIMEOUT_MIN_SECS: u32 = 240;
-const WATCH_TIMEOUT_MAX_SECS: u32 = 295;
+const WATCH_TIMEOUT_MAX_SECS: u32 = 294;
 const WATCH_TIMEOUT_SPAN: u32 = WATCH_TIMEOUT_MAX_SECS - WATCH_TIMEOUT_MIN_SECS + 1;
 static WATCH_CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
