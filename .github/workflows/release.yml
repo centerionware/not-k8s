@@ -444,6 +444,14 @@ jobs:
           published_version="${published_tag#v}"
           [[ "$published_version" == "$VERSION" ]]
 
+          # The README deliberately uses the moving latest-release URL with a
+          # VERSION placeholder. It does not need a per-release commit, and
+          # attempting to parse it as a versioned URL makes publication fail.
+          if grep -Fqx 'wget https://github.com/centerionware/not-k8s/releases/latest/download/notk8s-VERSION-linux-aarch64-release' README.md; then
+            echo 'README uses the latest-release installer URL'
+            exit 0
+          fi
+
           old_version="$(sed -nE 's#^wget https://github.com/centerionware/not-k8s/releases/download/v([0-9]+(\.[0-9]+)+)/notk8s-[0-9]+(\.[0-9]+)+-linux-aarch64-release$#\1#p' README.md | head -n1)"
           [[ -n "$old_version" ]]
           if [[ "$old_version" == "$published_version" ]]; then
