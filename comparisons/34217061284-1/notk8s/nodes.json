@@ -1,0 +1,134 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "annotations": {
+                    "volumes.kubernetes.io/controller-managed-attach-detach": "true"
+                },
+                "creationTimestamp": "2026-09-08T11:40:39Z",
+                "labels": {
+                    "kubernetes.io/arch": "x86_64",
+                    "kubernetes.io/hostname": "runnervmejwal",
+                    "kubernetes.io/os": "linux",
+                    "node.kubernetes.io/instance-type": "nodelet",
+                    "nodelet.dev/managed": "true"
+                },
+                "name": "runnervmejwal",
+                "resourceVersion": "143",
+                "uid": "7f9ce9ac-9d50-4cc9-8a7e-74ac332eb7d8"
+            },
+            "spec": {
+                "podCIDR": "10.42.0.0/24",
+                "podCIDRs": [
+                    "10.42.0.0/24"
+                ]
+            },
+            "status": {
+                "addresses": [
+                    {
+                        "address": "10.1.0.240",
+                        "type": "InternalIP"
+                    },
+                    {
+                        "address": "runnervmejwal",
+                        "type": "Hostname"
+                    }
+                ],
+                "allocatable": {
+                    "cpu": "4000m",
+                    "ephemeral-storage": "154894188544",
+                    "memory": "16765378560",
+                    "pods": "110"
+                },
+                "capacity": {
+                    "cpu": "4",
+                    "ephemeral-storage": "154894188544",
+                    "memory": "16765378560",
+                    "pods": "110"
+                },
+                "conditions": [
+                    {
+                        "lastHeartbeatTime": "2026-09-08T11:40:39Z",
+                        "lastTransitionTime": "2026-09-08T11:40:39Z",
+                        "message": "nodelet is posting status",
+                        "reason": "NodeletReady",
+                        "status": "True",
+                        "type": "Ready"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-09-08T11:40:39Z",
+                        "lastTransitionTime": "2026-09-08T11:40:39Z",
+                        "message": "sufficient memory",
+                        "reason": "KubeletHasSufficientMemory",
+                        "status": "False",
+                        "type": "MemoryPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-09-08T11:40:39Z",
+                        "lastTransitionTime": "2026-09-08T11:40:39Z",
+                        "message": "no disk pressure",
+                        "reason": "KubeletHasNoDiskPressure",
+                        "status": "False",
+                        "type": "DiskPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-09-08T11:40:39Z",
+                        "lastTransitionTime": "2026-09-08T11:40:39Z",
+                        "message": "sufficient PIDs",
+                        "reason": "KubeletHasSufficientPID",
+                        "status": "False",
+                        "type": "PIDPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-09-08T11:40:44Z",
+                        "lastTransitionTime": "2026-09-08T11:40:44Z",
+                        "message": "Flannel is running on this node",
+                        "reason": "FlannelIsUp",
+                        "status": "False",
+                        "type": "NetworkUnavailable"
+                    }
+                ],
+                "daemonEndpoints": {
+                    "kubeletEndpoint": {
+                        "Port": 10250
+                    }
+                },
+                "nodeInfo": {
+                    "architecture": "x86_64",
+                    "bootID": "dbf3fdbb-63b6-435b-93d6-a8bc84803791",
+                    "containerRuntimeVersion": "cri://containerd",
+                    "kernelVersion": "6.17.0-1022-azure",
+                    "kubeProxyVersion": "n/a",
+                    "kubeletVersion": "nodelet/0.8.0",
+                    "machineID": "909c09e4df324de2904a6d6b1c5d05b9",
+                    "operatingSystem": "linux",
+                    "osImage": "Ubuntu 24.04.4 LTS",
+                    "systemUUID": "b1511459-29ca-4699-95ee-25fe41408f2f"
+                },
+                "runtimeHandlers": [
+                    {
+                        "features": {
+                            "recursiveReadOnlyMounts": true,
+                            "userNamespaces": true
+                        },
+                        "name": ""
+                    },
+                    {
+                        "features": {
+                            "recursiveReadOnlyMounts": true,
+                            "userNamespaces": true
+                        },
+                        "name": "runc"
+                    }
+                ]
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}
