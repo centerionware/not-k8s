@@ -140,7 +140,7 @@ jobs:
       # an uncommitted dependency graph.
       - name: Upload Cargo.lock
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: cargo-lock
           path: Cargo.lock
@@ -461,7 +461,7 @@ jobs:
 
       - name: Upload debug
         if: steps.want.outputs.build == 'true' && (inputs.profile == 'debug' || inputs.profile == 'both')
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: notk8s-${{ matrix.arch }}-debug
           path: dist/debug/
@@ -470,7 +470,7 @@ jobs:
 
       - name: Upload release
         if: steps.want.outputs.build == 'true' && (inputs.profile == 'release' || inputs.profile == 'both')
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: notk8s-${{ matrix.arch }}-release
           path: dist/release/

@@ -57,7 +57,7 @@ patch below has passed runtime validation.
   Apply kube-runtime's default backoff to both streams and test a refused
   API connection. A bounded retry warning during downtime is still expected.
 - Build logs warned that the artifact actions still targeted deprecated
-  Node 20. Update build/e2e upload and download actions to their supported
+  Node 20. Update e2e upload and download actions to their supported
   Node 24 versions, preserving artifact names and archive behavior.
 
 Sources for Secret behavior:
