@@ -1,0 +1,3710 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1238" onload="init(evt)" viewBox="0 0 1200 1238" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1238.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >bootstrap CPU samples</text>
+<text id="details" x="10.00" y="1221" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="1221" > </text>
+<g id="frames">
+<g >
+<title>[libapt-pkg.so.6.0.0] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="917" width="23.6" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="402.40" y="927.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="901" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="895.5" ></text>
+</g>
+<g >
+<title>[http] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1093" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="968.80" y="1103.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="927.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="885" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="895.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="277" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="287.5" ></text>
+</g>
+<g >
+<title>__cpu_indicator_init (20,408,163 samples, 0.50%)</title><rect x="39.5" y="549" width="5.9" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="42.50" y="559.5" ></text>
+</g>
+<g >
+<title>nodebootstrap::run_cli (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1077" width="59.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="1069.10" y="1087.5" >nodebo..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="709" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="42.50" y="719.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1072.0" y="789" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1075.00" y="799.5" ></text>
+</g>
+<g >
+<title>[apt_pkg.cpython-312-x86_64-linux-gnu.so] (530,612,238 samples, 13.00%)</title><rect x="45.4" y="949" width="153.4" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="48.40" y="959.5" >[apt_pkg.cpython-31..</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="995.3" y="661" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="998.30" y="671.5" ></text>
+</g>
+<g >
+<title>[_hashlib.cpython-312-x86_64-linux-gnu.so] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="229" width="5.9" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="24.80" y="239.5" ></text>
+</g>
+<g >
+<title>write (20,408,163 samples, 0.50%)</title><rect x="777.0" y="1029" width="5.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="780.00" y="1039.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="501" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="511.5" ></text>
+</g>
+<g >
+<title>debVersioningSystem::DoCmpVersion (20,408,163 samples, 0.50%)</title><rect x="623.6" y="917" width="5.9" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="626.60" y="927.5" ></text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="565" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="42.50" y="575.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::DependencyState (142,857,141 samples, 3.50%)</title><rect x="228.3" y="853" width="41.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="231.30" y="863.5" >pkg..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="773" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="783.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1109" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1119.5" >[..</text>
+</g>
+<g >
+<title>pkgDepCache::Init (265,306,119 samples, 6.50%)</title><rect x="299.1" y="821" width="76.7" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="302.10" y="831.5" >pkgDepCa..</text>
+</g>
+<g >
+<title>Perl_sv_clear (20,408,163 samples, 0.50%)</title><rect x="983.5" y="709" width="5.9" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="986.50" y="719.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="765.2" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="768.20" y="879.5" ></text>
+</g>
+<g >
+<title>Py_RunMain (1,265,306,106 samples, 31.00%)</title><rect x="10.0" y="1093" width="365.8" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="13.00" y="1103.5" >Py_RunMain</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="933" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 2.00%)</title><rect x="1142.8" y="901" width="23.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1145.80" y="911.5" >[..</text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="417.1" y="789" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="420.10" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="293.2" y="693" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="296.20" y="703.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1125" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1169.40" y="1135.5" ></text>
+</g>
+<g >
+<title>_start (61,224,489 samples, 1.50%)</title><rect x="688.5" y="1157" width="17.7" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="691.50" y="1167.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="821" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="831.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="782.9" y="709" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="785.90" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="981" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="384.70" y="991.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="1013" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="1023.5" ></text>
+</g>
+<g >
+<title>EDSP::WriteRequest (20,408,163 samples, 0.50%)</title><rect x="63.1" y="901" width="5.9" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="66.10" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1107.4" y="725" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1110.40" y="735.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (1,265,306,106 samples, 31.00%)</title><rect x="10.0" y="1141" width="365.8" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="1151.5" >__libc_start_main</text>
+</g>
+<g >
+<title>operator new (20,408,163 samples, 0.50%)</title><rect x="381.7" y="1013" width="5.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="384.70" y="1023.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="773" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="783.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="645" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="655.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::CheckDep (102,040,815 samples, 2.50%)</title><rect x="340.4" y="757" width="29.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="343.40" y="767.5" >pk..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1107.4" y="693" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1110.40" y="703.5" ></text>
+</g>
+<g >
+<title>unlinkat (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="1029" width="5.9" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1175.30" y="1039.5" ></text>
+</g>
+<g >
+<title>&lt;ureq::stream::DeadlineStream as std::io::BufRead&gt;::fill_buf (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="933" width="35.4" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="1086.80" y="943.5" >&lt;u..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="1029" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="1039.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::StateCache::Update (20,408,163 samples, 0.50%)</title><rect x="305.0" y="805" width="5.9" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="308.00" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1125" width="23.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="667.90" y="1135.5" >[..</text>
+</g>
+<g >
+<title>EDSP::ResolveExternal (20,408,163 samples, 0.50%)</title><rect x="63.1" y="917" width="5.9" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="66.10" y="927.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="757" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="42.50" y="767.5" ></text>
+</g>
+<g >
+<title>pkgCache::PkgIterator::operator++ (20,408,163 samples, 0.50%)</title><rect x="80.8" y="901" width="5.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="83.80" y="911.5" ></text>
+</g>
+<g >
+<title>PyTuple_Pack (20,408,163 samples, 0.50%)</title><rect x="27.7" y="485" width="5.9" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="30.70" y="495.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="975.5" ></text>
+</g>
+<g >
+<title>[python3.12] (81,632,652 samples, 2.00%)</title><rect x="21.8" y="789" width="23.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="799.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="1013" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="1023.5" ></text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="613" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="42.50" y="623.5" ></text>
+</g>
+<g >
+<title>read (20,408,163 samples, 0.50%)</title><rect x="440.7" y="949" width="5.9" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="443.70" y="959.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkAndSweep (20,408,163 samples, 0.50%)</title><rect x="299.1" y="789" width="5.9" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="302.10" y="799.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (40,816,326 samples, 1.00%)</title><rect x="21.8" y="581" width="11.8" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="24.80" y="591.5" ></text>
+</g>
+<g >
+<title>pkgCache::PkgIterator::State (20,408,163 samples, 0.50%)</title><rect x="434.8" y="997" width="5.9" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="437.80" y="1007.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::BuildSourceList (20,408,163 samples, 0.50%)</title><rect x="293.2" y="821" width="5.9" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="296.20" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="805" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="815.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (204,081,630 samples, 5.00%)</title><rect x="216.5" y="869" width="59.0" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="219.50" y="879.5" >[libap..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="927.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="927.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (81,632,652 samples, 2.00%)</title><rect x="21.8" y="853" width="23.6" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="24.80" y="863.5" >P..</text>
+</g>
+<g >
+<title>pkgDepCache::MarkRequired (81,632,652 samples, 2.00%)</title><rect x="169.3" y="885" width="23.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="172.30" y="895.5" >p..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="911.5" ></text>
+</g>
+<g >
+<title>_PyArg_ParseTuple_SizeT (20,408,163 samples, 0.50%)</title><rect x="163.4" y="933" width="5.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="166.40" y="943.5" ></text>
+</g>
+<g >
+<title>pkgCache::DepIterator::IsSatisfied (40,816,326 samples, 1.00%)</title><rect x="546.9" y="949" width="11.8" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="549.90" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="991.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (20,408,163 samples, 0.50%)</title><rect x="69.0" y="901" width="5.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="72.00" y="911.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (306,122,445 samples, 7.50%)</title><rect x="971.7" y="1125" width="88.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="974.70" y="1135.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (20,408,163 samples, 0.50%)</title><rect x="33.6" y="757" width="5.9" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="36.60" y="767.5" ></text>
+</g>
+<g >
+<title>write (20,408,163 samples, 0.50%)</title><rect x="446.6" y="949" width="5.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="449.60" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="384.70" y="927.5" ></text>
+</g>
+<g >
+<title>malloc (20,408,163 samples, 0.50%)</title><rect x="381.7" y="997" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="384.70" y="1007.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="869" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="927.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="373" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="383.5" ></text>
+</g>
+<g >
+<title>[libzstd.so.1.5.5] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="949" width="23.6" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="667.90" y="959.5" >[..</text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (81,632,652 samples, 2.00%)</title><rect x="977.6" y="901" width="23.6" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="980.60" y="911.5" >P..</text>
+</g>
+<g >
+<title>pkgDepCache::ActionGroup::~ActionGroup (20,408,163 samples, 0.50%)</title><rect x="287.3" y="837" width="5.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="290.30" y="847.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="933" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="959.5" ></text>
+</g>
+<g >
+<title>std::io::default_read_buf::&lt;&lt;ureq::response::LimitedRead&lt;ureq::stream::DeadlineStream&gt; as std::io::Read&gt;::read_buf::{closure#0}&gt; (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="981" width="35.4" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="1086.80" y="991.5" >st..</text>
+</g>
+<g >
+<title>Perl_call_list (20,408,163 samples, 0.50%)</title><rect x="694.4" y="581" width="5.9" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="697.40" y="591.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="895.5" ></text>
+</g>
+<g >
+<title>Perl_gv_fetchpvn_flags (20,408,163 samples, 0.50%)</title><rect x="782.9" y="309" width="5.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="785.90" y="319.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="597" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="607.5" ></text>
+</g>
+<g >
+<title>[http] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1061" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="968.80" y="1071.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1029" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="1039.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="309" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="319.5" ></text>
+</g>
+<g >
+<title>nodebootstrap::kube_api::block_on::&lt; (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="997" width="5.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="1122.20" y="1007.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (40,816,326 samples, 1.00%)</title><rect x="21.8" y="757" width="11.8" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="24.80" y="767.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="629" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="639.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (20,408,163 samples, 0.50%)</title><rect x="21.8" y="501" width="5.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="24.80" y="511.5" ></text>
+</g>
+<g >
+<title>Perl_block_end (20,408,163 samples, 0.50%)</title><rect x="983.5" y="757" width="5.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="986.50" y="767.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::PhasingApplied (20,408,163 samples, 0.50%)</title><rect x="92.6" y="917" width="5.9" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="95.60" y="927.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="782.9" y="581" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="785.90" y="591.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="965" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="975.5" ></text>
+</g>
+<g >
+<title>pkgCache::DepIterator::IsSatisfied (61,224,489 samples, 1.50%)</title><rect x="322.7" y="757" width="17.7" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="325.70" y="767.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1013" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="1023.5" ></text>
+</g>
+<g >
+<title>_dl_catch_exception (20,408,163 samples, 0.50%)</title><rect x="39.5" y="629" width="5.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="42.50" y="639.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="1007.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="917" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="927.5" >[..</text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (102,040,815 samples, 2.50%)</title><rect x="452.5" y="1013" width="29.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="455.50" y="1023.5" >[l..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="879.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::BuildCaches (20,408,163 samples, 0.50%)</title><rect x="293.2" y="837" width="5.9" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="296.20" y="847.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1107.4" y="709" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1110.40" y="719.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1013" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1023.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="805" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="815.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="911.5" ></text>
+</g>
+<g >
+<title>ZSTD_decompressContinue (81,632,652 samples, 2.00%)</title><rect x="664.9" y="965" width="23.6" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="667.90" y="975.5" >Z..</text>
+</g>
+<g >
+<title>__libc_start_main (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1141" width="289.1" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="378.80" y="1151.5" >__libc_start_main</text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="645" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="42.50" y="655.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::PhasingApplied (20,408,163 samples, 0.50%)</title><rect x="157.5" y="901" width="5.9" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="160.50" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="901" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="629" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="639.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (81,632,652 samples, 2.00%)</title><rect x="21.8" y="933" width="23.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="943.5" >_..</text>
+</g>
+<g >
+<title>Perl_leave_scope (20,408,163 samples, 0.50%)</title><rect x="788.8" y="309" width="5.9" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="791.80" y="319.5" ></text>
+</g>
+<g >
+<title>perl_run (40,816,326 samples, 1.00%)</title><rect x="794.7" y="1093" width="11.8" height="15.0" fill="rgb(236,147,35)" rx="2" ry="2" />
+<text  x="797.70" y="1103.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="741" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="645" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="655.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1157" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1167.5" >[..</text>
+</g>
+<g >
+<title>[tar] (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1077" width="17.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1175.30" y="1087.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="927.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="688.5" y="1029" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="691.50" y="1039.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (81,632,652 samples, 2.00%)</title><rect x="21.8" y="965" width="23.6" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="24.80" y="975.5" >P..</text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (20,408,163 samples, 0.50%)</title><rect x="393.5" y="933" width="5.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="396.50" y="943.5" ></text>
+</g>
+<g >
+<title>[perl] (122,448,978 samples, 3.00%)</title><rect x="971.7" y="1061" width="35.4" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="974.70" y="1071.5" >[p..</text>
+</g>
+<g >
+<title>[dpkg] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1109" width="76.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="709.20" y="1119.5" >[dpkg]</text>
+</g>
+<g >
+<title>_PyErr_SetKeyError (20,408,163 samples, 0.50%)</title><rect x="27.7" y="501" width="5.9" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="30.70" y="511.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="782.9" y="837" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="785.90" y="847.5" ></text>
+</g>
+<g >
+<title>gzip (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1173" width="159.3" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="809.50" y="1183.5" >gzip</text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="688.5" y="853" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="691.50" y="863.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="837" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="847.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (306,122,445 samples, 7.50%)</title><rect x="287.3" y="917" width="88.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="290.30" y="927.5" >_PyEval_Ev..</text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="389" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="399.5" ></text>
+</g>
+<g >
+<title>pkgPolicy::GetPriority (20,408,163 samples, 0.50%)</title><rect x="369.9" y="789" width="5.9" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="372.90" y="799.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="437" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="447.5" ></text>
+</g>
+<g >
+<title>_PyModule_ClearDict (20,408,163 samples, 0.50%)</title><rect x="10.0" y="1045" width="5.9" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="13.00" y="1055.5" ></text>
+</g>
+<g >
+<title>getdents64 (20,408,163 samples, 0.50%)</title><rect x="771.1" y="1029" width="5.9" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="774.10" y="1039.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (40,816,326 samples, 1.00%)</title><rect x="470.2" y="949" width="11.8" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="473.20" y="959.5" ></text>
+</g>
+<g >
+<title>_PyRun_AnyFileObject (1,244,897,943 samples, 30.50%)</title><rect x="15.9" y="1077" width="359.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="18.90" y="1087.5" >_PyRun_AnyFileObject</text>
+</g>
+<g >
+<title>&lt;ureq::response::LimitedRead&lt;ureq::stream::DeadlineStream&gt; as std::io::Read&gt;::read (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="965" width="35.4" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="1086.80" y="975.5" >&lt;u..</text>
+</g>
+<g >
+<title>[apt-get] (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1157" width="289.1" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="378.80" y="1167.5" >[apt-get]</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="389" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;ureq::stream::DeadlineStream as std::io::Read&gt;::read (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="949" width="35.4" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1086.80" y="959.5" >&lt;u..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="677" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="687.5" ></text>
+</g>
+<g >
+<title>[dpkg] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1077" width="76.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="709.20" y="1087.5" >[dpkg]</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (20,408,163 samples, 0.50%)</title><rect x="21.8" y="341" width="5.9" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="24.80" y="351.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (20,408,163 samples, 0.50%)</title><rect x="33.6" y="741" width="5.9" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="36.60" y="751.5" ></text>
+</g>
+<g >
+<title>pkgApplyStatus (20,408,163 samples, 0.50%)</title><rect x="204.7" y="933" width="5.9" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="207.70" y="943.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="688.5" y="1013" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="691.50" y="1023.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="358.1" y="741" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="361.10" y="751.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="782.9" y="549" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="785.90" y="559.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::VersionState (20,408,163 samples, 0.50%)</title><rect x="269.6" y="837" width="5.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="272.60" y="847.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="965" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="975.5" >[..</text>
+</g>
+<g >
+<title>perl_parse (40,816,326 samples, 1.00%)</title><rect x="688.5" y="1093" width="11.8" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="691.50" y="1103.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="927.5" ></text>
+</g>
+<g >
+<title>debVersioningSystem::CheckDep (20,408,163 samples, 0.50%)</title><rect x="364.0" y="741" width="5.9" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="367.00" y="751.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,244,897,943 samples, 30.50%)</title><rect x="15.9" y="1013" width="359.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="18.90" y="1023.5" >PyEval_EvalCode</text>
+</g>
+<g >
+<title>nodebootstrap::kube_api::apply_yaml::{closure#0} (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="981" width="5.9" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1122.20" y="991.5" ></text>
+</g>
+<g >
+<title>pkgPackageManager::OrderInstall (122,448,978 samples, 3.00%)</title><rect x="387.6" y="1013" width="35.4" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="390.60" y="1023.5" >pk..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1072.0" y="757" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1075.00" y="767.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="688.5" y="757" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="691.50" y="767.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="805" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="815.5" >[..</text>
+</g>
+<g >
+<title>_start (81,632,652 samples, 2.00%)</title><rect x="782.9" y="1157" width="23.6" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="785.90" y="1167.5" >_..</text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="794.7" y="1077" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="797.70" y="1087.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="709" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="719.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Update (20,408,163 samples, 0.50%)</title><rect x="145.7" y="869" width="5.9" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="148.70" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="965" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="975.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="33.6" y="645" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="36.60" y="655.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1095.6" y="613" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1098.60" y="623.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="453" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="463.5" ></text>
+</g>
+<g >
+<title>_start (306,122,445 samples, 7.50%)</title><rect x="971.7" y="1157" width="88.5" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="974.70" y="1167.5" >_start</text>
+</g>
+<g >
+<title>Perl_runops_standard (81,632,652 samples, 2.00%)</title><rect x="977.6" y="981" width="23.6" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="980.60" y="991.5" >P..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="895.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1125" width="289.1" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="378.80" y="1135.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1125" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="968.80" y="1135.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="1061" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="1071.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="927.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkAndSweep (81,632,652 samples, 2.00%)</title><rect x="169.3" y="901" width="23.6" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="172.30" y="911.5" >p..</text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="198.8" y="949" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="201.80" y="959.5" ></text>
+</g>
+<g >
+<title>[perl] (102,040,815 samples, 2.50%)</title><rect x="977.6" y="1029" width="29.5" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="1039.5" >[p..</text>
+</g>
+<g >
+<title>pkgPackageManager::DoInstall (122,448,978 samples, 3.00%)</title><rect x="387.6" y="1029" width="35.4" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="390.60" y="1039.5" >pk..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="981" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="991.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="933" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1077.9" y="725" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1080.90" y="735.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="782.9" y="469" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="785.90" y="479.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Update (40,816,326 samples, 1.00%)</title><rect x="145.7" y="885" width="11.8" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="148.70" y="895.5" ></text>
+</g>
+<g >
+<title>pkgSourceList::ReadSourceDir (20,408,163 samples, 0.50%)</title><rect x="293.2" y="789" width="5.9" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="296.20" y="799.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1061" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1071.5" >[..</text>
+</g>
+<g >
+<title>CommandLine::DispatchArg (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1077" width="289.1" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="378.80" y="1087.5" >CommandLine::DispatchArg</text>
+</g>
+<g >
+<title>perl_run (183,673,467 samples, 4.50%)</title><rect x="1007.1" y="1093" width="53.1" height="15.0" fill="rgb(236,147,35)" rx="2" ry="2" />
+<text  x="1010.10" y="1103.5" >perl_..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="821" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1107.4" y="757" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1110.40" y="767.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="384.70" y="911.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="517" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="527.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1141" width="5.9" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="968.80" y="1151.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="853" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="863.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="933" width="5.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1051.40" y="943.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (40,816,326 samples, 1.00%)</title><rect x="21.8" y="677" width="11.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="837" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="847.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="384.70" y="943.5" ></text>
+</g>
+<g >
+<title>Perl_regexec_flags (20,408,163 samples, 0.50%)</title><rect x="800.6" y="1045" width="5.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="803.60" y="1055.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="417.1" y="773" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="420.10" y="783.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="757" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="767.5" ></text>
+</g>
+<g >
+<title>nodebootstrap::cni::run_with (183,673,467 samples, 4.50%)</title><rect x="1066.1" y="1029" width="53.1" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1069.10" y="1039.5" >nodeb..</text>
+</g>
+<g >
+<title>MD5Update (142,857,141 samples, 3.50%)</title><rect x="706.2" y="1029" width="41.3" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="709.20" y="1039.5" >MD5..</text>
+</g>
+<g >
+<title>pkgDepCache::UpdateVerState (40,816,326 samples, 1.00%)</title><rect x="635.4" y="965" width="11.8" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="638.40" y="975.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="393.5" y="885" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="396.50" y="895.5" ></text>
+</g>
+<g >
+<title>pkgPolicy::GetCandidateVer (61,224,489 samples, 1.50%)</title><rect x="647.2" y="997" width="17.7" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="650.20" y="1007.5" ></text>
+</g>
+<g >
+<title>&lt;serde_yaml::loader::Loader&gt;::next_document (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="949" width="5.9" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="1122.20" y="959.5" ></text>
+</g>
+<g >
+<title>_PyObject_Call_Prepend (306,122,445 samples, 7.50%)</title><rect x="287.3" y="933" width="88.5" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="290.30" y="943.5" >_PyObject_..</text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (20,408,163 samples, 0.50%)</title><rect x="21.8" y="325" width="5.9" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="24.80" y="335.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="895.5" ></text>
+</g>
+<g >
+<title>sccp (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="981" width="17.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1069.10" y="991.5" ></text>
+</g>
+<g >
+<title>[gzip] (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1077" width="159.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="809.50" y="1087.5" >[gzip]</text>
+</g>
+<g >
+<title>[python3.12] (551,020,401 samples, 13.50%)</title><rect x="45.4" y="965" width="159.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="48.40" y="975.5" >[python3.12]</text>
+</g>
+<g >
+<title>__libc_malloc_impl (20,408,163 samples, 0.50%)</title><rect x="1060.2" y="1157" width="5.9" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="1063.20" y="1167.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::ActionGroup::~ActionGroup (20,408,163 samples, 0.50%)</title><rect x="210.6" y="885" width="5.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="213.60" y="895.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="805" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="815.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="927.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="782.9" y="757" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="785.90" y="767.5" ></text>
+</g>
+<g >
+<title>[gzip] (428,571,423 samples, 10.50%)</title><rect x="830.1" y="1045" width="123.9" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="833.10" y="1055.5" >[gzip]</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="629" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="639.5" ></text>
+</g>
+<g >
+<title>[tar] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="1045" width="5.9" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1175.30" y="1055.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="1007.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="597" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="607.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="27.7" y="517" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="30.70" y="527.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="997" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="1007.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::BuildCaches (40,816,326 samples, 1.00%)</title><rect x="440.7" y="997" width="11.8" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="443.70" y="1007.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="773" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="783.5" ></text>
+</g>
+<g >
+<title>[libgcrypt.so.20.4.3] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1013" width="5.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="968.80" y="1023.5" ></text>
+</g>
+<g >
+<title>Perl_hv_common (20,408,163 samples, 0.50%)</title><rect x="782.9" y="293" width="5.9" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="785.90" y="303.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 2.00%)</title><rect x="1142.8" y="917" width="23.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1145.80" y="927.5" >[..</text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (20,408,163 samples, 0.50%)</title><rect x="293.2" y="709" width="5.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="296.20" y="719.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="1013" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="1023.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (81,632,652 samples, 2.00%)</title><rect x="782.9" y="1141" width="23.6" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="785.90" y="1151.5" >_..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="837" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="847.5" ></text>
+</g>
+<g >
+<title>[dpkg] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1045" width="76.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="709.20" y="1055.5" >[dpkg]</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="373" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="383.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="853" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="863.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="895.5" ></text>
+</g>
+<g >
+<title>Perl_Slab_Alloc (20,408,163 samples, 0.50%)</title><rect x="995.3" y="613" width="5.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="998.30" y="623.5" ></text>
+</g>
+<g >
+<title>pkgPolicy::GetCandidateVer (20,408,163 samples, 0.50%)</title><rect x="369.9" y="805" width="5.9" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="372.90" y="815.5" ></text>
+</g>
+<g >
+<title>Perl_sv_free2 (20,408,163 samples, 0.50%)</title><rect x="983.5" y="677" width="5.9" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="986.50" y="687.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (81,632,652 samples, 2.00%)</title><rect x="21.8" y="869" width="23.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="879.5" >_..</text>
+</g>
+<g >
+<title>ZSTD_decompressStream (81,632,652 samples, 2.00%)</title><rect x="664.9" y="997" width="23.6" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="667.90" y="1007.5" >Z..</text>
+</g>
+<g >
+<title>pkgCache::PkgIterator::operator++ (20,408,163 samples, 0.50%)</title><rect x="375.8" y="1029" width="5.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="378.80" y="1039.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="954.0" y="1045" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="957.00" y="1055.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1029" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1039.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="975.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="501" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="511.5" ></text>
+</g>
+<g >
+<title>unsafe_libyaml::scanner::yaml_parser_fetch_more_tokens (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="917" width="5.9" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1122.20" y="927.5" ></text>
+</g>
+<g >
+<title>PyModule_ExecDef (20,408,163 samples, 0.50%)</title><rect x="21.8" y="245" width="5.9" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="24.80" y="255.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="927.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkInstall (40,816,326 samples, 1.00%)</title><rect x="145.7" y="917" width="11.8" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="148.70" y="927.5" ></text>
+</g>
+<g >
+<title>Perl_leave_scope (20,408,163 samples, 0.50%)</title><rect x="1013.0" y="1045" width="5.9" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="1016.00" y="1055.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::Open (285,714,282 samples, 7.00%)</title><rect x="293.2" y="853" width="82.6" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="296.20" y="863.5" >pkgCacheF..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="661" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="42.50" y="671.5" ></text>
+</g>
+<g >
+<title>[apt_pkg.cpython-312-x86_64-linux-gnu.so] (285,714,282 samples, 7.00%)</title><rect x="204.7" y="949" width="82.6" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="207.70" y="959.5" >[apt_pkg...</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="700.3" y="1061" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="703.30" y="1071.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (20,408,163 samples, 0.50%)</title><rect x="694.4" y="565" width="5.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="697.40" y="575.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="741" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="42.50" y="751.5" ></text>
+</g>
+<g >
+<title>ring::aead::algorithm::aes_gcm_open (40,816,326 samples, 1.00%)</title><rect x="1101.5" y="805" width="11.8" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1104.50" y="815.5" ></text>
+</g>
+<g >
+<title>pkgPolicy::GetPriority (40,816,326 samples, 1.00%)</title><rect x="275.5" y="869" width="11.8" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="278.50" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="911.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="885" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="895.5" ></text>
+</g>
+<g >
+<title>[tar] (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1157" width="17.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1175.30" y="1167.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1148.7" y="837" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1151.70" y="847.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Sweep (20,408,163 samples, 0.50%)</title><rect x="210.6" y="869" width="5.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="213.60" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="933" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="943.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::Open (265,306,119 samples, 6.50%)</title><rect x="210.6" y="933" width="76.7" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="213.60" y="943.5" >pkgCache..</text>
+</g>
+<g >
+<title>Perl_regexec_flags (20,408,163 samples, 0.50%)</title><rect x="700.3" y="1045" width="5.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="703.30" y="1055.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="1029" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="1039.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,244,897,943 samples, 30.50%)</title><rect x="15.9" y="1045" width="359.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.90" y="1055.5" >[python3.12]</text>
+</g>
+<g >
+<title>nodebootstrap::dispatch (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1061" width="59.0" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1069.10" y="1071.5" >nodebo..</text>
+</g>
+<g >
+<title>[http] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1157" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="968.80" y="1167.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (102,040,815 samples, 2.50%)</title><rect x="452.5" y="981" width="29.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="455.50" y="991.5" >[l..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1141" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1151.5" >[[k..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="645" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="655.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="773" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="783.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 2.00%)</title><rect x="1142.8" y="885" width="23.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1145.80" y="895.5" >[..</text>
+</g>
+<g >
+<title>pkgDepCache::Sweep (20,408,163 samples, 0.50%)</title><rect x="204.7" y="901" width="5.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="207.70" y="911.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="688.5" y="709" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="691.50" y="719.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="991.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (40,816,326 samples, 1.00%)</title><rect x="440.7" y="981" width="11.8" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="443.70" y="991.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Update (204,081,630 samples, 5.00%)</title><rect x="310.9" y="805" width="59.0" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="313.90" y="815.5" >pkgDep..</text>
+</g>
+<g >
+<title>pkgCacheFile::BuildDepCache (265,306,119 samples, 6.50%)</title><rect x="299.1" y="837" width="76.7" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="302.10" y="847.5" >pkgCache..</text>
+</g>
+<g >
+<title>unsafe_libyaml::parser::yaml_parser_parse_block_mapping_key (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="933" width="5.9" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1122.20" y="943.5" ></text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="581" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="42.50" y="591.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="933" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="965" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="975.5" ></text>
+</g>
+<g >
+<title>FileFd::Write (20,408,163 samples, 0.50%)</title><rect x="393.5" y="949" width="5.9" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="396.50" y="959.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="917" width="5.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="1051.40" y="927.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="805" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="815.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 2.50%)</title><rect x="1136.9" y="965" width="29.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1139.90" y="975.5" >[[..</text>
+</g>
+<g >
+<title>&lt;ring::aead::algorithm::Algorithm&gt;::open_within (40,816,326 samples, 1.00%)</title><rect x="1101.5" y="821" width="11.8" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1104.50" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="837" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="847.5" ></text>
+</g>
+<g >
+<title>needrestart (306,122,445 samples, 7.50%)</title><rect x="971.7" y="1173" width="88.5" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="974.70" y="1183.5" >needrestart</text>
+</g>
+<g >
+<title>[gzip] (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1109" width="159.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="809.50" y="1119.5" >[gzip]</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="800.6" y="1029" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="803.60" y="1039.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="453" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="463.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1125" width="159.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="809.50" y="1135.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>pkgCache::DepIterator::operator++ (20,408,163 samples, 0.50%)</title><rect x="74.9" y="901" width="5.9" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="77.90" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="869" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="879.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="837" width="23.6" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="402.40" y="847.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="837" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="847.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="989.4" y="725" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="992.40" y="735.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="975.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="782.9" y="437" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="785.90" y="447.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="949" width="5.9" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1051.40" y="959.5" ></text>
+</g>
+<g >
+<title>systemctl (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1173" width="5.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1169.40" y="1183.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="725" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="735.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (408,163,260 samples, 10.00%)</title><rect x="529.2" y="981" width="118.0" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="532.20" y="991.5" >[libapt-pkg.so..</text>
+</g>
+<g >
+<title>[libzstd.so.1.5.5] (20,408,163 samples, 0.50%)</title><rect x="682.6" y="933" width="5.9" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="685.60" y="943.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="782.9" y="405" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="785.90" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="1013" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="1023.5" ></text>
+</g>
+<g >
+<title>pkgProblemResolver::Resolve (81,632,652 samples, 2.00%)</title><rect x="499.7" y="1029" width="23.6" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="502.70" y="1039.5" >p..</text>
+</g>
+<g >
+<title>EDSP::WriteRequest (20,408,163 samples, 0.50%)</title><rect x="499.7" y="997" width="5.9" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="502.70" y="1007.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="393.5" y="837" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="396.50" y="847.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Sweep (20,408,163 samples, 0.50%)</title><rect x="192.9" y="901" width="5.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="195.90" y="911.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="309" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="319.5" ></text>
+</g>
+<g >
+<title>ring_core_0_17_14__aes_gcm_dec_update_vaes_avx2 (40,816,326 samples, 1.00%)</title><rect x="1101.5" y="789" width="11.8" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="1104.50" y="799.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (40,816,326 samples, 1.00%)</title><rect x="21.8" y="741" width="11.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="789" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="799.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="765.2" y="853" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="768.20" y="863.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="517" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="527.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="782.9" y="901" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="785.90" y="911.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="821" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="981" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="991.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1077" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1087.5" >[[k..</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="800.6" y="1013" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="803.60" y="1023.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="393.5" y="853" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="396.50" y="863.5" ></text>
+</g>
+<g >
+<title>Perl_yylex (20,408,163 samples, 0.50%)</title><rect x="694.4" y="197" width="5.9" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="697.40" y="207.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1093" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1169.40" y="1103.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="384.70" y="959.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="989.4" y="677" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="992.40" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1184.1" y="805" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1187.10" y="815.5" ></text>
+</g>
+<g >
+<title>[libselinux.so.1] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1045" width="5.9" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1169.40" y="1055.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Sweep (20,408,163 samples, 0.50%)</title><rect x="482.0" y="1013" width="5.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="485.00" y="1023.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="794.7" y="1061" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="797.70" y="1071.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (204,081,630 samples, 5.00%)</title><rect x="310.9" y="789" width="59.0" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="313.90" y="799.5" >[libap..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1109" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1169.40" y="1119.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (40,816,326 samples, 1.00%)</title><rect x="21.8" y="597" width="11.8" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="24.80" y="607.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (61,224,489 samples, 1.50%)</title><rect x="688.5" y="1141" width="17.7" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="691.50" y="1151.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (40,816,326 samples, 1.00%)</title><rect x="145.7" y="901" width="11.8" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="148.70" y="911.5" ></text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1061" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1169.40" y="1071.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1107.4" y="773" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1110.40" y="783.5" ></text>
+</g>
+<g >
+<title>[tar] (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1109" width="17.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1175.30" y="1119.5" ></text>
+</g>
+<g >
+<title>[perl] (163,265,304 samples, 4.00%)</title><rect x="1007.1" y="1061" width="47.2" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1010.10" y="1071.5" >[perl]</text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="133" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="143.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (122,448,978 samples, 3.00%)</title><rect x="1131.0" y="981" width="35.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1134.00" y="991.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="911.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="741" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="981" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="991.5" ></text>
+</g>
+<g >
+<title>notk8s::main (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1093" width="59.0" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1069.10" y="1103.5" >notk8s..</text>
+</g>
+<g >
+<title>[tar] (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1093" width="17.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1175.30" y="1103.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="789" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="799.5" >[..</text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (61,224,489 samples, 1.50%)</title><rect x="405.3" y="805" width="17.7" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="408.30" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="700.3" y="1013" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="703.30" y="1023.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::DependencyState (306,122,445 samples, 7.50%)</title><rect x="546.9" y="965" width="88.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="549.90" y="975.5" >pkgDepCach..</text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (61,224,489 samples, 1.50%)</title><rect x="505.6" y="1013" width="17.7" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="508.60" y="1023.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="991.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="782.9" y="693" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="785.90" y="703.5" ></text>
+</g>
+<g >
+<title>apt-check (1,265,306,106 samples, 31.00%)</title><rect x="10.0" y="1173" width="365.8" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="13.00" y="1183.5" >apt-check</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="895.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="965" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="975.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="837" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="847.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="181" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="191.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1045" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1055.5" >[[k..</text>
+</g>
+<g >
+<title>perl_run (20,408,163 samples, 0.50%)</title><rect x="700.3" y="1093" width="5.9" height="15.0" fill="rgb(236,147,35)" rx="2" ry="2" />
+<text  x="703.30" y="1103.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="821" width="23.6" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="402.40" y="831.5" >[..</text>
+</g>
+<g >
+<title>[python3.12] (306,122,445 samples, 7.50%)</title><rect x="287.3" y="885" width="88.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="290.30" y="895.5" >[python3.12]</text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="949" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="959.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="911.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="33.6" y="677" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.60" y="687.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="389" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::crypto::ring::tls13::Tls13MessageDecrypter as rustls::crypto::cipher::MessageDecrypter&gt;::decrypt (40,816,326 samples, 1.00%)</title><rect x="1101.5" y="837" width="11.8" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1104.50" y="847.5" ></text>
+</g>
+<g >
+<title>pkgDPkgPM::Go (102,040,815 samples, 2.50%)</title><rect x="423.0" y="1013" width="29.5" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="426.00" y="1023.5" >pk..</text>
+</g>
+<g >
+<title>pkgDepCache::Init (489,795,912 samples, 12.00%)</title><rect x="523.3" y="1013" width="141.6" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="526.30" y="1023.5" >pkgDepCache::Init</text>
+</g>
+<g >
+<title>Perl_runops_standard (20,408,163 samples, 0.50%)</title><rect x="694.4" y="405" width="5.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="697.40" y="415.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="1029" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="1039.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="997" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1007.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1093" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1103.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="853" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="863.5" ></text>
+</g>
+<g >
+<title>Perl_newBINOP (20,408,163 samples, 0.50%)</title><rect x="995.3" y="629" width="5.9" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="998.30" y="639.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="853" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="863.5" ></text>
+</g>
+<g >
+<title>CacheFile::CheckDeps (20,408,163 samples, 0.50%)</title><rect x="375.8" y="1045" width="5.9" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="378.80" y="1055.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="782.9" y="1013" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="785.90" y="1023.5" ></text>
+</g>
+<g >
+<title>debVersioningSystem::CmpFragment (20,408,163 samples, 0.50%)</title><rect x="623.6" y="901" width="5.9" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="626.60" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="975.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="869" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="879.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="163.4" y="917" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="166.40" y="927.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (81,632,652 samples, 2.00%)</title><rect x="21.8" y="885" width="23.6" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="24.80" y="895.5" >P..</text>
+</g>
+<g >
+<title>pkgPolicy::GetPriority (61,224,489 samples, 1.50%)</title><rect x="647.2" y="981" width="17.7" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="650.20" y="991.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (40,816,326 samples, 1.00%)</title><rect x="21.8" y="613" width="11.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="623.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1093" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1103.5" >[..</text>
+</g>
+<g >
+<title>[python3.12] (81,632,652 samples, 2.00%)</title><rect x="21.8" y="901" width="23.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="911.5" >[..</text>
+</g>
+<g >
+<title>[systemctl] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1157" width="5.9" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1169.40" y="1167.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="788.8" y="325" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="791.80" y="335.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (102,040,815 samples, 2.50%)</title><rect x="452.5" y="997" width="29.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="455.50" y="1007.5" >[l..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="677" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="687.5" ></text>
+</g>
+<g >
+<title>dpkg-deb (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1173" width="23.6" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="667.90" y="1183.5" >d..</text>
+</g>
+<g >
+<title>Hashes::Add (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1029" width="5.9" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="968.80" y="1039.5" ></text>
+</g>
+<g >
+<title>OPENSSL_LH_doall_arg (20,408,163 samples, 0.50%)</title><rect x="21.8" y="37" width="5.9" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="24.80" y="47.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="33.6" y="693" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.60" y="703.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="949" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="709" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="719.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="917" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="927.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="789" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="799.5" ></text>
+</g>
+<g >
+<title>Perl_PerlIO_set_ptrcnt (20,408,163 samples, 0.50%)</title><rect x="1024.8" y="1029" width="5.9" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1027.80" y="1039.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="1077" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="1087.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="782.9" y="421" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="785.90" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (20,408,163 samples, 0.50%)</title><rect x="21.8" y="453" width="5.9" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="24.80" y="463.5" ></text>
+</g>
+<g >
+<title>Perl_sv_clear (20,408,163 samples, 0.50%)</title><rect x="983.5" y="661" width="5.9" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="986.50" y="671.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (81,632,652 samples, 2.00%)</title><rect x="977.6" y="853" width="23.6" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="980.60" y="863.5" >P..</text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="885" width="23.6" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="402.40" y="895.5" >[..</text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="617.7" y="917" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="620.70" y="927.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (81,632,652 samples, 2.00%)</title><rect x="21.8" y="837" width="23.6" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="24.80" y="847.5" >P..</text>
+</g>
+<g >
+<title>[python3.12] (81,632,652 samples, 2.00%)</title><rect x="21.8" y="949" width="23.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="959.5" >[..</text>
+</g>
+<g >
+<title>[gzip] (163,265,304 samples, 4.00%)</title><rect x="906.8" y="1029" width="47.2" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="909.80" y="1039.5" >[gzip]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="959.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="949" width="23.6" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="402.40" y="959.5" >[..</text>
+</g>
+<g >
+<title>dlopen (20,408,163 samples, 0.50%)</title><rect x="39.5" y="725" width="5.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="42.50" y="735.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::DependencyState (163,265,304 samples, 4.00%)</title><rect x="322.7" y="773" width="47.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="325.70" y="783.5" >pkgD..</text>
+</g>
+<g >
+<title>https (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1173" width="5.9" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="968.80" y="1183.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1154.6" y="821" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1157.60" y="831.5" ></text>
+</g>
+<g >
+<title>[python3.12] (81,632,652 samples, 2.00%)</title><rect x="21.8" y="773" width="23.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="783.5" >[..</text>
+</g>
+<g >
+<title>_dl_catch_exception (20,408,163 samples, 0.50%)</title><rect x="39.5" y="677" width="5.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="42.50" y="687.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (102,040,815 samples, 2.50%)</title><rect x="116.2" y="901" width="29.5" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="119.20" y="911.5" >[l..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1072.0" y="773" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1075.00" y="783.5" ></text>
+</g>
+<g >
+<title>[python3.12] (40,816,326 samples, 1.00%)</title><rect x="21.8" y="645" width="11.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="655.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="788.8" y="341" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="791.80" y="351.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1141" width="76.7" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="709.20" y="1151.5" >__libc_s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="1013" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="1023.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="853" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="863.5" ></text>
+</g>
+<g >
+<title>[dpkg] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1061" width="76.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="709.20" y="1071.5" >[dpkg]</text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="853" width="23.6" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="402.40" y="863.5" >[..</text>
+</g>
+<g >
+<title>pkgCacheFile::BuildDepCache (489,795,912 samples, 12.00%)</title><rect x="523.3" y="1029" width="141.6" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="526.30" y="1039.5" >pkgCacheFile::Buil..</text>
+</g>
+<g >
+<title>EDSP::ResolveExternal (20,408,163 samples, 0.50%)</title><rect x="499.7" y="1013" width="5.9" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="502.70" y="1023.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (40,816,326 samples, 1.00%)</title><rect x="440.7" y="965" width="11.8" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="443.70" y="975.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkAndSweep (20,408,163 samples, 0.50%)</title><rect x="86.7" y="901" width="5.9" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="89.70" y="911.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::ActionGroup::~ActionGroup (20,408,163 samples, 0.50%)</title><rect x="299.1" y="805" width="5.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="302.10" y="815.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="949" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="959.5" ></text>
+</g>
+<g >
+<title>pkgApplyStatus (20,408,163 samples, 0.50%)</title><rect x="287.3" y="853" width="5.9" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="290.30" y="863.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="782.9" y="341" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="785.90" y="351.5" ></text>
+</g>
+<g >
+<title>openat64 (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="1045" width="11.8" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1181.20" y="1055.5" ></text>
+</g>
+<g >
+<title>tar (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1173" width="17.7" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="1175.30" y="1183.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="917" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="927.5" ></text>
+</g>
+<g >
+<title>dpkg-preconfigu (61,224,489 samples, 1.50%)</title><rect x="688.5" y="1173" width="17.7" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="691.50" y="1183.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="33.6" y="709" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="36.60" y="719.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (20,408,163 samples, 0.50%)</title><rect x="694.4" y="421" width="5.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="697.40" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="10.0" y="1061" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="13.00" y="1071.5" ></text>
+</g>
+<g >
+<title>main (81,632,652 samples, 2.00%)</title><rect x="782.9" y="1109" width="23.6" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="785.90" y="1119.5" >m..</text>
+</g>
+<g >
+<title>pkgDepCache::MarkRequired (20,408,163 samples, 0.50%)</title><rect x="287.3" y="805" width="5.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="290.30" y="815.5" ></text>
+</g>
+<g >
+<title>[dpkg] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1093" width="76.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="709.20" y="1103.5" >[dpkg]</text>
+</g>
+<g >
+<title>[libc.so.6] (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1125" width="17.7" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1175.30" y="1135.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (122,448,978 samples, 3.00%)</title><rect x="387.6" y="997" width="35.4" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="390.60" y="1007.5" >[l..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="965" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="975.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="895.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="33.6" y="725" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.60" y="735.5" ></text>
+</g>
+<g >
+<title>debVersioningSystem::DoCmpVersion (20,408,163 samples, 0.50%)</title><rect x="364.0" y="725" width="5.9" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="367.00" y="735.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="989.4" y="693" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="992.40" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 2.00%)</title><rect x="1142.8" y="853" width="23.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1145.80" y="863.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1109" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1119.5" >[[k..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="805" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="815.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1107.4" y="741" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1110.40" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="789" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="799.5" ></text>
+</g>
+<g >
+<title>[perl] (122,448,978 samples, 3.00%)</title><rect x="971.7" y="1077" width="35.4" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="974.70" y="1087.5" >[p..</text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="165" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="175.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (102,040,815 samples, 2.50%)</title><rect x="393.5" y="965" width="29.5" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="396.50" y="975.5" >[l..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="959.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (40,816,326 samples, 1.00%)</title><rect x="21.8" y="629" width="11.8" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="24.80" y="639.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="101" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="111.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="805" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="815.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="117" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="127.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (20,408,163 samples, 0.50%)</title><rect x="33.6" y="661" width="5.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="36.60" y="671.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="533" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="543.5" ></text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="39.5" y="693" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="42.50" y="703.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1184.1" y="789" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1187.10" y="799.5" ></text>
+</g>
+<g >
+<title>[apt_pkg.cpython-312-x86_64-linux-gnu.so] (306,122,445 samples, 7.50%)</title><rect x="287.3" y="869" width="88.5" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="290.30" y="879.5" >[apt_pkg.c..</text>
+</g>
+<g >
+<title>&lt;ureq::rtls::RustlsStream as std::io::Read&gt;::read (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="901" width="35.4" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="1086.80" y="911.5" >&lt;u..</text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="10.0" y="1029" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="13.00" y="1039.5" ></text>
+</g>
+<g >
+<title>pkgProblemResolver::KeepPhasedUpdates (20,408,163 samples, 0.50%)</title><rect x="157.5" y="917" width="5.9" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="160.50" y="927.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (102,040,815 samples, 2.50%)</title><rect x="977.6" y="1045" width="29.5" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="980.60" y="1055.5" >Pe..</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (81,632,652 samples, 2.00%)</title><rect x="21.8" y="981" width="23.6" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="24.80" y="991.5" >P..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="943.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1125" width="76.7" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="709.20" y="1135.5" >[libc.so..</text>
+</g>
+<g >
+<title>pkgSourceList::ReadMainList (20,408,163 samples, 0.50%)</title><rect x="293.2" y="805" width="5.9" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="296.20" y="815.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkKeep (102,040,815 samples, 2.50%)</title><rect x="169.3" y="933" width="29.5" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="172.30" y="943.5" >pk..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="975.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCore&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::process_new_packets (61,224,489 samples, 1.50%)</title><rect x="1101.5" y="869" width="17.7" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1104.50" y="879.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="677" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="687.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="197" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="207.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::msgs::deframer::buffers::DeframerVecBuffer&gt;::read (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="853" width="17.7" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1086.80" y="863.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="693" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="703.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="782.9" y="565" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="785.90" y="575.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (81,632,652 samples, 2.00%)</title><rect x="21.8" y="805" width="23.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="815.5" >_..</text>
+</g>
+<g >
+<title>memmove (20,408,163 samples, 0.50%)</title><rect x="1113.3" y="853" width="5.9" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1116.30" y="863.5" ></text>
+</g>
+<g >
+<title>Perl_regexec_flags (20,408,163 samples, 0.50%)</title><rect x="1018.9" y="1045" width="5.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1021.90" y="1055.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1001.2" y="981" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1004.20" y="991.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (40,816,326 samples, 1.00%)</title><rect x="21.8" y="725" width="11.8" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="24.80" y="735.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1184.1" y="821" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1187.10" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="901" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="911.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="782.9" y="1045" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="785.90" y="1055.5" ></text>
+</g>
+<g >
+<title>[http] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1077" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="968.80" y="1087.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="53" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="63.5" ></text>
+</g>
+<g >
+<title>sccp (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="837" width="17.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1086.80" y="847.5" ></text>
+</g>
+<g >
+<title>[libzstd.so.1.5.5] (20,408,163 samples, 0.50%)</title><rect x="682.6" y="917" width="5.9" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="685.60" y="927.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::UpdateVerState (20,408,163 samples, 0.50%)</title><rect x="151.6" y="869" width="5.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="154.60" y="879.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,244,897,943 samples, 30.50%)</title><rect x="15.9" y="1029" width="359.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.90" y="1039.5" >[python3.12]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="1007.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="943.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="661" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="671.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="1077" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="1087.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="821" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="831.5" ></text>
+</g>
+<g >
+<title>Perl_re_intuit_start (20,408,163 samples, 0.50%)</title><rect x="1018.9" y="1029" width="5.9" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="1021.90" y="1039.5" ></text>
+</g>
+<g >
+<title>Py_BytesMain (1,265,306,106 samples, 31.00%)</title><rect x="10.0" y="1109" width="365.8" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="13.00" y="1119.5" >Py_BytesMain</text>
+</g>
+<g >
+<title>nodebootstrap::pkg::fetch_url (183,673,467 samples, 4.50%)</title><rect x="1066.1" y="1013" width="53.1" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="1069.10" y="1023.5" >nodeb..</text>
+</g>
+<g >
+<title>pkgDepCache::AddStates (20,408,163 samples, 0.50%)</title><rect x="145.7" y="853" width="5.9" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="148.70" y="863.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (142,857,141 samples, 3.50%)</title><rect x="104.4" y="917" width="41.3" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="107.40" y="927.5" >[li..</text>
+</g>
+<g >
+<title>[ld-linux-x86-64.so.2] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1077" width="5.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1169.40" y="1087.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (40,816,326 samples, 1.00%)</title><rect x="511.5" y="997" width="11.8" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="514.50" y="1007.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="1007.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="943.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="989.4" y="709" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="992.40" y="719.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="853" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1051.40" y="863.5" ></text>
+</g>
+<g >
+<title>[tar] (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1061" width="17.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1175.30" y="1071.5" ></text>
+</g>
+<g >
+<title>frontend (81,632,652 samples, 2.00%)</title><rect x="782.9" y="1173" width="23.6" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="785.90" y="1183.5" >f..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="853" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="863.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="782.9" y="725" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="785.90" y="735.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkRequired (20,408,163 samples, 0.50%)</title><rect x="299.1" y="773" width="5.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="302.10" y="783.5" ></text>
+</g>
+<g >
+<title>fstatat64 (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="1061" width="5.9" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="1057.30" y="1071.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="991.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="782.9" y="997" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="785.90" y="1007.5" ></text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;fn (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1125" width="59.0" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1069.10" y="1135.5" >std::s..</text>
+</g>
+<g >
+<title>[python3.12] (40,816,326 samples, 1.00%)</title><rect x="21.8" y="661" width="11.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="671.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="485" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="495.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1141" width="23.6" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="667.90" y="1151.5" >_..</text>
+</g>
+<g >
+<title>perl_parse (40,816,326 samples, 1.00%)</title><rect x="782.9" y="1093" width="11.8" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="785.90" y="1103.5" ></text>
+</g>
+<g >
+<title>[perl] (61,224,489 samples, 1.50%)</title><rect x="1036.6" y="1045" width="17.7" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1039.60" y="1055.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="837" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="847.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1045" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1055.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="773" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="783.5" ></text>
+</g>
+<g >
+<title>_PyType_GetDict (20,408,163 samples, 0.50%)</title><rect x="10.0" y="1013" width="5.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="13.00" y="1023.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="21.8" y="357" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="959.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1141" width="159.3" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="809.50" y="1151.5" >__libc_start_main</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="1007.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="997" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="1007.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (40,816,326 samples, 1.00%)</title><rect x="458.4" y="949" width="11.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="461.40" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="879.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (40,816,326 samples, 1.00%)</title><rect x="782.9" y="853" width="11.8" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="785.90" y="863.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="357" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 2.50%)</title><rect x="1136.9" y="949" width="29.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1139.90" y="959.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="879.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (20,408,163 samples, 0.50%)</title><rect x="21.8" y="373" width="5.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="24.80" y="383.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="688.5" y="725" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="691.50" y="735.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="959.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (102,040,815 samples, 2.50%)</title><rect x="452.5" y="965" width="29.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="455.50" y="975.5" >[l..</text>
+</g>
+<g >
+<title>Perl_call_list (81,632,652 samples, 2.00%)</title><rect x="977.6" y="869" width="23.6" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="980.60" y="879.5" >P..</text>
+</g>
+<g >
+<title>pkgDepCache::Update (408,163,260 samples, 10.00%)</title><rect x="529.2" y="997" width="118.0" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="532.20" y="1007.5" >pkgDepCache::U..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="949" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="959.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="21.8" y="293" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="303.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="1013" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="1023.5" ></text>
+</g>
+<g >
+<title>main (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1141" width="59.0" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1069.10" y="1151.5" >main</text>
+</g>
+<g >
+<title>pkgPackageManager::DoInstallPostFork (102,040,815 samples, 2.50%)</title><rect x="423.0" y="1029" width="29.5" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="426.00" y="1039.5" >pk..</text>
+</g>
+<g >
+<title>[python3.12] (81,632,652 samples, 2.00%)</title><rect x="21.8" y="917" width="23.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="927.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="757" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="767.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="837" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="847.5" ></text>
+</g>
+<g >
+<title>[python3.12] (306,122,445 samples, 7.50%)</title><rect x="287.3" y="949" width="88.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="290.30" y="959.5" >[python3.12]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="821" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="725" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="735.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::ActionGroup::~ActionGroup (20,408,163 samples, 0.50%)</title><rect x="204.7" y="917" width="5.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="207.70" y="927.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="885" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="895.5" ></text>
+</g>
+<g >
+<title>main (306,122,445 samples, 7.50%)</title><rect x="971.7" y="1109" width="88.5" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="974.70" y="1119.5" >main</text>
+</g>
+<g >
+<title>pkgCache::DepIterator::IsIgnorable (20,408,163 samples, 0.50%)</title><rect x="263.7" y="821" width="5.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="266.70" y="831.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (40,816,326 samples, 1.00%)</title><rect x="21.8" y="709" width="11.8" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="24.80" y="719.5" ></text>
+</g>
+<g >
+<title>InstallPackages (244,897,956 samples, 6.00%)</title><rect x="381.7" y="1045" width="70.8" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="384.70" y="1055.5" >Install..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,244,897,943 samples, 30.50%)</title><rect x="15.9" y="997" width="359.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="18.90" y="1007.5" >_PyEval_EvalFrameDefault</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="773" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="783.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="911.5" ></text>
+</g>
+<g >
+<title>Perl_sv_gets (20,408,163 samples, 0.50%)</title><rect x="1024.8" y="1045" width="5.9" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="1027.80" y="1055.5" ></text>
+</g>
+<g >
+<title>debVersioningSystem::CheckDep (40,816,326 samples, 1.00%)</title><rect x="617.7" y="933" width="11.8" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="620.70" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="917" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="927.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="991.5" ></text>
+</g>
+<g >
+<title>[http] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1109" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="968.80" y="1119.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (591,836,727 samples, 14.50%)</title><rect x="204.7" y="981" width="171.1" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="207.70" y="991.5" >_PyObject_MakeTpCall</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="741" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="751.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (20,408,163 samples, 0.50%)</title><rect x="293.2" y="725" width="5.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="296.20" y="735.5" ></text>
+</g>
+<g >
+<title>[libgcrypt.so.20.4.3] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="981" width="5.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="968.80" y="991.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="693" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.12] (40,816,326 samples, 1.00%)</title><rect x="21.8" y="533" width="11.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="543.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="821" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="831.5" ></text>
+</g>
+<g >
+<title>[gzip] (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1157" width="159.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="809.50" y="1167.5" >[gzip]</text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (20,408,163 samples, 0.50%)</title><rect x="293.2" y="773" width="5.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="296.20" y="783.5" ></text>
+</g>
+<g >
+<title>PerlIOUnix_open (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="997" width="5.9" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="1045.50" y="1007.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::MarkRequired (20,408,163 samples, 0.50%)</title><rect x="86.7" y="885" width="5.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="89.70" y="895.5" ></text>
+</g>
+<g >
+<title>std::io::default_read_buf::&lt;&lt;ureq::rtls::RustlsStream as std::io::Read&gt;::read_buf::{closure#0}&gt; (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="917" width="35.4" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="1086.80" y="927.5" >st..</text>
+</g>
+<g >
+<title>APT::Upgrade::Upgrade (142,857,141 samples, 3.50%)</title><rect x="57.2" y="933" width="41.3" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="60.20" y="943.5" >APT..</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="229" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="239.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1125" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1135.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="895.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="911.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="688.5" y="869" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="691.50" y="879.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="533" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="543.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (40,816,326 samples, 1.00%)</title><rect x="782.9" y="869" width="11.8" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="785.90" y="879.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="765.2" y="837" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="768.20" y="847.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="911.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="805" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="815.5" ></text>
+</g>
+<g >
+<title>pkgCache::DepIterator::IsIgnorable (20,408,163 samples, 0.50%)</title><rect x="629.5" y="933" width="5.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="632.50" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="975.5" ></text>
+</g>
+<g >
+<title>[python3.12] (81,632,652 samples, 2.00%)</title><rect x="21.8" y="821" width="23.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="831.5" >[..</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="901" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1072.0" y="741" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1075.00" y="751.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (102,040,815 samples, 2.50%)</title><rect x="977.6" y="997" width="29.5" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="980.60" y="1007.5" >Pe..</text>
+</g>
+<g >
+<title>Perl_call_list (20,408,163 samples, 0.50%)</title><rect x="694.4" y="437" width="5.9" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="697.40" y="447.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="879.5" ></text>
+</g>
+<g >
+<title>FileFd::Write (81,632,652 samples, 2.00%)</title><rect x="399.4" y="933" width="23.6" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="402.40" y="943.5" >F..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="965" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="975.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (61,224,489 samples, 1.50%)</title><rect x="688.5" y="1125" width="17.7" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="691.50" y="1135.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="688.5" y="837" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="691.50" y="847.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="943.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::record_layer::RecordLayer&gt;::decrypt_incoming (40,816,326 samples, 1.00%)</title><rect x="1101.5" y="853" width="11.8" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1104.50" y="863.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="1029" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="1039.5" ></text>
+</g>
+<g >
+<title>[dpkg] (81,632,652 samples, 2.00%)</title><rect x="747.5" y="1029" width="23.6" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="750.50" y="1039.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1172.3" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1175.30" y="1007.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="821" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="831.5" >[..</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (20,408,163 samples, 0.50%)</title><rect x="21.8" y="469" width="5.9" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="24.80" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="927.5" ></text>
+</g>
+<g >
+<title>apt-get (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1173" width="289.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="378.80" y="1183.5" >apt-get</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="789" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="799.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="917" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="927.5" ></text>
+</g>
+<g >
+<title>Perl_sv_free2 (20,408,163 samples, 0.50%)</title><rect x="983.5" y="725" width="5.9" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="986.50" y="735.5" ></text>
+</g>
+<g >
+<title>_start (1,265,306,106 samples, 31.00%)</title><rect x="10.0" y="1157" width="365.8" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="13.00" y="1167.5" >_start</text>
+</g>
+<g >
+<title>[dpkg] (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1157" width="76.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="709.20" y="1167.5" >[dpkg]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="885" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="895.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="677" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="687.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="661" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1086.80" y="671.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (20,408,163 samples, 0.50%)</title><rect x="694.4" y="549" width="5.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="697.40" y="559.5" ></text>
+</g>
+<g >
+<title>unsafe_libyaml::scanner::yaml_parser_fetch_value (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="901" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1122.20" y="911.5" ></text>
+</g>
+<g >
+<title>DoInstall (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1061" width="289.1" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="378.80" y="1071.5" >DoInstall</text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (224,489,793 samples, 5.50%)</title><rect x="98.5" y="933" width="64.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="101.50" y="943.5" >[libapt..</text>
+</g>
+<g >
+<title>std::io::copy::stack_buffer_copy::&lt;alloc::boxed::Box&lt;dyn std::io::Read + core::marker::Send + core::marker::Sync&gt;, std::fs::File&gt; (183,673,467 samples, 4.50%)</title><rect x="1066.1" y="997" width="53.1" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="1069.10" y="1007.5" >std::..</text>
+</g>
+<g >
+<title>__libc_start_main (61,224,489 samples, 1.50%)</title><rect x="1172.3" y="1141" width="17.7" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="1175.30" y="1151.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="688.5" y="1061" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="691.50" y="1071.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="1018.9" y="1013" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1021.90" y="1023.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::CheckDep (265,306,119 samples, 6.50%)</title><rect x="558.7" y="949" width="76.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="561.70" y="959.5" >pkgDepCa..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="805" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="815.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (551,020,401 samples, 13.50%)</title><rect x="45.4" y="981" width="159.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="48.40" y="991.5" >PyObject_Vectorcall</text>
+</g>
+<g >
+<title>RunScripts (20,408,163 samples, 0.50%)</title><rect x="428.9" y="997" width="5.9" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="431.90" y="1007.5" ></text>
+</g>
+<g >
+<title>PerlIO_openn (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="1029" width="5.9" height="15.0" fill="rgb(250,209,49)" rx="2" ry="2" />
+<text  x="1045.50" y="1039.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (102,040,815 samples, 2.50%)</title><rect x="393.5" y="981" width="29.5" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="396.50" y="991.5" >[l..</text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (81,632,652 samples, 2.00%)</title><rect x="399.4" y="869" width="23.6" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="402.40" y="879.5" >[..</text>
+</g>
+<g >
+<title>MD5Transform (142,857,141 samples, 3.50%)</title><rect x="706.2" y="1013" width="41.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="709.20" y="1023.5" >MD5..</text>
+</g>
+<g >
+<title>pkgDepCache::Sweep (40,816,326 samples, 1.00%)</title><rect x="487.9" y="1029" width="11.8" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="490.90" y="1039.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (20,408,163 samples, 0.50%)</title><rect x="700.3" y="1077" width="5.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="703.30" y="1087.5" ></text>
+</g>
+<g >
+<title>lzma_code (81,632,652 samples, 2.00%)</title><rect x="399.4" y="901" width="23.6" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="402.40" y="911.5" >l..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="989.4" y="741" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="992.40" y="751.5" ></text>
+</g>
+<g >
+<title>Perl_hv_common (20,408,163 samples, 0.50%)</title><rect x="794.7" y="1045" width="5.9" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="797.70" y="1055.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::CheckDep (122,448,978 samples, 3.00%)</title><rect x="234.2" y="837" width="35.4" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="237.20" y="847.5" >pk..</text>
+</g>
+<g >
+<title>[libzstd.so.1.5.5] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="981" width="23.6" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="667.90" y="991.5" >[..</text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="393.5" y="901" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="396.50" y="911.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (183,673,467 samples, 4.50%)</title><rect x="1007.1" y="1077" width="53.1" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="1010.10" y="1087.5" >Perl_..</text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="85" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="95.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="21.8" y="421" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="431.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (20,408,163 samples, 0.50%)</title><rect x="21.8" y="485" width="5.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="495.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 2.00%)</title><rect x="1142.8" y="869" width="23.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1145.80" y="879.5" >[..</text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="789" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="799.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (40,816,326 samples, 1.00%)</title><rect x="21.8" y="549" width="11.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.80" y="559.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="965" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="384.70" y="975.5" ></text>
+</g>
+<g >
+<title>_PyRun_SimpleFileObject (1,244,897,943 samples, 30.50%)</title><rect x="15.9" y="1061" width="359.9" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="18.90" y="1071.5" >_PyRun_SimpleFileObject</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="789" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="799.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::Open (489,795,912 samples, 12.00%)</title><rect x="523.3" y="1045" width="141.6" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="526.30" y="1055.5" >pkgCacheFile::Open</text>
+</g>
+<g >
+<title>debVersioningSystem::CmpFragment (20,408,163 samples, 0.50%)</title><rect x="364.0" y="709" width="5.9" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="367.00" y="719.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="917" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="927.5" ></text>
+</g>
+<g >
+<title>syscall (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1157" width="41.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1128.10" y="1167.5" >sys..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="789" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="799.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="959.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="688.5" y="693" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="691.50" y="703.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="949" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="959.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="405" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="428.9" y="821" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="431.90" y="831.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="1045" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="1055.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="821" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="831.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="943.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="1013" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="1023.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="997" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="1007.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="694.4" y="613" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="697.40" y="623.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="917" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="927.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="975.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="741" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="751.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1169.40" y="943.5" ></text>
+</g>
+<g >
+<title>EVP_MD_do_all_provided (20,408,163 samples, 0.50%)</title><rect x="21.8" y="213" width="5.9" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="24.80" y="223.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="440.7" y="821" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="443.70" y="831.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (244,897,956 samples, 6.00%)</title><rect x="452.5" y="1045" width="70.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="455.50" y="1055.5" >[libapt-..</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="794.7" y="1029" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="797.70" y="1039.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (20,408,163 samples, 0.50%)</title><rect x="381.7" y="1029" width="5.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="384.70" y="1039.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,408,163 samples, 0.50%)</title><rect x="1030.7" y="1045" width="5.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1033.70" y="1055.5" ></text>
+</g>
+<g >
+<title>[libapt-private.so.0.0.0] (122,448,978 samples, 3.00%)</title><rect x="452.5" y="1029" width="35.4" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="455.50" y="1039.5" >[li..</text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="341" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="351.5" ></text>
+</g>
+<g >
+<title>lzma_code (20,408,163 samples, 0.50%)</title><rect x="393.5" y="917" width="5.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="396.50" y="927.5" ></text>
+</g>
+<g >
+<title>[liblzma.so.5.4.5] (20,408,163 samples, 0.50%)</title><rect x="393.5" y="869" width="5.9" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="396.50" y="879.5" ></text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (20,408,163 samples, 0.50%)</title><rect x="293.2" y="741" width="5.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="296.20" y="751.5" ></text>
+</g>
+<g >
+<title>perl_parse (122,448,978 samples, 3.00%)</title><rect x="971.7" y="1093" width="35.4" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="974.70" y="1103.5" >pe..</text>
+</g>
+<g >
+<title>ExecFork (20,408,163 samples, 0.50%)</title><rect x="428.9" y="965" width="5.9" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="431.90" y="975.5" ></text>
+</g>
+<g >
+<title>[python3.12] (40,816,326 samples, 1.00%)</title><rect x="21.8" y="565" width="11.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="575.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="943.5" ></text>
+</g>
+<g >
+<title>pkgCacheFile::BuildDepCache (265,306,119 samples, 6.50%)</title><rect x="210.6" y="917" width="76.7" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="213.60" y="927.5" >pkgCache..</text>
+</g>
+<g >
+<title>read (40,816,326 samples, 1.00%)</title><rect x="759.3" y="1013" width="11.8" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="762.30" y="1023.5" ></text>
+</g>
+<g >
+<title>write (20,408,163 samples, 0.50%)</title><rect x="959.9" y="1045" width="5.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="962.90" y="1055.5" ></text>
+</g>
+<g >
+<title>[http] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="1045" width="5.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="968.80" y="1055.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::Update (204,081,630 samples, 5.00%)</title><rect x="216.5" y="885" width="59.0" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="219.50" y="895.5" >pkgDep..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="765.2" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="768.20" y="895.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="688.5" y="901" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="691.50" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="1178.2" y="949" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1181.20" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="991.5" ></text>
+</g>
+<g >
+<title> core::result::Result&lt; (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1109" width="59.0" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="1069.10" y="1119.5" > core:..</text>
+</g>
+<g >
+<title>PerlIOBuf_open (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="1013" width="5.9" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1045.50" y="1023.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::UpdateVerState (20,408,163 samples, 0.50%)</title><rect x="269.6" y="853" width="5.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="272.60" y="863.5" ></text>
+</g>
+<g >
+<title>notk8s-linux-x8 (367,346,934 samples, 9.00%)</title><rect x="1060.2" y="1173" width="106.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1063.20" y="1183.5" >notk8s-linux-x8</text>
+</g>
+<g >
+<title>pkgDepCache::AddSizes (20,408,163 samples, 0.50%)</title><rect x="316.8" y="773" width="5.9" height="15.0" fill="rgb(235,142,33)" rx="2" ry="2" />
+<text  x="319.80" y="783.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="694.4" y="325" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="697.40" y="335.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="782.9" y="357" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="367.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::AddSizes (20,408,163 samples, 0.50%)</title><rect x="541.0" y="965" width="5.9" height="15.0" fill="rgb(235,142,33)" rx="2" ry="2" />
+<text  x="544.00" y="975.5" ></text>
+</g>
+<g >
+<title>Perl_call_sv (20,408,163 samples, 0.50%)</title><rect x="694.4" y="277" width="5.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="697.40" y="287.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="69" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="79.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="885" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1051.40" y="895.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="245" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="255.5" ></text>
+</g>
+<g >
+<title>pkgDepCache::ActionGroup::~ActionGroup (102,040,815 samples, 2.50%)</title><rect x="169.3" y="917" width="29.5" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="172.30" y="927.5" >pk..</text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCommon&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::complete_io::&lt;alloc::boxed::Box&lt;dyn ureq::stream::ReadWrite&gt;&gt; (122,448,978 samples, 3.00%)</title><rect x="1083.8" y="885" width="35.4" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1086.80" y="895.5" >&lt;r..</text>
+</g>
+<g >
+<title>[libc.so.6] (1,265,306,106 samples, 31.00%)</title><rect x="10.0" y="1125" width="365.8" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="1135.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="782.9" y="981" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="785.90" y="991.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="983.5" y="693" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="986.50" y="703.5" ></text>
+</g>
+<g >
+<title>[gzip] (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1093" width="159.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="809.50" y="1103.5" >[gzip]</text>
+</g>
+<g >
+<title>libc_start_main_stage2 (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1157" width="59.0" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="1069.10" y="1167.5" >libc_s..</text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1077" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1087.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="981" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="991.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1061" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1071.5" >[[k..</text>
+</g>
+<g >
+<title>[python3.12] (591,836,727 samples, 14.50%)</title><rect x="204.7" y="965" width="171.1" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="207.70" y="975.5" >[python3.12]</text>
+</g>
+<g >
+<title>__libc_start_main (306,122,445 samples, 7.50%)</title><rect x="971.7" y="1141" width="88.5" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="974.70" y="1151.5" >__libc_sta..</text>
+</g>
+<g >
+<title>[libcrypto.so.3] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="149" width="5.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="24.80" y="159.5" ></text>
+</g>
+<g >
+<title>pkgPolicy::GetCandidateVer (40,816,326 samples, 1.00%)</title><rect x="275.5" y="885" width="11.8" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="278.50" y="895.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="933" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="943.5" ></text>
+</g>
+<g >
+<title>Perl_re_intuit_start (20,408,163 samples, 0.50%)</title><rect x="700.3" y="1029" width="5.9" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="703.30" y="1039.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 2.50%)</title><rect x="1136.9" y="933" width="29.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1139.90" y="943.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="446.6" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="449.60" y="911.5" ></text>
+</g>
+<g >
+<title>nodebootstrap::run_all (204,081,630 samples, 5.00%)</title><rect x="1066.1" y="1045" width="59.0" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1069.10" y="1055.5" >nodebo..</text>
+</g>
+<g >
+<title>pkgDepCache::MarkAndSweep (20,408,163 samples, 0.50%)</title><rect x="287.3" y="821" width="5.9" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="290.30" y="831.5" ></text>
+</g>
+<g >
+<title>dpkg (265,306,119 samples, 6.50%)</title><rect x="706.2" y="1173" width="76.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="709.20" y="1183.5" >dpkg</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="879.5" ></text>
+</g>
+<g >
+<title>[apt-get] (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1109" width="289.1" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="378.80" y="1119.5" >[apt-get]</text>
+</g>
+<g >
+<title>Perl_call_list (20,408,163 samples, 0.50%)</title><rect x="694.4" y="293" width="5.9" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="697.40" y="303.5" ></text>
+</g>
+<g >
+<title>[libgcrypt.so.20.4.3] (20,408,163 samples, 0.50%)</title><rect x="965.8" y="997" width="5.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="968.80" y="1007.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="782.9" y="277" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="785.90" y="287.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (306,122,445 samples, 7.50%)</title><rect x="287.3" y="901" width="88.5" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="290.30" y="911.5" >_PyObject_..</text>
+</g>
+<g >
+<title>[libapt-pkg.so.6.0.0] (61,224,489 samples, 1.50%)</title><rect x="69.0" y="917" width="17.7" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="72.00" y="927.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="948.1" y="885" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="951.10" y="895.5" ></text>
+</g>
+<g >
+<title>nodebootstrap::targets::run_with (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="1029" width="5.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1122.20" y="1039.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (20,408,163 samples, 0.50%)</title><rect x="694.4" y="261" width="5.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="697.40" y="271.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="853" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="863.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (20,408,163 samples, 0.50%)</title><rect x="1166.4" y="1141" width="5.9" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="1169.40" y="1151.5" ></text>
+</g>
+<g >
+<title>pkgSourceList::Type::ParseStanza (20,408,163 samples, 0.50%)</title><rect x="293.2" y="757" width="5.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="296.20" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCommon&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::read_tls (61,224,489 samples, 1.50%)</title><rect x="1083.8" y="869" width="17.7" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="1086.80" y="879.5" ></text>
+</g>
+<g >
+<title>_Fork (20,408,163 samples, 0.50%)</title><rect x="428.9" y="949" width="5.9" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="431.90" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="777.0" y="869" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.00" y="879.5" ></text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="261" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="271.5" ></text>
+</g>
+<g >
+<title>DispatchCommandLine (999,999,987 samples, 24.50%)</title><rect x="375.8" y="1093" width="289.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="378.80" y="1103.5" >DispatchCommandLine</text>
+</g>
+<g >
+<title>write (20,408,163 samples, 0.50%)</title><rect x="948.1" y="1013" width="5.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="951.10" y="1023.5" ></text>
+</g>
+<g >
+<title>&lt;serde_yaml::de::Deserializer as core::iter::traits::iterator::Iterator&gt;::next (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="965" width="5.9" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="1122.20" y="975.5" ></text>
+</g>
+<g >
+<title>Py_FinalizeEx (20,408,163 samples, 0.50%)</title><rect x="10.0" y="1077" width="5.9" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="13.00" y="1087.5" ></text>
+</g>
+<g >
+<title>Perl_gv_fetchsv (20,408,163 samples, 0.50%)</title><rect x="782.9" y="325" width="5.9" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="785.90" y="335.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 1.00%)</title><rect x="759.3" y="997" width="11.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="762.30" y="1007.5" ></text>
+</g>
+<g >
+<title>pkgCache::DepIterator::IsSatisfied (20,408,163 samples, 0.50%)</title><rect x="228.3" y="837" width="5.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="231.30" y="847.5" ></text>
+</g>
+<g >
+<title>_dl_catch_exception (20,408,163 samples, 0.50%)</title><rect x="39.5" y="597" width="5.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="42.50" y="607.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="782.9" y="613" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="785.90" y="623.5" ></text>
+</g>
+<g >
+<title>[perl] (40,816,326 samples, 1.00%)</title><rect x="688.5" y="661" width="11.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="691.50" y="671.5" ></text>
+</g>
+<g >
+<title>ExecFork (20,408,163 samples, 0.50%)</title><rect x="428.9" y="981" width="5.9" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="431.90" y="991.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (142,857,141 samples, 3.50%)</title><rect x="1125.1" y="1029" width="41.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1128.10" y="1039.5" >[[k..</text>
+</g>
+<g >
+<title>Perl_leave_scope (20,408,163 samples, 0.50%)</title><rect x="983.5" y="741" width="5.9" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="986.50" y="751.5" ></text>
+</g>
+<g >
+<title>all (4,081,632,600 samples, 100%)</title><rect x="10.0" y="1189" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1199.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="213" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="223.5" ></text>
+</g>
+<g >
+<title>open64 (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="981" width="5.9" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1045.50" y="991.5" ></text>
+</g>
+<g >
+<title>[python3.12] (40,816,326 samples, 1.00%)</title><rect x="21.8" y="693" width="11.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="703.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="885" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="895.5" >[..</text>
+</g>
+<g >
+<title>pkgDepCache::Init (265,306,119 samples, 6.50%)</title><rect x="210.6" y="901" width="76.7" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="213.60" y="911.5" >pkgDepCa..</text>
+</g>
+<g >
+<title>[python3.12] (20,408,163 samples, 0.50%)</title><rect x="21.8" y="517" width="5.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.80" y="527.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (81,632,652 samples, 2.00%)</title><rect x="782.9" y="1125" width="23.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="785.90" y="1135.5" >[..</text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="694.4" y="469" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="697.40" y="479.5" ></text>
+</g>
+<g >
+<title>Perl_call_list (102,040,815 samples, 2.50%)</title><rect x="977.6" y="1013" width="29.5" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="980.60" y="1023.5" >Pe..</text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (40,816,326 samples, 1.00%)</title><rect x="989.4" y="757" width="11.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="992.40" y="767.5" ></text>
+</g>
+<g >
+<title>pkgCache::DepIterator::GlobOr (20,408,163 samples, 0.50%)</title><rect x="641.3" y="949" width="5.9" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="644.30" y="959.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="995.3" y="645" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="998.30" y="655.5" ></text>
+</g>
+<g >
+<title>[perl] (61,224,489 samples, 1.50%)</title><rect x="983.5" y="773" width="17.7" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="986.50" y="783.5" ></text>
+</g>
+<g >
+<title>[gzip] (551,020,401 samples, 13.50%)</title><rect x="806.5" y="1061" width="159.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="809.50" y="1071.5" >[gzip]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="959.9" y="1029" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="962.90" y="1039.5" ></text>
+</g>
+<g >
+<title>[perl] (20,408,163 samples, 0.50%)</title><rect x="694.4" y="485" width="5.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="697.40" y="495.5" ></text>
+</g>
+<g >
+<title>Perl_newATTRSUB_x (20,408,163 samples, 0.50%)</title><rect x="1048.4" y="981" width="5.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1051.40" y="991.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (40,816,326 samples, 1.00%)</title><rect x="688.5" y="997" width="11.8" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="691.50" y="1007.5" ></text>
+</g>
+<g >
+<title>Perl_runops_standard (81,632,652 samples, 2.00%)</title><rect x="977.6" y="837" width="23.6" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="980.60" y="847.5" >P..</text>
+</g>
+<g >
+<title>pkgDepCache::ActionGroup::~ActionGroup (20,408,163 samples, 0.50%)</title><rect x="86.7" y="917" width="5.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="89.70" y="927.5" ></text>
+</g>
+<g >
+<title>[perl] (81,632,652 samples, 2.00%)</title><rect x="977.6" y="933" width="23.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="980.60" y="943.5" >[..</text>
+</g>
+<g >
+<title>nodebootstrap::rbac::run_with (20,408,163 samples, 0.50%)</title><rect x="1119.2" y="1013" width="5.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="1122.20" y="1023.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="901" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="911.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1054.3" y="1045" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1057.30" y="1055.5" ></text>
+</g>
+<g >
+<title>[dpkg-deb] (81,632,652 samples, 2.00%)</title><rect x="664.9" y="1013" width="23.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="667.90" y="1023.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="771.1" y="949" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="774.10" y="959.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 0.50%)</title><rect x="1042.5" y="965" width="5.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1045.50" y="975.5" ></text>
+</g>
+<g >
+<title>main (61,224,489 samples, 1.50%)</title><rect x="688.5" y="1109" width="17.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="691.50" y="1119.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 1.50%)</title><rect x="1066.1" y="821" width="17.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.10" y="831.5" ></text>
+</g>
+</g>
+</svg>

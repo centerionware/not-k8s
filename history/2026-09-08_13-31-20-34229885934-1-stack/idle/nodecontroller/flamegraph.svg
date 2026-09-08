@@ -1,0 +1,1594 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="2134" onload="init(evt)" viewBox="0 0 1200 2134" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="2134.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >idle/nodecontroller CPU samples</text>
+<text id="details" x="10.00" y="2117" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="2117" > </text>
+<g id="frames">
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1429" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1439.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1301" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1311.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1765" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1775.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>&lt;tower_http::trace::future::ResponseFuture&lt;tower::util::map_err::MapErrFuture&lt;hyper_util::client::legacy::client::ResponseFuture, &lt;alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt; as core::convert::From&lt;hyper_util::client::legacy::client::Error&gt;&gt;::from&gt;, tower_http::classify::ServerErrorsAsFailures, kube_client::client::builder::make_generic_builder&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;::{closure#2},  (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1717" width="124.2" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1006.68" y="1727.5" >&lt;tower_http::tr..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="501" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >[unkno..</text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (204,081,630 samples, 52.63%)</title><rect x="568.9" y="2005" width="621.1" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="571.95" y="2015.5" >std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1973" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1983.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1941" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1951.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1573" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1583.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="997" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1007.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="741" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="2021" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="2031.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1653" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1663.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="69" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="79.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1477" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1487.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="2037" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="2047.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1413" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1423.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1029" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1039.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1573" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1583.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="853" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1749" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1759.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1765" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1775.5" >[unkno..</text>
+</g>
+<g >
+<title>shutdown (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1893" width="62.1" height="15.0" fill="rgb(251,213,50)" rx="2" ry="2" />
+<text  x="820.37" y="1903.5" >shutdown</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1253" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1263.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1573" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1583.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>nodecontroller::run::{closure#0}::{closure#0}::{closure#0}::{closure#11} (61,224,489 samples, 15.79%)</title><rect x="941.6" y="1925" width="186.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="944.58" y="1935.5" >nodecontroller::run::{cl..</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::SyncWriteAdapter&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt; as std::io::Write&gt;::write_vectored (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1829" width="248.5" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="571.95" y="1839.5" >&lt;tokio_rustls::common::SyncWriteA..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="885" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1717" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1727.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1877" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1887.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1861" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="820.37" y="1871.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="293" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="453" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="245" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="255.5" >[unkno..</text>
+</g>
+<g >
+<title>rustls::webpki::verify::verify_server_cert_signed_by_trust_anchor_impl (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1797" width="62.1" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="882.47" y="1807.5" >rustls..</text>
+</g>
+<g >
+<title>&lt;futures_util::stream::stream::map::Map&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn futures_core::stream::Stream&lt;Item = core::result::Result&lt;kube_runtime::watcher::Event&lt;kube_core::dynamic::DynamicObject&gt;, kube_runtime::watcher::Error&gt;&gt; + core::marker::Send&gt;&gt;, nodecontroller::controllers::garbage_collector::run_generation::{closure#0}::{closure#1}&gt; as futures_core::stream::Stream&gt;::poll_next (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1909" width="124.2" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1006.68" y="1919.5" >&lt;futures_util::..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="405" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >[unkno..</text>
+</g>
+<g >
+<title>__munmap (20,408,163 samples, 5.26%)</title><rect x="258.4" y="2053" width="62.1" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="261.42" y="2063.5" >__munmap</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="933" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" >[unkno..</text>
+</g>
+<g >
+<title>webpki::signed_data::verify_signed_data (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1749" width="62.1" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="882.47" y="1759.5" >webpki..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1173" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1183.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="693.2" y="1157" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="696.16" y="1167.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1205" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1215.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="661" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="671.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="1065.8" y="1381" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1068.79" y="1391.5" >[[kern..</text>
+</g>
+<g >
+<title>&lt;kube_client::client::Client&gt;::request_text::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1829" width="124.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1006.68" y="1839.5" >&lt;kube_client::c..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="325" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="485" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="72.1" y="2021" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="75.11" y="2031.5" >[[kern..</text>
+</g>
+<g >
+<title>ring_core_0_17_14__ecp_nistz256_ord_sqr_mont_adx (20,408,163 samples, 5.26%)</title><rect x="382.6" y="2053" width="62.1" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="385.63" y="2063.5" >ring_c..</text>
+</g>
+<g >
+<title>webpki::signed_data::verify_signature (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1733" width="62.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="882.47" y="1743.5" >webpki..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1253" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1263.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1941" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1951.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1781" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1791.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1221" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1231.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1493" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1503.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1717" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1727.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1541" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1551.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1381" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1391.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;futures_util::future::future::Map&lt;futures_util::future::try_future::MapErr&lt;hyper_util::common::lazy::Lazy&lt;&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}, futures_util::future::either::Either&lt;futures_util::future::try_future::AndThen&lt;futures_util::future::try_future::MapErr&lt;hyper_util::service::oneshot::Oneshot&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, http::uri::Uri&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#0}&gt;, futures_util::future::either::Either&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}&gt;&gt;, futures_util::future::ready::Ready&lt;core::result::Result&lt;hyper_util::client::legacy::pool::Pooled&lt;hyper_util::client::legacy::client::PoolClient&lt;kube_client::client::body::Body&gt;,  (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1925" width="62.1" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="882.47" y="1935.5" >&lt;futur..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="149" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1925" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1935.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1525" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1535.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="581" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1909" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1919.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1925" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1935.5" >[unkno..</text>
+</g>
+<g >
+<title>nodecontroller::controllers::endpoint_slice::run::{closure#0} (20,408,163 samples, 5.26%)</title><rect x="1127.9" y="1909" width="62.1" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1130.89" y="1919.5" >nodeco..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::dispatch::Dispatcher&lt;hyper::proto::h1::dispatch::Client&lt;kube_client::client::body::Body&gt;, kube_client::client::body::Body, core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, hyper::proto::h1::role::Client&gt;&gt;::poll_flush (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1909" width="248.5" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="571.95" y="1919.5" >&lt;hyper::proto::h1::dispatch::Disp..</text>
+</g>
+<g >
+<title>&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt; as tower_service::Service&lt;http::uri::Uri&gt;&gt;::call::{closure#4} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1637" width="124.2" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="1006.68" y="1647.5" >&lt;hyper_rustls::..</text>
+</g>
+<g >
+<title>&lt;tower::util::map_err::MapErrFuture&lt;tower_http::map_response_body::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;alloc::boxed::Box&lt;dyn http_body::Body&lt;Data = bytes::bytes::Bytes, Error = alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt; + core::marker::Unpin + core::marker::Send&gt;&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;, &lt;kube_client::client::body::Body&gt;::wrap_body&lt;alloc::boxed::Box&lt;dyn http_body::Body&lt;Data = bytes::bytes::Bytes, Error = alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt; + core::marker::Unpin + core::marker::Send&gt;&gt;&gt;, &lt;alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt; as core::convert::Into&lt;alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt;::into&gt; as core::future::future::Future&gt;::poll (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1781" width="124.2" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="1006.68" y="1791.5" >&lt;tower::util::m..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1957" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1967.5" >[unkno..</text>
+</g>
+<g >
+<title>__libc_free (20,408,163 samples, 5.26%)</title><rect x="10.0" y="37" width="62.1" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="13.00" y="47.5" >__libc..</text>
+</g>
+<g >
+<title>&lt;std::sys::thread::unix::Thread&gt;::new::thread_start (204,081,630 samples, 52.63%)</title><rect x="568.9" y="2037" width="621.1" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="571.95" y="2047.5" >&lt;std::sys::thread::unix::Thread&gt;::new::thread_start</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="2037" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="2047.5" >[[kern..</text>
+</g>
+<g >
+<title>&lt;futures_util::future::either::Either&lt;futures_util::future::try_future::AndThen&lt;futures_util::future::try_future::MapErr&lt;hyper_util::service::oneshot::Oneshot&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, http::uri::Uri&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#0}&gt;, futures_util::future::either::Either&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}&gt;&gt;, futures_util::future::ready::Ready&lt;core::result::Result&lt;hyper_util::client::legacy::pool::Pooled&lt;hyper_util::client::legacy::client::PoolClient&lt;kube_client::client::body::Body&gt;,  (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1909" width="62.1" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="882.47" y="1919.5" >&lt;futur..</text>
+</g>
+<g >
+<title>all (387,755,097 samples, 100%)</title><rect x="10.0" y="2085" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="2095.5" ></text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="821" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >[unkno..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler::multi_thread::worker::Launch&gt;::launch::{closure#0}&gt;, tokio::runtime::blocking::schedule::BlockingSchedule&gt; (204,081,630 samples, 52.63%)</title><rect x="568.9" y="1989" width="621.1" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="571.95" y="1999.5" >tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="261" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="421" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="373" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;rustls::vecbuf::ChunkVecBuffer&gt;::write_to (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1845" width="248.5" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="571.95" y="1855.5" >&lt;rustls::vecbuf::ChunkVecBuffer&gt;:..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="213" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1973" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1983.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1221" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1231.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1877" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="820.37" y="1887.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1797" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1807.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1621" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1631.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="2021" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="2031.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>&lt;hyper_util::common::lazy::Lazy&lt;&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}, futures_util::future::either::Either&lt;futures_util::future::try_future::AndThen&lt;futures_util::future::try_future::MapErr&lt;hyper_util::service::oneshot::Oneshot&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, http::uri::Uri&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#0}&gt;, futures_util::future::either::Either&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}&gt;&gt;, futures_util::future::ready::Ready&lt;core::result::Result&lt;hyper_util::client::legacy::pool::Pooled&lt;hyper_util::client::legacy::client::PoolClient&lt;kube_client::client::body::Body&gt;,  (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1685" width="124.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1006.68" y="1695.5" >&lt;hyper_util::co..</text>
+</g>
+<g >
+<title>start (204,081,630 samples, 52.63%)</title><rect x="568.9" y="2053" width="621.1" height="15.0" fill="rgb(208,18,4)" rx="2" ry="2" />
+<text  x="571.95" y="2063.5" >start</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1445" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1455.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>socket (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1589" width="124.2" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="1006.68" y="1599.5" >socket</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="1973" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="1983.5" >[[kern..</text>
+</g>
+<g >
+<title>&lt;webpki::verify_cert::ChainOptions&lt;webpki::verify_cert::KeyUsage&gt;&gt;::build_chain (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1781" width="62.1" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="882.47" y="1791.5" >&lt;webpk..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1461" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1471.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1365" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1375.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1509" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1519.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1749" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1759.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="533" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1077" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1087.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCore&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::process_new_packets (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1845" width="62.1" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="882.47" y="1855.5" >&lt;rustl..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1829" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1839.5" >[unkno..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;nodecontroller::run::{closure#0}::{closure#0}::{closure#0}::{closure#11}, alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (61,224,489 samples, 15.79%)</title><rect x="941.6" y="1941" width="186.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="944.58" y="1951.5" >tokio::runtime::task::ra..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="773" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1333" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1343.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="565" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1541" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1551.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (40,816,326 samples, 10.53%)</title><rect x="10.0" y="2053" width="124.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="2063.5" >[unknown]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="755.3" y="1125" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="758.26" y="1135.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1461" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1471.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task (204,081,630 samples, 52.63%)</title><rect x="568.9" y="1957" width="621.1" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="571.95" y="1967.5" >&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1493" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1503.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="725" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1637" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1647.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="197" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="357" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="2037" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="2047.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="613" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="623.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1413" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1423.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;rustls::webpki::server_verifier::WebPkiServerVerifier as rustls::verify::ServerCertVerifier&gt;::verify_server_cert (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1813" width="62.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="882.47" y="1823.5" >&lt;rustl..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="693" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;hyper_util::client::legacy::connect::http::ConnectingTcpRemote&gt;::connect::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1605" width="124.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1006.68" y="1615.5" >&lt;hyper_util::cl..</text>
+</g>
+<g >
+<title>__ecp_nistz256_mul_montx (20,408,163 samples, 5.26%)</title><rect x="134.2" y="2053" width="62.1" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="137.21" y="2063.5" >__ecp_..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="1909" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="1919.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1333" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1343.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, rustls::client::client_conn::connection::ClientConnection&gt;&gt;::write_io (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1861" width="248.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="571.95" y="1871.5" >&lt;tokio_rustls::common::Stream&lt;hyp..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1589" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1599.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1429" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1439.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="506.8" y="1861" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="509.84" y="1871.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1397" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1407.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1141" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1151.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1237" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1247.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="2005" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="2015.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1669" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1679.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1125" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1135.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1109" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1119.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::send_request::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1701" width="124.2" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1006.68" y="1711.5" >&lt;hyper_util::cl..</text>
+</g>
+<g >
+<title>&lt;futures_util::stream::unfold::Unfold&lt; (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1877" width="124.2" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="1006.68" y="1887.5" >&lt;futures_util::..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="437" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="277" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="901" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1509" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1519.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1781" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1791.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 15.79%)</title><rect x="631.1" y="1173" width="186.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="634.05" y="1183.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output =  (122,448,978 samples, 31.58%)</title><rect x="568.9" y="1941" width="372.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="571.95" y="1951.5" >tokio::runtime::task::raw::poll::&lt;core::pin::Pin&lt;a..</text>
+</g>
+<g >
+<title>sccp (40,816,326 samples, 10.53%)</title><rect x="444.7" y="2053" width="124.2" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="447.74" y="2063.5" >sccp</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="837" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1845" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="820.37" y="1855.5" >[[kern..</text>
+</g>
+<g >
+<title>&lt;k8s_openapi::v1_34::api::core::v1::service::Service as core::clone::Clone&gt;::clone (20,408,163 samples, 5.26%)</title><rect x="1127.9" y="1893" width="62.1" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1130.89" y="1903.5" >&lt;k8s_o..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 15.79%)</title><rect x="631.1" y="1189" width="186.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="634.05" y="1199.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="805" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="789" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="72.1" y="2005" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="75.11" y="2015.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1893" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1903.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="101" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="111.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1605" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1615.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1797" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="820.37" y="1807.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="2021" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="2031.5" >[[kern..</text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::multi_thread::worker::run (204,081,630 samples, 52.63%)</title><rect x="568.9" y="1973" width="621.1" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="571.95" y="1983.5" >tokio::runtime::scheduler::multi_thread::worker::run</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1269" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1279.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1877" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1887.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="53" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="63.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="597" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1813" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="820.37" y="1823.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1013" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1023.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="869" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1349" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1359.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1701" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1711.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1397" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1407.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;nodecontroller::api_budget::ApiBudgetService&lt;tower::util::boxed::sync::BoxService&lt;http::request::Request&lt;kube_client::client::body::Body&gt;, http::response::Response&lt;alloc::boxed::Box&lt;dyn http_body::Body&lt;Data = bytes::bytes::Bytes, Error = alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt; + core::marker::Unpin + core::marker::Send&gt;&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; as tower_service::Service&lt;http::request::Request&lt;kube_client::client::body::Body&gt;&gt;&gt;::call::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1749" width="124.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1006.68" y="1759.5" >&lt;nodecontroller..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="72.1" y="1989" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="75.11" y="1999.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1045" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1055.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;hyper_timeout::stream::TimeoutReader&lt;hyper_timeout::stream::TimeoutWriter&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt; as hyper::rt::io::Write&gt;::poll_shutdown (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1909" width="62.1" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="820.37" y="1919.5" >&lt;hyper..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1685" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1695.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>&lt;rustls::client::tls13::ExpectCertificateVerify as rustls::common_state::State&lt;rustls::client::client_conn::ClientConnectionData&gt;&gt;::handle (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1829" width="62.1" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="882.47" y="1839.5" >&lt;rustl..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="1065.8" y="1397" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1068.79" y="1407.5" >[[kern..</text>
+</g>
+<g >
+<title>&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt; as tower_service::Service&lt;http::uri::Uri&gt;&gt;::call::{closure#0} (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1893" width="62.1" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="882.47" y="1903.5" >&lt;hyper..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1285" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1295.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1445" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1455.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1797" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1807.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt; as tower_service::Service&lt;http::uri::Uri&gt;&gt;::call::{closure#4} (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1877" width="62.1" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="882.47" y="1887.5" >&lt;hyper..</text>
+</g>
+<g >
+<title>ring::ec::suite_b::ops::p256::twin_mul_nistz256 (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1701" width="62.1" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="882.47" y="1711.5" >ring::..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1621" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1631.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1701" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1711.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1317" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1327.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1189" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1199.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1957" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1967.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1093" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1103.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1989" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1999.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1477" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1487.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="757" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="117" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="127.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="2005" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="2015.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>&lt;hyper_util::client::legacy::connect::http::HttpConnector as tower_service::Service&lt;http::uri::Uri&gt;&gt;::call::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1621" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1631.5" >&lt;hyper_util::cl..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="444.7" y="1909" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="447.74" y="1919.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1477" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1487.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>&lt;futures_util::stream::stream::map::Map&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn futures_core::stream::Stream&lt;Item = core::result::Result&lt;kube_runtime::watcher::Event&lt;kube_core::metadata::PartialObjectMeta&gt;, kube_runtime::watcher::Error&gt;&gt; + core::marker::Send&gt;&gt;, nodecontroller::controllers::garbage_collector::run_generation::{closure#0}::{closure#0}&gt; as futures_core::stream::Stream&gt;::poll_next (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1893" width="124.2" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1006.68" y="1903.5" >&lt;futures_util::..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1157" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1167.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="645" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1861" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1871.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="629" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1509" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1519.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="1989" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="1999.5" >[[kern..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;nodecontroller::run::{closure#0}::{closure#0}::{closure#0}::{closure#5}, alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (20,408,163 samples, 5.26%)</title><rect x="1127.9" y="1941" width="62.1" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1130.89" y="1951.5" >tokio:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1413" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1423.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="2005" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="2015.5" >[[kern..</text>
+</g>
+<g >
+<title>&lt;kube_client::client::Client&gt;::send::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1813" width="124.2" height="15.0" fill="rgb(223,82,19)" rx="2" ry="2" />
+<text  x="1006.68" y="1823.5" >&lt;kube_client::c..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1445" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1455.5" >[unkno..</text>
+</g>
+<g >
+<title>ring_core_0_17_14__p256_point_mul (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1685" width="62.1" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="882.47" y="1695.5" >ring_c..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1429" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1439.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;core::hash::sip::Hasher&lt;core::hash::sip::Sip13Rounds&gt; as core::hash::Hasher&gt;::write (20,408,163 samples, 5.26%)</title><rect x="941.6" y="1861" width="62.1" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="944.58" y="1871.5" >&lt;core:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="1925" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="1935.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="389" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="229" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="239.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1541" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1551.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1525" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1535.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1557" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1567.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>__libc_malloc_impl (20,408,163 samples, 5.26%)</title><rect x="196.3" y="2053" width="62.1" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="199.32" y="2063.5" >__libc..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1493" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1503.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, rustls::client::client_conn::connection::ClientConnection&gt;&gt;::read_io (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1861" width="62.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="882.47" y="1871.5" >&lt;tokio..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="981" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="991.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1669" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1679.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1285" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1295.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;futures_util::future::either::Either&lt;futures_util::future::try_future::AndThen&lt;futures_util::future::try_future::MapErr&lt;hyper_util::service::oneshot::Oneshot&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, http::uri::Uri&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#0}&gt;, futures_util::future::either::Either&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}&gt;&gt;, futures_util::future::ready::Ready&lt;core::result::Result&lt;hyper_util::client::legacy::pool::Pooled&lt;hyper_util::client::legacy::client::PoolClient&lt;kube_client::client::body::Body&gt;,  (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1669" width="124.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1006.68" y="1679.5" >&lt;futures_util::..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1269" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1279.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1989" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1999.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="517" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1733" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1743.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1733" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1743.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="693.2" y="1141" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="696.16" y="1151.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>nodecontroller::run::{closure#0}::{closure#0}::{closure#0}::{closure#5} (20,408,163 samples, 5.26%)</title><rect x="1127.9" y="1925" width="62.1" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="1130.89" y="1935.5" >nodeco..</text>
+</g>
+<g >
+<title>&lt;tower_http::map_response_body::ResponseFuture&lt;tower::util::either::EitherResponseFuture&lt;tower::retry::future::ResponseFuture&lt;kube_client::client::retry::RetryPolicy, tower::util::either::Either&lt;tower::util::either::Either&lt;tower_http::auth::add_authorization::AddAuthorization&lt;kube_client::client::middleware::extra_headers::ExtraHeaders&lt;tower_http::trace::service::Trace&lt;tower::util::map_err::MapErr&lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;, &lt;alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt; as core::convert::From&lt;hyper_util::client::legacy::client::Error&gt;&gt;::from&gt;, tower_http::classify::SharedClassifier&lt;tower_http::classify::ServerErrorsAsFailures&gt;, kube_client::client::builder::make_generic_builder&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;::{closure#0}, kube_client::client::builder::make_generic_builder&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;::{closure#1}, kube_client::client::builder::make_generic_builder&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;::{closure#2},  (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1733" width="124.2" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1006.68" y="1743.5" >&lt;tower_http::ma..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1205" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1215.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1317" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1327.5" >[unkno..</text>
+</g>
+<g >
+<title>tokio-rt-worker (387,755,097 samples, 100.00%)</title><rect x="10.0" y="2069" width="1180.0" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="13.00" y="2079.5" >tokio-rt-worker</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1381" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1391.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1461" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1471.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="1941" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="1951.5" >[[kern..</text>
+</g>
+<g >
+<title>alloc_slot (20,408,163 samples, 5.26%)</title><rect x="72.1" y="2037" width="62.1" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="75.11" y="2047.5" >alloc_..</text>
+</g>
+<g >
+<title>&lt;std::hash::random::RandomState as core::hash::BuildHasher&gt;::hash_one::&lt;&amp;alloc::string::String&gt; (20,408,163 samples, 5.26%)</title><rect x="941.6" y="1877" width="62.1" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="944.58" y="1887.5" >&lt;std::..</text>
+</g>
+<g >
+<title>&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt; as tower_service::Service&lt;http::uri::Uri&gt;&gt;::call::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1653" width="124.2" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1006.68" y="1663.5" >&lt;hyper_timeout:..</text>
+</g>
+<g >
+<title>&lt;ring::ec::suite_b::ecdsa::verification::EcdsaVerificationAlgorithm as ring::signature::VerificationAlgorithm&gt;::verify (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1717" width="62.1" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="882.47" y="1727.5" >&lt;ring:..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="549" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="341" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="181" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="191.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="917" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1845" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1855.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1605" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1615.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1589" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1599.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="817.4" y="1829" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="820.37" y="1839.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="258.4" y="1957" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="261.42" y="1967.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1813" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1823.5" >[unkno..</text>
+</g>
+<g >
+<title>sccp (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1813" width="248.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="571.95" y="1823.5" >sccp</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1349" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1359.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="165" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="175.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;futures_util::future::future::Map&lt;futures_util::future::try_future::MapErr&lt;hyper::client::conn::http1::upgrades::UpgradeableConnection&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, kube_client::client::body::Body&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}::{closure#2}&gt;, &lt;hyper_util::client::legacy::client::Client&lt;hyper_timeout::TimeoutConnector&lt;hyper_rustls::connector::HttpsConnector&lt;hyper_util::client::legacy::connect::http::HttpConnector&gt;&gt;, kube_client::client::body::Body&gt;&gt;::connect_to::{closure#0}::{closure#1}::{closure#0}::{closure#3}&gt; as core::future::future::Future&gt;::poll (102,040,815 samples, 26.32%)</title><rect x="568.9" y="1925" width="310.6" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="571.95" y="1935.5" >&lt;futures_util::future::future::Map&lt;future..</text>
+</g>
+<g >
+<title>&lt;tower::buffer::future::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;kube_client::client::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;&gt; as core::future::future::Future&gt;::poll (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1797" width="124.2" height="15.0" fill="rgb(231,124,29)" rx="2" ry="2" />
+<text  x="1006.68" y="1807.5" >&lt;tower::buffer:..</text>
+</g>
+<g >
+<title>&lt;webpki::verify_cert::ChainOptions&lt;webpki::verify_cert::KeyUsage&gt;&gt;::build_chain_inner (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1765" width="62.1" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="882.47" y="1775.5" >&lt;webpk..</text>
+</g>
+<g >
+<title>&lt;hyper_timeout::stream::TimeoutReader&lt;hyper_timeout::stream::TimeoutWriter&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt; as hyper::rt::io::Write&gt;::poll_write_vectored (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1877" width="248.5" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="571.95" y="1887.5" >&lt;hyper_timeout::stream::TimeoutRe..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1301" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1311.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1525" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1535.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="309" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1365" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1375.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="469" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" >[unkno..</text>
+</g>
+<g >
+<title>__unlock (20,408,163 samples, 5.26%)</title><rect x="320.5" y="2053" width="62.1" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="323.53" y="2063.5" >__unlock</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1237" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1247.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 5.26%)</title><rect x="1065.8" y="1365" width="62.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1068.79" y="1375.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="709" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1893" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1903.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="133" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="143.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;futures_util::future::future::map::Map&lt;futures_util::future::try_future::into_future::IntoFuture&lt;tower_http::map_response_body::ResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;alloc::boxed::Box&lt;dyn http_body::Body&lt;Data = bytes::bytes::Bytes, Error = alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt; + core::marker::Unpin + core::marker::Send&gt;&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt; + core::marker::Send&gt;&gt;, &lt;kube_client::client::body::Body&gt;::wrap_body&lt;alloc::boxed::Box&lt;dyn http_body::Body&lt;Data = bytes::bytes::Bytes, Error = alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt; + core::marker::Unpin + core::marker::Send&gt;&gt;&gt;&gt;, futures_util::fns::MapErrFn&lt;&lt;alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt; as core::convert::Into&lt;alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Send + core::marker::Sync&gt;&gt;&gt;::into&gt;&gt; as core::future::future::Future&gt;::poll (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1765" width="124.2" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="1006.68" y="1775.5" >&lt;futures_util::..</text>
+</g>
+<g >
+<title>ecp_nistz256_windowed_mul (20,408,163 samples, 5.26%)</title><rect x="879.5" y="1669" width="62.1" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="882.47" y="1679.5" >ecp_ni..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="85" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="95.5" >[unkno..</text>
+</g>
+<g >
+<title>kube_runtime::watcher::step::&lt;kube_runtime::watcher::FullObject&lt;kube_core::metadata::PartialObjectMeta&gt;&gt;::{closure#0} (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1845" width="124.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1006.68" y="1855.5" >kube_runtime::w..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1637" width="248.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="571.95" y="1647.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>&lt;futures_util::stream::unfold::Unfold&lt; (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1861" width="124.2" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="1006.68" y="1871.5" >&lt;futures_util::..</text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::cloned::Cloned&lt;core::iter::adapters::filter::Filter&lt;std::collections::hash::map::Values&lt;alloc::string::String, nodecontroller::controllers::garbage_collector::ObjRecord&gt;, &lt;nodecontroller::controllers::garbage_collector::State&gt;::install_snapshot::{closure#3}&gt;&gt; as core::iter::traits::iterator::Iterator&gt;::next (20,408,163 samples, 5.26%)</title><rect x="941.6" y="1909" width="62.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="944.58" y="1919.5" >&lt;core:..</text>
+</g>
+<g >
+<title>&lt;hashbrown::map::HashMap&lt;alloc::string::String,  (20,408,163 samples, 5.26%)</title><rect x="941.6" y="1893" width="62.1" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="944.58" y="1903.5" >&lt;hashb..</text>
+</g>
+<g >
+<title>&lt;k8s_openapi::v1_34::apimachinery::pkg::apis::meta::v1::object_meta::ObjectMeta as core::clone::Clone&gt;::clone (20,408,163 samples, 5.26%)</title><rect x="1127.9" y="1877" width="62.1" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1130.89" y="1887.5" >&lt;k8s_o..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h1::io::Buffered&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;hyper_timeout::stream::TimeoutStream&lt;hyper_rustls::stream::MaybeHttpsStream&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;&gt;, hyper::proto::h1::encode::EncodedBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll_flush (81,632,652 samples, 21.05%)</title><rect x="568.9" y="1893" width="248.5" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="571.95" y="1903.5" >&lt;hyper::proto::h1::io::Buffered&lt;c..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1557" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1567.5" >[unkno..</text>
+</g>
+<g >
+<title>&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (204,081,630 samples, 52.63%)</title><rect x="568.9" y="2021" width="621.1" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="571.95" y="2031.5" >&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::s..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="949" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="959.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1653" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1663.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="965" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="975.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1061" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1071.5" >[unkno..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 10.53%)</title><rect x="1003.7" y="1557" width="124.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1006.68" y="1567.5" >[[kernel.kallsy..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="1685" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1695.5" >[unkno..</text>
+</g>
+<g >
+<title>[unknown] (20,408,163 samples, 5.26%)</title><rect x="10.0" y="677" width="62.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="687.5" >[unkno..</text>
+</g>
+</g>
+</svg>
