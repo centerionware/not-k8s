@@ -29,7 +29,7 @@
 //! current behavior, not something this port owes -- tracked as
 //! follow-up, not a gap introduced here.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::config::Config;
 use crate::pkg::{PkgNames, command_exists, pkg_install};
@@ -198,6 +198,74 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
 /// single-node install active on a reused host.
 pub fn remove_nodelet(cfg: &Config) {
     service_mgr::remove(cfg, "nodelet");
+}
+
+/// Waits (bounded) for the freshly started or restarted control plane to be
+/// ready to serve real workloads: the nodecontroller holds its
+/// `kube-system/kube-controller-manager` leader lease, and its
+/// service-account controller has created the `default` ServiceAccount in
+/// every existing namespace — the exact readiness the e2e harness waits on
+/// per test namespace.
+///
+/// Bootstrap restarts nodecontroller after the flannel endpoint refresh
+/// (so it does not keep watches from the pre-refresh apiserver), and
+/// leadership acquisition plus informer startup is a tens-of-seconds
+/// process — without this wait, a harness that starts the moment bootstrap
+/// returns races that transition (observed live: a per-test namespace's
+/// default ServiceAccount appeared 41s late, after the test's own deadline,
+/// because the restarted controller had only just acquired leadership).
+pub fn wait_for_control_plane_readiness(cfg: &Config) -> Result<()> {
+    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+    loop {
+        let ready = crate::kube_api::block_on(&kubeconfig, control_plane_ready)
+            .context("checking control-plane readiness")?;
+        if ready {
+            tracing::info!("control plane is ready: leader lease held and every namespace has its default ServiceAccount");
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "control plane did not become ready within 150s (nodecontroller never held the kube-controller-manager lease with default ServiceAccounts in every namespace); check: journalctl -u nodecontroller -n 100"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+async fn control_plane_ready(client: kube::Client) -> Result<bool> {
+    use k8s_openapi::api::coordination::v1::Lease;
+    use k8s_openapi::api::core::v1::{Namespace, ServiceAccount};
+    use kube::api::{Api, ListParams};
+    // The nodecontroller must hold its leader lease before its controllers
+    // are doing anything at all.
+    let leases: Api<Lease> = Api::namespaced(client.clone(), "kube-system");
+    let holds_lease = match leases.get_opt("kube-controller-manager").await? {
+        Some(lease) => lease
+            .spec
+            .and_then(|spec| spec.holder_identity)
+            .map(|identity| !identity.is_empty())
+            .unwrap_or(false),
+        None => false,
+    };
+    if !holds_lease {
+        return Ok(false);
+    }
+    // Every existing namespace must already have its `default`
+    // ServiceAccount (the service-account controller's output).
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let namespaces = namespaces.list(&ListParams::default()).await?;
+    for namespace in &namespaces.items {
+        let name = namespace.metadata.name.as_deref().unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), name);
+        if service_accounts.get_opt("default").await?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Called last in `run_all()`, alongside `ensure_nodelet` (same ordering

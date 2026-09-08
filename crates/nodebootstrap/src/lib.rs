@@ -152,6 +152,14 @@ pub fn run_all() -> Result<()> {
         }
         services::ensure_nodecontroller(&cfg)?;
         services::ensure_nodescheduler(&cfg)?;
+        // The controllers were just started (or restarted after the flannel
+        // endpoint refresh) and need time to acquire leadership and sync
+        // their informers before anything the caller does next (the e2e
+        // harness starts its per-test namespaces immediately after bootstrap
+        // returns, and every one of those waits on its namespace's default
+        // ServiceAccount). Wait for that concrete readiness so bootstrap
+        // returns only when the cluster can actually serve it.
+        services::wait_for_control_plane_readiness(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
     Ok(())
