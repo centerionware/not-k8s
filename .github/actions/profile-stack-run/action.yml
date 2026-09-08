@@ -7,6 +7,9 @@ inputs:
   release_tag:
     description: Exact published tag, empty builds source
     default: ''
+  profile_binary:
+    description: Run-scoped unstripped profiling binary, when supplied
+    default: ''
 runs:
   using: composite
   steps:
@@ -89,18 +92,25 @@ runs:
           sha256sum "$binary" Cargo.lock
           "$binary" components
         } >> "$GITHUB_WORKSPACE/profile-data/metadata.txt"
-    - name: Get release binary
-      id: released
+    - name: Get profile artifact
+      id: artifact
       if: inputs.release_tag != ''
       env:
-        RELEASE_TAG: ${{ inputs.release_tag }}
-        GH_TOKEN: ${{ github.token }}
+        PROFILE_BINARY_INPUT: ${{ inputs.profile_binary }}
       shell: bash
       run: |
         set -euo pipefail
-        bash deploy/download-release-runtime.sh "$RELEASE_TAG" profiling "$GITHUB_WORKSPACE/profile-bin"
-        echo "PROFILE_BINARY=$GITHUB_WORKSPACE/profile-bin/notk8s" >> "$GITHUB_ENV"
-        { echo "release_tag=$RELEASE_TAG"; cat profile-bin/SHA256SUMS; } >> profile-data/metadata.txt
+        [[ -n "$PROFILE_BINARY_INPUT" ]] || {
+          echo 'release flamegraphs require the profiling Actions artifact' >&2
+          exit 1
+        }
+        binary="$PROFILE_BINARY_INPUT"
+        [[ -f "$binary" ]] || { echo "profiling artifact is missing: $binary" >&2; exit 1; }
+        readelf -SW "$binary" > /tmp/profiling-sections.txt
+        grep -q '\.debug_info' /tmp/profiling-sections.txt
+        grep -q '\.symtab' /tmp/profiling-sections.txt
+        echo "PROFILE_BINARY=$binary" >> "$GITHUB_ENV"
+        { echo "profile_artifact=$binary"; sha256sum "$binary"; } >> profile-data/metadata.txt
     - name: Profile bootstrap
       id: bootstrap
       shell: bash
@@ -122,7 +132,7 @@ runs:
         sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
     - name: Render diagnostics
       id: render
-      if: ${{ always() && (steps.build.outcome == 'success' || steps.released.outcome == 'success') }}
+      if: ${{ always() && (steps.build.outcome == 'success' || steps.artifact.outcome == 'success') }}
       shell: bash
       run: |
         set -euo pipefail
@@ -151,7 +161,7 @@ runs:
           python3 deploy/lib/render-stack-charts.py --output profile-data/charts --series not-k8s=profile-data
         fi
     - name: Publish results
-      if: ${{ always() && (steps.build.outcome == 'success' || steps.released.outcome == 'success') }}
+      if: ${{ always() && (steps.build.outcome == 'success' || steps.artifact.outcome == 'success') }}
       env:
         GH_TOKEN: ${{ github.token }}
         PROFILE_RESULT: capture=${{ steps.capture.outcome }},render=${{ steps.render.outcome }}

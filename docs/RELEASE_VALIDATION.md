@@ -16,9 +16,10 @@ After publication, independent jobs on disposable x86_64 runners execute:
 
 Nine validation jobs can run concurrently. No job-level serialization or
 `max-parallel` cap is imposed; GitHub's account concurrency allowance determines
-when runners are available. Build jobs have a 180-minute timeout, validation
-jobs 120 minutes. GitHub-hosted jobs allow at most six hours each; this is not
-a six-hour limit on the sum of parallel job durations.
+when runners are available. Build-and-test has a 90-minute timeout, release
+builds 240 minutes, and validation jobs 120 minutes. GitHub-hosted jobs allow
+at most six hours each; this is not a six-hour limit on the sum of parallel job
+durations.
 
 ## Exact release identity and executable provenance
 
@@ -30,12 +31,14 @@ The workflow is serialized against another release to protect version mutation.
 Every validation runner downloads the exact tagged asset and verifies its entry
 in the release's `SHA256SUMS` before execution. E2e and comparison use the normal
 optimized, stripped combined release binary and its nodebootstrap applet.
-Flamegraphs use an **additional published x86_64 `profiling` asset**, built with
+Flamegraphs use a **run-scoped x86_64 `profiling` Actions artifact**, built with
 release optimization, debug symbols and frame pointers. It is diagnostic, not
 byte-identical to the stripped release asset; flamegraph-run CPU numbers must
-not be presented as release benchmark ratios. No post-publication Rust build or
-Actions build-artifact transfer is needed. Release artifacts can be cleaned up
-as soon as publication completes.
+not be presented as release benchmark ratios. The artifact is uploaded by the
+x86_64 release build, downloaded by the post-publication flamegraph job, and
+deleted after that job reaches a terminal success/failure/cancellation state. It is not a
+GitHub Release asset. The normal release assets remain available, while their
+temporary build artifacts are cleaned up and verified before validation starts.
 
 Comparison measurement jobs are read-only; small metrics/diagnostic artifacts
 (one-day retention, no binaries) pass to a dedicated publication job. E2e and
