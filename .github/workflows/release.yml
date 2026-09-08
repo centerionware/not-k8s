@@ -269,6 +269,27 @@ jobs:
           echo 'CC_x86_64_unknown_linux_musl=musl-gcc' >> "$GITHUB_ENV"
           echo 'MUSL_C_COMPILER=musl-gcc' >> "$GITHUB_ENV"
           echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+      - name: Stamp version
+        env:
+          RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path('Cargo.toml')
+          text = path.read_text()
+          expected = os.environ['RELEASE_VERSION']
+          prefix, marker, suffix = text.partition('[workspace.package]')
+          if not marker:
+              raise SystemExit('Cargo.toml has no [workspace.package] section')
+          pattern = re.compile(r'(?m)^(version\s*=\s*)"[^"]+"$')
+          updated, replacements = pattern.subn(rf'\1"{expected}"', suffix, count=1)
+          if replacements != 1:
+              raise SystemExit('Cargo.toml workspace package version is missing')
+          path.write_text(prefix + marker + updated)
+          PY
       - name: Check asset version
         run: |
           python3 - <<'PY'
