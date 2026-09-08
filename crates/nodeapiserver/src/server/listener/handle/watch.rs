@@ -178,7 +178,13 @@ macro_rules! handle_watch {
                                 let client = $request_field_manager
                                     .clone()
                                     .unwrap_or_default();
-                                WatchIdleGuard::spawn(kill, resource, client)
+                                // The watch's own `timeoutSeconds` becomes
+                                // the watchdog's deadline: ending the stream
+                                // in-body is not reliably delivered to the
+                                // client (see `watch_stream`), so the
+                                // watchdog closes the connection instead,
+                                // which triggers the same client relist.
+                                WatchIdleGuard::spawn(kill, resource, client, watch_options.timeout)
                             })
                     } else {
                         None

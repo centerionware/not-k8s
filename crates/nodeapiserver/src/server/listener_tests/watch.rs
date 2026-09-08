@@ -235,6 +235,7 @@ async fn watch_body_with_idle_guard_streams_and_tracks_frames() {
         WatchConnectionKill(kill_tx),
         "v1/namespaces".to_string(),
         "test-client".to_string(),
+        None,
     );
     let tracker = guard.tracker();
     let body = watch_response_body(

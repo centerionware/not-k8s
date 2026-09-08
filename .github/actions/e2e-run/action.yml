@@ -46,10 +46,12 @@ runs:
         CIDR: ${{ inputs.cidr }}
         CIDR6: ${{ inputs.cidr6 }}
         RUST_LOG: info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
-        # Disable the idle watchdog's connection kill so a real watch-feed
-        # stall surfaces (with the watchdog's diagnostics) instead of being
-        # healed invisibly — e2e wants the failures + instrumentation.
-        NODEAPISERVER_WATCH_IDLE_KILL_DISABLED: "true"
+        # The idle watchdog's connection kill is left enabled (the
+        # deployment default): it is the recovery for a stalled bookmark
+        # watch (connection close -> client relist) and the delivery
+        # mechanism for the `timeoutSeconds` deadline, so e2e must exercise
+        # it for real. Set NODEAPISERVER_WATCH_IDLE_KILL_DISABLED=1/true
+        # here to reproduce a raw feed stall with only the diagnostics.
       shell: bash
       run: |
         set -euo pipefail
@@ -83,8 +85,8 @@ runs:
           ./dist-bin/nodebootstrap "${args[@]:1}"
         if [[ "$APISERVER" == nodeapiserver ]]; then
           installed_env=$(sudo systemctl show nodeapiserver --property=Environment --value)
-          if [[ "$installed_env" != *"RUST_LOG=$RUST_LOG"* || "$installed_env" != *"NODEAPISERVER_WATCH_IDLE_KILL_DISABLED=true"* ]]; then
-            echo 'nodeapiserver service did not retain the requested watch tracing/kill-disable environment' >&2
+          if [[ "$installed_env" != *"RUST_LOG=$RUST_LOG"* ]]; then
+            echo 'nodeapiserver service did not retain the requested watch tracing environment' >&2
             exit 1
           fi
           # Bootstrap creates system namespaces: prove traces were emitted,

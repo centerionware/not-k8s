@@ -254,11 +254,27 @@ fn watch_response_body_with_initial_events(
                 || *initial_events_end
                 || event.kind != crate::cacher::store::EventKind::Bookmark
         });
+    // The `timeoutSeconds` bound. A bookmark-negotiated watch (which always
+    // carries a connection-level watchdog, `idle`) gets the bound from the
+    // watchdog instead of this in-body `take_until`: ending the stream here
+    // depends on hyper re-polling a body that a quiet feed leaves parked,
+    // so the final EOF is not reliably delivered — observed live as a watch
+    // that ended server-side on schedule while the client hung on an EOF
+    // that never arrived until its own idle timeout. The watchdog fires the
+    // per-connection kill switch at the deadline, which the client observes
+    // as a connection close and recovers from with the same relist, and
+    // which is driven by tokio's timer regardless of what hyper is doing
+    // with the body. Watches that never negotiated bookmarks keep the
+    // in-body end (there is no watchdog to own the bound for them).
     let events: WatchEventStream = if let Some(timeout) = timeout {
-        Box::pin(futures::StreamExt::take_until(
-            events,
-            tokio::time::sleep(timeout),
-        ))
+        if idle.is_none() {
+            Box::pin(futures::StreamExt::take_until(
+                events,
+                tokio::time::sleep(timeout),
+            ))
+        } else {
+            Box::pin(events)
+        }
     } else {
         Box::pin(events)
     };

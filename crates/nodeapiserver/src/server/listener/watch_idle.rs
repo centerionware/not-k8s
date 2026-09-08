@@ -81,6 +81,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 /// How long a bookmark-negotiated watch may produce nothing before the
 /// connection is closed for the client to reconnect and relist.
@@ -226,14 +227,32 @@ pub struct WatchIdleGuard {
 
 impl WatchIdleGuard {
     /// Starts the watchdog for one watch, bound to this connection's kill
-    /// switch. Task count stays bounded by the number of active bookmark
-    /// watches; each task is a sleep-and-compare loop that exits within one
-    /// limit of its body ending.
-    pub fn spawn(kill: WatchConnectionKill, resource: String, client: String) -> Self {
+    /// switch. `deadline` is the watch's own `timeoutSeconds`: instead of
+    /// ending the stream in-body (whose final EOF is not reliably delivered
+    /// to a client — see `watch_stream`'s own note), the watchdog fires the
+    /// connection kill switch at the deadline, which the client observes as
+    /// a connection close and recovers from with the same relist. Task count
+    /// stays bounded by the number of active bookmark watches; each task is
+    /// a sleep-and-compare loop that exits within one limit of its body
+    /// ending.
+    pub fn spawn(
+        kill: WatchConnectionKill,
+        resource: String,
+        client: String,
+        deadline: Option<Duration>,
+    ) -> Self {
         let tracker = WatchIdleTracker::new();
         let (stop_tx, stop_rx) = watch::channel(false);
         let kill_enabled = kill_enabled_from_env();
-        spawn_idle_watchdog(kill, tracker.clone(), stop_rx, resource, client, kill_enabled);
+        spawn_idle_watchdog(
+            kill,
+            tracker.clone(),
+            stop_rx,
+            resource,
+            client,
+            kill_enabled,
+            deadline,
+        );
         Self { tracker, stop_tx }
     }
 
@@ -288,13 +307,71 @@ pub async fn watch_idle_loop(
     resource: String,
     client: String,
     kill_enabled: bool,
+    deadline: Option<Duration>,
 ) {
     let mut last_polls = tracker.poll_count();
     let mut last_frames = tracker.frame_count();
+    // The watch's `timeoutSeconds`, as an instant from now: at the deadline
+    // the watchdog closes the connection (same client relist as the stream
+    // ending, delivered reliably) instead of relying on the in-body
+    // `take_until` whose final EOF is not guaranteed to reach the client.
+    let mut deadline_at = deadline.map(|d| Instant::now() + d);
     loop {
         let last_frame = tracker.last_frame_at();
+        // Wake at whichever comes first: the next silence check or the
+        // timeout deadline (which needs sub-limit precision so a healthy
+        // watch still relists at its own `timeoutSeconds`, not a full
+        // silence-limit late).
+        let silence_at = Instant::now() + limit;
+        let next_wake = match deadline_at {
+            Some(deadline_at) => deadline_at.min(silence_at),
+            None => silence_at,
+        };
         tokio::select! {
-            _ = tokio::time::sleep(limit) => {
+            _ = tokio::time::sleep_until(next_wake) => {
+                if let Some(deadline) = deadline_at {
+                    if Instant::now() >= deadline {
+                        // The watch reached its `timeoutSeconds`. Consume
+                        // the deadline so observation mode falls back to the
+                        // ordinary silence sampling; with the kill enabled
+                        // the connection is closed for the client to relist
+                        // (the recovery a clean EOF was meant to trigger).
+                        deadline_at = None;
+                        let polls = tracker.poll_count();
+                        let frames = tracker.frame_count();
+                        let polls_in_window = polls.saturating_sub(last_polls);
+                        let frames_in_window = frames.saturating_sub(last_frames);
+                        if kill_enabled {
+                            tracing::info!(
+                                target: "nk_watch_trace",
+                                boundary = "watch_idle_timeout_killed",
+                                resource = %resource,
+                                client = %client,
+                                polls_in_window,
+                                frames_in_window,
+                                last_poll = poll_outcome_label(tracker.last_poll_outcome()),
+                                total_frames = frames,
+                                "watch idle: bookmark watch reached its timeoutSeconds deadline; closing the connection so the client relists (the in-body stream end is not delivered reliably enough to depend on)"
+                            );
+                            let _ = kill.send(true);
+                            return;
+                        }
+                        tracing::debug!(
+                            target: "nk_watch_trace",
+                            boundary = "watch_idle_timeout_observed",
+                            resource = %resource,
+                            client = %client,
+                            polls_in_window,
+                            frames_in_window,
+                            last_poll = poll_outcome_label(tracker.last_poll_outcome()),
+                            total_frames = frames,
+                            "watch idle: bookmark watch reached its timeoutSeconds deadline (observation mode: the connection kill is disabled, so the stream stays open for the journals)"
+                        );
+                        last_polls = polls;
+                        last_frames = frames;
+                        continue;
+                    }
+                }
                 let polls = tracker.poll_count();
                 let frames = tracker.frame_count();
                 let polls_in_window = polls.saturating_sub(last_polls);
@@ -373,7 +450,8 @@ pub async fn watch_idle_loop(
 /// One task per bookmark-negotiated watch, alive for at most
 /// [`WATCH_IDLE_SILENCE_LIMIT`] past its last frame, and exited as soon as
 /// its body ends — so the task count stays bounded by the number of active
-/// bookmark watches.
+/// bookmark watches. `deadline` is the watch's `timeoutSeconds`, owned by
+/// this watchdog rather than an in-body stream end (see `watch_idle_loop`).
 pub fn spawn_idle_watchdog(
     kill: WatchConnectionKill,
     tracker: WatchIdleTracker,
@@ -381,9 +459,10 @@ pub fn spawn_idle_watchdog(
     resource: String,
     client: String,
     kill_enabled: bool,
+    deadline: Option<Duration>,
 ) {
     tokio::spawn(async move {
-        watch_idle_loop(&kill.0, &tracker, WATCH_IDLE_SILENCE_LIMIT, stop, resource, client, kill_enabled).await;
+        watch_idle_loop(&kill.0, &tracker, WATCH_IDLE_SILENCE_LIMIT, stop, resource, client, kill_enabled, deadline).await;
     });
 }
 
@@ -416,11 +495,12 @@ mod watch_idle_tests {
         resource: String,
         client: String,
         kill_enabled: bool,
+        deadline: Option<Duration>,
     ) -> tokio::task::JoinHandle<()> {
         let kill = WatchConnectionKill(kill.clone());
         let tracker = tracker.clone();
         tokio::spawn(async move {
-            watch_idle_loop(&kill.0, &tracker, limit, stop, resource, client, kill_enabled).await;
+            watch_idle_loop(&kill.0, &tracker, limit, stop, resource, client, kill_enabled, deadline).await;
         })
     }
 
@@ -439,6 +519,7 @@ mod watch_idle_tests {
             resource,
             client,
             true,
+            None,
         );
         let killed = tokio::time::timeout(Duration::from_secs(1), kill_rx.changed())
             .await
@@ -464,6 +545,7 @@ mod watch_idle_tests {
             resource,
             client,
             true,
+            None,
         );
         // Frames every 40ms — each far below the 100ms limit — for 320ms
         // total. A fixed-lifetime bound would have fired by now.
@@ -504,6 +586,7 @@ mod watch_idle_tests {
             resource,
             client,
             true,
+            None,
         );
         // One frame just past half the limit: the watchdog must not close
         // at the original deadline — it must wait a fresh full limit from
@@ -535,6 +618,7 @@ mod watch_idle_tests {
             resource,
             client,
             true,
+            None,
         );
         // The body ends (or is dropped) long before the idle limit; the
         // watchdog must exit without ever killing the connection.
@@ -561,6 +645,7 @@ mod watch_idle_tests {
             resource,
             client,
             false,
+            None,
         );
         // Several consecutive silence windows: every one is an observed
         // stall (`watch_idle_stall_observed`), and none may kill.
@@ -600,5 +685,122 @@ mod watch_idle_tests {
         assert_eq!(tracker.frame_count(), 0);
         assert_eq!(tracker.last_poll_outcome(), POLL_OUTCOME_PENDING);
         assert_eq!(poll_outcome_label(tracker.last_poll_outcome()), "pending");
+    }
+
+    #[tokio::test]
+    async fn watchdog_closes_the_connection_at_the_timeout_deadline_even_while_frames_flow() {
+        let (kill_tx, mut kill_rx) = watch::channel(false);
+        let tracker = WatchIdleTracker::new();
+        let started = std::time::Instant::now();
+        let (resource, client) = loop_args("v1/namespaces");
+        let (_stop_tx, stop_rx) = never_stop();
+        // Limit is 200ms (the silence bound would not fire for 200ms of
+        // quiet), but the watch's own `timeoutSeconds` deadline is 250ms:
+        // a healthy stream that keeps producing frames below the silence
+        // limit must still be ended at its deadline — that is the client
+        // relist cadence the in-body `take_until` used to provide (when it
+        // happened to be delivered).
+        spawn_loop(
+            &kill_tx,
+            &tracker,
+            Duration::from_millis(200),
+            stop_rx,
+            resource,
+            client,
+            true,
+            Some(Duration::from_millis(250)),
+        );
+        // Frames every 40ms, well under the 200ms silence limit, until past
+        // the 250ms deadline.
+        loop {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            tracker.note_poll();
+            tracker.note_frame();
+            if started.elapsed() >= Duration::from_millis(220) {
+                break;
+            }
+        }
+        let killed = tokio::time::timeout(Duration::from_secs(1), kill_rx.changed())
+            .await
+            .expect("the watchdog must fire the kill at the watch's timeoutSeconds deadline");
+        assert!(killed.is_ok());
+        assert!(
+            started.elapsed() >= Duration::from_millis(240),
+            "the deadline kill must not fire before the configured timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn watchdog_deadline_never_fires_before_frames_stop_when_deadline_is_later_than_silence() {
+        let (kill_tx, mut kill_rx) = watch::channel(false);
+        let tracker = WatchIdleTracker::new();
+        let (resource, client) = loop_args("v1/namespaces");
+        let (_stop_tx, stop_rx) = never_stop();
+        // Deadline well past the silence limit: with frames flowing, the
+        // silence check must not fire, and the deadline must not fire early.
+        spawn_loop(
+            &kill_tx,
+            &tracker,
+            Duration::from_millis(100),
+            stop_rx,
+            resource,
+            client,
+            true,
+            Some(Duration::from_millis(500)),
+        );
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            tracker.note_poll();
+            tracker.note_frame();
+        }
+        assert!(
+            !*kill_rx.borrow(),
+            "neither the silence bound nor the deadline may fire while frames keep flowing"
+        );
+        // Once the feed goes quiet the silence bound closes the connection
+        // well before the (irrelevant now) 500ms deadline.
+        let killed = tokio::time::timeout(Duration::from_secs(1), kill_rx.changed())
+            .await
+            .expect("silence must close the connection before the later deadline");
+        assert!(killed.is_ok());
+    }
+
+    #[tokio::test]
+    async fn observation_mode_logs_the_deadline_but_keeps_the_stream_open() {
+        let (kill_tx, kill_rx) = watch::channel(false);
+        let tracker = WatchIdleTracker::new();
+        let (resource, client) = loop_args("v1/namespaces");
+        let (_stop_tx, stop_rx) = never_stop();
+        let task = spawn_loop(
+            &kill_tx,
+            &tracker,
+            Duration::from_millis(200),
+            stop_rx,
+            resource,
+            client,
+            false,
+            Some(Duration::from_millis(120)),
+        );
+        // Deadline passes while frames keep flowing below the silence limit:
+        // observation mode must log (`watch_idle_timeout_observed`) but
+        // never close the connection.
+        for _ in 0..6 {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            tracker.note_poll();
+            tracker.note_frame();
+        }
+        assert!(
+            !*kill_rx.borrow(),
+            "observation mode must not close the connection at the deadline"
+        );
+        assert!(
+            !task.is_finished(),
+            "observation mode must keep sampling after the deadline passes"
+        );
+        // Still alive after the deadline has been consumed and silence
+        // resumes being sampled.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!task.is_finished());
+        assert!(!*kill_rx.borrow());
     }
 }
