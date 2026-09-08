@@ -1,4 +1,4 @@
-name: Quick check (x86_64, no artifacts)
+name: Quick check
 
 # The fast iteration loop: native x86_64, debug profile, no musl/cross
 # targets, no artifact upload — just "does this compile and pass its own
@@ -29,12 +29,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
 
-      - name: cargo test (native x86_64, debug)
+      - name: Run unit tests
         # No separate `cargo build` step — `cargo test` already compiles
         # the lib/bin/test targets for each package before running
         # anything, so a prior build step would just pay the same

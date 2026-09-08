@@ -1,4 +1,4 @@
-name: nodebootstrap e2e (real infra)
+name: Nodebootstrap e2e
 
 # Runs nodebootstrap for real against a real Ubuntu VM -- not this repo's
 # own bash test-e2e.sh harness (that assumes an already-bootstrapped
@@ -50,12 +50,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
 
-      - name: cargo build (nodestore, nodelet [cri], nodeproxy, nodescheduler, nodecontroller, nodeapiserver, nodebootstrap, debug)
+      - name: Build components
         run: |
           set -e
           cargo build -p nodestore
@@ -66,7 +68,7 @@ jobs:
           cargo build -p nodeapiserver
           cargo build -p nodebootstrap
 
-      - name: Stage binaries where nodebootstrap's services.rs expects them
+      - name: Stage binaries
         run: |
           set -e
           dest=/var/lib/nodebootstrap/toolchain/bin
@@ -75,7 +77,7 @@ jobs:
             sudo install -m0755 "target/debug/$bin" "$dest/$bin"
           done
 
-      - name: Ensure kubectl is available
+      - name: Install kubectl
         run: |
           set -e
           if ! command -v kubectl &>/dev/null; then
@@ -86,17 +88,17 @@ jobs:
           fi
           kubectl version --client
 
-      - name: nodebootstrap containerd (real containerd install + config, independent of the cluster)
+      - name: Install containerd
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap containerd
 
-      - name: Verify containerd is actually up and CRI-capable
+      - name: Verify CRI
         run: |
           set -e
           sudo systemctl is-active --quiet containerd || { sudo journalctl -u containerd -n 100 --no-pager; exit 1; }
           sudo ctr version
           sudo crictl version || true
 
-      - name: nodebootstrap nodestore (real service install)
+      - name: Start nodestore
         run: |
           set -e
           sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodestore
@@ -110,22 +112,22 @@ jobs:
             exit 1
           fi
 
-      - name: nodebootstrap pki (real CA + cert issuance)
+      - name: Create PKI
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap pki
 
-      - name: nodebootstrap kubeconfig (real kubeconfig emission)
+      - name: Create kubeconfigs
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap kubeconfig
 
-      - name: nodebootstrap targets (starts the repository nodeapiserver)
+      - name: Start nodeapiserver
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap targets
 
-      - name: Real kubectl against nodeapiserver
+      - name: Verify API access
         run: sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get --raw=/readyz
 
-      - name: nodebootstrap rbac (verifies bootstrap RBAC + applies the nodescheduler DRA grant)
+      - name: Configure RBAC
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap rbac
 
-      - name: nodebootstrap nodescheduler + nodecontroller (this project's own, not upstream's)
+      - name: Start controllers
         run: |
           set -e
           sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodescheduler
@@ -134,7 +136,7 @@ jobs:
           sudo systemctl is-active --quiet nodescheduler || { sudo journalctl -u nodescheduler -n 100 --no-pager; exit 1; }
           sudo systemctl is-active --quiet nodecontroller || { sudo journalctl -u nodecontroller -n 100 --no-pager; exit 1; }
 
-      - name: nodebootstrap cni (real flannel + CNI plugin binaries, real flanneld)
+      - name: Install CNI
         # Ordered here, not earlier: flanneld's kube-subnet-mgr mode needs a
         # live kubeconfig pointed at a reachable apiserver -- same ordering
         # constraint lib.rs's own run_all() documents (cni runs after
@@ -154,26 +156,26 @@ jobs:
         # after that point, not immediately after this step.
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap cni
 
-      - name: nodebootstrap service-reconciler (verifies the kubernetes Service)
+      - name: Verify API Service
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap service-reconciler
 
-      - name: nodebootstrap manifests (applies the real CoreDNS manifest)
+      - name: Install CoreDNS
         run: sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap manifests
 
-      - name: Verify CoreDNS objects were actually created
+      - name: Verify CoreDNS
         run: |
           set -e
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get deployment coredns -n kube-system
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get service kube-dns -n kube-system
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get configmap coredns -n kube-system
 
-      - name: nodebootstrap nodelet + nodeproxy (real service install, real CRI runtime)
+      - name: Start node services
         run: |
           set -e
           sudo -E env "PATH=$PATH" NODELET_RUNTIME=cri ./target/debug/nodebootstrap nodelet
           sudo -E env "PATH=$PATH" ./target/debug/nodebootstrap nodeproxy
 
-      - name: Verify the node actually registered and went Ready
+      - name: Wait for Ready
         run: |
           set -e
           for _ in $(seq 1 30); do
@@ -196,7 +198,7 @@ jobs:
           done
           sudo kubectl --kubeconfig=/etc/nodebootstrap/admin.kubeconfig get nodes -o jsonpath='{.items[0].spec.taints}'; echo
 
-      - name: Verify flanneld actually wrote a subnet lease
+      - name: Verify subnet lease
         # Moved here (not right after the "nodebootstrap cni" step) --
         # flanneld's kube-subnet-mgr mode can't succeed until the Node
         # object above exists, so this is the earliest point a real
@@ -211,7 +213,7 @@ jobs:
           [ -s /run/flannel/subnet.env ] || { echo "flanneld never wrote /run/flannel/subnet.env"; sudo journalctl -u flanneld -n 100 --no-pager || true; exit 1; }
           cat /run/flannel/subnet.env
 
-      - name: Real pod through nodescheduler + nodelet + real containerd end to end
+      - name: Test pod lifecycle
         # A real image, actually pulled and run by containerd through
         # nodelet's CRI runtime -- --image=does-not-matter (this step's
         # previous form) only ever "worked" under the mock runtime, where
@@ -238,7 +240,7 @@ jobs:
           sudo crictl pods || true
           sudo crictl ps -a || true
 
-      - name: Dump logs on failure
+      - name: Dump failure logs
         if: failure()
         run: |
           for svc in containerd flanneld nodestore nodeapiserver kube-apiserver nodescheduler nodecontroller nodelet nodeproxy; do

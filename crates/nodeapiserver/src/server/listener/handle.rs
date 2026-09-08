@@ -43,6 +43,12 @@ async fn handle(
         })
         .filter(|value| !value.is_empty());
     let admission_metadata = req.extensions().get::<SharedAdmissionMetadata>().cloned();
+    // Captured before any handler can consume `req` (CREATE/UPDATE/PATCH
+    // move it into `read_body_bytes`), so the watch idle watchdog's
+    // per-connection kill switch survives to `handle_watch!` below — it
+    // cannot be re-read from `$req` there, because `handle_crud!` may
+    // already have moved the request.
+    let watch_kill = req.extensions().get::<WatchConnectionKill>().cloned();
 
     let info = path::parse(&method, &path_str, &query);
 
@@ -174,11 +180,13 @@ async fn handle(
         };
         match route_discovery(&parts, accept_header, &crds, &aggregated) {
             DiscoveryRoute::Found(doc) => {
-                return Ok(json_response_with_content_type(
+                let mut response = json_response_with_content_type(
                     StatusCode::OK,
                     &doc,
                     discovery_content_type(&parts, accept_header),
-                ));
+                );
+                response.headers_mut().insert("Vary", hyper::header::HeaderValue::from_static("Accept"));
+                return Ok(response);
             }
             DiscoveryRoute::FoundRaw(bytes) => {
                 return Ok(Response::builder()
@@ -186,6 +194,23 @@ async fn handle(
                     .header("Content-Type", "application/json")
                     .body(body_from_bytes(bytes.to_vec()))
                     .unwrap());
+            }
+            DiscoveryRoute::FoundOpenApiProtobuf(bytes) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", openapi::V2_PROTOBUF_CONTENT_TYPE)
+                    .header("Vary", "Accept")
+                    .body(body_from_bytes(bytes.to_vec()))
+                    .unwrap());
+            }
+            DiscoveryRoute::NotAcceptable => {
+                let mut response = json_response(StatusCode::NOT_ACCEPTABLE, &serde_json::json!({
+                    "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                    "reason": "NotAcceptable", "code": 406,
+                    "message": "OpenAPI v2 supports application/json and the gnostic v2 protobuf media type"
+                }));
+                response.headers_mut().insert("Vary", http::HeaderValue::from_static("Accept"));
+                return Ok(response);
             }
             DiscoveryRoute::NotFound => {
                 // Group L Phase 3's own last named gap, closed: a real
@@ -264,6 +289,7 @@ async fn handle(
         return Ok(proxy_resource(
             req,
             storage,
+            &cache_registry,
             &info,
             &method,
             &path_str,
@@ -610,6 +636,7 @@ async fn handle(
         is_watch,
         is_certificate_status_subresource,
         wants_partial_metadata,
-        has_body
+        has_body,
+        watch_kill
     );
 }

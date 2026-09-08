@@ -471,7 +471,7 @@ async fn patch_ephemeral_containers_once(
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
         return Ok(UpdateOutcome::ObjectNotFound);
     };
-    let existing_object = decrypt_and_decode_with_rotation(
+    let mut existing_object = decrypt_and_decode_with_rotation(
         storage,
         "",
         "pods",
@@ -484,8 +484,9 @@ async fn patch_ephemeral_containers_once(
         kind_of_patch,
         resolved.schema,
         None,
-        &existing_object,
+        &mut existing_object,
         patch_doc,
+        existing_kv.mod_revision,
     ) {
         Ok(object) => object,
         Err(message) => return Ok(UpdateOutcome::Invalid(vec![message])),

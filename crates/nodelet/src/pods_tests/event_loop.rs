@@ -16,6 +16,59 @@ use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tower::service_fn;
 
+#[tokio::test(start_paused = true)]
+async fn final_delete_conflict_retries_same_uid_but_not_a_replacement() {
+    for live_uid in ["old-uid", "replacement-uid"] {
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let checked_uid = Arc::new(tokio::sync::Notify::new());
+        let deleted = Arc::new(tokio::sync::Notify::new());
+        let service = {
+            let deletes = deletes.clone();
+            let checked_uid = checked_uid.clone();
+            let deleted = deleted.clone();
+            service_fn(move |request: Request<Body>| {
+                let deletes = deletes.clone();
+                let checked_uid = checked_uid.clone();
+                let deleted = deleted.clone();
+                async move {
+                    let (code, body) = if request.method() == http::Method::DELETE {
+                        if deletes.fetch_add(1, Ordering::SeqCst) == 0 {
+                            (409, serde_json::json!({"apiVersion": "v1", "kind": "Status",
+                                "status": "Failure", "reason": "Conflict", "message": "CAS race", "code": 409}))
+                        } else {
+                            deleted.notify_one();
+                            (200, serde_json::json!({"apiVersion": "v1", "kind": "Status", "status": "Success", "code": 200}))
+                        }
+                    } else {
+                        assert_eq!(request.method(), http::Method::GET);
+                        checked_uid.notify_one();
+                        (200, serde_json::json!({"apiVersion": "v1", "kind": "Pod",
+                            "metadata": {"name": "app", "namespace": "default", "uid": live_uid}}))
+                    };
+                    Ok::<_, Infallible>(Response::builder().status(code)
+                        .body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap())
+                }
+            })
+        };
+        let controller = PodController::new(Client::new(service, "default"),
+            Arc::new(MockRuntime::new()), "node".into());
+        let pod: Pod = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "app", "namespace": "default", "uid": "old-uid"},
+        })).unwrap();
+        controller.spawn_teardown(pod);
+        tokio::time::timeout(Duration::from_secs(1), checked_uid.notified()).await
+            .expect("409 must trigger a UID check, not silent success");
+        if live_uid == "old-uid" {
+            tokio::time::timeout(Duration::from_secs(30), deleted.notified()).await
+                .expect("same UID must be retried without another watch event");
+            assert_eq!(deletes.load(Ordering::SeqCst), 2);
+        } else {
+            tokio::time::sleep(RETRY_FIRST_DELAY * 2).await;
+            assert_eq!(deletes.load(Ordering::SeqCst), 1);
+        }
+    }
+}
+
 #[test]
 fn api_pod_readiness_requires_running_ready_containers_and_ready_condition() {
     let mut pod: Pod = serde_json::from_value(serde_json::json!({

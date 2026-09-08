@@ -130,6 +130,11 @@ structure, ownership, errors, async cancellation, bounded work, and verification
 
 ## Validation and completion
 
+Keep workflow/action titles and individual step display names at most 20
+characters to avoid GitHub Actions log-layout overflow. Give every step an
+explicit, static `name`, including composite-action calls; do not shorten
+artifact identifiers or change step IDs just to shorten a display label.
+
 **Do not run local Cargo builds, Cargo tests, or local e2e on this development
 host. Use CI.** It is resource constrained; debug artifacts can also exhaust
 RAM/tmpfs. Source inspection, formatting checks, and lightweight documentation

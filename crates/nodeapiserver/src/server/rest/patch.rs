@@ -14,7 +14,7 @@ pub enum PatchKind {
 /// resubmit the stale candidate. Explicit preconditions still return 409.
 /// JSON Patch may test or replace metadata indirectly, so leave its caller
 /// in control of retrying those conditional operations.
-fn patch_allows_conflict_retry(kind: PatchKind, patch: &Value) -> bool {
+pub(crate) fn patch_allows_conflict_retry(kind: PatchKind, patch: &Value) -> bool {
     !matches!(kind, PatchKind::Json)
         && patch.pointer("/metadata/resourceVersion").is_none()
 }
@@ -153,9 +153,15 @@ fn apply_patch(
     kind_of_patch: PatchKind,
     schema: Option<&str>,
     open_api_schema: Option<&Value>,
-    existing: &Value,
+    existing: &mut Value,
     patch_doc: &Value,
+    revision: i64,
 ) -> Result<Value, String> {
+    // The MVCC row, not a revision embedded in its serialized payload, is
+    // authoritative. Deferred deletion can persist the pre-delete RV. Stamp
+    // the current RV before applying the request so inherited metadata does
+    // not become a false precondition, and JSON Patch tests see the live RV.
+    set_metadata_field(existing, "resourceVersion", Value::String(revision.to_string()));
     match kind_of_patch {
         PatchKind::Json => {
             let mut object = existing.clone();
@@ -214,7 +220,7 @@ pub async fn patch_prepare(
         existing_kv.mod_revision,
     )
     .await?;
-    let existing_object_for_request = convert_to_requested_version(
+    let mut existing_object_for_request = convert_to_requested_version(
         storage,
         group,
         version,
@@ -228,8 +234,9 @@ pub async fn patch_prepare(
         kind_of_patch,
         resolved.schema,
         resolved.open_api_schema.as_ref(),
-        &existing_object_for_request,
+        &mut existing_object_for_request,
         patch_doc,
+        existing_kv.mod_revision,
     ) {
         Ok(object) => object,
         Err(msg) => return Ok(PatchPrepareOutcome::Invalid(vec![msg])),
@@ -290,6 +297,16 @@ pub async fn patch_persist_with_manager(
     dry_run: bool,
     field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
+    // PATCH may omit resourceVersion, but an explicitly supplied version is
+    // still a precondition (not just metadata to strip before persistence).
+    if let Some(version) = candidate.pointer("/metadata/resourceVersion") {
+        if !version.is_null()
+            && version.as_str().and_then(|value| value.parse::<i64>().ok())
+                != Some(context.existing_kv.mod_revision)
+        {
+            return Ok(UpdateOutcome::Conflict);
+        }
+    }
     // Group K: same pruning `create`/`update` run, same order (before
     // validation/defaulting) — `candidate` is already owned, so this
     // just reassigns it rather than needing the borrow-juggling
@@ -461,6 +478,34 @@ pub async fn patch_status_with_manager(
     dry_run: bool,
     field_manager: Option<&str>,
 ) -> Result<UpdateOutcome, Error> {
+    // Status has the same parent-object CAS as ordinary writes. An
+    // unconditional merge is a transformation of fresh state, not a stale
+    // replacement: recompute it after a concurrent node/controller update.
+    for attempt in 0..8 {
+        let outcome = patch_status_once(storage, group, version, resource,
+            namespace, name, kind_of_patch, patch_doc, dry_run, field_manager).await?;
+        if !matches!(outcome, UpdateOutcome::Conflict) || attempt == 7
+            || !patch_allows_conflict_retry(kind_of_patch, patch_doc)
+        {
+            return Ok(outcome);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+    }
+    unreachable!("bounded status PATCH retry loop returns its last outcome")
+}
+
+async fn patch_status_once(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    kind_of_patch: PatchKind,
+    patch_doc: &Value,
+    dry_run: bool,
+    field_manager: Option<&str>,
+) -> Result<UpdateOutcome, Error> {
     let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
         return Ok(UpdateOutcome::UnknownResource);
     };
@@ -487,7 +532,7 @@ pub async fn patch_status_with_manager(
         existing_kv.mod_revision,
     )
     .await?;
-    let existing_object_for_request = convert_to_requested_version(
+    let mut existing_object_for_request = convert_to_requested_version(
         storage,
         group,
         version,
@@ -501,13 +546,23 @@ pub async fn patch_status_with_manager(
         kind_of_patch,
         resolved.schema,
         resolved.open_api_schema.as_ref(),
-        &existing_object_for_request,
+        &mut existing_object_for_request,
         patch_doc,
+        existing_kv.mod_revision,
     ) {
         Ok(object) => object,
         Err(msg) => return Ok(UpdateOutcome::Invalid(vec![msg])),
     };
 
+    // Metadata is otherwise reset by the status strategy, but the caller's
+    // explicit resourceVersion is still a precondition on the parent object.
+    if let Some(version) = patch_doc.pointer("/metadata/resourceVersion") {
+        if version.as_str().and_then(|value| value.parse::<i64>().ok())
+            != Some(existing_kv.mod_revision)
+        {
+            return Ok(UpdateOutcome::Conflict);
+        }
+    }
     let mut object = existing_object_for_request;
     match patched.get("status") {
         Some(status) => object["status"] = status.clone(),

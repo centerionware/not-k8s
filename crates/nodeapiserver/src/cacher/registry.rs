@@ -26,6 +26,12 @@ use tokio::sync::watch;
 /// functions key resources by.
 pub type ResourceKey = (String, String, String);
 
+/// Revisions for the four RBAC resource caches.  This is deliberately a
+/// cheap in-process invalidation token: readers can inspect it on every
+/// authorization request without transferring any RBAC objects.  A changed
+/// token means the authorizer must refresh its consistent snapshot.
+pub type RbacRevisionSignature = [i64; 4];
+
 /// Real `client-go` `SharedInformerFactory` defaults use similar orders
 /// of magnitude for these; picked for the same reason — large enough
 /// that a burst of events (a controller doing a bulk create/delete) does
@@ -63,6 +69,32 @@ impl CacheRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key)
             .map(|registration| registration.cache.clone())
+    }
+
+    /// Returns the latest content revisions of all RBAC caches once their initial
+    /// LISTs have completed.  A missing/unsynced cache intentionally returns
+    /// `None`: callers must use the direct storage path until the informer
+    /// factory has a complete view rather than treating an empty cache as an
+    /// authoritative policy.
+    pub fn rbac_revision_signature(&self) -> Option<RbacRevisionSignature> {
+        let resources = [
+            ("rbac.authorization.k8s.io", "v1", "clusterrolebindings"),
+            ("rbac.authorization.k8s.io", "v1", "clusterroles"),
+            ("rbac.authorization.k8s.io", "v1", "rolebindings"),
+            ("rbac.authorization.k8s.io", "v1", "roles"),
+        ];
+        let caches: Vec<SharedCache> = resources
+            .iter()
+            .map(|(group, version, resource)| self.get(group, version, resource))
+            .collect::<Option<Vec<_>>>()?;
+        caches.iter().all(SharedCache::has_synced).then(|| {
+            [
+                caches[0].content_revision(),
+                caches[1].content_revision(),
+                caches[2].content_revision(),
+                caches[3].content_revision(),
+            ]
+        })
     }
 
     /// Starts a background `reflect()` loop for one resource and

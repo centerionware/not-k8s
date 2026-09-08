@@ -47,7 +47,22 @@ use crate::command::{
 use crate::error::{Error, Result};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params_from_iter, Connection, OptionalExtension, Transaction};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
+
+const RBAC_LIST_PREFIXES: [&[u8]; 4] = [
+    b"/registry/clusterrolebindings/",
+    b"/registry/clusterroles/",
+    b"/registry/rolebindings/",
+    b"/registry/roles/",
+];
+
+#[derive(Clone)]
+struct CachedRbacRange {
+    revision: i64,
+    result: RangeResult,
+}
 
 /// A key/value pair as etcd reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -124,6 +139,70 @@ pub struct Applied {
 
 pub struct Store {
     conn: Connection,
+    /// The four full RBAC lists are read for nearly every authenticated API
+    /// request. SQLite's page cache avoids disk I/O, but not rebuilding and
+    /// copying the same result. This small application cache is invalidated
+    /// by `apply_at` when the state machine touches an RBAC key, so replicas
+    /// share the same correctness boundary as their replicated writes.
+    rbac_cache: RefCell<HashMap<Vec<u8>, CachedRbacRange>>,
+}
+
+fn rbac_list_prefix(range: &KeyRange) -> Option<&'static [u8]> {
+    let KeyRange::Between { from, to } = range else {
+        return None;
+    };
+    RBAC_LIST_PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| from.as_slice() == *prefix && to.as_slice() == prefix_range_end(prefix))
+}
+
+fn prefix_range_end(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    while end.last() == Some(&0xff) {
+        end.pop();
+    }
+    if let Some(last) = end.last_mut() {
+        *last += 1;
+        end
+    } else {
+        vec![0]
+    }
+}
+
+fn rbac_key(key: &[u8]) -> bool {
+    RBAC_LIST_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
+
+fn rbac_range(range: &KeyRange) -> bool {
+    match range {
+        KeyRange::Single(key) => rbac_key(key),
+        KeyRange::Between { from, to } => RBAC_LIST_PREFIXES.iter().any(|prefix| {
+            let prefix_end = prefix_range_end(prefix);
+            from.as_slice() < prefix_end.as_slice() && *prefix < to.as_slice()
+        }),
+        KeyRange::From(from) => RBAC_LIST_PREFIXES.iter().any(|prefix| {
+            from.as_slice() < prefix_range_end(prefix).as_slice()
+        }),
+        KeyRange::All => true,
+    }
+}
+
+fn command_touches_rbac(command: &Command) -> bool {
+    fn request_touches(request: &RequestOp) -> bool {
+        match request {
+            RequestOp::Range(_) => false,
+            RequestOp::Put(op) => rbac_key(&op.key),
+            RequestOp::Delete(op) => rbac_range(&op.range),
+        }
+    }
+
+    match command {
+        Command::Put(op) => rbac_key(&op.key),
+        Command::Delete(op) => rbac_range(&op.range),
+        Command::Txn(op) => op.success.iter().any(request_touches) || op.failure.iter().any(request_touches),
+        _ => false,
+    }
 }
 
 impl Store {
@@ -140,7 +219,7 @@ impl Store {
             }
             Connection::open(path)?
         };
-        let store = Store { conn };
+        let store = Store { conn, rbac_cache: RefCell::new(HashMap::new()) };
         store.init_schema()?;
         Ok(store)
     }
@@ -250,9 +329,31 @@ impl Store {
                 return Err(Error::FutureRevision { requested: q.revision, current });
             }
         }
+        if let Some(prefix) = rbac_list_prefix(&q.range) {
+            if q.limit == 0 && !q.keys_only && !q.count_only && q.sort.is_none() {
+                if let Some(cached) = self.rbac_cache.borrow().get(prefix) {
+                    // A cache populated at an older revision is still valid
+                    // for a newer snapshot when no RBAC mutation has
+                    // invalidated it. It is not valid for a historical read
+                    // older than the cached result.
+                    if at >= cached.revision {
+                        return Ok(cached.result.clone());
+                    }
+                }
+            }
+        }
         // Same code path a transaction's own Range op takes, so a read is
         // answered identically whether or not it is inside a txn.
-        range_in(&self.conn, &q.range, at, q)
+        let result = range_in(&self.conn, &q.range, at, q)?;
+        if let Some(prefix) = rbac_list_prefix(&q.range) {
+            if q.limit == 0 && !q.keys_only && !q.count_only && q.sort.is_none() {
+                self.rbac_cache.borrow_mut().insert(
+                    prefix.to_vec(),
+                    CachedRbacRange { revision: at, result: result.clone() },
+                );
+            }
+        }
+        Ok(result)
     }
 
     /// Events strictly after `since`, in apply order — the watch replay path.
@@ -544,6 +645,7 @@ impl Store {
             [snapshot.applied_index as i64],
         )?;
         tx.commit()?;
+        self.rbac_cache.borrow_mut().clear();
         Ok(())
     }
 
@@ -685,7 +787,11 @@ impl Store {
                 [index as i64],
             )?;
         }
+        let committed_events_touch_rbac = w.events.iter().any(|event| rbac_key(&event.kv.key));
         tx.commit()?;
+        if command_touches_rbac(cmd) || committed_events_touch_rbac {
+            self.rbac_cache.borrow_mut().clear();
+        }
         Ok(Applied { revision, response, events: w.events })
     }
 }
@@ -932,36 +1038,35 @@ fn current_range_in(conn: &Connection, range: &KeyRange) -> Result<Vec<KeyValue>
 fn range_in(conn: &Connection, range: &KeyRange, at: i64, q: &RangeQuery) -> Result<RangeResult> {
     let (pred, mut args) = range_predicate(range);
     args.push(SqlValue::Integer(at));
-    let base = format!(
-        "SELECT key, value, create_revision, revision, version, lease, deleted FROM (
-             SELECT key, value, create_revision, revision, version, lease, deleted,
-                    ROW_NUMBER() OVER (PARTITION BY key ORDER BY revision DESC, sub DESC) AS rn
-             FROM kv WHERE {pred} AND revision <= ?{n}
-         ) WHERE rn = 1 AND deleted = 0",
-        pred = pred,
-        n = args.len()
-    );
+    // Enumerate keys using the covering key/revision index, then seek the
+    // newest visible row for each key. The former window query fetched and
+    // ranked every historical VALUE, dominating the measured Range CPU.
+    // Filter tombstones AFTER choosing the newest row, or deleted keys revive.
+    // sub breaks ties between writes to the same key within a transaction.
+    let n = args.len();
+    let latest = if matches!(range, KeyRange::Single(_)) {
+        format!("SELECT rowid FROM kv WHERE {pred} AND revision <= ?{n}
+                 ORDER BY revision DESC, sub DESC LIMIT 1")
+    } else {
+        format!("SELECT (SELECT rowid FROM kv AS versions
+                         WHERE versions.key = keys.key AND revision <= ?{n}
+                         ORDER BY revision DESC, sub DESC LIMIT 1)
+                 FROM (SELECT DISTINCT key FROM kv WHERE {pred} AND revision <= ?{n}) AS keys")
+    };
+    let base = format!("SELECT key, value, create_revision, revision, version, lease, deleted
+                        FROM kv WHERE rowid IN ({latest}) AND deleted = 0");
     if q.count_only {
         let sql = format!("SELECT COUNT(*) FROM ({base})");
-        let count: i64 = conn.query_row(&sql, params_from_iter(args.iter()), |r| r.get(0))?;
+        let count: i64 = conn.prepare_cached(&sql)?.query_row(params_from_iter(args.iter()), |r| r.get(0))?;
         return Ok(RangeResult { kvs: Vec::new(), count, more: false });
     }
-    // Issue #556: `count` and the returned page used to be two independent
-    // executions of the same windowed (ROW_NUMBER() PARTITION BY key)
-    // subquery above -- real, measured cost against a store carrying any
-    // meaningful amount of uncompacted MVCC history (a live perf capture
-    // found `sqlite3VdbeExec`/`vdbeSorterSort` dominating nodestore's idle
-    // CPU with 10502 total kv rows behind only 489 live keys). Every
-    // historical revision of every key in the range got sorted and
-    // partitioned, twice, on every single Range call. A second window
-    // function, `COUNT(*) OVER ()`, computed in the same single pass, gets
-    // both in one: it's the size of the full result set before `ORDER BY`/
-    // `LIMIT` trims it, on every row that pass already produced.
+    // Count the visible rows before pagination, without a second execution
+    // of the latest-row query (the invariant established by issue #556).
     let mut sql = format!("SELECT *, COUNT(*) OVER () AS total_count FROM ({base}) ORDER BY {}", order_by(q.sort));
     if q.limit > 0 {
         sql.push_str(&format!(" LIMIT {}", q.limit + 1));
     }
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let mut count = 0i64;
     let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
         count = row.get(7)?;
@@ -1052,6 +1157,66 @@ mod tests {
     }
 
     // ── Revisions ────────────────────────────────────────────────────────
+
+    #[test]
+    fn indexed_range_matches_window_reference_across_history_and_query_options() {
+        let s = store();
+        // Duplicate keys at different sub-revisions, tombstones and recreation.
+        // Direct fixture rows isolate the read algorithm from write behavior.
+        for revision in 2..=12i64 {
+            for sub in 0..4i64 {
+                s.conn.execute("INSERT INTO kv (revision,sub,key,value,create_revision,version,lease,deleted)
+                    VALUES (?1,?2,?3,?4,2,?1,?2,?5)", rusqlite::params![revision, sub,
+                    format!("/{}", sub % 3).into_bytes(), format!("v{revision}-{sub}").into_bytes(),
+                    i64::from((revision + sub) % 5 == 0)]).unwrap();
+            }
+        }
+        // Keys born later must not enter an earlier historical snapshot.
+        s.conn.execute("INSERT INTO kv (revision,sub,key,value,create_revision,version,lease,deleted)
+            VALUES (10,9,?1,?2,10,1,0,0)", rusqlite::params![b"/later".as_slice(), b"late".as_slice()]).unwrap();
+        for range in [KeyRange::All, KeyRange::Single(b"/0".to_vec()),
+            KeyRange::Single(b"missing".to_vec()), KeyRange::From(b"/1".to_vec()),
+            KeyRange::Between { from: b"/0".to_vec(), to: b"/2".to_vec() }] {
+            for at in 1..=13 {
+                for target in [SortTarget::Key, SortTarget::Version, SortTarget::CreateRevision,
+                    SortTarget::ModRevision, SortTarget::Value] {
+                    for ascending in [false, true] {
+                        let mut q = RangeQuery::current(range.clone());
+                        q.sort = Some(Sort { target, ascending });
+                        let (pred, mut args) = range_predicate(&range);
+                        args.push(SqlValue::Integer(at));
+                        let sql = format!("SELECT key,value,create_revision,revision,version,lease FROM (
+                            SELECT *, ROW_NUMBER() OVER (PARTITION BY key ORDER BY revision DESC, sub DESC) rn
+                            FROM kv WHERE {pred} AND revision <= ?{}) WHERE rn=1 AND deleted=0 ORDER BY {}",
+                            args.len(), order_by(q.sort));
+                        let reference: Vec<KeyValue> = s.conn.prepare(&sql).unwrap()
+                            .query_map(params_from_iter(args.iter()), |r| Ok(KeyValue {
+                                key:r.get(0)?, value:r.get(1)?, create_revision:r.get(2)?,
+                                mod_revision:r.get(3)?, version:r.get(4)?, lease:r.get(5)?
+                            })).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                        for limit in [0, 1, 2, 10] {
+                            for keys_only in [false, true] {
+                                q.limit = limit;
+                                q.keys_only = keys_only;
+                                q.count_only = false;
+                                let actual = range_in(&s.conn, &range, at, &q).unwrap();
+                                let mut expected = reference.clone();
+                                if limit > 0 { expected.truncate(limit as usize); }
+                                if keys_only { for kv in &mut expected { kv.value.clear(); } }
+                                assert_eq!(actual.kvs, expected, "range={range:?}, at={at}");
+                                assert_eq!(actual.count, reference.len() as i64);
+                                assert_eq!(actual.more, limit > 0 && reference.len() as i64 > limit);
+                            }
+                        }
+                        q.count_only = true;
+                        let count = range_in(&s.conn, &range, at, &q).unwrap();
+                        assert_eq!(count.count, reference.len() as i64);
+                        assert!(count.kvs.is_empty() && !count.more);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn an_empty_store_starts_at_revision_one() {
@@ -1351,6 +1516,55 @@ mod tests {
         let keys: Vec<_> = r.kvs.iter().map(|kv| kv.key.clone()).collect();
         assert_eq!(keys, vec![b"/registry/pods/a".to_vec(), b"/registry/pods/b".to_vec()]);
         assert_eq!(r.count, 2);
+    }
+
+    #[test]
+    fn rbac_list_cache_survives_unrelated_writes_and_invalidates_on_policy_writes() {
+        let mut s = store();
+        put(&mut s, "/registry/roles/admin", "v1");
+        let query = RangeQuery::current(KeyRange::Between {
+            from: b"/registry/roles/".to_vec(),
+            to: b"/registry/roles0".to_vec(),
+        });
+        let first = s.range(&query).unwrap();
+        put(&mut s, "/registry/pods/p1", "unrelated");
+        assert_eq!(s.range(&query).unwrap().kvs, first.kvs);
+        put(&mut s, "/registry/roles/admin", "v2");
+        assert_eq!(s.range(&query).unwrap().kvs[0].value, b"v2");
+    }
+
+    #[test]
+    fn lease_revoke_and_expiry_invalidate_rbac_list_cache() {
+        let query = RangeQuery::current(KeyRange::Between {
+            from: b"/registry/roles/".to_vec(),
+            to: b"/registry/roles0".to_vec(),
+        });
+        let mut s = store();
+        s.apply(&Command::LeaseGrant { id: 1, ttl_secs: 1, now_unix_secs: 0 }).unwrap();
+        s.apply(&Command::Put(PutOp {
+            key: b"/registry/roles/revoked".to_vec(),
+            value: b"x".to_vec(),
+            lease: 1,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        })).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 1);
+        s.apply(&Command::LeaseRevoke { id: 1 }).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 0);
+
+        s.apply(&Command::LeaseGrant { id: 2, ttl_secs: 1, now_unix_secs: 0 }).unwrap();
+        s.apply(&Command::Put(PutOp {
+            key: b"/registry/roles/expired".to_vec(),
+            value: b"x".to_vec(),
+            lease: 2,
+            prev_kv: false,
+            ignore_value: false,
+            ignore_lease: false,
+        })).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 1);
+        s.apply(&Command::ExpireLeases { now_unix_secs: 2 }).unwrap();
+        assert_eq!(s.range(&query).unwrap().count, 0);
     }
 
     #[test]

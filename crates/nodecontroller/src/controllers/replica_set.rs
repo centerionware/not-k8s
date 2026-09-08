@@ -53,6 +53,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const CREATION_EXPECTATION_TIMEOUT: Duration = Duration::from_secs(30);
+// Keep one unavailable apiserver request from parking this controller's
+// single event loop indefinitely. A timed-out reconcile is retried below.
+const RECONCILE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct PendingCreates {
@@ -390,6 +393,11 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             queue.enqueue(key.clone());
                         }
                     }
+                    Some(Ok(Event::Init)) => {
+                        pods.clear();
+                        expectations.clear();
+                        tracing::debug!(target: "nk_controller_trace", controller = "replicaset", "replaced Pod informer snapshot");
+                    }
                     Some(Ok(Event::Delete(pod))) => {
                         let ns = ns_of(&pod);
                         note_pod_event(&mut expectations, &pod);
@@ -398,7 +406,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             queue.enqueue(key.clone());
                         }
                     }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "pod watch error in replicaset-controller"),
                     None => return Ok(()),
                 }
@@ -410,7 +418,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         let name = rs.name_any();
                         let key = format!("{ns}/{name}");
                         replica_sets.insert(key.clone(), rs);
+                        tracing::debug!(target: "nk_controller_trace", controller = "replicaset", key = %key, "enqueued ReplicaSet event");
                         queue.enqueue(key);
+                    }
+                    Some(Ok(Event::Init)) => {
+                        replica_sets.clear();
+                        expectations.clear();
+                        tracing::debug!(target: "nk_controller_trace", controller = "replicaset", "replaced ReplicaSet informer snapshot");
                     }
                     Some(Ok(Event::Delete(rs))) => {
                         let ns = ns_of(&rs);
@@ -418,14 +432,31 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         replica_sets.remove(&format!("{ns}/{name}"));
                         expectations.remove(&(ns, name));
                     }
-                    Some(Ok(Event::Init | Event::InitDone)) => {}
+                    Some(Ok(Event::InitDone)) => {}
                     Some(Err(e)) => tracing::warn!(error = ?e, "replicaset watch error in replicaset-controller"),
                     None => return Ok(()),
                 }
             }
             key = queue.pop() => {
                 if let Some(rs) = replica_sets.get(&key).cloned() {
-                    if reconcile_replica_set(&client, &rs, &pods, &mut expectations).await {
+                    tracing::debug!(target: "nk_controller_trace", controller = "replicaset", key = %key, "starting ReplicaSet reconcile");
+                    let needs_retry = match tokio::time::timeout(
+                        RECONCILE_TIMEOUT,
+                        reconcile_replica_set(&client, &rs, &pods, &mut expectations),
+                    ).await {
+                        Ok(needs_retry) => needs_retry,
+                        Err(_) => {
+                            tracing::warn!(
+                                target: "nk_controller_trace",
+                                controller = "replicaset",
+                                key = %key,
+                                timeout_secs = RECONCILE_TIMEOUT.as_secs(),
+                                "ReplicaSet reconcile timed out; retrying"
+                            );
+                            true
+                        }
+                    };
+                    if needs_retry {
                         schedule_retry(&queue, key);
                     }
                 }

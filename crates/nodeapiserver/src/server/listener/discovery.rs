@@ -15,6 +15,8 @@ enum DiscoveryRoute {
     /// round trip through `serde_json::Value` for a payload that can be
     /// tens of kilobytes.
     FoundRaw(&'static [u8]),
+    FoundOpenApiProtobuf(&'static [u8]),
+    NotAcceptable,
     NotFound,
 }
 /// `true` if `accept_header` asks for aggregated discovery v2
@@ -124,7 +126,11 @@ fn route_discovery(
                 None => DiscoveryRoute::NotFound,
             }
         }
-        (Some("openapi"), Some("v2"), 2) => DiscoveryRoute::Found(openapi::v2()),
+        (Some("openapi"), Some("v2"), 2) => match openapi::negotiate_v2(accept_header) {
+            Some(true) => DiscoveryRoute::FoundOpenApiProtobuf(openapi::v2_protobuf()),
+            Some(false) => DiscoveryRoute::Found(openapi::v2()),
+            None => DiscoveryRoute::NotAcceptable,
+        },
         (Some("openapi"), Some("v3"), 2) => DiscoveryRoute::Found(openapi::root()),
         (Some("openapi"), Some("v3"), n) if n > 2 => match openapi::doc(&parts[2..].join("/")) {
             Some(bytes) => DiscoveryRoute::FoundRaw(bytes),

@@ -32,6 +32,7 @@ macro_rules! handle_reviews {
         let Some(mut client) = $storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
         };
+        let content_type = $req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let body_bytes = match read_body_bytes($req).await {
             Ok(b) => b,
             Err(e) => {
@@ -39,7 +40,12 @@ macro_rules! handle_reviews {
                 return Ok(body_read_error_response(&$path_str, &e));
             }
         };
-        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+        let kind = match $info.resource.as_str() {
+            "subjectaccessreviews" => "SubjectAccessReview",
+            "localsubjectaccessreviews" => "LocalSubjectAccessReview",
+            _ => "SelfSubjectAccessReview",
+        };
+        let body_value = match decode_virtual_request(&body_bytes, content_type.as_deref(), &$info.api_group, &$info.api_version, kind) {
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
         };
@@ -69,7 +75,7 @@ macro_rules! handle_reviews {
         // namespace naturally restricts to just those, no separate branch
         // needed.
         let resolve_namespace = if review.is_resource { review.namespace.as_str() } else { "" };
-        let resolved = authz::resolve::rules_for(&mut client, &review.user_name, &review.user_groups, resolve_namespace).await;
+        let resolved = authz::resolve::rules_for(&mut client, &review.user_name, &review.user_groups, resolve_namespace, Some(&$cache_registry)).await;
         let attrs = authz::rbac::RequestAttributes {
             is_resource_request: review.is_resource,
             verb: &review.verb,
@@ -95,6 +101,7 @@ macro_rules! handle_reviews {
         let Some(mut client) = $storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
         };
+        let content_type = $req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let body_bytes = match read_body_bytes($req).await {
             Ok(b) => b,
             Err(e) => {
@@ -102,7 +109,7 @@ macro_rules! handle_reviews {
                 return Ok(body_read_error_response(&$path_str, &e));
             }
         };
-        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+        let body_value = match decode_virtual_request(&body_bytes, content_type.as_deref(), &$info.api_group, &$info.api_version, "SelfSubjectRulesReview") {
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
         };
@@ -111,7 +118,7 @@ macro_rules! handle_reviews {
             None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
         let review_namespace = body_value.pointer("/spec/namespace").and_then(serde_json::Value::as_str).unwrap_or("");
-        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, review_namespace).await;
+        let resolved = authz::resolve::rules_for(&mut client, user_name, &user_groups, review_namespace, Some(&$cache_registry)).await;
         let mut response_body = body_value;
         response_body["status"] = authz::sar::build_rules_status(&resolved.rules, &resolved.errors);
         return Ok(json_response(StatusCode::CREATED, &response_body));
@@ -122,6 +129,7 @@ macro_rules! handle_reviews {
     // already produced. Same "checked before generic `$is_create`, never
     // persisted" reasoning as every other review kind above.
     if $info.is_resource_request && $info.api_group == "authentication.k8s.io" && $info.resource == "selfsubjectreviews" && $info.verb == "create" && $info.subresource.is_empty() {
+        let content_type = $req.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_owned);
         let body_bytes = match read_body_bytes($req).await {
             Ok(b) => b,
             Err(e) => {
@@ -129,7 +137,7 @@ macro_rules! handle_reviews {
                 return Ok(body_read_error_response(&$path_str, &e));
             }
         };
-        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+        let body_value = match decode_virtual_request(&body_bytes, content_type.as_deref(), &$info.api_group, &$info.api_version, "SelfSubjectReview") {
             Ok(v) => v,
             Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
         };

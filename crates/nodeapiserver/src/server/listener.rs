@@ -124,6 +124,7 @@ include!("listener/base.rs");
 include!("listener/run.rs");
 include!("listener/discovery.rs");
 include!("listener/admission.rs");
+include!("listener/watch_idle.rs");
 include!("listener/handle.rs");
 include!("listener/proxy.rs");
 include!("listener_tests.rs");

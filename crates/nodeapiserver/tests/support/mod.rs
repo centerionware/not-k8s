@@ -2,7 +2,6 @@
 
 use nodeapiserver::config::Config;
 use nodeapiserver::storage::client::StorageClient;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -91,37 +90,4 @@ pub async fn spawn_nodestore(
     }
     let storage = storage.expect("nodestore never became reachable within 20s");
     (child, data_dir, storage)
-}
-
-pub fn a_crd() -> serde_json::Value {
-    json!({
-        "apiVersion": "apiextensions.k8s.io/v1",
-        "kind": "CustomResourceDefinition",
-        "metadata": {"name": "widgets.example.com"},
-        "spec": {
-            "group": "example.com",
-            "scope": "Namespaced",
-            "names": {"plural": "widgets", "singular": "widget", "kind": "Widget", "listKind": "WidgetList"},
-            "versions": [{
-                "name": "v1",
-                "served": true,
-                "storage": true,
-                "additionalPrinterColumns": [{"name": "Color", "type": "string", "jsonPath": ".spec.color"}],
-                "schema": {
-                    "openAPIV3Schema": {
-                        "type": "object",
-                        "properties": {
-                            "spec": {
-                                "type": "object",
-                                "properties": {
-                                    "size": {"type": "string", "default": "small"},
-                                    "color": {"type": "string"},
-                                },
-                            },
-                        },
-                    },
-                },
-            }],
-        },
-    })
 }

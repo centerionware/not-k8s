@@ -72,12 +72,7 @@ macro_rules! handle_crud {
                     if body_bytes.is_empty() {
                         (None, None)
                     } else {
-                        let format = content_type.as_deref().and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json);
-                        let decoded = match format {
-                            negotiation::Format::Json => crate::codec::json::decode(&body_bytes).map_err(|e| e.to_string()),
-                            negotiation::Format::Yaml => crate::codec::yaml::decode(&body_bytes).map_err(|e| e.to_string()),
-                            negotiation::Format::Protobuf => Err("protobuf DELETE options are not decoded yet".to_string()),
-                        };
+                        let decoded = decode_virtual_request(&body_bytes, content_type.as_deref(), "", "v1", "DeleteOptions");
                         match decoded {
                             Ok(value) => (None, Some(value)),
                             Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error))),

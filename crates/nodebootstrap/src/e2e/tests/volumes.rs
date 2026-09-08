@@ -182,17 +182,34 @@ pub(super) async fn projected_volume_merges_configmap_and_downward_api(
                 {"configMap": {"name": "projected-config"}},
                 {"downwardAPI": {"items": [{"path": "name", "fieldRef": {"fieldPath": "metadata.name"}}]}}
             ]}}],
-            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "cat /projected/config /projected/name > /dev/termination-log"], "volumeMounts": [{"name": "projected", "mountPath": "/projected"}] }]
+            "containers": [{"name": "app", "image": "busybox:latest",
+                "command": ["sh", "-c", "exec 3</projected/config; touch /tmp/reader-ready; while [ \"$(cat /projected/config)\" != updated-value ]; do sleep 1; done; { cat <&3; echo; cat /projected/config; echo; cat /projected/name; } > /dev/termination-log"],
+                "readinessProbe": {"exec": {"command": ["test", "-f", "/tmp/reader-ready"]}, "periodSeconds": 1},
+                "volumeMounts": [{"name": "projected", "mountPath": "/projected"}] }]
         }),
     )
     .await?;
+    // Hold a reader across a real projection refresh. An in-place rewrite
+    // changes that reader's bytes; atomic publication leaves the old complete
+    // file available while new opens see the updated file.
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context.wait_until("projected-volume reader to open its file", Duration::from_secs(90), || {
+        let pods = pods.clone();
+        async move {
+            Ok(pods.get(name).await?.status.and_then(|status| status.conditions)
+                .unwrap_or_default().iter().any(|condition|
+                    condition.type_ == "Ready" && condition.status == "True"))
+        }
+    }).await?;
+    configmaps.patch("projected-config", &PatchParams::default(),
+        &Patch::Merge(&json!({"data": {"config": "updated-value"}}))).await?;
     context
         .wait_until("projected volume content", Duration::from_secs(90), || {
             let context = context.clone();
             async move {
                 Ok(terminated_message(&context, name)
                     .await?
-                    .is_some_and(|message| message.contains("projected-value") && message.contains(name)))
+                    .is_some_and(|message| message == format!("projected-value\nupdated-value\n{name}")))
             }
         })
         .await
@@ -303,7 +320,7 @@ pub(super) async fn projected_service_account_token_waits_for_service_account(
                         .and_then(|status| status.phase.as_deref())
                         == Some("Pending")
                         && pod.status.as_ref().and_then(|status| status.message.as_deref()).is_some_and(
-                            |message| message.starts_with("waiting for projected ServiceAccount token(s)"),
+                            |message| message.starts_with("waiting for projected volume(s)"),
                         ))
                 }
             })

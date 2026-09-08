@@ -7,6 +7,25 @@ mod tests {
     }
 
     #[test]
+    fn virtual_requests_decode_protobuf_without_persisted_resource_lookup() {
+        for (group, kind, schema, value) in [
+            ("", "DeleteOptions", "io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions",
+             serde_json::json!({"preconditions":{"uid":"original-uid"}})),
+            ("authorization.k8s.io", "SelfSubjectAccessReview", "io.k8s.api.authorization.v1.SelfSubjectAccessReview",
+             serde_json::json!({"spec":{"resourceAttributes":{"verb":"get","resource":"pods"}}})),
+        ] {
+            let version = if group.is_empty() { "v1".to_string() } else { format!("{group}/v1") };
+            let raw = crate::codec::protobuf::encode_message(schema, &value).unwrap();
+            let wire = crate::codec::protobuf::wrap_unknown(&version, kind, &raw);
+            let decoded = decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", kind).unwrap();
+            for (key, expected) in value.as_object().unwrap() {
+                assert_eq!(&decoded[key], expected);
+            }
+            assert!(decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", "WrongKind").is_err());
+        }
+    }
+
+    #[test]
     fn api_root_serves_api_versions() {
         let route = route_discovery(&parts("/api"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
@@ -208,6 +227,30 @@ mod tests {
                 .as_object()
                 .is_some_and(|definitions| definitions.contains_key("io.k8s.api.core.v1.Pod"))
         );
+    }
+
+    #[test]
+    fn openapi_v2_honors_kubectl_protobuf_accept_and_quality_exclusions() {
+        assert_eq!(openapi::V2_PROTOBUF_CONTENT_TYPE, "application/com.github.proto-openapi.spec.v2.v1.0+protobuf");
+        assert_eq!(openapi::negotiate_v2(Some(openapi::V2_PROTOBUF_CONTENT_TYPE)), Some(true));
+        let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_LEGACY_ACCEPT), &[], &[]);
+        let DiscoveryRoute::FoundOpenApiProtobuf(bytes) = route else { panic!("kubectl requires gnostic protobuf") };
+        let pool = prost_reflect::DescriptorPool::decode(
+            include_bytes!(concat!(env!("OUT_DIR"), "/openapi-v2-descriptor.bin")).as_slice()
+        ).unwrap();
+        let decoded = prost_reflect::DynamicMessage::decode(
+            pool.get_message_by_name("openapi.v2.Document").unwrap(), bytes
+        ).unwrap();
+        assert_eq!(decoded.get_field_by_name("swagger").unwrap().as_str(), Some("2.0"));
+        let definitions = decoded.get_field_by_name("definitions").unwrap();
+        let entries = definitions.as_message().unwrap().get_field_by_name("additional_properties").unwrap();
+        assert!(entries.as_list().unwrap().iter().any(|entry| {
+            entry.as_message().unwrap().get_field_by_name("name").unwrap().as_str()
+                == Some("io.k8s.api.core.v1.Pod")
+        }));
+        assert_eq!(openapi::negotiate_v2(Some("application/json;q=0,*/*;q=1")), Some(true));
+        assert_eq!(openapi::negotiate_v2(Some("application/xml")), None);
+        assert!(matches!(route_discovery(&parts("/openapi/v2"), Some("application/xml"), &[], &[]), DiscoveryRoute::NotAcceptable));
     }
 
     #[test]

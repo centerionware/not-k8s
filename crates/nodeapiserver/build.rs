@@ -72,6 +72,17 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let out_dir = Path::new(&out_dir);
+    println!("cargo:rerun-if-changed=proto/openapi/v2/OpenAPIv2.proto");
+    tonic_prost_build::configure()
+        .build_server(false)
+        .build_client(false)
+        .file_descriptor_set_path(out_dir.join("openapi-v2-descriptor.bin"))
+        // Preserve the unmodified upstream descriptor, including these two
+        // standalone types not referenced by its Document test decoder.
+        .type_attribute(".openapi.v2.Default", "#[allow(dead_code)]")
+        .type_attribute(".openapi.v2.VendorExtension", "#[allow(dead_code)]")
+        .compile_protos(&["proto/openapi/v2/OpenAPIv2.proto"], &["proto"])
+        .expect("compiling the vendored gnostic OpenAPI v2 descriptor");
     std::fs::write(out_dir.join("proto_fields.rs"), proto_out).expect("writing proto_fields.rs");
     std::fs::write(out_dir.join("openapi_meta.rs"), openapi_out).expect("writing openapi_meta.rs");
     std::fs::write(out_dir.join("api_resources.rs"), discovery_out).expect("writing api_resources.rs");

@@ -28,7 +28,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 mod support;
-use support::{a_crd, find_nodestore_binary, spawn_nodestore};
+use support::{find_nodestore_binary, spawn_nodestore};
+#[path = "support/crd.rs"]
+mod crd;
+use crd::a_crd;
 
 fn conversion_crd(webhook_url: &str) -> serde_json::Value {
     json!({

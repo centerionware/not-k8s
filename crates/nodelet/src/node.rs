@@ -422,8 +422,11 @@ pub async fn register(
 ) -> Result<()> {
     let api: Api<Node> = Api::all(client.clone());
     let pp = PatchParams::apply(FIELD_MANAGER).force();
+    tracing::info!(node = %cfg.node_name, operation = "apply Node", "node registration request starting");
     api.patch(&cfg.node_name, &pp, &Patch::Apply(&build_node(cfg))).await?;
+    tracing::info!(node = %cfg.node_name, operation = "push Node status", "node registration request starting");
     push_status(client, cfg, true, extra_capacity, images, mounted_csi_volumes, runtime_handlers).await?;
+    tracing::info!(node = %cfg.node_name, operation = "renew Lease", "node registration request starting");
     renew_lease(client, cfg).await?;
 
     // k3s's cloud-node-lifecycle-controller adds this taint asynchronously

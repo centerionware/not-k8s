@@ -116,6 +116,23 @@ fn failed_projected_service_account_token_is_pending() {
 }
 
 #[test]
+fn failed_projected_configmap_is_pending() {
+    let pod = pod_with_volumes(vec![projected_token_volume("root-ca")]);
+    let mut resolved = HashMap::new();
+    resolved.insert(
+        "root-ca".to_string(),
+        ResolvedVolume::Invalid(
+            "projected volume: failed to fetch required ConfigMap source kube-root-ca.crt"
+                .to_string(),
+        ),
+    );
+    assert_eq!(
+        pending_projected_volume_names(&pod, &resolved),
+        vec!["root-ca".to_string()]
+    );
+}
+
+#[test]
 fn resolved_projected_service_account_token_is_not_pending() {
     let pod = pod_with_volumes(vec![projected_token_volume("api-token")]);
     let mut resolved = HashMap::new();

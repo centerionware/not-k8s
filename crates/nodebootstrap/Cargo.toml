@@ -65,6 +65,10 @@ serde_yaml = "0.9"
 [build-dependencies]
 tonic-prost-build = "0.14"
 
+[dev-dependencies]
+tower = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
 # Not yet used by any module -- added back as each real group lands:
 # thiserror (once needed), chrono (cert validity windows in pki.rs).
 # kubeconfig.rs deliberately hand-templates its YAML rather than pulling in

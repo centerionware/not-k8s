@@ -77,6 +77,59 @@ fn systemd_service_available(name: &str) -> bool {
         })
 }
 
+/// A systemd restart returning successfully only means the new process was
+/// spawned.  Keep the next e2e case from racing the apiserver's listener and
+/// storage initialization (especially after a guard is dropped between
+/// cases).
+///
+/// Authenticate with the cluster-admin client certificate rather than a
+/// bearer token: the `nodeapiserver-e2e-token` is only installed by the
+/// authentication overrides, and the RBAC override denies `/readyz` to it
+/// (audit logs show 401/403, never 200).  The admin certificate (x509,
+/// `system:masters`) is authorized under every override the suite installs.
+/// The probe runs through `run_privileged_output` because the private key is
+/// root-owned with mode 0600.
+fn wait_for_nodeapiserver() -> Result<()> {
+    let pki_dir = std::env::var("NODEBOOTSTRAP_PKI_DIR")
+        .unwrap_or_else(|_| "/var/lib/nodebootstrap/pki".to_string());
+    let cert = format!("{pki_dir}/admin.crt");
+    let key = format!("{pki_dir}/admin.key");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        let ready = run_privileged_output(
+            "curl",
+            &[
+                "-k",
+                "-sS",
+                "--max-time",
+                "2",
+                "--cert",
+                cert.as_str(),
+                "--key",
+                key.as_str(),
+                "-w",
+                "\n%{http_code}",
+                "https://127.0.0.1:6443/readyz?verbose",
+            ],
+        )
+        .is_ok_and(|output| {
+            if !output.status.success() {
+                return false;
+            }
+            let response = String::from_utf8_lossy(&output.stdout);
+            let Some((_, status)) = response.rsplit_once('\n') else {
+                return false;
+            };
+            status.trim() == "200"
+        });
+        if ready {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    anyhow::bail!("nodeapiserver did not become ready within 60 seconds after restart")
+}
+
 fn crd_is_established(crd: &CustomResourceDefinition) -> bool {
     crd.status.as_ref().is_some_and(|status| {
         status.conditions.as_ref().is_some_and(|conditions| {
@@ -130,6 +183,7 @@ impl NodeapiserverAdmissionPluginOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -140,6 +194,7 @@ impl Drop for NodeapiserverAdmissionPluginOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
     }
 }
 
@@ -193,6 +248,7 @@ impl NodeapiserverPodNodeSelectorOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -205,6 +261,7 @@ impl Drop for NodeapiserverPodNodeSelectorOverride {
         let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
     }
 }
 
@@ -247,6 +304,7 @@ impl NodeapiserverAuthenticationOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 
@@ -288,6 +346,7 @@ impl NodeapiserverAuthenticationOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -298,6 +357,7 @@ impl Drop for NodeapiserverAuthenticationOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
         let _ = fs::remove_file(&self.token_file);
     }
 }
@@ -356,6 +416,7 @@ impl NodeapiserverAuthorizationWebhookOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -368,6 +429,7 @@ impl Drop for NodeapiserverAuthorizationWebhookOverride {
         let _ = run_privileged("rm", &["-f", config_file.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
     }
 }
 
@@ -420,6 +482,7 @@ impl NodeapiserverAuditLogOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -430,6 +493,7 @@ impl Drop for NodeapiserverAuditLogOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
         let _ = fs::remove_file(&self.audit_log);
         for index in 1..=self.max_backups {
             let backup = PathBuf::from(format!("{}.{}", self.audit_log.display(), index));
@@ -484,6 +548,7 @@ impl NodeapiserverAuditWebhookOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 
@@ -521,6 +586,7 @@ impl NodeapiserverAuditWebhookOverride {
         run_privileged("systemctl", &["daemon-reload"])?;
         run_privileged("systemctl", &["reset-failed", "nodeapiserver.service"])?;
         run_privileged("systemctl", &["restart", "nodeapiserver.service"])?;
+        wait_for_nodeapiserver()?;
         Ok(guard)
     }
 }
@@ -531,6 +597,7 @@ impl Drop for NodeapiserverAuditWebhookOverride {
         let _ = run_privileged("rm", &["-f", drop_in.as_ref()]);
         let _ = run_privileged("systemctl", &["daemon-reload"]);
         let _ = run_privileged("systemctl", &["restart", "nodeapiserver.service"]);
+        let _ = wait_for_nodeapiserver();
         if let Some(policy_file) = &self.policy_file {
             let _ = fs::remove_file(policy_file);
         }
@@ -964,6 +1031,63 @@ pub(super) async fn nodeapiserver_target_is_serving(context: &E2eContext) -> Res
             && openapi_v2["definitions"].as_object().is_some_and(|definitions| !definitions.is_empty()),
         "nodeapiserver OpenAPI v2 response was not a populated Swagger document"
     );
+    Ok(())
+}
+
+pub(super) async fn kubectl_apply_uses_openapi_schema(context: &E2eContext) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    // Newer kubectl can prefer v3 and miss a broken v2 response header.
+    // Check the legacy client-go request explicitly, independent of the
+    // installed kubectl version. '@' is accepted but must never be emitted.
+    for accept in ["application/com.github.proto-openapi.spec.v2@v1.0+protobuf",
+                   "application/com.github.proto-openapi.spec.v2.v1.0+protobuf"] {
+        let response = context.client.send(Request::builder().uri("/openapi/v2")
+            .header("Accept", accept).body(kube::client::Body::from(Vec::new()))?).await?;
+        anyhow::ensure!(response.status().is_success(), "OpenAPI v2 request failed: {}", response.status());
+        anyhow::ensure!(response.headers().get("Content-Type").and_then(|v| v.to_str().ok())
+            == Some("application/com.github.proto-openapi.spec.v2.v1.0+protobuf"),
+            "OpenAPI v2 must return the valid MIME subtype, not the legacy Accept spelling");
+    }
+    let rejected = context.client.send(Request::builder().uri("/openapi/v2")
+        .header("Accept", "application/xml").body(kube::client::Body::from(Vec::new()))?).await?;
+    anyhow::ensure!(rejected.status().as_u16() == 406, "unsupported OpenAPI media must return 406");
+    anyhow::ensure!(rejected.headers().get("Vary").and_then(|v| v.to_str().ok()) == Some("Accept"),
+        "OpenAPI rejection must vary on Accept just like successful negotiation");
+    let cfg = crate::config::Config::from_env()?;
+    let kubeconfig = std::env::var_os("KUBECONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cfg.kubeconfig_dir().join("admin.kubeconfig"));
+    let mut manifest = json!({
+        "apiVersion":"apps/v1", "kind":"Deployment",
+        "metadata":{"name":"openapi-apply", "namespace":context.namespace},
+        "spec":{"replicas":0, "selector":{"matchLabels":{"app":"openapi-apply"}},
+            "template":{"metadata":{"labels":{"app":"openapi-apply"}},
+                "spec":{"containers":[{"name":"web", "image":"busybox:1.36"}]}}}
+    });
+    // Use kubectl's default validation and client-side apply on both CREATE
+    // and PATCH. A JSON-only /openapi/v2 endpoint fails its gnostic decoder.
+    for image in ["busybox:1.36", "busybox:1.37"] {
+        manifest["spec"]["template"]["spec"]["containers"][0]["image"] = json!(image);
+        let mut child = tokio::process::Command::new("kubectl")
+            .env("KUBECONFIG", &kubeconfig)
+            .args(["apply", "--request-timeout=30s", "-f", "-"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .kill_on_drop(true).spawn().context("starting kubectl apply")?;
+        let mut stdin = child.stdin.take().context("kubectl stdin missing")?;
+        stdin.write_all(&serde_json::to_vec(&manifest)?).await?;
+        drop(stdin);
+        let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+            .await.context("kubectl apply timed out")??;
+        anyhow::ensure!(output.status.success(), "kubectl apply failed: {}{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
+        let deployed = deployments.get("openapi-apply").await?;
+        let containers = deployed.spec.context("Deployment spec missing")?
+            .template.spec.context("Pod template spec missing")?.containers;
+        anyhow::ensure!(containers.len() == 1 && containers[0].image.as_deref() == Some(image),
+            "kubectl apply did not preserve and update the named container");
+    }
     Ok(())
 }
 
@@ -2357,11 +2481,6 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
             }
         }
     }))?;
-    let service_account: ServiceAccount = serde_json::from_value(json!({
-        "apiVersion": "v1",
-        "kind": "ServiceAccount",
-        "metadata": {"name": "default", "namespace": &namespace_name}
-    }))?;
     let pod: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -2377,10 +2496,16 @@ pub(super) async fn nodeapiserver_applies_namespace_node_selector(
             .create(&PostParams::default(), &namespace)
             .await
             .context("creating the PodNodeSelector namespace")?;
-        service_accounts
-            .create(&PostParams::default(), &service_account)
-            .await
-            .context("creating the PodNodeSelector ServiceAccount")?;
+        context
+            .wait_until(
+                "the PodNodeSelector namespace's default ServiceAccount",
+                Duration::from_secs(30),
+                || {
+                    let service_accounts = service_accounts.clone();
+                    async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+                },
+            )
+            .await?;
         let created = pods
             .create(&PostParams::default(), &pod)
             .await
@@ -6925,6 +7050,79 @@ pub(super) async fn nodeapiserver_honors_dry_run_and_delete_preconditions(contex
     anyhow::ensure!(configmaps.get(&name).await.is_ok(), "a failed delete precondition removed the object");
     configmaps.delete(&name, &DeleteParams::default()).await.context("cleaning up the delete-precondition fixture")?;
     anyhow::ensure!(!resource_version.is_empty(), "fixture resourceVersion was empty");
+    protobuf_reviews_and_secret_writes(context).await?;
+    Ok(())
+}
+
+/// Exercise the actual wire shapes used by kubectl, cert-manager and Helm.
+async fn protobuf_reviews_and_secret_writes(context: &E2eContext) -> Result<()> {
+    use prost::Message;
+    #[derive(Clone, PartialEq, Message)]
+    struct TypeMeta {
+        #[prost(string, tag = "1")]
+        api_version: String,
+        #[prost(string, tag = "2")]
+        kind: String,
+    }
+    #[derive(Clone, PartialEq, Message)]
+    struct Unknown {
+        #[prost(message, optional, tag = "1")]
+        type_meta: Option<TypeMeta>,
+        #[prost(bytes = "vec", tag = "2")]
+        raw: Vec<u8>,
+    }
+    let envelope = |version: &str, kind: &str, raw: Vec<u8>| {
+        let mut wire = b"k8s\0".to_vec();
+        wire.extend(Unknown {
+            type_meta: Some(TypeMeta { api_version: version.into(), kind: kind.into() }),
+            raw,
+        }.encode_to_vec());
+        wire
+    };
+    // spec(2) -> resourceAttributes(1) -> verb(2)="get", resource(5)="pods".
+    let review = envelope("authorization.k8s.io/v1", "SelfSubjectAccessReview",
+        b"\x12\x0d\x0a\x0b\x12\x03get\x2a\x04pods".to_vec());
+    let request = Request::builder().method("POST")
+        .uri("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews")
+        .header("content-type", "application/vnd.kubernetes.protobuf")
+        .header("accept", "application/json").body(review)?;
+    let response: Value = context.client.request(request).await.context("protobuf access review")?;
+    anyhow::ensure!(response["status"]["allowed"] == true, "admin access review was denied: {response}");
+
+    let path = format!("/api/v1/namespaces/{}/secrets", context.namespace);
+    let mut secret = json!({"apiVersion":"v1", "kind":"Secret",
+        "metadata":{"name":"helm-unconditional-update"}, "type":"Opaque", "data":{"release":"b2xk"}});
+    let request = Request::builder().method("POST").uri(&path)
+        .header("content-type", "application/json").body(serde_json::to_vec(&secret)?)?;
+    let created: Value = context.client.request(request).await?;
+    let path = format!("{path}/helm-unconditional-update");
+    secret["data"]["release"] = json!("bmV3");
+    let request = Request::builder().method("PUT").uri(&path)
+        .header("content-type", "application/json").body(serde_json::to_vec(&secret)?)?;
+    let updated: Value = context.client.request(request).await.context("Helm-shaped unconditional Secret update")?;
+    anyhow::ensure!(updated["data"]["release"] == "bmV3" && updated["metadata"]["uid"] == created["metadata"]["uid"], "Secret update lost data or identity: {updated}");
+    for metadata in [
+        json!({"name":"helm-unconditional-update", "resourceVersion":created["metadata"]["resourceVersion"]}),
+        json!({"name":"helm-unconditional-update", "uid":"wrong-uid"}),
+    ] {
+        secret["metadata"] = metadata;
+        let request = Request::builder().method("PUT").uri(&path)
+            .header("content-type", "application/json").body(serde_json::to_vec(&secret)?)?;
+        match context.client.request::<Value>(request).await {
+            Err(KubeError::Api(error)) if error.code == 409 => {}
+            other => anyhow::bail!("conditional Secret update must conflict: {other:?}"),
+        }
+    }
+    let request = Request::builder().method("DELETE").uri(&path)
+        .header("content-type", "application/vnd.kubernetes.protobuf")
+        .header("accept", "application/json")
+        .body(envelope("v1", "DeleteOptions", Vec::new()))?;
+    let _: Value = context.client.request(request).await.context("protobuf Secret delete")?;
+    let request = Request::builder().uri(&path).body(Vec::new())?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 404 => {}
+        other => anyhow::bail!("protobuf delete left the Secret behind: {other:?}"),
+    }
     Ok(())
 }
 

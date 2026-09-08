@@ -10,7 +10,8 @@ macro_rules! handle_watch {
         $is_get:ident, $is_list:ident, $is_create:ident,
         $is_delete:ident, $is_update:ident, $is_watch:ident,
         $is_certificate_status_subresource:ident,
-        $wants_partial_metadata:ident, $has_body:ident
+        $wants_partial_metadata:ident, $has_body:ident,
+        $watch_kill:ident
     ) => {{
     // Group D/E: real `WATCH`, served purely from an already-registered
     // `cacher::CacheRegistry` cache. A live cache already holds
@@ -150,6 +151,44 @@ macro_rules! handle_watch {
             match watch_result {
                 Ok((replay, rx)) => {
                     let group_version = if $info.api_group.is_empty() { $info.api_version.clone() } else { format!("{}/{}", $info.api_group, $info.api_version) };
+                    // Only a bookmark-negotiated watch is promised the
+                    // cache's periodic progress heartbeat, so only it gets
+                    // the connection-level idle watchdog (`watch_idle`); a
+                    // connection that never asked for bookmarks keeps the
+                    // previous contract — open until its own
+                    // `timeoutSeconds` or a `Lagged` end — rather than
+                    // being churned on every quiet stretch. The kill
+                    // switch comes from this connection's request
+                    // extensions (installed by the listener's connection
+                    // task in `server::listener::run`); its absence means
+                    // no watchdog for this watch, same as no bookmarks.
+                    let idle = if watch_options.allow_watch_bookmarks {
+                        $watch_kill
+                            .clone()
+                            .map(|kill| {
+                                // Identity for the watchdog's diagnostics:
+                                // which resource this watch was on, and
+                                // which client (user-agent, same fallback
+                                // `request_field_manager` already uses).
+                                let resource = if $info.api_group.is_empty() {
+                                    format!("{}/{}", $info.api_version, $info.resource)
+                                } else {
+                                    format!("{}/{}/{}", $info.api_group, $info.api_version, $info.resource)
+                                };
+                                let client = $request_field_manager
+                                    .clone()
+                                    .unwrap_or_default();
+                                // The watch's own `timeoutSeconds` becomes
+                                // the watchdog's deadline: ending the stream
+                                // in-body is not reliably delivered to the
+                                // client (see `watch_stream`), so the
+                                // watchdog closes the connection instead,
+                                // which triggers the same client relist.
+                                WatchIdleGuard::spawn(kill, resource, client, watch_options.timeout)
+                            })
+                    } else {
+                        None
+                    };
                     let body = if initial_events.is_some() {
                         watch_response_body_with_initial_events(
                             replay,
@@ -167,6 +206,7 @@ macro_rules! handle_watch {
                             watch_options.timeout,
                             conversion_webhook,
                             initial_events,
+                            idle,
                         )
                     } else {
                         watch_response_body(
@@ -184,6 +224,7 @@ macro_rules! handle_watch {
                             watch_options.allow_watch_bookmarks,
                             watch_options.timeout,
                             conversion_webhook,
+                            idle,
                         )
                     };
                     // No explicit `Transfer-Encoding` header: hyper's own

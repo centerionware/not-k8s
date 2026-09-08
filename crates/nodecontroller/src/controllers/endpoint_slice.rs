@@ -1,6 +1,15 @@
 //! endpointslice-controller (Group B, service routing): watches Service +
-//! Pod, produces EndpointSlices. Pure event — a Pod either matches a
-//! Service's selector or it doesn't, nothing to poll.
+//! Pod, produces EndpointSlices. Mostly event-driven — a Pod either
+//! matches a Service's selector or it doesn't — with one bounded
+//! safety-net resync (see [`RESYNC_INTERVAL`]): the shared informers'
+//! upstream connections can each stall for their whole timeout window
+//! delivering nothing without any error surfacing here, so a Service
+//! left with an empty EndpointSlice by a missed Pod event would
+//! otherwise stay wrong forever. The resync refreshes both local caches
+//! from fresh LISTs and re-enqueues every known Service, so the gap
+//! self-heals within one period; reconciliation is keyed and
+//! deduplicated and an unchanged server-side apply is an apiserver
+//! no-op, so the poll is cheap.
 //!
 //! `nodeproxy`'s `svc.rs` only *consumes* EndpointSlices (Service +
 //! EndpointSlice watch, no periodic resync) — this is the piece that
@@ -42,7 +51,7 @@ use k8s_openapi::api::core::v1::{Pod, Service, ServicePort};
 use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort, EndpointSlice};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{BTreeMap, HashMap};
@@ -50,6 +59,15 @@ use std::collections::{BTreeMap, HashMap};
 const SERVICE_NAME_LABEL: &str = "kubernetes.io/service-name";
 const MANAGED_BY_LABEL: &str = "endpointslice.kubernetes.io/managed-by";
 const MANAGED_BY_VALUE: &str = "nodecontroller";
+
+/// Safety-net cadence for [`resync_pods_and_services`]. Well under the
+/// informers' 290s watch timeout (the longest a stalled connection can
+/// go without any event — see the module doc), and long enough that the
+/// per-tick work — one pod LIST plus one service LIST plus a
+/// deduplicated re-enqueue, unchanged applies being apiserver-side
+/// no-ops — stays negligible against a live cluster's own event
+/// traffic.
+const RESYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Does `selector` match `labels`? Every key in `selector` must be present
 /// in `labels` with an equal value. An empty/absent selector means "this
@@ -305,9 +323,18 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
     let mut svc_stream = crate::watch::watch_services(&client);
     let mut pod_stream = crate::watch::watch_pods(&client);
+    let mut resync = tokio::time::interval(RESYNC_INTERVAL);
+    resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Skip the immediate first tick: the informers' own initial LISTs just
+    // populated the caches, so a resync at t=0 would only add to the
+    // startup burst the watch layer already admission-controls.
+    resync.tick().await;
 
     loop {
         tokio::select! {
+            _ = resync.tick() => {
+                resync_pods_and_services(&client, &mut services, &mut pods, &queue).await;
+            }
             ev = svc_stream.next() => {
                 match ev {
                     Some(Ok(Event::Apply(svc))) | Some(Ok(Event::InitApply(svc))) => {
@@ -352,6 +379,62 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 }
             }
         }
+    }
+}
+
+/// Bounded safety-net resync behind the watch-driven fast path. A missed
+/// event leaves its Service's EndpointSlice wrong with no further event
+/// to correct it — the shared informers' upstream watches can each
+/// deliver nothing for their whole timeout window (observed live: a pod
+/// watch went 290s with zero events while sibling connections flowed,
+/// only recovering when its reconnect was told its RV was too old and it
+/// relisted). Refreshing both local caches from fresh LISTs and
+/// re-enqueueing every known Service bounds that staleness to one
+/// [`RESYNC_INTERVAL`] regardless of the informers' own recovery. The
+/// enqueued work is keyed and deduplicated, and `reconcile_service`'s
+/// server-side apply of an unchanged slice is an apiserver no-op, so this
+/// stays cheap even when nothing has actually drifted.
+///
+/// A LIST failure or timeout keeps the previous cache and only skips that
+/// half of the tick (a warn, not a panic): the event path keeps the cache
+/// fresh in the common case, and the next tick retries.
+async fn resync_pods_and_services(
+    client: &Client,
+    services: &mut HashMap<String, Service>,
+    pods: &mut HashMap<String, Pod>,
+    queue: &KeyedWorkQueue<String>,
+) {
+    let pod_api: Api<Pod> = Api::all(client.clone());
+    match tokio::time::timeout(RESYNC_INTERVAL, pod_api.list(&ListParams::default())).await {
+        Ok(Ok(list)) => {
+            pods.clear();
+            pods.extend(list.items.into_iter().map(|pod| (pod_key(&pod), pod)));
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = ?e, "endpointslice resync pod LIST failed; keeping the cached pod set");
+        }
+        Err(_) => {
+            tracing::warn!("endpointslice resync pod LIST timed out; keeping the cached pod set");
+        }
+    }
+    let svc_api: Api<Service> = Api::all(client.clone());
+    match tokio::time::timeout(RESYNC_INTERVAL, svc_api.list(&ListParams::default())).await {
+        Ok(Ok(list)) => {
+            services.clear();
+            services.extend(list.items.into_iter().map(|svc| {
+                let key = format!("{}/{}", svc.namespace().unwrap_or_default(), svc.name_any());
+                (key, svc)
+            }));
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = ?e, "endpointslice resync service LIST failed; keeping the cached service set");
+        }
+        Err(_) => {
+            tracing::warn!("endpointslice resync service LIST timed out; keeping the cached service set");
+        }
+    }
+    for key in services.keys() {
+        queue.enqueue(key.clone());
     }
 }
 

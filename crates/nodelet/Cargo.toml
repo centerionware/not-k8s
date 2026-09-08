@@ -64,6 +64,7 @@ x509-parser = { version = "0.16", optional = true }
 tonic-prost-build = { version = "0.14", optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 http = "1"
 tower = { workspace = true, features = ["util"] }
 

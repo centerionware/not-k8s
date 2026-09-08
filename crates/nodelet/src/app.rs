@@ -59,9 +59,18 @@ pub async fn run() -> Result<()> {
     // kubeconfig before the real client below is built.
     nodelet::bootstrap::run(&cfg).await.context("TLS bootstrap")?;
 
-    let client = kube::Client::try_default()
+    // Keep the heartbeat/status writer on its own HTTP connection pool. The
+    // main client is shared by the pod and informer watches; when those
+    // long-lived streams reconnect together, a short node Lease or status
+    // request must not wait behind them. The two clients use the same
+    // credentials and TLS settings, but deliberately do not share a transport.
+    let kube_config = kube::Config::infer()
         .await
-        .context("building kube client (is KUBECONFIG set and the apiserver reachable?)")?;
+        .context("inferring kube client config (is KUBECONFIG set and the apiserver reachable?)")?;
+    let client = kube::Client::try_from(kube_config.clone())
+        .context("building kube watch client")?;
+    let heartbeat_client = kube::Client::try_from(kube_config)
+        .context("building kube heartbeat client")?;
 
     // Pick the runtime. Mock needs nothing; CRI needs the `cri` feature + containerd
     // (and the kube Client, to resolve ConfigMap/Secret volumes — CRI itself has
@@ -118,7 +127,7 @@ pub async fn run() -> Result<()> {
     }
 
     // Cheap, frequent liveness (Lease) decoupled from infrequent full status push.
-    tokio::spawn(heartbeat_loop(client.clone(), cfg.clone(), runtime.clone()));
+    tokio::spawn(heartbeat_loop(heartbeat_client, cfg.clone(), runtime.clone()));
 
     // Coarse periodic housekeeping (orphaned sandboxes, unreferenced
     // images) — a no-op on the mock runtime, see PodRuntime::gc()'s default.
@@ -533,30 +542,55 @@ async fn log_rotate_loop(runtime: Arc<dyn PodRuntime>, cfg: Config) {
 
 /// Renew the Lease every `heartbeat`; push full node status every `status_interval`.
 async fn heartbeat_loop(client: kube::Client, cfg: Config, runtime: Arc<dyn PodRuntime>) {
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     let mut last_status = Instant::now();
     loop {
         tokio::time::sleep(cfg.heartbeat).await;
 
-        if let Err(e) = node::renew_lease(&client, &cfg).await {
-            warn!(error = ?e, "lease renewal failed");
+        match tokio::time::timeout(REQUEST_TIMEOUT, node::renew_lease(&client, &cfg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = ?e, "lease renewal failed"),
+            Err(_) => warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "lease renewal timed out"),
         }
 
         if last_status.elapsed() >= cfg.status_interval {
-            let images = runtime.node_images().await.unwrap_or_default();
-            let runtime_handlers = runtime.runtime_handlers().await.unwrap_or_default();
-            match node::push_status(
+            let images = match tokio::time::timeout(REQUEST_TIMEOUT, runtime.node_images()).await {
+                Ok(Ok(images)) => images,
+                Ok(Err(e)) => {
+                    warn!(error = ?e, "CRI image inventory failed during heartbeat; continuing with an empty image list");
+                    Vec::new()
+                }
+                Err(_) => {
+                    warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "CRI image inventory timed out during heartbeat; continuing with an empty image list");
+                    Vec::new()
+                }
+            };
+            let runtime_handlers = match tokio::time::timeout(REQUEST_TIMEOUT, runtime.runtime_handlers()).await {
+                Ok(Ok(handlers)) => handlers,
+                Ok(Err(e)) => {
+                    warn!(error = ?e, "CRI runtime-handler query failed during heartbeat; continuing with no runtime handlers");
+                    Vec::new()
+                }
+                Err(_) => {
+                    warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "CRI runtime-handler query timed out during heartbeat; continuing with no runtime handlers");
+                    Vec::new()
+                }
+            };
+            let device_plugin_capacity = runtime.device_plugin_capacity();
+            let mounted_csi_volumes = runtime.mounted_csi_volumes();
+            let status = node::push_status(
                 &client,
                 &cfg,
                 true,
-                &runtime.device_plugin_capacity(),
+                &device_plugin_capacity,
                 images,
-                &runtime.mounted_csi_volumes(),
+                &mounted_csi_volumes,
                 &runtime_handlers,
-            )
-            .await
-            {
-                Ok(()) => info!("node status pushed"),
-                Err(e) => warn!(error = ?e, "node status push failed"),
+            );
+            match tokio::time::timeout(REQUEST_TIMEOUT, status).await {
+                Ok(Ok(())) => info!("node status pushed"),
+                Ok(Err(e)) => warn!(error = ?e, "node status push failed"),
+                Err(_) => warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "node status push timed out"),
             }
             last_status = Instant::now();
         }

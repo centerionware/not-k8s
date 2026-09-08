@@ -343,7 +343,7 @@ pub async fn list_at_revision(
             ..Default::default()
         })
         .await?;
-    let revision = resp.header.map(|h| h.revision).unwrap_or(at_revision);
+    let revision = list_snapshot_revision(at_revision, resp.header.map(|h| h.revision));
     // Real upstream's own documented caveat applies here too: filtering by
     // label/field selector happens *after* the limited range fetch, so a
     // page can legitimately come back with fewer than `limit` items (or
@@ -433,6 +433,13 @@ fn encode_continue_token(resume_key: &[u8], revision: i64) -> String {
     buf.push(0);
     buf.extend_from_slice(revision.to_string().as_bytes());
     base64::engine::general_purpose::STANDARD.encode(buf)
+}
+
+fn list_snapshot_revision(requested: i64, current: Option<i64>) -> i64 {
+    // etcd's header reports the CURRENT store revision even for a historical
+    // Range. A continuation page must keep the original snapshot revision:
+    // advertising a newer RV would skip intervening writes in LIST/WATCH.
+    if requested > 0 { requested } else { current.unwrap_or(0) }
 }
 
 /// The inverse of [`encode_continue_token`]. `None` for anything

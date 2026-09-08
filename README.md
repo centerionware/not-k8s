@@ -123,7 +123,13 @@ full unfiltered suite against a fresh cluster with no k3s installation.
 
 ## Profiling
 
-[`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results)
+[Profiling guide](docs/PROFILING.md): build and flamegraph all components on one
+runner, or compare selected components/whole stacks against Kubernetes or k3s
+without perf overhead. Branches and release tags are supported.
+
+Each completed run publishes a README with embedded graphs and its source data
+to [`profiling-results`](https://github.com/centerionware/not-k8s/tree/profiling-results).
+Stack profiles also include SVG flamegraphs and compressed raw profiling data.
 
 ## Learn more
 

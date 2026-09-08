@@ -28,9 +28,28 @@
 
 use crate::authz::rbac::PolicyRule;
 use crate::authz::subject::{first_applicable_subject, Subject, SubjectKind};
+use crate::cacher::registry::RbacRevisionSignature;
 use crate::server::rest::{self, GetOutcome, ListOutcome};
 use crate::storage::client::StorageClient;
 use serde_json::Value;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
+
+/// Authorization is on the hot path for every request when RBAC is enabled.
+/// Re-reading all RBAC bindings from nodestore for every GET/LIST made a busy
+/// cluster spend thousands of Range calls per 30 seconds just resolving the
+/// same controller identities, starving lease renewals and other writes.
+///
+struct CachedSnapshot {
+    signature: RbacRevisionSignature,
+    snapshot: Snapshot,
+}
+
+static SNAPSHOT_CACHE: OnceLock<Mutex<Option<CachedSnapshot>>> = OnceLock::new();
+
+fn snapshot_cache() -> &'static Mutex<Option<CachedSnapshot>> {
+    SNAPSHOT_CACHE.get_or_init(|| Mutex::new(None))
+}
 
 const GROUP: &str = "rbac.authorization.k8s.io";
 const VERSION: &str = "v1";
@@ -64,6 +83,13 @@ pub async fn load_snapshot(storage: &mut StorageClient) -> Result<Snapshot, Stri
         .current_revision()
         .await
         .map_err(|error| format!("reading the RBAC snapshot revision: {error}"))?;
+    load_snapshot_at_revision(storage, revision).await
+}
+
+async fn load_snapshot_at_revision(
+    storage: &mut StorageClient,
+    revision: i64,
+) -> Result<Snapshot, String> {
     Ok(Snapshot {
         cluster_role_bindings: snapshot_list(storage, "clusterrolebindings", None, revision).await?,
         cluster_roles: snapshot_list(storage, "clusterroles", None, revision).await?,
@@ -142,15 +168,40 @@ fn object_name(object: &Value) -> &str {
 /// are consulted then, matching upstream's own `if len(namespace) > 0`
 /// guard around the `RoleBinding` half).
 ///
-/// Authorization must use a fresh, internally consistent policy snapshot.
-/// The watch cache is intentionally not used here: it is valid for ordinary
-/// read latency optimization, but a cache can report `has_synced()` while it
-/// is still behind a just-committed RoleBinding or ClusterRole. That race
-/// turns a valid service-account request into a transient 403 during
-/// controller startup. Read one MVCC revision and use it for every RBAC
-/// list/get below, so bindings and the roles they reference come from the
-/// same store snapshot.
-pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups: &[String], namespace: &str) -> Resolved {
+/// Authorization uses one internally consistent MVCC snapshot, but does not
+/// transfer that snapshot for every request. Every request checks the four
+/// informer revision counters in-process; only a changed counter invalidates
+/// the cached snapshot and causes a fresh storage read. Until all four caches
+/// have completed their initial LIST, the direct path below remains the safe
+/// bootstrap behavior.
+pub async fn rules_for(
+    storage: &mut StorageClient,
+    user_name: &str,
+    user_groups: &[String],
+    namespace: &str,
+    cache_registry: Option<&crate::cacher::CacheRegistry>,
+) -> Resolved {
+    if let Some(registry) = cache_registry {
+        if let Some(signature) = registry.rbac_revision_signature() {
+            {
+                let mut cache = snapshot_cache().lock().await;
+                if let Some(cached) = cache.as_ref().filter(|cached| cached.signature == signature) {
+                    return cached.snapshot.rules_for(user_name, user_groups, namespace);
+                }
+                // Holding this async mutex across the refresh coalesces a burst
+                // of requests after one RBAC event into one four-resource
+                // snapshot load. It is never held across the normal cached
+                // hot path. The scope is intentional: a failed refresh must
+                // release the coalescing lock before the direct fallback below.
+                if let Ok(snapshot) = load_snapshot(storage).await {
+                    let resolved = snapshot.rules_for(user_name, user_groups, namespace);
+                    *cache = Some(CachedSnapshot { signature, snapshot });
+                    return resolved;
+                }
+            }
+        }
+    }
+
     let mut resolved = Resolved::default();
     let revision = match storage.current_revision().await {
         Ok(revision) => revision,
@@ -162,8 +213,8 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
 
     match rest::list_at_revision(storage, None, GROUP, VERSION, "clusterrolebindings", None, "", "", 0, "", revision).await {
         Ok(ListOutcome::Found(list)) => {
-            for item in list["items"].as_array().cloned().unwrap_or_default() {
-                accumulate_binding(storage, &item, user_name, user_groups, "", revision, &mut resolved).await;
+            for item in list["items"].as_array().into_iter().flatten() {
+                accumulate_binding(storage, item, user_name, user_groups, "", revision, &mut resolved).await;
             }
         }
         Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("clusterrolebindings is unknown to this build".to_string()),
@@ -173,8 +224,8 @@ pub async fn rules_for(storage: &mut StorageClient, user_name: &str, user_groups
     if !namespace.is_empty() {
         match rest::list_at_revision(storage, None, GROUP, VERSION, "rolebindings", Some(namespace), "", "", 0, "", revision).await {
             Ok(ListOutcome::Found(list)) => {
-                for item in list["items"].as_array().cloned().unwrap_or_default() {
-                    accumulate_binding(storage, &item, user_name, user_groups, namespace, revision, &mut resolved).await;
+                for item in list["items"].as_array().into_iter().flatten() {
+                    accumulate_binding(storage, item, user_name, user_groups, namespace, revision, &mut resolved).await;
                 }
             }
             Ok(ListOutcome::UnknownResource) | Ok(ListOutcome::InvalidContinueToken) => resolved.errors.push("rolebindings is unknown to this build".to_string()),

@@ -135,7 +135,14 @@ fn watch_event_matches_selector(
 /// the channel's bounded capacity) ends the stream rather than skipping
 /// silently past the gap — real kube-apiserver's own posture for a
 /// watcher that falls too far behind: close the connection, the client's
-/// own `client-go` Reflector relists. `StreamBody`/`Frame` come from
+/// own `client-go` Reflector relists. A bookmark-negotiated connection
+/// that produces nothing at all for [`WATCH_IDLE_SILENCE_LIMIT`] is
+/// likewise recovered server-side — but at the *connection* level, by the
+/// watchdog in `watch_idle`, not by anything in this body (see that
+/// module's doc comment for why an in-body timer cannot detect a dead
+/// feed). This body's only jobs are to bump the watchdog's frame tracker
+/// on every frame it produces and to stop the watchdog when it ends.
+/// `StreamBody`/`Frame` come from
 /// `http_body_util`/`hyper::body` — `BoxedBody` (a boxed `http_body::Body`
 /// trait object) is what lets this coexist with every other, non-streaming
 /// `Response<BoxedBody>` this listener already returns; hyper's own h1/h2
@@ -157,6 +164,7 @@ fn watch_response_body(
     allow_watch_bookmarks: bool,
     timeout: Option<std::time::Duration>,
     conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
+    idle: Option<WatchIdleGuard>,
 ) -> BoxedBody {
     watch_response_body_with_initial_events(
         replay,
@@ -174,6 +182,7 @@ fn watch_response_body(
         timeout,
         conversion_webhook,
         None,
+        idle,
     )
 }
 
@@ -193,6 +202,7 @@ fn watch_response_body_with_initial_events(
     timeout: Option<std::time::Duration>,
     conversion_webhook: Option<crate::apiextensions::registry::ConversionWebhook>,
     initial_events: Option<(Vec<crate::cacher::store::WatchEvent>, i64)>,
+    idle: Option<WatchIdleGuard>,
 ) -> BoxedBody {
     use http_body_util::{BodyExt, StreamBody};
     use tokio_stream::StreamExt;
@@ -216,9 +226,26 @@ fn watch_response_body_with_initial_events(
         None => Box::pin(tokio_stream::empty()),
     };
     let replay_stream = tokio_stream::iter(replay).map(|event| (event, false));
-    let live_stream = BroadcastStream::new(rx)
-        .map_while(|res| res.ok())
-        .map(|event| (event, false));
+    // The one silent way the live half of a watch body can end without
+    // this function returning: `Lagged` (the watcher fell behind the
+    // cache's bounded broadcast) or `Closed` (the cache was dropped or
+    // replaced). That ends the stream and the client relists, but it must
+    // show up in the journals — a silently-terminated stream would
+    // otherwise be indistinguishable from a healthy-but-quiet watch, which
+    // is exactly the ambiguity the idle watchdog's diagnostics (see
+    // `watch_idle`) exist to resolve.
+    let live_stream = {
+        let live_diag = format!("{group}/{version}/{resource}");
+        BroadcastStream::new(rx)
+            .map_while(move |res| match res {
+                Ok(event) => Some(event),
+                Err(e) => {
+                    tracing::debug!(target: "nk_watch_trace", boundary = "live_stream_ended", resource = %live_diag, error = ?e, "watch: live event stream ended; client will relist");
+                    None
+                }
+            })
+            .map(|event| (event, false))
+    };
     let events = initial_stream
         .chain(replay_stream)
         .chain(live_stream)
@@ -227,11 +254,27 @@ fn watch_response_body_with_initial_events(
                 || *initial_events_end
                 || event.kind != crate::cacher::store::EventKind::Bookmark
         });
+    // The `timeoutSeconds` bound. A bookmark-negotiated watch (which always
+    // carries a connection-level watchdog, `idle`) gets the bound from the
+    // watchdog instead of this in-body `take_until`: ending the stream here
+    // depends on hyper re-polling a body that a quiet feed leaves parked,
+    // so the final EOF is not reliably delivered — observed live as a watch
+    // that ended server-side on schedule while the client hung on an EOF
+    // that never arrived until its own idle timeout. The watchdog fires the
+    // per-connection kill switch at the deadline, which the client observes
+    // as a connection close and recovers from with the same relist, and
+    // which is driven by tokio's timer regardless of what hyper is doing
+    // with the body. Watches that never negotiated bookmarks keep the
+    // in-body end (there is no watchdog to own the bound for them).
     let events: WatchEventStream = if let Some(timeout) = timeout {
-        Box::pin(futures::StreamExt::take_until(
-            events,
-            tokio::time::sleep(timeout),
-        ))
+        if idle.is_none() {
+            Box::pin(futures::StreamExt::take_until(
+                events,
+                tokio::time::sleep(timeout),
+            ))
+        } else {
+            Box::pin(events)
+        }
     } else {
         Box::pin(events)
     };
@@ -265,7 +308,8 @@ fn watch_response_body_with_initial_events(
                 initial_events_end,
             )
         });
-        return StreamBody::new(frames).boxed();
+        let body = StreamBody::new(frames).boxed();
+        return wrap_idle_tracking(body, idle);
     }
 
     let events: WatchEventStream = Box::pin(filtered);
@@ -283,7 +327,80 @@ fn watch_response_body_with_initial_events(
             conversion_webhook,
         })),
     };
-    StreamBody::new(stream).boxed()
+    wrap_idle_tracking(StreamBody::new(stream).boxed(), idle)
+}
+
+/// Wraps a watch response body so it participates in the connection-level
+/// idle bound (`watch_idle`): every frame it produces bumps the watchdog's
+/// tracker, and when the body ends — or is dropped, which is how hyper
+/// tears down a response whose stream never completes — it fires the stop
+/// signal so the watchdog exits without killing the connection for a watch
+/// that is already gone.
+fn wrap_idle_tracking(body: BoxedBody, idle: Option<WatchIdleGuard>) -> BoxedBody {
+    use http_body_util::BodyExt as _;
+    match idle {
+        Some(guard) => IdleWatchBody {
+            inner: body,
+            tracker: guard.tracker(),
+            stop_tx: guard.stop_tx(),
+        }
+        .boxed(),
+        None => body,
+    }
+}
+
+struct IdleWatchBody {
+    inner: BoxedBody,
+    tracker: WatchIdleTracker,
+    stop_tx: tokio::sync::watch::Sender<bool>,
+}
+
+impl http_body::Body for IdleWatchBody {
+    type Data = hyper::body::Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        // Every poll is counted, frame or not: the watchdog's diagnostic
+        // reads `poll_count` vs `frame_count` to tell "hyper stopped
+        // polling this body" from "the body was polled but the event
+        // subscription yielded nothing" (see `watch_idle`'s module doc).
+        self.tracker.note_poll();
+        match Pin::new(&mut self.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                self.tracker.note_frame();
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                // The encode failed: hyper aborts the response, so this
+                // body is done — stop the watchdog like any other end.
+                self.tracker.note_poll_outcome(POLL_OUTCOME_ENDED);
+                let _ = self.stop_tx.send(true);
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.tracker.note_poll_outcome(POLL_OUTCOME_ENDED);
+                let _ = self.stop_tx.send(true);
+                Poll::Ready(None)
+            }
+            Poll::Pending => {
+                self.tracker.note_poll_outcome(POLL_OUTCOME_PENDING);
+                Poll::Pending
+            }
+        }
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl Drop for IdleWatchBody {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(true);
+    }
 }
 
 /// Return the upstream-compatible response for a watch that started below

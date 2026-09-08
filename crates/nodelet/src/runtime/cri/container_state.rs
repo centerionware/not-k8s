@@ -349,6 +349,11 @@ pub(crate) fn termination_grace_seconds(pod: &Pod) -> i64 {
     }
 }
 
+pub(crate) fn remaining_termination_grace(grace_seconds: i64, elapsed: Duration) -> i64 {
+    let remaining = Duration::from_secs(grace_seconds.max(0) as u64).saturating_sub(elapsed);
+    (remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0)) as i64
+}
+
 
 impl CriRuntime {
     /// Drop every restart-count entry for a sandbox that's gone (removed or

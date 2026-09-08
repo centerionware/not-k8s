@@ -1,0 +1,30 @@
+name: Publish comparison
+description: Publish only metrics and diagnostics on a separate, write-enabled runner.
+runs:
+  using: composite
+  steps:
+    - name: Download metrics
+      uses: actions/download-artifact@v4
+      with:
+        pattern: comparison-metrics-${{ github.run_attempt }}-*
+        path: comparison-inputs
+    - name: Publish measurements
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        failed=0
+        mapfile -t backends < <(jq -r '.[]' <<< "$PROFILE_BACKENDS")
+        for backend in "${backends[@]}"; do
+          case "$backend" in notk8s|k8s|k3s) ;; *) exit 2 ;; esac
+          data="comparison-inputs/comparison-metrics-$GITHUB_RUN_ATTEMPT-$backend"
+          if [[ ! -f "$data/measurement-status.txt" ]]; then
+            echo "Missing measurements for $backend" >&2
+            failed=1
+            continue
+          fi
+          bash deploy/publish-profile-comparison.sh leg "$data" "$backend"
+          [[ "$(cat "$data/measurement-status.txt")" == success ]] || failed=1
+        done
+        exit "$failed"

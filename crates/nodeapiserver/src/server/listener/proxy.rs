@@ -379,6 +379,7 @@ fn proxy_suffix(info: &path::RequestInfo) -> String {
 async fn proxy_resource(
     req: Request<Incoming>,
     storage: Option<StorageClient>,
+    cache_registry: &crate::cacher::CacheRegistry,
     info: &path::RequestInfo,
     method: &str,
     path_str: &str,
@@ -399,8 +400,14 @@ async fn proxy_resource(
             Some(id) => (id.name.as_str(), id.groups.clone()),
             None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
-        let resolved =
-            authz::resolve::rules_for(&mut client, user_name, &user_groups, &info.namespace).await;
+        let resolved = authz::resolve::rules_for(
+            &mut client,
+            user_name,
+            &user_groups,
+            &info.namespace,
+            Some(cache_registry),
+        )
+        .await;
         let subresource = if info.verb == "proxy" {
             "proxy"
         } else {
