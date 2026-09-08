@@ -11,7 +11,7 @@ use kube::runtime::watcher;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const WATCH_TIMEOUT_MIN_SECS: u32 = 240;
-const WATCH_TIMEOUT_MAX_SECS: u32 = 295;
+const WATCH_TIMEOUT_MAX_SECS: u32 = 294;
 const WATCH_TIMEOUT_SPAN: u32 = WATCH_TIMEOUT_MAX_SECS - WATCH_TIMEOUT_MIN_SECS + 1;
 static WATCH_CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 

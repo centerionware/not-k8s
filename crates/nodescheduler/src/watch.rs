@@ -104,7 +104,7 @@ const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5)
 // independently compiled components from choosing the same sequence at
 // startup.
 const WATCH_TIMEOUT_MIN_SECS: u32 = 240;
-const WATCH_TIMEOUT_MAX_SECS: u32 = 295;
+const WATCH_TIMEOUT_MAX_SECS: u32 = 294;
 const WATCH_TIMEOUT_SPAN: u32 = WATCH_TIMEOUT_MAX_SECS - WATCH_TIMEOUT_MIN_SECS + 1;
 static WATCH_CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
