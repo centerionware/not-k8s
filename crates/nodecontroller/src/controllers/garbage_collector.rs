@@ -47,6 +47,15 @@
 //! (no duplicate LIST); only the dynamic/metadata kinds re-LIST, and the
 //! one-stream-per-second admission keeps the burst bounded.
 //!
+//! **Staged records respect deletes.** While a kind is relisting, its
+//! `Apply` events are staged in a per-kind buffer until `InitDone` installs
+//! the snapshot. A `Delete` for a staged object cancels the staged record
+//! (the same way it removes the live bookkeeping) so the snapshot install
+//! cannot resurrect a deleted object into `exists` — observed live as a
+//! deleted owner ConfigMap keeping its orphaned Certificate alive forever
+//! because the stale staged record made every later orphan decision see a
+//! live owner.
+//!
 //! # Scope of this slice
 //!
 //! **Discovery is refreshed by a shared CRD informer.** A CRD installed after
@@ -488,8 +497,19 @@ impl State {
             .collect()
     }
 
-    fn handle_delete(&mut self, obj: DynamicObject) {
+    fn handle_delete(&mut self, kind_key: &str, obj: DynamicObject) {
         let Some(uid) = obj.uid() else { return };
+        // A delete must cancel the object's *staged* record too: the object's
+        // create was buffered in `relist[kind]` while its kind was still
+        // relisting, and the delete arrives before the kind's snapshot
+        // installs. If the staged record survives, `install_snapshot` treats
+        // it as a live snapshot entry and resurrects the deleted object into
+        // `exists` — poisoning every later orphan decision that names it as
+        // an owner (observed live: a deleted ConfigMap kept its orphaned
+        // Certificate alive for the test's full timeout).
+        if let Some(staged) = self.relist.get_mut(kind_key) {
+            staged.remove(&uid);
+        }
         self.deletes.remove(&uid);
         self.exists.remove(&uid);
         self.uid_to_kind.remove(&uid);
@@ -619,7 +639,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        state.handle_delete(owner);
+        state.handle_delete("apps/v1/Deployment", owner);
         assert!(state.deletes.contains_key("replicaset"));
         state.complete_delete("replicaset", true);
         let due = state.deletes["replicaset"].due;
@@ -639,7 +659,7 @@ mod tests {
     fn child_delete_cancels_a_pending_retry() {
         let mut state = empty_state();
         state.enqueue_delete("old-uid".into());
-        state.handle_delete(DynamicObject {
+        state.handle_delete("apps/v1/ReplicaSet", DynamicObject {
             types: None,
             data: serde_json::Value::Null,
             metadata: kube::api::ObjectMeta {
@@ -742,6 +762,46 @@ mod tests {
             );
         let orphans = state.install_snapshot("cert-manager.io/v1/Certificate");
         assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "certificate");
+    }
+
+    #[test]
+    fn delete_of_a_staged_owner_is_not_resurrected_by_its_snapshot_install() {
+        // The e2e failure this guards: an owner ConfigMap was created while
+        // its kind was still relisting (so its record was staged, not live),
+        // then deleted before the kind's snapshot installed. The staged
+        // record used to survive the delete and get installed as if live,
+        // poisoning `exists` with a dead owner UID and permanently hiding
+        // the orphaned child from every later decision.
+        let mut state = empty_state();
+        // The child kind finished relisting first, so the child is live in
+        // the graph with an edge to the not-yet-initialized owner kind.
+        state.store_record(record("certificate", "cert-manager.io/v1/Certificate", &["cm-uid"]));
+        // The owner kind is still relisting; the owner was created in that
+        // window and its record went into the staged buffer.
+        state.begin_relist("v1/ConfigMap");
+        state
+            .relist
+            .get_mut("v1/ConfigMap")
+            .unwrap()
+            .insert("cm-uid".into(), record("cm-uid", "v1/ConfigMap", &[]));
+        // The owner is deleted before its kind finishes relisting.
+        state.handle_delete("v1/ConfigMap", DynamicObject {
+            types: None,
+            data: serde_json::Value::Null,
+            metadata: kube::api::ObjectMeta {
+                uid: Some("cm-uid".into()),
+                ..Default::default()
+            },
+        });
+        // The snapshot install must not resurrect the deleted owner, and its
+        // final scan must expose the child as an orphan.
+        let orphans = state.install_snapshot("v1/ConfigMap");
+        assert!(
+            !state.exists.contains("cm-uid"),
+            "a deleted staged owner must not be installed as live"
+        );
+        assert_eq!(orphans.len(), 1, "the orphaned child must be enqueued");
         assert_eq!(orphans[0].uid, "certificate");
     }
 
@@ -1123,7 +1183,7 @@ async fn run_generation(
                         state.handle_apply(&kind_key, obj, true);
                     }
                     Ok(Event::Delete(obj)) => {
-                        state.handle_delete(obj);
+                        state.handle_delete(&kind_key, obj);
                     }
                     Ok(Event::Init) => state.begin_relist(&kind_key),
                     Ok(Event::InitDone) => {
