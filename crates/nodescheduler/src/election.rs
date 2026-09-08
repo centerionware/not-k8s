@@ -253,7 +253,7 @@ impl LeaderLease {
 
             // A stalled HTTP request must count as a failed renewal, not
             // suspend this loop until kube-rs' unbounded response timeout (or
-            // the apiserver's 290-second watch lifetime) happens to expire.
+            // the apiserver's long-lived watch lifetime) happens to expire.
             // The shared node-leaderelection implementation has the same
             // deadline; keeping this local implementation in lockstep is what
             // prevents a scheduler from retaining leadership on a dead

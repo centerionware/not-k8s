@@ -130,11 +130,31 @@ use kube::{Api, Client, ResourceExt};
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
 const TABLE: &str = "not_k8s_svc";
 const SVC_NAME_LABEL: &str = "kubernetes.io/service-name";
+
+// kube-rs otherwise sends the same five-minute (290s) timeout for every
+// informer. The control-plane processes start their informers together, so
+// that shared deadline turns one harmless reconnect into a synchronized LIST
+// storm. Keep each timeout within the API server's 295s limit, but spread
+// starts across a 56s window. The process id prevents the independently
+// compiled components from choosing the same sequence at startup.
+const WATCH_TIMEOUT_MIN_SECS: u32 = 240;
+const WATCH_TIMEOUT_MAX_SECS: u32 = 295;
+const WATCH_TIMEOUT_SPAN: u32 = WATCH_TIMEOUT_MAX_SECS - WATCH_TIMEOUT_MIN_SECS + 1;
+static WATCH_CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+fn watch_config() -> watcher::Config {
+    let sequence = WATCH_CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let process_seed = std::process::id().wrapping_mul(0x9E37_79B9);
+    let timeout = WATCH_TIMEOUT_MIN_SECS
+        + process_seed.wrapping_add(sequence) % WATCH_TIMEOUT_SPAN;
+    watcher::Config::default().timeout(timeout)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Family {
@@ -340,14 +360,14 @@ fn watch_services(
     let api: Api<Service> = Api::all(client.clone());
     // watcher retries a failed watch start immediately unless paced. During
     // API restarts that otherwise becomes a connection/error-log hot loop.
-    watcher(api, watcher::Config::default()).default_backoff().boxed()
+    watcher(api, watch_config()).default_backoff().boxed()
 }
 
 fn watch_endpoint_slices(
     client: &Client,
 ) -> futures::stream::BoxStream<'static, watcher::Result<Event<EndpointSlice>>> {
     let api: Api<EndpointSlice> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).default_backoff().boxed()
+    watcher(api, watch_config()).default_backoff().boxed()
 }
 
 fn obj_key<T: ResourceExt>(obj: &T) -> String {
