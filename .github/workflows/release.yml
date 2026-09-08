@@ -4,6 +4,12 @@ name: Release pipeline
 # downloads the exact published assets; no workflow dispatch/reusable workflows.
 on:
   workflow_dispatch:
+    inputs:
+      reuse_release_tag:
+        description: Existing published tag to validate without rebuilding release assets
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -27,13 +33,23 @@ jobs:
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
+          REUSE_RELEASE_TAG: ${{ inputs.reuse_release_tag }}
         run: |
           set -euo pipefail
-          version=$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .content | tr -d '\n' | base64 --decode)
+          if [[ -n "$REUSE_RELEASE_TAG" ]]; then
+            [[ "$REUSE_RELEASE_TAG" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]] || exit 2
+            version="${REUSE_RELEASE_TAG#v}"
+            tag="$REUSE_RELEASE_TAG"
+          else
+            version=$(gh api "repos/$GITHUB_REPOSITORY/contents/VERSION?ref=version" --jq .content | tr -d '\n' | base64 --decode)
+            tag="v$version"
+          fi
           [[ "$version" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]] || exit 2
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   build-and-test:
+    if: ${{ inputs.reuse_release_tag == '' }}
     runs-on: ubuntu-latest
     # A cold workspace build can take 40--50 minutes before the unit tests;
     # keep enough headroom for dependency setup and the complete test list.
@@ -64,6 +80,7 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p notk8s
   build-release:
     needs: [build-and-test, release-identity]
+    if: ${{ inputs.reuse_release_tag == '' }}
     env:
       RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
     strategy:
@@ -83,10 +100,8 @@ jobs:
             runner: ubuntu-latest
             cross: true
     runs-on: ${{ matrix.runner }}
-    # Each target builds debug and release assets, then x86_64 also builds the
-    # symbolized profiling asset. Reserve ample room for a cold 40--50 minute
-    # build and the additional profiling build without turning a slow
-    # compiler into an unbounded job.
+    # Each target builds debug and release assets. The separate profiling job
+    # builds the symbolized x86_64 artifact needed by flamegraphs.
     timeout-minutes: 240
     steps:
       - name: Check out repository
@@ -201,32 +216,6 @@ jobs:
               actual = tomllib.load(stream)['workspace']['package']['version']
           assert actual == os.environ['RELEASE_VERSION'], (actual, os.environ['RELEASE_VERSION'])
           PY
-      - name: Build profile asset
-        if: matrix.arch == 'x86_64'
-        run: |
-          set -euo pipefail
-          # `nodebootstrap fetch` installs system services and therefore
-          # re-executes through sudo. Its cargo builds leave target/ owned by
-          # root; use the same identity here and pass the selected musl
-          # toolchain explicitly so the profile build can create its output.
-          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "CARGO_HOME=$cargo_home" \
-            "RUSTUP_HOME=$rustup_home" \
-            "RUSTFLAGS=-C force-frame-pointers=yes" \
-            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" \
-            "CC_x86_64_unknown_linux_musl=$CC_x86_64_unknown_linux_musl" \
-            "MUSL_C_COMPILER=$MUSL_C_COMPILER" \
-            cargo build --profile profiling --features cri -p notk8s --target x86_64-unknown-linux-musl
-          rm -rf profile-dist
-          mkdir -p profile-dist
-          cp target/x86_64-unknown-linux-musl/profiling/notk8s profile-dist/notk8s-linux-x86_64-profiling
-          readelf -SW profile-dist/notk8s-linux-x86_64-profiling > /tmp/profiling-sections.txt
-          grep -q '\.debug_info' /tmp/profiling-sections.txt
-          grep -q '\.symtab' /tmp/profiling-sections.txt
       - name: Verify static assets
         run: |
           set -euo pipefail
@@ -255,8 +244,51 @@ jobs:
           # GitHub's minimum is one day; cleanup-release-artifacts removes
           # these run-scoped assets after publication (normally within 15m).
           retention-days: 1
+  build-profile-artifact:
+    needs: [build-and-test, release-identity]
+    if: ${{ always() && needs.release-identity.result == 'success' && (inputs.reuse_release_tag != '' || needs.build-and-test.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.reuse_release_tag || github.sha }}
+          persist-credentials: false
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+      - name: Prepare musl
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools musl-dev
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+          echo 'CC_x86_64_unknown_linux_musl=musl-gcc' >> "$GITHUB_ENV"
+          echo 'MUSL_C_COMPILER=musl-gcc' >> "$GITHUB_ENV"
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+      - name: Check asset version
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          with open('Cargo.toml', 'rb') as stream:
+              actual = tomllib.load(stream)['workspace']['package']['version']
+          assert actual == os.environ['RELEASE_VERSION'], (actual, os.environ['RELEASE_VERSION'])
+          PY
+      - name: Build profile asset
+        run: |
+          set -euo pipefail
+          RUSTFLAGS='-C force-frame-pointers=yes' \
+            cargo build --profile profiling --features cri -p notk8s --target x86_64-unknown-linux-musl
+          rm -rf profile-dist
+          mkdir -p profile-dist
+          cp target/x86_64-unknown-linux-musl/profiling/notk8s profile-dist/notk8s-linux-x86_64-profiling
+          readelf -SW profile-dist/notk8s-linux-x86_64-profiling > /tmp/profiling-sections.txt
+          grep -q '\.debug_info' /tmp/profiling-sections.txt
+          grep -q '\.symtab' /tmp/profiling-sections.txt
       - name: Upload profile
-        if: matrix.arch == 'x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: profiling-${{ github.run_id }}
@@ -272,7 +304,8 @@ jobs:
     outputs:
       tag: v${{ steps.version.outputs.version }}
       published: ${{ steps.publish.outputs.published }}
-    needs: [build-release, release-identity]
+    needs: [build-release, build-profile-artifact, release-identity]
+    if: ${{ always() && needs.release-identity.result == 'success' && needs.build-profile-artifact.result == 'success' && (inputs.reuse_release_tag != '' || needs.build-release.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -281,6 +314,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Download artifacts
+        if: inputs.reuse_release_tag == ''
         uses: actions/download-artifact@v4
         with:
           path: dist
@@ -293,6 +327,7 @@ jobs:
         run: echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
       - name: Prepare assets
         id: assets
+        if: inputs.reuse_release_tag == ''
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -324,8 +359,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          REUSE_RELEASE_TAG: ${{ inputs.reuse_release_tag }}
         run: |
           set -euo pipefail
+          if [[ -n "$REUSE_RELEASE_TAG" ]]; then
+            tag="$(gh release view "$REUSE_RELEASE_TAG" --json tagName --jq .tagName)"
+            [[ "$tag" == "$REUSE_RELEASE_TAG" ]] || exit 1
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           tag="v$VERSION"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             git fetch origin "refs/tags/$tag"
@@ -368,6 +410,7 @@ jobs:
           fi
           echo "published=true" >> "$GITHUB_OUTPUT"
       - name: Advance VERSION
+        if: inputs.reuse_release_tag == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -391,6 +434,7 @@ jobs:
             -f message="chore(release): advance version to $next" \
             -f content="$content" -f sha="$sha" -f branch=version >/dev/null
       - name: Update install docs
+        if: inputs.reuse_release_tag == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}

@@ -105,7 +105,7 @@ runs:
           exit 1
         }
         binary="$PROFILE_BINARY_INPUT"
-        [[ -f "$binary" ]] || { echo "profiling artifact is missing: $binary" >&2; exit 1; }
+        [[ -f "$binary" && -x "$binary" ]] || { echo "profiling artifact is missing or not executable: $binary" >&2; exit 1; }
         readelf -SW "$binary" > /tmp/profiling-sections.txt
         grep -q '\.debug_info' /tmp/profiling-sections.txt
         grep -q '\.symtab' /tmp/profiling-sections.txt
