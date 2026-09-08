@@ -1,20 +1,8 @@
 name: Profiling checks
-# Run explicitly when changing profiling/release tooling. PR path filters use
-# the cumulative diff, so they reran these checks on unrelated follow-up commits.
+# Run explicitly when changing profiling/release tooling. Keep this out of
+# pull_request so the profiling-only validation does not block normal PRs;
+# maintainers can dispatch it manually when profiling code is in scope.
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/profiling-check.yml"
-      - ".github/workflows/profiling.yml"
-      - ".github/workflows/release.yml"
-      - "deploy/**/*profil*"
-      - "deploy/lib/render-perf.sh"
-      - "deploy/lib/render-stack-charts.py"
-      - "deploy/profile-stack.py"
-      - "deploy/test-profile-stack.py"
-      - "deploy/test-release-validation.py"
-      - "deploy/download-release-runtime.sh"
-      - "deploy/publish-validation-results.sh"
   workflow_dispatch:
 permissions:
   contents: read
