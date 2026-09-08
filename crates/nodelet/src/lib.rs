@@ -39,6 +39,7 @@ pub mod pods;
 pub mod plugin_registry;
 pub mod probes;
 pub mod runtime;
+pub(crate) mod watch_config;
 #[cfg(feature = "cri")]
 pub mod server;
 #[cfg(feature = "cri")]

@@ -78,7 +78,10 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client, ResourceExt};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc, Mutex,
+};
 
 /// First pause after a watch fails to start, doubling to [`WATCH_MAX_BACKOFF`].
 const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
@@ -92,6 +95,26 @@ const WATCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_mil
 /// an outage costs nothing; not placing pods for a minute after the outage
 /// ends costs the cluster.
 const WATCH_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+
+// kube-rs otherwise sends the same five-minute (290s) timeout for every
+// informer. Scheduler watches are opened together with the other control-plane
+// clients, so that shared deadline turns one harmless reconnect into a
+// synchronized LIST storm. Keep each timeout within the API server's 295s
+// limit, but spread starts across a 56s window. The process id prevents the
+// independently compiled components from choosing the same sequence at
+// startup.
+const WATCH_TIMEOUT_MIN_SECS: u32 = 240;
+const WATCH_TIMEOUT_MAX_SECS: u32 = 295;
+const WATCH_TIMEOUT_SPAN: u32 = WATCH_TIMEOUT_MAX_SECS - WATCH_TIMEOUT_MIN_SECS + 1;
+static WATCH_CONFIG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+fn watch_config() -> watcher::Config {
+    let sequence = WATCH_CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let process_seed = std::process::id().wrapping_mul(0x9E37_79B9);
+    let timeout = WATCH_TIMEOUT_MIN_SECS
+        + process_seed.wrapping_add(sequence) % WATCH_TIMEOUT_SPAN;
+    watcher::Config::default().timeout(timeout)
+}
 
 /// Whether this failure is worth a log line.
 ///
@@ -317,12 +340,12 @@ impl RelistSweep {
 
 fn watch_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Node>>> {
     let api: Api<Node> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 fn watch_pods(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pod>>> {
     let api: Api<Pod> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 type Pdb = k8s_openapi::api::policy::v1::PodDisruptionBudget;
@@ -343,7 +366,7 @@ type DeviceClass = crate::cache::dra::RawDeviceClass;
 type ResourceSlice = crate::cache::dra::RawResourceSlice;
 
 fn watch_namespaces(client: &Client) -> BoxStream<'static, watcher::Result<Event<Ns>>> {
-    watcher(Api::<Ns>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<Ns>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 /// The four workload watches exist only to derive `PodTopologySpread`'s
 /// system default constraints, so `TopologyDefaulting::None` must actually
@@ -367,7 +390,7 @@ where
     if !enabled {
         return futures::stream::pending().boxed();
     }
-    watcher(Api::<K>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<K>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 /// A Service's selector, as a LabelSelector.
@@ -390,7 +413,7 @@ fn service_selector(svc: &Svc) -> Option<k8s_openapi::apimachinery::pkg::apis::m
 
 fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>> {
     let api: Api<Pdb> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(api, watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 /// Phase 4's seven storage watches. Unconditional, the same as the pod/node/PDB
@@ -400,27 +423,27 @@ fn watch_pdbs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pdb>>
 /// nothing; see docs/SCHEDULER.md's "Informers" section for the up-to-date
 /// accounting.
 fn watch_pvs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pv>>> {
-    watcher(Api::<Pv>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<Pv>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_pvcs(client: &Client) -> BoxStream<'static, watcher::Result<Event<Pvc>>> {
-    watcher(Api::<Pvc>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<Pvc>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_storage_classes(client: &Client) -> BoxStream<'static, watcher::Result<Event<Sc>>> {
-    watcher(Api::<Sc>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<Sc>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiNode>>> {
-    watcher(Api::<CsiNode>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<CsiNode>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_drivers(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiDriver>>> {
-    watcher(Api::<CsiDriver>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<CsiDriver>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_storage_capacities(
     client: &Client,
 ) -> BoxStream<'static, watcher::Result<Event<CsiStorageCapacity>>> {
-    watcher(Api::<CsiStorageCapacity>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<CsiStorageCapacity>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Result<Event<VolumeAttachment>>> {
-    watcher(Api::<VolumeAttachment>::all(client.clone()), watcher::Config::default())
+    watcher(Api::<VolumeAttachment>::all(client.clone()), watch_config())
         .backoff(WatchBackoffPolicy::default())
         .boxed()
 }
@@ -429,13 +452,13 @@ fn watch_volume_attachments(client: &Client) -> BoxStream<'static, watcher::Resu
 /// Phase 4's storage watches — `DynamicResources` is itself an unconditional
 /// default-profile plugin, so there is no "off" mode to gate these behind.
 fn watch_resource_claims(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceClaim>>> {
-    watcher(Api::<ResourceClaim>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<ResourceClaim>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_device_classes(client: &Client) -> BoxStream<'static, watcher::Result<Event<DeviceClass>>> {
-    watcher(Api::<DeviceClass>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<DeviceClass>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_resource_slices(client: &Client) -> BoxStream<'static, watcher::Result<Event<ResourceSlice>>> {
-    watcher(Api::<ResourceSlice>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    watcher(Api::<ResourceSlice>::all(client.clone()), watch_config()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 
 fn handle_cached_event<T, K, U, R>(
