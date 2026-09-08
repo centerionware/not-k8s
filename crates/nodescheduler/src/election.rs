@@ -251,19 +251,35 @@ impl LeaderLease {
         loop {
             tokio::time::sleep(self.retry_period).await;
 
-            match self.try_acquire().await {
-                Ok(true) => last_success = Instant::now(),
-                Ok(false) => {
+            // A stalled HTTP request must count as a failed renewal, not
+            // suspend this loop until kube-rs' unbounded response timeout (or
+            // the apiserver's 290-second watch lifetime) happens to expire.
+            // The shared node-leaderelection implementation has the same
+            // deadline; keeping this local implementation in lockstep is what
+            // prevents a scheduler from retaining leadership on a dead
+            // transport.
+            match tokio::time::timeout(self.retry_period, self.try_acquire()).await {
+                Err(_) => {
                     tracing::warn!(
                         lease = %self.name,
-                        "the scheduler lease was taken by another instance; stopping"
+                        timeout_secs = self.retry_period.as_secs_f64(),
+                        "scheduler lease renewal request timed out"
                     );
-                    return;
                 }
-                Err(e) => {
-                    // Not fatal on its own — the deadline below decides.
-                    tracing::warn!(error = %e, "lease renewal failed");
-                }
+                Ok(result) => match result {
+                    Ok(true) => last_success = Instant::now(),
+                    Ok(false) => {
+                        tracing::warn!(
+                            lease = %self.name,
+                            "the scheduler lease was taken by another instance; stopping"
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        // Not fatal on its own — the deadline below decides.
+                        tracing::warn!(error = %e, "lease renewal failed");
+                    }
+                },
             }
 
             if last_success.elapsed() >= self.renew_deadline {

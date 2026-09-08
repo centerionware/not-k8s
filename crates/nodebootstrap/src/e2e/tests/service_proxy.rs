@@ -1,6 +1,7 @@
 use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
+use http::Request;
 use k8s_openapi::api::core::v1::{Node, Pod, Service};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::api::rbac::v1::{Role, RoleBinding};
@@ -13,6 +14,46 @@ use tokio::net::TcpStream;
 
 async fn create_backend(context: &E2eContext, name: &str) -> Result<()> {
     create_backend_with_marker(context, name, name, "service-proxy-marker").await
+}
+
+pub(super) async fn nodeapiserver_proxy_subresources_relay_requests(
+    context: &E2eContext,
+) -> Result<()> {
+    if !matches!(crate::config::Config::from_env()?.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "node/service proxy subresources are only exercised against nodeapiserver",
+        ));
+    }
+
+    let name = "nodeapiserver-service-proxy";
+    create_backend(context, name).await?;
+    create_service(context, name, "ClusterIP", 18093, None).await?;
+
+    let path = format!(
+        "/api/v1/namespaces/{}/services/{name}:http/proxy/",
+        context.namespace
+    );
+    let client = context.client.clone();
+    context
+        .wait_until(
+            "nodeapiserver Service proxy to relay to an EndpointSlice backend",
+            Duration::from_secs(90),
+            move || {
+                let client = client.clone();
+                let path = path.clone();
+                async move {
+                    let request = Request::builder()
+                        .method("GET")
+                        .uri(path)
+                        .body(Vec::new())?;
+                    Ok(client
+                        .request_text(request)
+                        .await
+                        .is_ok_and(|body| body.contains("service-proxy-marker")))
+                }
+            },
+        )
+        .await
 }
 
 async fn exec_probe_output(
@@ -813,7 +854,7 @@ pub(super) async fn a_long_lived_watch_survives_a_service_churn_burst(
                 "name": "watcher",
                 "image": "curlimages/curl:8.10.1",
                 "command": ["sh", "-c", format!(
-                    "TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert $CACERT -H \"Authorization: Bearer $TOKEN\" \"https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/{}/pods?watch=true&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err & echo $! > /tmp/watch.pid; wait $(cat /tmp/watch.pid); echo WATCH_EXIT=$? >> /tmp/watch.err; sleep 3600",
+                    "TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token); CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt; curl -sS -N --connect-timeout 5 --max-time 90 --cacert $CACERT -H \"Authorization: Bearer $TOKEN\" \"https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/namespaces/{}/pods?watch=true&sendInitialEvents=true&allowWatchBookmarks=true&resourceVersion=0&resourceVersionMatch=NotOlderThan&timeoutSeconds=85\" > /tmp/watch.out 2>/tmp/watch.err & echo $! > /tmp/watch.pid; wait $(cat /tmp/watch.pid); echo WATCH_EXIT=$? >> /tmp/watch.err; sleep 3600",
                     context.namespace
                 )]
             }]

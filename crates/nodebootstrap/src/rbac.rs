@@ -28,6 +28,14 @@
 //! `system:kube-scheduler`/`system:node` identities `pki.rs` already issues
 //! certs for.
 //!
+//! The `nodeapiserver` target is the deliberate exception to the upstream
+//! verification path: it has no upstream post-start RBAC hook. On that target
+//! this module first applies a small bootstrap policy for the static admin,
+//! scheduler, controller-manager, and controller identities, then applies the
+//! same supplemental grants used by the upstream target. The initial target
+//! process is intentionally unauthorised until this policy exists; it is
+//! restarted with enforcement after this function returns.
+//!
 //! **Finding #2 (2026-08-22, found live running `nodescheduler` against
 //! this exact stack):** `system:kube-scheduler`'s built-in bootstrap
 //! ClusterRole on `v1.33.13` does **not** grant `get`/`list`/`watch` on
@@ -485,6 +493,219 @@ subjects:
     )
 }
 
+/// Bootstrap the policy that an upstream apiserver would normally create in
+/// its `rbac/bootstrap-roles` post-start hook. The replacement apiserver does
+/// not have that hook, so it needs these identities before RBAC enforcement
+/// can be enabled.
+///
+/// The control-plane roles are bound only to the certificates and
+/// kube-system ServiceAccounts used by the replacement scheduler and
+/// controller-manager. The existing supplemental manifest still applies the
+/// explicit impersonation and patch grants used by the upstream target.
+fn nodeapiserver_bootstrap() -> String {
+    // kube-apiserver normally creates these built-in classes as part of its
+    // bootstrap policy. The replacement server has no post-start hook, and
+    // CoreDNS uses system-cluster-critical before ordinary workloads can
+    // become useful, so seed the same two classes before nodecontroller is
+    // started.
+    let system_priority_classes = r#"
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-node-critical
+value: 2000001000
+globalDefault: false
+description: " system-node-critical"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-cluster-critical
+value: 2000000000
+globalDefault: false
+description: " system-cluster-critical"
+---
+"#;
+    let controller_roles: String = CONTROLLER_SA_NAMES
+        .iter()
+        .map(|name| {
+            format!(
+                r#"---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: "system:controller:{name}"
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+- nonResourceURLs: ["*"]
+  verbs: ["*"]
+"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{system_priority_classes}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-admin
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+- nonResourceURLs: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:masters
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:kube-scheduler
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+- nonResourceURLs: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:kube-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kube-scheduler
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: system:kube-scheduler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:kube-controller-manager
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+- nonResourceURLs: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:kube-controller-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kube-controller-manager
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: system:kube-controller-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:node
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "pods/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["serviceaccounts/token"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:discovery
+rules:
+- nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/healthz", "/readyz", "/livez"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:discovery
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:authenticated
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:public-info-viewer
+rules:
+- nonResourceURLs: ["/livez", "/readyz", "/healthz", "/version", "/version/"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:monitoring
+rules:
+- nonResourceURLs: ["/metrics", "/metrics/slis", "/livez", "/readyz", "/healthz", "/livez/*", "/readyz/*", "/healthz/*"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["nodes/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:monitoring
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:public-info-viewer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:public-info-viewer
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:authenticated
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:unauthenticated
+{controller_roles}"#
+    )
+}
+
 /// A handful of the ~90 bootstrap `system:` ClusterRoles that must exist if
 /// the PostStartHook ran at all -- not the full list (that would just be
 /// re-deriving upstream's own table, the exact duplication this module's
@@ -500,6 +721,8 @@ const SENTINEL_CLUSTER_ROLES: &[&str] = &[
     "cluster-admin",
     "system:node",
     "system:discovery",
+    "system:public-info-viewer",
+    "system:monitoring",
     "system:kube-scheduler",
     "system:controller:replicaset-controller",
 ];
@@ -514,9 +737,21 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    if matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        apply_nodeapiserver_bootstrap(&kubeconfig)?;
+    }
     verify_bootstrap_rbac(&kubeconfig)?;
     apply_supplemental_grants(&kubeconfig)?;
     verify_supplemental_grants(&kubeconfig)
+}
+
+fn apply_nodeapiserver_bootstrap(kubeconfig: &std::path::Path) -> Result<()> {
+    let manifest = nodeapiserver_bootstrap();
+    crate::kube_api::block_on(kubeconfig, move |client| async move {
+        let applied = crate::kube_api::apply_yaml(&client, &manifest, "nodebootstrap").await?;
+        tracing::info!(applied, "applied nodeapiserver bootstrap RBAC policy");
+        Ok(())
+    })
 }
 
 /// Apply supplemental RBAC through the kube client.
@@ -588,9 +823,36 @@ fn verify_bootstrap_rbac(kubeconfig: &std::path::Path) -> Result<()> {
         }
         tracing::info!(
             checked = SENTINEL_CLUSTER_ROLES.len(),
-            "bootstrap RBAC policy present (kube-apiserver's own PostStartHook, not vendored here -- \
-             see this module's doc comment)"
+            "bootstrap RBAC policy present (upstream apiserver PostStartHook or nodeapiserver target policy)"
         );
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nodeapiserver_bootstrap;
+
+    #[test]
+    fn nodeapiserver_bootstrap_contains_the_static_identities() {
+        let manifest = nodeapiserver_bootstrap();
+        for expected in [
+            "name: system-node-critical",
+            "value: 2000001000",
+            "name: system-cluster-critical",
+            "value: 2000000000",
+            "name: cluster-admin",
+            "name: system:kube-scheduler",
+            "name: system:kube-controller-manager",
+            "name: system:discovery",
+            "name: \"system:controller:replicaset-controller\"",
+            "name: system:public-info-viewer",
+            "name: system:monitoring",
+            "name: nodebootstrap:public-info-viewer",
+            "name: system:unauthenticated",
+            "name: system:masters",
+        ] {
+            assert!(manifest.contains(expected), "bootstrap manifest missing {expected:?}");
+        }
+    }
 }

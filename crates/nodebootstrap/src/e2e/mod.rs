@@ -195,6 +195,266 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_target_is_serving",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_kubectl_apply_uses_openapi_schema",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_enforces_node_restriction",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_core_defaults",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_invalid_builtin_schema_constraints",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_invalid_metadata_keys",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_invalid_batch_names",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_invalid_workload_names",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_privileged_csr_subject",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_pure_admission_to_apply",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_always_pull_images",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_storage_admission_to_apply",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_adds_extended_resource_tolerations",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_defaults_ingress_class",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_defaults_storage_class_on_apply",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_adds_storage_protection_finalizer",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_runtime_class_admission",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_priority_admission",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_unsupported_pvc_resize",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_namespace_node_selector",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_applies_configured_node_selector",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_serializes_resource_quota_creates",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_taints_new_nodes_not_ready",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_binds_a_pod_through_binding_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_advertises_subresources",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_serves_workload_scale_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_reconciles_managed_fields_across_versions",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_reconciles_crd_managed_fields_after_schema_change",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_authentication_modes",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_apf_labels_requests",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_exposes_inflight_metrics",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_exposes_full_request_metrics",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_patch_dry_run",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_authorizes_before_special_handlers",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_writes_audit_log",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_audits_rejected_requests",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rotates_audit_log",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_delivers_audit_webhook",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_audits_request_and_response_objects",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_unsupported_field_selector",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_serves_generic_status_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_excludes_status_from_main_managed_fields",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_serves_ephemeralcontainers_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_enforces_service_account_mountable_secrets",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_watches_an_uncommon_builtin_resource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_watch_options",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_recreates_a_dynamic_watch_cache",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_watches_partial_object_metadata",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_unsupported_resource_route",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_rejects_oversized_request_body",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_validating_admission_policy_denies_create",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_enforces_crd_schema_constraints",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_supports_crd_selectable_fields",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_mutating_admission_policy_mutates_create",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_validates_crd_status_subresource",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_webhook_match_conditions",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_webhook_side_effects_on_dry_run",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_runs_webhook_for_delete_collection",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_finalizers",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_authorization_webhook_decisions",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_resource_version_snapshot",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_serves_partial_object_metadata",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_generate_name",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_honors_dry_run_and_delete_preconditions",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_graceful_node_shutdown_manual_note",
         group: TestGroup::General,
     },
@@ -871,6 +1131,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_readiness_does_not_wait_for_liveness_delay",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_liveness_probe_failure_restarts_the_container",
         group: TestGroup::General,
     },
@@ -1099,11 +1363,19 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
-        name: "test_termination_grace_period_is_honored_not_instant",
+        name: "test_termination_grace_period_clean_exit_is_not_instant",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_termination_grace_period_force_kills_term_ignoring_pod",
         group: TestGroup::General,
     },
     TestCase {
         name: "test_clusterip_service_routes_to_its_backend_pod",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_nodeapiserver_proxy_subresources_relay_requests",
         group: TestGroup::General,
     },
     TestCase {
@@ -1152,6 +1424,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_a_long_lived_watch_survives_a_service_churn_burst",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_paginated_list_watch_preserves_concurrent_updates",
         group: TestGroup::General,
     },
     TestCase {
@@ -1243,7 +1519,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     // component diagnostics or publishes the real failing test.
     kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
     kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
-    let client = Client::try_from(kube_config).context(
+    let mut client = Client::try_from(kube_config).context(
         "building the Kubernetes client for bootstrap e2e; set KUBECONFIG or bootstrap the cluster first",
     )?;
     if let Some(shard) = shard {
@@ -1256,7 +1532,9 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
     let mut skipped = 0;
     for name in selected {
         let started = Instant::now();
-        print!("▶ {name} ... ");
+        let started_at = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        print!("▶ {started_at} {name} ... ");
         let _ = std::io::stdout().flush();
         // The shell harness gave every test a fresh namespace and removed it
         // before the next test started. Reusing one namespace here left every
@@ -1295,23 +1573,32 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                 } else {
                     // A failed test must not poison later tests with its
                     // Pods, Services, PVCs, or controller-owned children.
-                    // The following workflow diagnostic phase collects
-                    // service state and logs, so retaining the namespace is
-                    // not worth allowing a failure cascade on a one-node
-                    // runner.
-                    test_context.cleanup().await;
                     println!("FAIL ({}ms)", started.elapsed().as_millis());
                     eprintln!("    {error:#}");
+                    test_context.capture_failure().await;
+                    test_context.cleanup().await;
                     failures.push(name);
                 }
             }
             Err(_) => {
-                test_context.cleanup().await;
                 println!("FAIL ({}ms)", started.elapsed().as_millis());
                 eprintln!(
                     "    test exceeded the 300-second safety timeout; the next test will run after cleanup"
                 );
+                test_context.capture_failure().await;
+                test_context.cleanup().await;
                 failures.push(name);
+            }
+        }
+        if is_environment_reconfiguring_test(name) {
+            match wait_for_api_after_environment_reconfiguration(&test_context).await {
+                Ok(recovered_client) => client = recovered_client,
+                Err(error) => {
+                    eprintln!("    API server did not recover after the environment-reconfiguring test: {error:#}");
+                    if !failures.contains(&name) {
+                        failures.push(name);
+                    }
+                }
             }
         }
     }
@@ -1329,6 +1616,56 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             failures.join(", ")
         )
     }
+}
+
+async fn wait_for_api_after_environment_reconfiguration(context: &E2eContext) -> Result<Client> {
+    // A kube-rs Client may retain a pool keyed by the old apiserver
+    // connection. Rebuild it for every recovery attempt so a connection
+    // failure during the restart cannot poison the whole 90-second wait.
+    // This barrier deliberately checks only the API server: requiring the
+    // namespace controller to recreate a ServiceAccount would conflate a
+    // nodecontroller/watch-recovery failure with this API restart check.
+    context
+        .wait_until(
+            "the API server to recover after an environment-reconfiguring test",
+            Duration::from_secs(90),
+            || {
+                async move {
+                    let Ok(client) = fresh_e2e_client().await else {
+                        return Ok(false);
+                    };
+                    let namespaces: Api<Namespace> = Api::all(client.clone());
+                    Ok(namespaces.list(&ListParams::default()).await.is_ok())
+                }
+            },
+        )
+        .await?;
+    let client = fresh_e2e_client().await?;
+    wait_for_service_account_controller(&client).await?;
+    Ok(client)
+}
+
+async fn wait_for_service_account_controller(client: &Client) -> Result<()> {
+    // An API list succeeding only proves that the listener is back. The
+    // namespace and ServiceAccount controllers may still be rebuilding their
+    // watches after the restart. Probe that actual dependency before the next
+    // test creates a namespace and turns a transient recovery window into a
+    // cascade of 60-second failures.
+    let probe = E2eContext::create(client.clone())
+        .await
+        .context("waiting for the ServiceAccount controller after an environment restart")?;
+    probe.cleanup().await;
+    Ok(())
+}
+
+async fn fresh_e2e_client() -> Result<Client> {
+    let mut kube_config = KubeConfig::infer()
+        .await
+        .context("reloading the Kubernetes client after an environment-reconfiguring test")?;
+    kube_config.read_timeout = Some(context::API_REQUEST_TIMEOUT);
+    kube_config.write_timeout = Some(context::API_REQUEST_TIMEOUT);
+    Client::try_from(kube_config)
+        .context("building a fresh Kubernetes client after an environment-reconfiguring test")
 }
 
 /// Print the tests selected by the same shard/filter logic as `run`, without
@@ -1442,7 +1779,7 @@ fn reorder_environment_reconfiguring_tests(selected: Vec<&'static str>) -> Vec<&
 fn is_environment_reconfiguring_test(name: &str) -> bool {
     matches!(
         name,
-        "test_pending_pod_recovers_after_the_node_failure_is_fixed"
+        "test_a_pending_pod_recovers_after_the_node_failure_is_fixed"
             | "test_config_file_sets_a_value_env_did_not_override"
             | "test_config_file_precedence_a_real_env_var_still_wins"
             | "test_config_dir_merges_files_in_filename_order"
@@ -1459,6 +1796,16 @@ fn is_environment_reconfiguring_test(name: &str) -> bool {
             | "test_scheduler_consults_an_http_extender_and_honours_a_filter_rejection"
             | "test_scheduler_schedules_a_pod_an_http_extender_approves"
             | "test_nodeproxy_rebuilds_the_whole_ruleset_after_a_restart"
+            | "test_nodeapiserver_authentication_modes"
+            | "test_nodeapiserver_authorizes_before_special_handlers"
+            | "test_nodeapiserver_writes_audit_log"
+            | "test_nodeapiserver_audits_rejected_requests"
+            | "test_nodeapiserver_rotates_audit_log"
+            | "test_nodeapiserver_delivers_audit_webhook"
+            | "test_nodeapiserver_audits_request_and_response_objects"
+            | "test_nodeapiserver_honors_authorization_webhook_decisions"
+            | "test_nodeapiserver_honors_always_pull_images"
+            | "test_nodeapiserver_applies_configured_node_selector"
             | "test_client_certificate_authentication_works"
             | "test_topology_manager_does_not_reject_pods_on_a_single_numa_node_host"
             | "test_topology_manager_restricted_does_not_reject_pods_on_a_single_numa_node_host"
@@ -1519,6 +1866,185 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
             bootstrap::configured_service_cidrs_are_used(context).await
         }
         "test_coredns_is_a_healthy_deployment" => bootstrap::coredns_is_a_healthy_deployment(context).await,
+        "test_nodeapiserver_target_is_serving" => bootstrap::nodeapiserver_target_is_serving(context).await,
+        "test_kubectl_apply_uses_openapi_schema" => bootstrap::kubectl_apply_uses_openapi_schema(context).await,
+        "test_nodeapiserver_enforces_node_restriction" => {
+            bootstrap::nodeapiserver_enforces_node_restriction(context).await
+        },
+        "test_nodeapiserver_applies_core_defaults" => bootstrap::nodeapiserver_applies_core_defaults(context).await,
+        "test_nodeapiserver_rejects_invalid_builtin_schema_constraints" => {
+            bootstrap::nodeapiserver_rejects_invalid_builtin_schema_constraints(context).await
+        },
+        "test_nodeapiserver_rejects_invalid_metadata_keys" => {
+            bootstrap::nodeapiserver_rejects_invalid_metadata_keys(context).await
+        },
+        "test_nodeapiserver_rejects_invalid_batch_names" => {
+            bootstrap::nodeapiserver_rejects_invalid_batch_names(context).await
+        },
+        "test_nodeapiserver_rejects_invalid_workload_names" => {
+            bootstrap::nodeapiserver_rejects_invalid_workload_names(context).await
+        },
+        "test_nodeapiserver_rejects_privileged_csr_subject" => {
+            bootstrap::nodeapiserver_rejects_privileged_csr_subject(context).await
+        },
+        "test_nodeapiserver_applies_pure_admission_to_apply" => {
+            bootstrap::nodeapiserver_applies_pure_admission_to_apply(context).await
+        },
+        "test_nodeapiserver_honors_always_pull_images" => {
+            bootstrap::nodeapiserver_honors_always_pull_images(context).await
+        },
+        "test_nodeapiserver_applies_storage_admission_to_apply" => {
+            bootstrap::nodeapiserver_applies_storage_admission_to_apply(context).await
+        },
+        "test_nodeapiserver_adds_extended_resource_tolerations" => {
+            bootstrap::nodeapiserver_adds_extended_resource_tolerations(context).await
+        },
+        "test_nodeapiserver_defaults_ingress_class" => bootstrap::nodeapiserver_defaults_ingress_class(context).await,
+        "test_nodeapiserver_defaults_storage_class_on_apply" => {
+            bootstrap::nodeapiserver_defaults_storage_class_on_apply(context).await
+        },
+        "test_nodeapiserver_adds_storage_protection_finalizer" => {
+            bootstrap::nodeapiserver_adds_storage_protection_finalizer(context).await
+        },
+        "test_nodeapiserver_applies_runtime_class_admission" => {
+            bootstrap::nodeapiserver_applies_runtime_class_admission(context).await
+        },
+        "test_nodeapiserver_applies_priority_admission" => {
+            bootstrap::nodeapiserver_applies_priority_admission(context).await
+        },
+        "test_nodeapiserver_rejects_unsupported_pvc_resize" => {
+            bootstrap::nodeapiserver_rejects_unsupported_pvc_resize(context).await
+        },
+        "test_nodeapiserver_applies_namespace_node_selector" => {
+            bootstrap::nodeapiserver_applies_namespace_node_selector(context).await
+        },
+        "test_nodeapiserver_applies_configured_node_selector" => {
+            bootstrap::nodeapiserver_applies_configured_node_selector(context).await
+        },
+        "test_nodeapiserver_serializes_resource_quota_creates" => {
+            bootstrap::nodeapiserver_serializes_resource_quota_creates(context).await
+        },
+        "test_nodeapiserver_taints_new_nodes_not_ready" => {
+            bootstrap::nodeapiserver_taints_new_nodes_not_ready(context).await
+        },
+        "test_nodeapiserver_binds_a_pod_through_binding_subresource" => {
+            bootstrap::nodeapiserver_binds_a_pod_through_binding_subresource(context).await
+        }
+        "test_nodeapiserver_advertises_subresources" => {
+            bootstrap::nodeapiserver_advertises_subresources(context).await
+        }
+        "test_nodeapiserver_serves_workload_scale_subresource" => {
+            bootstrap::nodeapiserver_serves_workload_scale_subresource(context).await
+        }
+        "test_nodeapiserver_reconciles_managed_fields_across_versions" => {
+            bootstrap::nodeapiserver_reconciles_managed_fields_across_versions(context).await
+        }
+        "test_nodeapiserver_reconciles_crd_managed_fields_after_schema_change" => {
+            bootstrap::nodeapiserver_reconciles_crd_managed_fields_after_schema_change(context).await
+        }
+        "test_nodeapiserver_authentication_modes" => {
+            bootstrap::nodeapiserver_authentication_modes(context).await
+        }
+        "test_nodeapiserver_apf_labels_requests" => {
+            bootstrap::nodeapiserver_apf_labels_requests(context).await
+        }
+        "test_nodeapiserver_exposes_inflight_metrics" => {
+            bootstrap::nodeapiserver_exposes_inflight_metrics(context).await
+        }
+        "test_nodeapiserver_exposes_full_request_metrics" => {
+            bootstrap::nodeapiserver_exposes_full_request_metrics(context).await
+        }
+        "test_nodeapiserver_honors_patch_dry_run" => bootstrap::nodeapiserver_honors_patch_dry_run(context).await,
+        "test_nodeapiserver_authorizes_before_special_handlers" => {
+            bootstrap::nodeapiserver_authorizes_before_special_handlers(context).await
+        }
+        "test_nodeapiserver_writes_audit_log" => bootstrap::nodeapiserver_writes_audit_log(context).await,
+        "test_nodeapiserver_audits_rejected_requests" => {
+            bootstrap::nodeapiserver_audits_rejected_requests(context).await
+        },
+        "test_nodeapiserver_rotates_audit_log" => bootstrap::nodeapiserver_rotates_audit_log(context).await,
+        "test_nodeapiserver_delivers_audit_webhook" => {
+            bootstrap::nodeapiserver_delivers_audit_webhook(context).await
+        }
+        "test_nodeapiserver_audits_request_and_response_objects" => {
+            bootstrap::nodeapiserver_audits_request_and_response_objects(context).await
+        }
+        "test_nodeapiserver_rejects_unsupported_field_selector" => {
+            bootstrap::nodeapiserver_rejects_unsupported_field_selector(context).await
+        }
+        "test_nodeapiserver_serves_generic_status_subresource" => {
+            bootstrap::nodeapiserver_serves_generic_status_subresource(context).await
+        }
+        "test_nodeapiserver_excludes_status_from_main_managed_fields" => {
+            bootstrap::nodeapiserver_excludes_status_from_main_managed_fields(context).await
+        }
+        "test_nodeapiserver_serves_ephemeralcontainers_subresource" => {
+            bootstrap::nodeapiserver_serves_ephemeralcontainers_subresource(context).await
+        }
+        "test_nodeapiserver_enforces_service_account_mountable_secrets" => {
+            bootstrap::nodeapiserver_enforces_service_account_mountable_secrets(context).await
+        }
+        "test_nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers" => {
+            bootstrap::nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers(context).await
+        }
+        "test_nodeapiserver_watches_an_uncommon_builtin_resource" => {
+            bootstrap::nodeapiserver_watches_an_uncommon_builtin_resource(context).await
+        },
+        "test_nodeapiserver_honors_watch_options" => bootstrap::nodeapiserver_honors_watch_options(context).await,
+        "test_nodeapiserver_recreates_a_dynamic_watch_cache" => {
+            bootstrap::nodeapiserver_recreates_a_dynamic_watch_cache(context).await
+        },
+        "test_nodeapiserver_watches_partial_object_metadata" => {
+            bootstrap::nodeapiserver_watches_partial_object_metadata(context).await
+        },
+        "test_nodeapiserver_rejects_unsupported_resource_route" => {
+            bootstrap::nodeapiserver_rejects_unsupported_resource_route(context).await
+        },
+        "test_nodeapiserver_rejects_oversized_request_body" => {
+            bootstrap::nodeapiserver_rejects_oversized_request_body(context).await
+        },
+        "test_nodeapiserver_validating_admission_policy_denies_create" => {
+            bootstrap::nodeapiserver_validating_admission_policy_denies_create(context).await
+        },
+        "test_nodeapiserver_enforces_crd_schema_constraints" => {
+            bootstrap::nodeapiserver_enforces_crd_schema_constraints(context).await
+        },
+        "test_nodeapiserver_supports_crd_selectable_fields" => {
+            bootstrap::nodeapiserver_supports_crd_selectable_fields(context).await
+        },
+        "test_nodeapiserver_mutating_admission_policy_mutates_create" => {
+            bootstrap::nodeapiserver_mutating_admission_policy_mutates_create(context).await
+        },
+        "test_nodeapiserver_validates_crd_status_subresource" => {
+            bootstrap::nodeapiserver_validates_crd_status_subresource(context).await
+        },
+        "test_nodeapiserver_honors_webhook_match_conditions" => {
+            bootstrap::nodeapiserver_honors_webhook_match_conditions(context).await
+        },
+        "test_nodeapiserver_honors_webhook_side_effects_on_dry_run" => {
+            bootstrap::nodeapiserver_honors_webhook_side_effects_on_dry_run(context).await
+        },
+        "test_nodeapiserver_runs_webhook_for_delete_collection" => {
+            bootstrap::nodeapiserver_runs_webhook_for_delete_collection(context).await
+        },
+        "test_nodeapiserver_honors_finalizers" => {
+            bootstrap::nodeapiserver_honors_finalizers(context).await
+        },
+        "test_nodeapiserver_honors_authorization_webhook_decisions" => {
+            bootstrap::nodeapiserver_honors_authorization_webhook_decisions(context).await
+        },
+        "test_nodeapiserver_honors_resource_version_snapshot" => {
+            bootstrap::nodeapiserver_honors_resource_version_snapshot(context).await
+        },
+        "test_nodeapiserver_serves_partial_object_metadata" => {
+            bootstrap::nodeapiserver_serves_partial_object_metadata(context).await
+        },
+        "test_nodeapiserver_honors_generate_name" => {
+            bootstrap::nodeapiserver_honors_generate_name(context).await
+        },
+        "test_nodeapiserver_honors_dry_run_and_delete_preconditions" => {
+            bootstrap::nodeapiserver_honors_dry_run_and_delete_preconditions(context).await
+        },
         "test_graceful_node_shutdown_manual_note" => {
             bootstrap::graceful_node_shutdown_manual_note(context).await
         }
@@ -2007,6 +2533,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_readiness_probe_gates_ready_condition" => {
             probes::readiness_probe_gates_ready_condition(context).await
         }
+        "test_readiness_does_not_wait_for_liveness_delay" => {
+            probes::readiness_does_not_wait_for_liveness_delay(context).await
+        }
         "test_liveness_probe_failure_restarts_the_container" => {
             probes::liveness_probe_failure_restarts_container(context).await
         }
@@ -2176,11 +2705,17 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_prestop_hook_runs_before_termination" => {
             hooks::prestop_hook_runs_before_termination(context).await
         }
-        "test_termination_grace_period_is_honored_not_instant" => {
-            hooks::termination_grace_period_is_honored_not_instant(context).await
+        "test_termination_grace_period_clean_exit_is_not_instant" => {
+            hooks::termination_grace_period_clean_exit_is_not_instant(context).await
+        }
+        "test_termination_grace_period_force_kills_term_ignoring_pod" => {
+            hooks::termination_grace_period_force_kills_term_ignoring_pod(context).await
         }
         "test_clusterip_service_routes_to_its_backend_pod" => {
             service_proxy::clusterip_service_routes_to_its_backend_pod(context).await
+        }
+        "test_nodeapiserver_proxy_subresources_relay_requests" => {
+            service_proxy::nodeapiserver_proxy_subresources_relay_requests(context).await
         }
         "test_nodeport_service_is_reachable_on_the_node_ip" => {
             service_proxy::nodeport_service_is_reachable_on_the_node_ip(context).await
@@ -2259,6 +2794,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         }
         "test_the_node_still_reconciles_pods_after_an_apiserver_restart" => {
             watch_recovery::node_still_reconciles_pods_after_an_apiserver_restart(context).await
+        }
+        "test_paginated_list_watch_preserves_concurrent_updates" => {
+            watch_recovery::paginated_list_watch_preserves_concurrent_updates(context).await
         }
         "test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers" => {
             controller_manager::node_is_tainted_unreachable_after_heartbeat_loss_and_recovers(context).await
@@ -2360,6 +2898,46 @@ mod tests {
             None
         )
         .unwrap());
+    }
+
+    /// Regression for docs/APISERVER_E2E_FIX.md's "nodeapiserver
+    /// crash/restart after Binding subresource" finding (run
+    /// `33674376893`): the real cause was
+    /// `test_nodeapiserver_authorizes_before_special_handlers` restarting
+    /// nodeapiserver.service twice (once via `install_rbac()`, once more
+    /// fire-and-forget when its guard drops) without being classified as
+    /// environment-reconfiguring, so an ordinary test could land right
+    /// after it in shard order and race the in-flight restart. Every test
+    /// that restarts nodeapiserver.service through one of the
+    /// `Nodeapiserver*Override` fixtures in `tests/bootstrap.rs` must be
+    /// listed here, or it can land next to an ordinary test the same way.
+    #[test]
+    fn every_nodeapiserver_restarting_fixture_test_is_environment_reconfiguring() {
+        for name in [
+            "test_nodeapiserver_authentication_modes",
+            "test_nodeapiserver_authorizes_before_special_handlers",
+            "test_nodeapiserver_honors_always_pull_images",
+            "test_nodeapiserver_applies_configured_node_selector",
+            "test_nodeapiserver_writes_audit_log",
+            "test_nodeapiserver_audits_rejected_requests",
+            "test_nodeapiserver_rotates_audit_log",
+            "test_nodeapiserver_delivers_audit_webhook",
+            "test_nodeapiserver_audits_request_and_response_objects",
+            "test_nodeapiserver_honors_authorization_webhook_decisions",
+        ] {
+            assert!(
+                is_environment_reconfiguring_test(name),
+                "{name} restarts nodeapiserver.service via a Nodeapiserver*Override fixture \
+                 but is missing from is_environment_reconfiguring_test()"
+            );
+        }
+    }
+
+    #[test]
+    fn node_recovery_fixture_is_deferred_with_other_environment_changes() {
+        assert!(is_environment_reconfiguring_test(
+            "test_a_pending_pod_recovers_after_the_node_failure_is_fixed"
+        ));
     }
 
     #[test]

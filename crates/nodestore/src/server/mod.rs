@@ -64,11 +64,22 @@ pub struct EtcdApi {
     /// client of another member's client API — i.e. forwarding a write to the
     /// leader.
     client_tls: Option<crate::tls::Material>,
+    /// Debugging-only tally of `Range` calls by a coarse key-prefix label
+    /// (see `range_counter_label()`), logged and reset periodically by
+    /// `spawn_range_counter_logger()`. Exists to answer #562: is nodestore's
+    /// CPU cost driven by a high *volume* of Range calls, and if so from
+    /// which resource, rather than by any single call being slow.
+    range_counters: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
 }
 
 impl EtcdApi {
     pub fn new(node: Arc<Node>) -> EtcdApi {
-        EtcdApi { node, raft: None, client_tls: None }
+        EtcdApi {
+            node,
+            raft: None,
+            client_tls: None,
+            range_counters: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
     }
 
     pub fn with_raft(mut self, handle: crate::replication::driver::RaftHandle) -> EtcdApi {
@@ -98,6 +109,70 @@ impl EtcdApi {
 
     pub fn node(&self) -> &Arc<Node> {
         &self.node
+    }
+
+    /// Coarse label for a Range call's key, for the debugging tally below:
+    /// etcd keys apiserver issues are shaped like
+    /// `/registry/<resource>[/<namespace>]/<name>`, so the second
+    /// `/`-separated segment identifies the resource kind without needing to
+    /// parse the rest of the key. Anything that doesn't fit that shape (a
+    /// raft/lease-internal key, an empty key) falls back to the literal key
+    /// text so it still shows up distinctly rather than being silently
+    /// dropped into one bucket.
+    fn range_counter_label(key: &[u8]) -> String {
+        let text = String::from_utf8_lossy(key);
+        let mut segments = text.split('/').filter(|s| !s.is_empty());
+        match (segments.next(), segments.next()) {
+            (Some("registry"), Some(resource)) => resource.to_string(),
+            _ => text.into_owned(),
+        }
+    }
+
+    /// Debugging instrumentation for #562: tallies Range calls by resource
+    /// so `spawn_range_counter_logger()` can report which caller is driving
+    /// call *volume*, since profiling has already ruled out any single call
+    /// being expensive. Cheap enough to leave on permanently — one mutex lock
+    /// and a hashmap entry increment per call.
+    fn record_range_call(&self, key: &[u8]) {
+        let label = Self::range_counter_label(key);
+        let mut counters = self.range_counters.lock().expect("range counters mutex poisoned");
+        *counters.entry(label).or_insert(0) += 1;
+    }
+
+    /// Spawns a task that logs and resets the Range-call tally every
+    /// `period`, so a live cluster can be watched for which resource is
+    /// generating the call volume without attaching a profiler. Idempotent
+    /// to call more than once only in the sense that each call adds another
+    /// independent logger — callers should spawn this exactly once, from
+    /// wherever the single `EtcdApi` is constructed.
+    pub fn spawn_range_counter_logger(&self, period: std::time::Duration) {
+        let counters = Arc::clone(&self.range_counters);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let snapshot: Vec<(String, u64)> = {
+                    let mut counters = counters.lock().expect("range counters mutex poisoned");
+                    let snapshot: Vec<(String, u64)> = counters.drain().collect();
+                    snapshot
+                };
+                if snapshot.is_empty() {
+                    continue;
+                }
+                let total: u64 = snapshot.iter().map(|(_, count)| count).sum();
+                let mut by_count = snapshot;
+                by_count.sort_by(|a, b| b.1.cmp(&a.1));
+                let top: Vec<String> =
+                    by_count.iter().take(10).map(|(label, count)| format!("{label}={count}")).collect();
+                tracing::info!(
+                    total_range_calls = total,
+                    window_secs = period.as_secs(),
+                    top_by_resource = %top.join(", "),
+                    "nodestore: Range call tally (debugging counters for #562)"
+                );
+            }
+        });
     }
 
     fn header(&self, revision: i64) -> Option<pb::ResponseHeader> {
@@ -238,6 +313,7 @@ impl pb::kv_server::Kv for EtcdApi {
                 req
             );
         }
+        self.record_range_call(&req.key);
         let query = convert::range_query(&req)?;
         let (result, revision) = self.node.read(|s| {
             let result = s.range(&query)?;

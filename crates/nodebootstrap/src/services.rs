@@ -87,10 +87,9 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 }
 
 /// Installed and started **before** `targets::run_with` in `run_all()` --
-/// `targets/upstream.rs` already orders `kube-apiserver.service` `After=
-/// nodestore.service`, so nodestore has to actually exist and be enabled
-/// by the time that runs, or the apiserver comes up with nothing to talk
-/// to.
+/// The selected apiserver target orders its service `After=nodestore.service`,
+/// so nodestore has to actually exist and be enabled by the time that target
+/// runs, or the apiserver comes up with nothing to talk to.
 pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
     let bin = binary_path(cfg, "nodestore");
     anyhow::ensure!(bin.exists(), "no nodestore binary at {} -- run `nodebootstrap fetch` first", bin.display());
@@ -122,6 +121,7 @@ pub fn ensure_nodestore(cfg: &Config) -> Result<()> {
             exec_cmd: &bin.to_string_lossy(),
             after: None, // nodestore is what other units order *after*, not the reverse
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodestore as a supervised service")
@@ -186,8 +186,9 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
             name: "nodelet",
             description: "nodelet -- not-k8s node agent (kubelet replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: (!cfg.worker).then_some("kube-apiserver.service"),
+            after: (!cfg.worker).then_some(cfg.apiserver_service()),
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodelet as a supervised service")
@@ -197,6 +198,124 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
 /// single-node install active on a reused host.
 pub fn remove_nodelet(cfg: &Config) {
     service_mgr::remove(cfg, "nodelet");
+}
+
+/// Prove that the restarted controllers can process a new namespace. A
+/// persisted leader lease and old ServiceAccounts survive process exit and
+/// cannot demonstrate that the current Namespace informer has initialized.
+pub fn wait_for_control_plane_readiness(cfg: &Config) -> Result<()> {
+    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    let ca = std::fs::read_to_string(cfg.pki_dir().join("ca.crt"))
+        .context("reading the expected namespace trust bundle")?;
+    crate::kube_api::block_on(&kubeconfig, |client| control_plane_ready(client, ca))
+        .context("checking control-plane readiness")
+}
+
+async fn control_plane_ready(client: kube::Client, ca: String) -> Result<()> {
+    use k8s_openapi::api::core::v1::{ConfigMap, Namespace, ServiceAccount};
+    use kube::api::{Api, DeleteParams, PostParams, Preconditions};
+    use std::time::Duration;
+    let request_timeout = Duration::from_secs(10);
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let mut probe = Namespace::default();
+    probe.metadata.generate_name = Some("nodebootstrap-ready-".into());
+    let probe = tokio::time::timeout(request_timeout,
+        namespaces.create(&PostParams::default(), &probe)).await
+        .context("readiness namespace create timed out")??;
+    let name = probe.metadata.name.as_deref().context("readiness namespace has no name")?;
+    let accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), name);
+    let maps: Api<ConfigMap> = Api::namespaced(client, name);
+    let result = tokio::time::timeout(Duration::from_secs(150), async {
+        loop {
+            let check = async {
+                let account = accounts.get_opt("default").await?;
+                let bundle = maps.get_opt("kube-root-ca.crt").await?;
+                Ok::<_, kube::Error>(account.is_some() && bundle
+                    .and_then(|map| map.data)
+                    .and_then(|data| data.get("ca.crt").cloned())
+                    .as_deref() == Some(ca.as_str()))
+            };
+            match tokio::time::timeout(request_timeout, check).await {
+                Ok(Ok(true)) => return Ok(()),
+                Ok(Ok(false)) => {},
+                Ok(Err(kube::Error::Api(error))) if error.code < 500 && error.code != 429 =>
+                    return Err(anyhow::Error::from(kube::Error::Api(error))),
+                Ok(Err(error)) => tracing::warn!(namespace = name, %error, "readiness probe request failed; retrying"),
+                Err(_) => tracing::warn!(namespace = name, "readiness probe request timed out; retrying"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }).await.context("controllers did not populate the new readiness namespace within 150s")
+        .and_then(|result| result);
+    let delete = DeleteParams {
+        preconditions: Some(Preconditions { uid: probe.metadata.uid, resource_version: None }),
+        ..Default::default()
+    };
+    if !matches!(tokio::time::timeout(request_timeout, namespaces.delete(name, &delete)).await, Ok(Ok(_))) {
+        tracing::warn!(namespace = name, "could not remove the readiness probe namespace");
+    }
+    result?;
+    tracing::info!("control plane is ready: controllers populated a new namespace with credentials");
+    Ok(())
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_waits_for_new_controller_output_and_cleans_up() {
+        let published = Arc::new(AtomicBool::new(false));
+        let deleted = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(tokio::sync::Notify::new());
+        let service = tower::service_fn({
+            let published = published.clone();
+            let deleted = deleted.clone();
+            let observed = observed.clone();
+            move |request: http::Request<kube::client::Body>| {
+                let published = published.clone();
+                let deleted = deleted.clone();
+                let observed = observed.clone();
+                async move {
+                    let mut status = 200;
+                    let body = match (request.method().as_str(), request.uri().path()) {
+                        ("POST", "/api/v1/namespaces") => serde_json::json!({
+                            "apiVersion":"v1", "kind":"Namespace",
+                            "metadata":{"name":"nodebootstrap-ready-test", "uid":"probe-uid"}
+                        }),
+                        ("GET", "/api/v1/namespaces/nodebootstrap-ready-test/serviceaccounts/default") => {
+                            if published.load(Ordering::SeqCst) {
+                                serde_json::json!({"apiVersion":"v1", "kind":"ServiceAccount", "metadata":{"name":"default"}})
+                            } else {
+                                observed.notify_one();
+                                status = 404;
+                                serde_json::json!({"apiVersion":"v1", "kind":"Status", "status":"Failure", "reason":"NotFound", "code":404})
+                            }
+                        }
+                        ("GET", "/api/v1/namespaces/nodebootstrap-ready-test/configmaps/kube-root-ca.crt") =>
+                            serde_json::json!({"apiVersion":"v1", "kind":"ConfigMap", "data":{"ca.crt":"expected-ca"}}),
+                        ("DELETE", "/api/v1/namespaces/nodebootstrap-ready-test") => {
+                            let body = request.into_body().collect_bytes().await.unwrap();
+                            let options: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                            assert_eq!(options["preconditions"]["uid"], "probe-uid");
+                            deleted.store(true, Ordering::SeqCst);
+                            serde_json::json!({"apiVersion":"v1", "kind":"Status", "status":"Success"})
+                        }
+                        _ => panic!("readiness must inspect new controller output: {} {}", request.method(), request.uri()),
+                    };
+                    Ok::<_, std::convert::Infallible>(http::Response::builder().status(status)
+                        .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap())).unwrap())
+                }
+            }
+        });
+        let task = tokio::spawn(control_plane_ready(kube::Client::new(service, "default"), "expected-ca".into()));
+        observed.notified().await;
+        assert!(!task.is_finished(), "old persisted state cannot satisfy readiness");
+        published.store(true, Ordering::SeqCst);
+        task.await.unwrap().unwrap();
+        assert!(deleted.load(Ordering::SeqCst));
+    }
 }
 
 /// Called last in `run_all()`, alongside `ensure_nodelet` (same ordering
@@ -229,7 +348,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
             name: "nodeproxy",
             description: "nodeproxy -- not-k8s Service routing (kube-proxy replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: (!cfg.worker).then_some("kube-apiserver.service"),
+            after: (!cfg.worker).then_some(cfg.apiserver_service()),
             env: &[
                 ("KUBECONFIG", &kubeconfig),
                 ("NODEPROXY_IP_FAMILY", &ip_family),
@@ -237,6 +356,7 @@ pub fn ensure_nodeproxy(cfg: &Config) -> Result<()> {
                 ("NOTK8S_COMPONENT", "nodeproxy"),
                 ("NOTK8S_COMPONENT_BINARY", binary.as_str()),
             ],
+            limit_stack: None,
         },
     )
     .context("installing nodeproxy as a supervised service")
@@ -290,7 +410,7 @@ fn write_host_sysctl(path: &str, value: &str) {
 /// Data and PKI remain on disk so an operator can recover or rejoin
 /// deliberately.
 pub fn remove_control_plane(cfg: &Config) {
-    for name in ["kube-apiserver", "nodestore", "nodescheduler", "nodecontroller"] {
+    for name in ["kube-apiserver", "nodeapiserver", "nodestore", "nodescheduler", "nodecontroller"] {
         service_mgr::remove(cfg, name);
     }
     tracing::info!("removed local control-plane services; retained control-plane data and PKI");
@@ -321,8 +441,9 @@ pub fn ensure_nodescheduler(cfg: &Config) -> Result<()> {
             name: "nodescheduler",
             description: "nodescheduler -- not-k8s scheduler (kube-scheduler replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: Some("kube-apiserver.service"),
+            after: Some(cfg.apiserver_service()),
             env: &env,
+            limit_stack: None,
         },
     )
     .context("installing nodescheduler as a supervised service")
@@ -372,8 +493,17 @@ pub fn ensure_nodecontroller(cfg: &Config) -> Result<()> {
             name: "nodecontroller",
             description: "nodecontroller -- not-k8s controller manager (kube-controller-manager replacement)",
             exec_cmd: &bin.to_string_lossy(),
-            after: Some("kube-apiserver.service"),
+            after: Some(cfg.apiserver_service()),
             env: &env,
+            // Issue #528 no longer needs this: the actual root cause was
+            // try_join! combining all 21 controllers' futures into one
+            // state machine on a single task's stack (fixed by switching
+            // to tokio::task::JoinSet -- see lib.rs's own run()). The
+            // LimitSTACK=infinity workaround this field briefly carried
+            // is no longer necessary now that the real fix is in;
+            // SupervisedService::limit_stack itself stays available for
+            // any future component that genuinely needs it.
+            limit_stack: None,
         },
     )
     .context("installing nodecontroller as a supervised service")

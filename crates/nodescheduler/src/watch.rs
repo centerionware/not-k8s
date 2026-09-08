@@ -183,6 +183,12 @@ pub fn route_pod(pod: &PodInfo, profile_names: &[String]) -> PodRoute {
         // capacity is not a per-profile question.
         return PodRoute::Cache;
     }
+    if pod.deleting {
+        // The binding subresource must reject a Pod once deletion has begun.
+        // Keeping an unassigned terminating Pod in the queue therefore turns
+        // namespace cleanup into an endless bind/409/requeue loop.
+        return PodRoute::Ignore;
+    }
     if profile_names.iter().any(|p| p == &pod.scheduler_name) {
         PodRoute::Queue
     } else {
@@ -1395,6 +1401,26 @@ mod tests {
         assert_eq!(route_pod(&pod(None, "default-scheduler"), &both), PodRoute::Queue);
         assert_eq!(route_pod(&pod(None, "batch-scheduler"), &both), PodRoute::Queue);
         assert_eq!(route_pod(&pod(None, "someone-elses-scheduler"), &both), PodRoute::Ignore);
+    }
+
+    #[test]
+    fn an_unassigned_terminating_pod_is_removed_from_the_queue() {
+        let mut deleting = pod(None, "default-scheduler");
+        deleting.deleting = true;
+        assert_eq!(
+            route_pod(&deleting, &profiles(&["default-scheduler"])),
+            PodRoute::Ignore
+        );
+    }
+
+    #[test]
+    fn an_assigned_terminating_pod_stays_in_the_cache_until_delete() {
+        let mut deleting = pod(Some("worker-1"), "default-scheduler");
+        deleting.deleting = true;
+        assert_eq!(
+            route_pod(&deleting, &profiles(&["default-scheduler"])),
+            PodRoute::Cache
+        );
     }
 
     #[test]

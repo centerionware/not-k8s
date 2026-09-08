@@ -70,7 +70,7 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
             name: "flanneld",
             description: "flanneld -- CNI overlay network daemon for not-k8s",
             exec_cmd: &command,
-            after: Some("kube-apiserver.service"),
+            after: Some(cfg.apiserver_service()),
             env: &[
                 // flanneld uses NODE_NAME for host-mode kube-subnet-mgr. If it
                 // is absent, it assumes it is running in a Pod and requires
@@ -83,6 +83,7 @@ fn start_flanneld(cfg: &Config) -> Result<()> {
                 ("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", &ipv4_cidr),
                 ("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", &ipv6_cidr),
             ],
+            limit_stack: None,
         },
     )
     .context("installing flanneld as a supervised service")

@@ -1,4 +1,4 @@
-name: Flamegraph — nodelet, multi-pod workload lifecycle
+name: Flamegraph
 
 # Manual trigger only, same conservative posture as profiling.yml/e2e.yml.
 #
@@ -75,7 +75,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve the release tag and download nodelet's debug binary
+      - name: Download nodelet
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,21 +93,22 @@ jobs:
           chmod +x /tmp/nodelet-debug
           file /tmp/nodelet-debug
 
-      - uses: ./.github/actions/setup-toolchain
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
 
-      - name: Build the Rust bootstrap applet
+      - name: Build bootstrap
         run: cargo build --features cri -p notk8s
 
-      - name: Bootstrap the stack with the debug nodelet binary (stripped control plane + containerd + CNI, no proxy)
+      - name: Bootstrap cluster
         run: |
           set -euo pipefail
           sudo -E env NOTK8S_NODELET_PREBUILT=/tmp/nodelet-debug \
             ./target/debug/notk8s bootstrap --proxy=none
 
-      - name: Settle before profiling
+      - name: Settle cluster
         run: sleep 15
 
-      - name: Record a flame graph across the workload's full lifecycle
+      - name: Record flamegraph
         timeout-minutes: 25
         env:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
@@ -193,7 +194,7 @@ jobs:
           rm -f "$STOP_FILE"
           ls -la /tmp/flamegraph-out
 
-      - name: Upload the flamegraph and raw profiling output as a workflow artifact
+      - name: Upload profile
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -201,7 +202,7 @@ jobs:
           path: /tmp/flamegraph-out/
           if-no-files-found: warn
 
-      - name: Publish the flamegraph to the flamegraphs branch
+      - name: Publish flamegraph
         if: always()
         run: |
           set -e
@@ -262,7 +263,7 @@ jobs:
             git push origin flamegraphs
           fi
 
-      - name: Print where the results landed
+      - name: Show results
         if: always()
         run: |
           echo "Workflow artifact: see this run's Artifacts section."

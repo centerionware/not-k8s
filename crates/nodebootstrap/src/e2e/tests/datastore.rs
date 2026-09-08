@@ -203,6 +203,13 @@ pub(super) fn grpc_json_call(
                         .range(pb::RangeRequest {
                             key: decode_field(&request, "key")?,
                             range_end: optional_bytes(&request, "rangeEnd")?,
+                            limit: request.get("limit").map_or(Ok(0), |value| {
+                                match value {
+                                    Value::String(value) => Ok(value.parse()?),
+                                    Value::Number(value) => value.as_i64().ok_or_else(|| anyhow::anyhow!("limit was not an integer")),
+                                    _ => anyhow::bail!("limit was not an integer"),
+                                }
+                            })?,
                             revision: request.get("revision").map_or(Ok(0), |value| {
                                 match value {
                                     Value::String(value) => Ok(value.parse()?),
@@ -595,6 +602,24 @@ pub(super) async fn datastore_lists_a_prefix_in_key_order(
         keys == ["/registry/pods/a", "/registry/pods/b", "/registry/pods/c"],
         "prefix order was {keys:?}"
     );
+    let snapshot = output["header"]["revision"].clone();
+    anyhow::ensure!(!snapshot.is_null(), "range response omitted its revision");
+    // Build MVCC history, then delete a key. The indexed Range path must
+    // choose the latest visible revision BEFORE filtering its tombstone.
+    for generation in 0..8 {
+        store.rpc("etcdserverpb.KV/Put", &json!({"key": b64("/registry/pods/a"),
+            "value": b64(&format!("generation-{generation}"))}).to_string())?;
+    }
+    store.rpc("etcdserverpb.KV/DeleteRange", &json!({"key": b64("/registry/pods/b")}).to_string())?;
+    let current: Value = serde_json::from_str(&store.rpc("etcdserverpb.KV/Range",
+        &json!({"key": b64("/registry/pods/"), "rangeEnd": b64("/registry/pods0"), "limit": "1"}).to_string())?)?;
+    anyhow::ensure!(current["count"] == "2" && current["more"] == true,
+        "current paginated Range must count live keys, not history or tombstones: {current}");
+    anyhow::ensure!(current["kvs"][0]["value"] == b64("generation-7"), "current Range returned a stale version");
+    let historical: Value = serde_json::from_str(&store.rpc("etcdserverpb.KV/Range",
+        &json!({"key": b64("/registry/pods/"), "rangeEnd": b64("/registry/pods0"),
+            "revision": snapshot}).to_string())?)?;
+    anyhow::ensure!(historical["kvs"] == output["kvs"], "historical prefix changed after updates/deletion");
     Ok(())
 }
 

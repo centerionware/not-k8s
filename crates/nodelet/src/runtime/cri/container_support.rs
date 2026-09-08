@@ -628,6 +628,7 @@ impl CriRuntime {
     /// `StopPodSandbox` so each container actually gets its own grace
     /// period instead of whatever the sandbox stop does by default.
     pub(crate) async fn graceful_stop_containers(&self, sandbox_id: &str, pod: &Pod, grace_seconds: i64) {
+        let started = tokio::time::Instant::now();
         let Ok(containers) = self.list_pod_containers(sandbox_id).await else { return };
         let running_v = ContainerState::ContainerRunning as i32;
         let pod_ip = self.pod_ip(sandbox_id).await.unwrap_or_default();
@@ -641,7 +642,7 @@ impl CriRuntime {
         // **Simplification**: real kubelet stops sidecars strictly *after*
         // every app container has fully stopped; this stops everything in
         // one pass instead — not perfectly ordered, but every container
-        // still gets its own graceful preStop + grace period.
+        // shares the Pod's remaining shutdown budget.
         let spec_containers = pod.spec.as_ref().map(|s| s.containers.as_slice()).unwrap_or(&[]);
         let spec_init_containers = pod.spec.as_ref().and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]);
 
@@ -657,12 +658,14 @@ impl CriRuntime {
                 .and_then(|sc| sc.lifecycle.as_ref())
                 .and_then(|l| l.pre_stop.as_ref())
             {
-                if let Err(e) = self.run_lifecycle_hook(&c.id, &pod_ip, pre_stop, grace_seconds).await {
+                let remaining = remaining_termination_grace(grace_seconds, started.elapsed());
+                if let Err(e) = self.run_lifecycle_hook(&c.id, &pod_ip, pre_stop, remaining).await {
                     warn!(container = %name, error = ?e, "preStop hook failed; continuing with termination anyway");
                 }
             }
             let mut rt = self.rt.clone();
-            let _ = rt.stop_container(StopContainerRequest { container_id: c.id.clone(), timeout: grace_seconds }).await;
+            let remaining = remaining_termination_grace(grace_seconds, started.elapsed());
+            let _ = rt.stop_container(StopContainerRequest { container_id: c.id.clone(), timeout: remaining }).await;
         }
     }
 

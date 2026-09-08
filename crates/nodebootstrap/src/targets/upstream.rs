@@ -1,6 +1,7 @@
 //! Installs real upstream `kube-apiserver` against `nodestore`, wired up
-//! with the PKI `pki.rs` minted (not k3s's) -- `main`'s default target for
-//! the one piece not yet replaced by `nodeapiserver`.
+//! with the PKI `pki.rs` minted (not k3s's) -- the explicit comparison target
+//! retained for compatibility testing after `nodeapiserver` became the
+//! bootstrap default.
 //!
 //! Replaces `deploy/lib/upstream-kube-apiserver.sh` -- but where that
 //! script deliberately *borrows* k3s's already-generated PKI (see its
@@ -53,6 +54,9 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     let arch = k8s_dl_arch(&cfg.arch()).with_context(|| format!("unsupported arch for upstream binaries: {}", cfg.arch()))?;
     let bin_dir = cfg.toolchain_dir().join("bin");
     std::fs::create_dir_all(&bin_dir).context("creating toolchain bin dir")?;
+    // A target change on an existing host must leave only one apiserver
+    // implementation bound to :6443.
+    service_mgr::remove(cfg, "nodeapiserver");
     fetch_binary("kube-apiserver", arch, &bin_dir)?;
 
     let spec = target_spec(cfg)?;
@@ -128,10 +132,13 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
 /// sufficient barrier because its Deployment/ReplicaSet may not have
 /// produced a Pod yet. A directly-created seed preserves the old shell
 /// bootstrap's smoke Pod behavior while keeping the bootstrap path in Rust.
+/// It is explicitly bound to this host because its only purpose is to create
+/// this host's first CNI network namespace; it is not a workload for the
+/// scheduler to place elsewhere.
 /// The Pod gets its own explicitly-created ServiceAccount and does not mount a
 /// token, so this does not depend on a serviceaccount controller that
 /// nodecontroller intentionally does not replace yet.
-fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
+pub(crate) fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
     let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
     let kubeconfig = Kubeconfig::read_from(&kubeconfig_path)
         .with_context(|| format!("reading {} for the CNI seed Pod", kubeconfig_path.display()))?;
@@ -173,6 +180,7 @@ fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
                 "labels": {"app.kubernetes.io/name": "nodebootstrap-cni-seed"}
             },
             "spec": {
+                "nodeName": cfg.node_name(),
                 "serviceAccountName": NAME,
                 "automountServiceAccountToken": false,
                 "restartPolicy": "Never",
@@ -196,7 +204,7 @@ fn ensure_cni_seed_pod(cfg: &Config) -> Result<()> {
 /// failure dump. On the successful path, remove it after the apiserver has
 /// switched to the reachable CNI gateway; the bridge remains managed by
 /// flannel and no bootstrap workload is left in the cluster.
-fn remove_cni_seed_pod(cfg: &Config) {
+pub(crate) fn remove_cni_seed_pod(cfg: &Config) {
     let kubeconfig_path = cfg.kubeconfig_dir().join("admin.kubeconfig");
     let kubeconfig = match Kubeconfig::read_from(&kubeconfig_path) {
         Ok(kubeconfig) => kubeconfig,
@@ -269,6 +277,7 @@ fn install_apiserver(
             exec_cmd: &apiserver_exec,
             after: Some("nodestore.service"),
             env: &[],
+            limit_stack: None,
         },
     )
     .context("installing kube-apiserver as a supervised service")
@@ -294,7 +303,7 @@ fn install_apiserver(
 /// (it doesn't need to complete a real etcd v3 handshake, just prove the
 /// listener is bound and accepting) and is far cheaper than parsing
 /// nodestore's own readiness signal out of its logs.
-fn wait_for_nodestore(etcd_servers: &str) -> Result<()> {
+pub(crate) fn wait_for_nodestore(etcd_servers: &str) -> Result<()> {
     let addr = etcd_servers.trim_start_matches("https://").trim_start_matches("http://");
     tracing::info!(addr, "waiting for nodestore to accept connections...");
     for _ in 0..30 {
@@ -396,7 +405,7 @@ fn nodestore_client_pki_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(data_dir).join("pki/client")
 }
 
-fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+pub(crate) fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let configured = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
     (
         configured("NODEBOOTSTRAP_JOIN_CA_FILE")
@@ -412,7 +421,7 @@ fn nodestore_client_pki_paths() -> (std::path::PathBuf, std::path::PathBuf, std:
     )
 }
 
-fn nodestore_etcd_servers() -> String {
+pub(crate) fn nodestore_etcd_servers() -> String {
     std::env::var("NODEBOOTSTRAP_ETCD_SERVERS").unwrap_or_else(|_| "https://127.0.0.1:2379".to_string())
 }
 
@@ -462,7 +471,7 @@ fn detect_host_address() -> Option<String> {
         })
 }
 
-fn wait_for_cni_address() -> Result<String> {
+pub(crate) fn wait_for_cni_address() -> Result<String> {
     tracing::info!("waiting for CNI bridge cni0 before publishing the apiserver Service endpoint...");
     for _ in 0..30 {
         if let Some(address) = detect_cni_address() {

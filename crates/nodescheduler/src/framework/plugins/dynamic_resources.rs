@@ -6,7 +6,7 @@
 //! Implemented, faithfully: a claim's `spec.devices.requests[]`, each with
 //! `deviceClassName` + `count` (`allocationMode: ExactCount`, the default),
 //! evaluated against real `ResourceSlice` device inventory using a real CEL
-//! interpreter (`cel-interpreter`) for both the request's own `selectors`
+//! interpreter (`cel`) for both the request's own `selectors`
 //! and its `DeviceClass`'s. An already-allocated claim being reused by a
 //! second pod is handled too — only `reservedFor` needs updating, not a new
 //! allocation. `PreBind` writes `status.allocation` and appends to
@@ -66,7 +66,7 @@
 //! (`device.attributes["dra.example.com"].foo` for an attribute the driver
 //! wrote as bare `foo`).
 //!
-//! `cel-interpreter` has no opaque/custom Value variant for upstream's
+//! `cel` has no opaque/custom Value variant for upstream's
 //! `apiservercel.Quantity`, so `quantity.rs` carries a private canonical
 //! representation inside a CEL string and implements the same methods with
 //! arbitrary-precision rational arithmetic. Equivalent spellings compare
@@ -248,7 +248,7 @@ fn pre_enqueue_impl(pod: &PodInfo) -> Status {
 }
 
 /// The CEL `device` variable's shape. `#[derive(Serialize)]` is enough to
-/// hand this straight to `cel_interpreter::Context::add_variable` — see the
+/// hand this straight to `cel::Context::add_variable` — see the
 /// crate's blanket `TryIntoValue for T: Serialize`.
 #[derive(serde::Serialize)]
 struct CelDevice {
@@ -334,11 +334,11 @@ fn cel_device(driver: &str, basic: &crate::cache::dra::RawBasicDevice) -> CelDev
 /// nodes × devices-per-node × selectors for every pod. `None` remembers an
 /// expression that failed to compile, so a malformed selector still fails
 /// closed without retrying the same doomed compile on every device.
-type CompiledSelectors = HashMap<String, Option<cel_interpreter::Program>>;
+type CompiledSelectors = HashMap<String, Option<cel::Program>>;
 
 fn compile_selectors(exprs: impl Iterator<Item = String>, cache: &mut CompiledSelectors) {
     for expr in exprs {
-        cache.entry(expr).or_insert_with_key(|e| cel_interpreter::Program::compile(e).ok());
+        cache.entry(expr).or_insert_with_key(|e| cel::Program::compile(e).ok());
     }
 }
 
@@ -360,13 +360,13 @@ fn device_matches(
         let Some(Some(program)) = compiled.get(&cel.expression) else {
             return false;
         };
-        let mut ctx = cel_interpreter::Context::default();
+        let mut ctx = cel::Context::default();
         crate::framework::plugins::quantity::install(&mut ctx);
         if ctx.add_variable("device", cel_device(driver, basic)).is_err() {
             return false;
         }
         match program.execute(&ctx) {
-            Ok(cel_interpreter::Value::Bool(true)) => {}
+            Ok(cel::Value::Bool(true)) => {}
             _ => return false,
         }
     }

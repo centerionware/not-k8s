@@ -59,9 +59,18 @@ pub async fn run() -> Result<()> {
     // kubeconfig before the real client below is built.
     nodelet::bootstrap::run(&cfg).await.context("TLS bootstrap")?;
 
-    let client = kube::Client::try_default()
+    // Keep the heartbeat/status writer on its own HTTP connection pool. The
+    // main client is shared by the pod and informer watches; when those
+    // long-lived streams reconnect together, a short node Lease or status
+    // request must not wait behind them. The two clients use the same
+    // credentials and TLS settings, but deliberately do not share a transport.
+    let kube_config = kube::Config::infer()
         .await
-        .context("building kube client (is KUBECONFIG set and the apiserver reachable?)")?;
+        .context("inferring kube client config (is KUBECONFIG set and the apiserver reachable?)")?;
+    let client = kube::Client::try_from(kube_config.clone())
+        .context("building kube watch client")?;
+    let heartbeat_client = kube::Client::try_from(kube_config)
+        .context("building kube heartbeat client")?;
 
     // Pick the runtime. Mock needs nothing; CRI needs the `cri` feature + containerd
     // (and the kube Client, to resolve ConfigMap/Secret volumes — CRI itself has
@@ -118,7 +127,7 @@ pub async fn run() -> Result<()> {
     }
 
     // Cheap, frequent liveness (Lease) decoupled from infrequent full status push.
-    tokio::spawn(heartbeat_loop(client.clone(), cfg.clone(), runtime.clone()));
+    tokio::spawn(heartbeat_loop(heartbeat_client, cfg.clone(), runtime.clone()));
 
     // Coarse periodic housekeeping (orphaned sandboxes, unreferenced
     // images) — a no-op on the mock runtime, see PodRuntime::gc()'s default.
@@ -335,6 +344,17 @@ async fn evict_pod(client: &kube::Client, runtime: &Arc<dyn PodRuntime>, pod: &k
         warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to stop containers");
     }
 
+    // A reconcile that was already inside ensure_pod() when the first patch
+    // landed can finish afterward and write a fresh non-terminal status. The
+    // runtime stop emits its own events too, so repeat the terminal patch
+    // after stopping: the last writer must be the eviction path, otherwise
+    // activeDeadlineSeconds can be lost and the Pod keeps running forever.
+    if status_patched {
+        if let Err(e) = pod_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch)).await {
+            warn!(pod = %format!("{ns}/{name}"), error = ?e, "eviction: failed to reaffirm pod status");
+        }
+    }
+
     if status_patched {
         info!(pod = %format!("{ns}/{name}"), status_reason, "evicted pod (containers stopped; object left for cleanup, matching real kubelet)");
     }
@@ -375,6 +395,25 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
                 continue;
             }
         };
+
+        // activeDeadlineSeconds is independent of resource-pressure ranking.
+        // Check it before the CRI stats RPC: a slow or wedged
+        // ListPodSandboxStats call must not delay a deadline eviction past
+        // the pod's own deadline.
+        let now = k8s_openapi::jiff::Timestamp::now();
+        let over_active_deadline = pods.iter().find(|p| {
+            if p.metadata.deletion_timestamp.is_some() {
+                return false;
+            }
+            let active_deadline_seconds = p.spec.as_ref().and_then(|s| s.active_deadline_seconds).map(i64::from);
+            let seconds_since_start =
+                p.status.as_ref().and_then(|s| s.start_time.as_ref()).map(|t| (now - t.0).get_seconds());
+            nodelet::eviction::active_deadline_exceeded(active_deadline_seconds, seconds_since_start)
+        });
+        if let Some(victim) = over_active_deadline {
+            evict_pod(&client, &runtime, victim, "DeadlineExceeded", "Pod was active on the node longer than the specified deadline").await;
+            continue;
+        }
 
         let usage_stats = match runtime.pod_usage_stats().await {
             Ok(stats) => stats,
@@ -436,31 +475,6 @@ async fn eviction_loop(client: kube::Client, runtime: Arc<dyn PodRuntime>, cfg: 
         });
         if let Some((victim, volume)) = over_empty_dir_limit {
             evict_pod(&client, &runtime, victim, "Evicted", &format!("The node was low on resource: emptyDir volume '{volume}' exceeded its sizeLimit.")).await;
-            continue; // one pod per check, matching the pressure-based path below
-        }
-
-        // spec.activeDeadlineSeconds (round 81; found in round 80's
-        // re-audit): real kubelet's own job, independent of node
-        // pressure and of restartPolicy — a pod running past its own
-        // deadline is terminated regardless of whether it would
-        // otherwise keep restarting under Always/OnFailure. Reuses the
-        // same evict_pod() stop-and-mark-Failed-but-never-delete path
-        // every other kubelet-initiated termination in this codebase
-        // uses (ephemeral-storage/emptyDir limits above, node-pressure
-        // eviction below) — matching real kubelet's own behavior exactly
-        // now (round 123), not a simplification of it.
-        let now = k8s_openapi::jiff::Timestamp::now();
-        let over_active_deadline = pods.iter().find(|p| {
-            if p.metadata.deletion_timestamp.is_some() {
-                return false;
-            }
-            let active_deadline_seconds = p.spec.as_ref().and_then(|s| s.active_deadline_seconds).map(i64::from);
-            let seconds_since_start =
-                p.status.as_ref().and_then(|s| s.start_time.as_ref()).map(|t| (now - t.0).get_seconds());
-            nodelet::eviction::active_deadline_exceeded(active_deadline_seconds, seconds_since_start)
-        });
-        if let Some(victim) = over_active_deadline {
-            evict_pod(&client, &runtime, victim, "DeadlineExceeded", "Pod was active on the node longer than the specified deadline").await;
             continue; // one pod per check, matching the pressure-based path below
         }
 
@@ -528,30 +542,55 @@ async fn log_rotate_loop(runtime: Arc<dyn PodRuntime>, cfg: Config) {
 
 /// Renew the Lease every `heartbeat`; push full node status every `status_interval`.
 async fn heartbeat_loop(client: kube::Client, cfg: Config, runtime: Arc<dyn PodRuntime>) {
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     let mut last_status = Instant::now();
     loop {
         tokio::time::sleep(cfg.heartbeat).await;
 
-        if let Err(e) = node::renew_lease(&client, &cfg).await {
-            warn!(error = ?e, "lease renewal failed");
+        match tokio::time::timeout(REQUEST_TIMEOUT, node::renew_lease(&client, &cfg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = ?e, "lease renewal failed"),
+            Err(_) => warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "lease renewal timed out"),
         }
 
         if last_status.elapsed() >= cfg.status_interval {
-            let images = runtime.node_images().await.unwrap_or_default();
-            let runtime_handlers = runtime.runtime_handlers().await.unwrap_or_default();
-            match node::push_status(
+            let images = match tokio::time::timeout(REQUEST_TIMEOUT, runtime.node_images()).await {
+                Ok(Ok(images)) => images,
+                Ok(Err(e)) => {
+                    warn!(error = ?e, "CRI image inventory failed during heartbeat; continuing with an empty image list");
+                    Vec::new()
+                }
+                Err(_) => {
+                    warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "CRI image inventory timed out during heartbeat; continuing with an empty image list");
+                    Vec::new()
+                }
+            };
+            let runtime_handlers = match tokio::time::timeout(REQUEST_TIMEOUT, runtime.runtime_handlers()).await {
+                Ok(Ok(handlers)) => handlers,
+                Ok(Err(e)) => {
+                    warn!(error = ?e, "CRI runtime-handler query failed during heartbeat; continuing with no runtime handlers");
+                    Vec::new()
+                }
+                Err(_) => {
+                    warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "CRI runtime-handler query timed out during heartbeat; continuing with no runtime handlers");
+                    Vec::new()
+                }
+            };
+            let device_plugin_capacity = runtime.device_plugin_capacity();
+            let mounted_csi_volumes = runtime.mounted_csi_volumes();
+            let status = node::push_status(
                 &client,
                 &cfg,
                 true,
-                &runtime.device_plugin_capacity(),
+                &device_plugin_capacity,
                 images,
-                &runtime.mounted_csi_volumes(),
+                &mounted_csi_volumes,
                 &runtime_handlers,
-            )
-            .await
-            {
-                Ok(()) => info!("node status pushed"),
-                Err(e) => warn!(error = ?e, "node status push failed"),
+            );
+            match tokio::time::timeout(REQUEST_TIMEOUT, status).await {
+                Ok(Ok(())) => info!("node status pushed"),
+                Ok(Err(e)) => warn!(error = ?e, "node status push failed"),
+                Err(_) => warn!(timeout_secs = REQUEST_TIMEOUT.as_secs(), "node status push timed out"),
             }
             last_status = Instant::now();
         }

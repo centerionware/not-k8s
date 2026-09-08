@@ -50,6 +50,23 @@ async fn pod_not_ready(context: &E2eContext, name: &str) -> Result<bool> {
         .any(|condition| condition.type_ == "Ready" && condition.status == "False"))
 }
 
+pub(super) async fn readiness_does_not_wait_for_liveness_delay(context: &E2eContext) -> Result<()> {
+    let name = "independent-probe-delays";
+    create_pod(context, name, json!({"containers": [{
+        "name": "app", "image": "busybox:latest", "command": ["sleep", "3600"],
+        "readinessProbe": {"exec": {"command": ["true"]}, "periodSeconds": 1},
+        "livenessProbe": {"exec": {"command": ["true"]}, "initialDelaySeconds": 60, "periodSeconds": 10}
+    }]})).await?;
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context.wait_until("probe fixture container to start", Duration::from_secs(90), || {
+        let pods = pods.clone();
+        async move { Ok(pods.get(name).await?.status.and_then(|s| s.phase).as_deref() == Some("Running")) }
+    }).await?;
+    context.wait_until("readiness before the 60-second liveness delay", Duration::from_secs(15), || {
+        pod_ready(context, name)
+    }).await
+}
+
 pub(super) async fn readiness_probe_gates_ready_condition(context: &E2eContext) -> Result<()> {
     let name = "readiness-probe";
     create_pod(

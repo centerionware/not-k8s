@@ -1,0 +1,207 @@
+[package]
+name = "nodeapiserver"
+description = "kube-apiserver's job: REST + watch over every built-in and CRD resource, backed by nodestore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nodeapiserver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodeapiserver"
+path = "src/main.rs"
+
+# No cargo features, deliberately — same reasoning nodestore's own Cargo.toml
+# gives: there is no "mock apiserver" worth having, the only real client that
+# matters is real kubectl/client-go/every other component here, so the thing
+# to test against is a real nodestore over a real gRPC connection.
+#
+# Dependency discipline (see docs/APISERVER.md): this crate must not depend
+# on nodelet, nodescheduler, or nodecontroller. It speaks etcd v3 over the
+# wire to nodestore like any other client rather than linking that crate —
+# the boundary crates/nodeproxy/Cargo.toml's own comment establishes,
+# applied here too.
+#
+# Deliberately minimal: only what src/ actually uses today is listed.
+# rcgen/p256/x509-parser/pem/jsonwebtoken (Group O),
+# kube/k8s-openapi (Group F onward) get
+# added as the group that first needs them lands — matching every other
+# crate in this workspace, not speculatively declared up front.
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+# Group B (wire formats): the codec operates on serde_json::Value as its
+# universal in-memory representation — real k8s-openapi struct
+# (de)serialization is Group F's job (the Scheme routes a GVK to a Rust
+# type; nothing here does that yet), so Value is what a format-transcoding
+# layer with no typed object model underneath can honestly operate on.
+serde_json = { workspace = true }
+serde = { workspace = true }
+serde_yaml = "0.9"
+# OpenAPI uses gnostic's document protobuf, not Kubernetes' object envelope.
+# Resolve fields from the vendored descriptor instead of hand-maintaining tags.
+prost-reflect = "0.16.5"
+# Group E's watch response lifetime uses the standard stream combinators to
+# apply Kubernetes' request timeout without turning the listener into a
+# polling loop.
+futures = { workspace = true }
+# protobuf's `bytes` fields are base64 in the JSON representation — the
+# same convention every other Kubernetes JSON<->protobuf codec follows.
+base64 = "0.22"
+
+# Group C: the etcd v3 gRPC client to nodestore. tonic/prost, not the
+# nodestore crate itself — see the dependency-discipline note above; this
+# crate speaks the wire protocol like any other client rather than linking
+# nodestore's own types.
+tonic = { workspace = true }
+prost = { workspace = true }
+tonic-prost = { workspace = true }
+# The Watch RPC is bidirectional streaming: ReceiverStream adapts a
+# tokio::sync::mpsc::Receiver into the Stream tonic's generated client
+# needs for the request side. Same version nodestore's own Cargo.toml uses.
+# "sync" also gates `BroadcastStream` (watch responses) and "net" gates
+# `UnixListenerStream` (kms_roundtrip test server); "time" is not needed
+# since the in-body `StreamExt::timeout` idle cap was replaced by the
+# connection-level watchdog in `server::listener::watch_idle`.
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+tower = { workspace = true, features = ["util"] }
+# storage/encryption.rs's AES-256-GCM encryption-at-rest provider. Not a
+# new dependency in the build graph — rustls (below, via its "ring"
+# feature) already pulls this crate in transitively (see Cargo.lock);
+# declaring it explicitly just makes it directly usable here too.
+ring = "0.17"
+# Group C: the upstream AES-CBC encryption-at-rest provider. These are the
+# RustCrypto AES-256-CBC and PKCS#7 mode crates; no provider code is shared
+# with the GCM path.
+aes = "0.8"
+cbc = "0.1"
+# Group C: Kubernetes' legacy NaCl-compatible Secretbox provider.
+crypto_secretbox = { version = "0.1", features = ["salsa20"] }
+
+# Group E: the REST/watch listener. Same hyper/hyper-util/tokio-rustls
+# stack as crates/nodelet/Cargo.toml's own HTTPS server, except this one
+# needs "http2" too (client-go and kubectl negotiate h2, and watch
+# multiplexing depends on it — CLAUDE.md's own note on why nodelet's http1-
+# only choice doesn't carry over here).
+# "client" is Group N's own addition: `proxy::http_client` dials
+# nodelet's kubelet-style server directly (`hyper::client::conn::http1::
+# handshake` over a TLS-wrapped stream), the same low-level raw-IO
+# pattern `crates/nodelet/src/server/exec.rs`'s own upstream-CRI proxy
+# already proved out in this workspace — just TLS-wrapped here instead
+# of plaintext-local, since nodelet's own server is a remote host, not a
+# local socket. Pulls in `want`/`pin-project-lite`/`smallvec` — all
+# already common transitive deps elsewhere in this workspace's
+# dependency tree, not a new dependency risk.
+# 1.11.1 fixes HTTP/1 buffered response bytes stranded by the write re-check
+# (hyperium/hyper#4143), which can leave a completed watch waiting for EOF.
+hyper = { version = "1.11.1", features = ["server", "http1", "http2", "client"] }
+hyper-util = { workspace = true, features = ["tokio", "server", "server-auto", "server-graceful"] }
+http = "1"
+http-body-util = "0.1"
+# The bare `Body` trait itself (`size_hint()`) -- `http-body-util` is
+# built-on-top helpers (`BoxBody`, `StreamBody`, `BodyExt`), not a
+# re-export of the trait; already resolved transitively (hyper/
+# http-body-util both depend on it), not a new dependency risk.
+http-body = "1"
+percent-encoding = "2"
+tokio-rustls = "0.26"
+rustls = { workspace = true }
+# Self-signed TLS server cert, generated on first start — see
+# server/tls.rs's own doc comment for why this isn't the cluster's real
+# PKI (Group O's job) and what it is instead.
+rcgen = "0.13"
+
+# Group H: ServiceAccount JWT issuance/validation. nodebootstrap generates an
+# EC P-256 PKCS#8 keypair (`sa.key`/`sa.pub`) for the same ES256 wire format
+# upstream kube-apiserver uses.
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+# Group H: OIDC discovery/JWKS fetches. The workspace already carries this
+# rustls-backed client for scheduler HTTP extenders; reuse that dependency
+# rather than adding a second TLS stack.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Group H: x509 client-certificate authentication. Same crate/version
+# nodecontroller's CSR controller and nodelet's own mTLS exec/logs server
+# already use (crates/nodelet/src/server/tls.rs's `client_identity_from_der`
+# is the precedent this module's identity extraction mirrors) — reusing an
+# already-proven-in-this-workspace pattern, not reinventing one.
+x509-parser = "0.16"
+pem = "3"
+# aggregator::client_tls's own "no spec.caBundle, no
+# insecureSkipTLSVerify" fallback — real upstream's own documented
+# default is "system trust roots on the apiserver," which this build has
+# no host-trust-store reader for; a bundled Mozilla root set is the
+# named, deliberate substitute. Already resolved in Cargo.lock at 1.0.9
+# (pulled transitively elsewhere in the workspace already).
+webpki-roots = "1"
+
+# Group E's server::rest::create: real metadata.creationTimestamp/uid.
+# chrono is already a pinned workspace dependency (every other crate here
+# that touches wall-clock time uses it); uuid is already resolved
+# transitively (see Cargo.lock) — declaring it explicitly with the "v4"
+# feature just makes that usable here too, not a new crate in the graph.
+chrono = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+# Group G: JSON Patch (RFC 6902) and JSON Merge Patch (RFC 7386) — reused
+# rather than hand-written (docs/APISERVER_PLAN.md finding 8: "94M
+# downloads, actively maintained"). Strategic Merge Patch is k8s-specific
+# and has no crate to reuse — hand-written in patch/strategic_merge.rs.
+json-patch = "4"
+
+# Groups J/K: CEL (x-kubernetes-validations, ValidatingAdmissionPolicy).
+# The `cel-rust` project (github.com/cel-rust/cel-rust) publishes under
+# this name now — `cel-interpreter` was its earlier crates.io name,
+# confirmed still present but no longer the actively-updated one
+# (verified directly against both crates' own crates.io metadata and the
+# upstream repo's own Cargo.toml before picking one, not assumed from
+# whichever name is more commonly referenced online). Default features
+# (regex, chrono) kept: real upstream's own CEL environment for
+# `x-kubernetes-validations` needs both (string pattern matching,
+# Duration/Timestamp comparisons against `metav1.Time`-shaped fields).
+# See `cel_ext`'s own doc comment / `docs/APISERVER.md`'s `cel_ext`
+# section for the full design — this dependency lands with Phase 1 (a
+# pure compile-and-evaluate wrapper, no cost accounting yet, not wired
+# into any real request path until Phase 2 lands).
+# The released cel-rust 0.14.4 parser has Kubernetes optional selection, but
+# its interpreter still raises NoSuchKey for a missing optional field. Pin the
+# narrowly scoped upstream fix until it is released for this component.
+cel = { git = "https://github.com/cel-rust/cel-rust", rev = "119a55dec433c1104ea5eac40faa2dde9ce97770", features = ["json", "structs"] }
+# Runtime CRD `pattern` constraints use the same Rust regex engine as the
+# CEL dependency already brings into the lockfile.
+regex = "1"
+# Group K: URL parsing for the Kubernetes URL CEL extension library. The
+# workspace already carries this version transitively; declaring it directly
+# makes the URL value implementation's dependency explicit.
+url = "2"
+# Group K: semantic-version parsing for Kubernetes' Semver CEL library. This
+# version is already present in the workspace lockfile through the release
+# tooling, so this is only an explicit direct dependency.
+semver = "1"
+
+[build-dependencies]
+# Group A codegen: parses vendor/openapi-spec/v3/*.json and
+# vendor/protos/**/generated.proto at build time into the tables
+# src/codegen.rs's consumers read. No prost/tonic-build here — see that
+# module's own doc comment for why this crate does not generate a second
+# struct universe with prost for the k8s API types themselves.
+serde_json = { workspace = true }
+# Group C: compiles proto/rpc.proto (client-only) into the etcd v3 client
+# types storage/client.rs wraps. Declared with an explicit version rather
+# than inherited: this one is not in the workspace's
+# [workspace.dependencies] (nodestore's own Cargo.toml declares its copy
+# the same way), and inheriting something that isn't there fails at
+# manifest-parse time, before any code is even looked at.
+tonic-prost-build = "0.14"
+
+[dev-dependencies]
+prost-types = { workspace = true }
+# server::tls's own tests generate a cert into a scratch directory.
+tempfile = "3"

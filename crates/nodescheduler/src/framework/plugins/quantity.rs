@@ -1,12 +1,12 @@
 //! Kubernetes' CEL Quantity library with exact arithmetic.
 //!
-//! `cel-interpreter` has no custom/opaque Value variant, so an exact quantity
+//! `cel` has no custom/opaque Value variant, so an exact quantity
 //! is carried as a private canonical string (`numerator/denominator`) and all
 //! Quantity methods operate on that representation. Equivalent spellings
 //! canonicalize identically, while arithmetic never passes through f64.
 
-use cel_interpreter::extractors::This;
-use cel_interpreter::{Context, ExecutionError, FunctionContext, Value};
+use cel::extractors::This;
+use cel::{Context, ExecutionError, FunctionContext, Value};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -211,7 +211,7 @@ mod tests {
     fn eval(expr: &str) -> Value {
         let mut ctx = Context::default();
         install(&mut ctx);
-        cel_interpreter::Program::compile(expr).unwrap().execute(&ctx).unwrap()
+        cel::Program::compile(expr).unwrap().execute(&ctx).unwrap()
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(eval(r#"isQuantity("Three")"#), Value::Bool(false));
         let mut ctx = Context::default();
         install(&mut ctx);
-        let program = cel_interpreter::Program::compile(r#"quantity("Three")"#).unwrap();
+        let program = cel::Program::compile(r#"quantity("Three")"#).unwrap();
         assert!(program.execute(&ctx).is_err());
     }
 }

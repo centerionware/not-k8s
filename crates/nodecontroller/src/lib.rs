@@ -73,6 +73,7 @@
 //! and standing that up twice is a race, not redundancy — the same
 //! reasoning `nodescheduler`'s leader election documents for `Binding`.
 
+mod api_budget;
 pub mod config;
 pub mod controllers;
 pub mod cron_schedule;
@@ -95,7 +96,10 @@ where
     F: Future<Output = Result<()>>,
 {
     if cfg.controller_disabled(name) {
-        tracing::info!(controller = name, "nodecontroller controller disabled by configuration");
+        tracing::info!(
+            controller = name,
+            "nodecontroller controller disabled by configuration"
+        );
         return Ok(());
     }
     tracing::debug!(controller = name, "starting nodecontroller controller");
@@ -198,7 +202,11 @@ fn upstream_controller_sa(name: &str) -> &'static str {
 /// grant -- since RBAC authorizes every actual request as whichever
 /// identity is impersonated, and its own built-in read-heavy role (which
 /// backs the shared informer factory, same as upstream) covers reads.
-fn impersonated_client(base: &kube::Config, controller_name: &str) -> Result<kube::Client> {
+fn impersonated_client(
+    base: &kube::Config,
+    controller_name: &str,
+    budget: &api_budget::ApiBudgetLayer,
+) -> Result<kube::Client> {
     let mut cfg = base.clone();
     let sa = upstream_controller_sa(controller_name);
     cfg.headers.push((
@@ -206,20 +214,38 @@ fn impersonated_client(base: &kube::Config, controller_name: &str) -> Result<kub
         http::header::HeaderValue::from_str(&format!("system:serviceaccount:kube-system:{sa}"))
             .with_context(|| format!("building Impersonate-User header for {controller_name}"))?,
     ));
-    for group in ["system:serviceaccounts", "system:serviceaccounts:kube-system"] {
-        cfg.headers.push((http::header::HeaderName::from_static("impersonate-group"), http::header::HeaderValue::from_static(group)));
+    for group in [
+        "system:serviceaccounts",
+        "system:serviceaccounts:kube-system",
+    ] {
+        cfg.headers.push((
+            http::header::HeaderName::from_static("impersonate-group"),
+            http::header::HeaderValue::from_static(group),
+        ));
     }
     Ok(kube::client::ClientBuilder::try_from(cfg)
-        .with_context(|| format!("building impersonated client for controller {controller_name} (sa {sa})"))?
+        .with_context(|| {
+            format!("building impersonated client for controller {controller_name} (sa {sa})")
+        })?
+        .with_layer(budget)
         .build())
 }
 
 pub async fn run() -> Result<()> {
     install_crypto_provider();
 
-    let cfg = config::Config::from_env()?;
+    // Issue #528: `Arc` so each controller's own spawned task (see
+    // run_as_leader's `work` closure below) can own a cheap clone of its
+    // own, satisfying `tokio::task::JoinSet::spawn`'s `'static` bound
+    // without needing every one of the 21 `controllers::*::run()`
+    // signatures to stop borrowing `&Config`.
+    let cfg = std::sync::Arc::new(config::Config::from_env()?);
     watch::configure_startup_concurrency(cfg.watch_startup_concurrency);
-    let kube_config = kube::Config::infer().await.context("loading apiserver configuration")?;
+    let api_budget =
+        api_budget::ApiBudgetLayer::new(cfg.api_general_concurrency, cfg.api_reserved_concurrency);
+    let kube_config = kube::Config::infer()
+        .await
+        .context("loading apiserver configuration")?;
     // The base (non-impersonated) identity -- system:kube-controller-
     // manager. Used for election (leader-election is nodecontroller's own
     // concern, not any single controller's) and, as of this fix, for
@@ -230,9 +256,17 @@ pub async fn run() -> Result<()> {
     // story (docs/E2E_FINDINGS.md finding 22's follow-up).
     let base_client = kube::client::ClientBuilder::try_from(kube_config.clone())
         .context("building apiserver client")?
+        .with_layer(&api_budget)
         .build();
     watch::set_base_client(base_client.clone());
-    let election_client = base_client;
+    // Election renewals must not share the informer/watch connection pool.
+    // A reconnect storm in the shared informer fleet must not delay the
+    // controller-manager Lease GET/replace pair long enough to lose
+    // leadership (or make the process retain it after the transport died).
+    let election_client = kube::client::ClientBuilder::try_from(kube_config.clone())
+        .context("building controller-manager election client")?
+        .with_layer(&api_budget)
+        .build();
 
     // One impersonated client per controller -- see impersonated_client's
     // doc comment. Built once, up front, so a startup-time HeaderValue
@@ -240,7 +274,7 @@ pub async fn run() -> Result<()> {
     // controller's own error handling.
     macro_rules! client_for {
         ($name:literal) => {
-            impersonated_client(&kube_config, $name)?
+            impersonated_client(&kube_config, $name, &api_budget)?
         };
     }
     let node_ipam_client = client_for!("node-ipam");
@@ -269,30 +303,95 @@ pub async fn run() -> Result<()> {
     let election_cfg = cfg.election();
     node_leaderelection::run_as_leader(election_client, &election_cfg, || async move {
         tracing::info!("nodecontroller is now leading — starting all controllers");
-        tokio::try_join!(
-            start_controller(&cfg, "node-ipam", controllers::node_ipam::run(node_ipam_client, &cfg)),
-            start_controller(&cfg, "node-lifecycle", controllers::node_lifecycle::run(node_lifecycle_client, &cfg)),
-            start_controller(&cfg, "service-account", controllers::service_account::run(service_account_client, &cfg)),
-            start_controller(&cfg, "namespace", controllers::namespace::run(namespace_client, &cfg)),
-            start_controller(&cfg, "endpoint-slice", controllers::endpoint_slice::run(endpoint_slice_client, &cfg)),
-            start_controller(&cfg, "resource-quota", controllers::resource_quota::run(resource_quota_client, &cfg)),
-            start_controller(&cfg, "replica-set", controllers::replica_set::run(replica_set_client, &cfg)),
-            start_controller(&cfg, "deployment", controllers::deployment::run(deployment_client, &cfg)),
-            start_controller(&cfg, "daemon-set", controllers::daemon_set::run(daemon_set_client, &cfg)),
-            start_controller(&cfg, "stateful-set", controllers::stateful_set::run(stateful_set_client, &cfg)),
-            start_controller(&cfg, "garbage-collector", controllers::garbage_collector::run(garbage_collector_client, &cfg)),
-            start_controller(&cfg, "job", controllers::job::run(job_client, &cfg)),
-            start_controller(&cfg, "cron-job", controllers::cron_job::run(cron_job_client, &cfg)),
-            start_controller(&cfg, "ttl-after-finished", controllers::ttl_after_finished::run(ttl_after_finished_client, &cfg)),
-            start_controller(&cfg, "attach-detach", controllers::attach_detach::run(attach_detach_client, &cfg)),
-            start_controller(&cfg, "pv-binder", controllers::pv_binder::run(pv_binder_client, &cfg)),
-            start_controller(&cfg, "storage-protection", controllers::storage_protection::run(storage_protection_client, &cfg)),
-            start_controller(&cfg, "root-ca-publisher", controllers::root_ca_publisher::run(root_ca_publisher_client, &cfg)),
-            start_controller(&cfg, "resource-claim", controllers::resource_claim::run(resource_claim_client, &cfg)),
-            start_controller(&cfg, "ephemeral-volume", controllers::ephemeral_volume::run(ephemeral_volume_client, &cfg)),
-            start_controller(&cfg, "csr", controllers::csr::run(csr_client, &cfg)),
-            start_controller(&cfg, "disruption", controllers::disruption::run(disruption_client, &cfg)),
-        )?;
+        // Issue #528: this used to be `tokio::try_join!` over all 21
+        // controllers' `run()` futures directly. `try_join!` combines its
+        // futures into *one* generated state machine polled on a single
+        // task -- unlike `tokio::spawn`, it never heap-boxes each future
+        // separately, so the combined state machine's size is the *sum* of
+        // all 21 controllers' own state machine sizes. Confirmed live: an
+        // unoptimized debug build reliably segfaulted on startup under the
+        // system default stack limit (typically 8MB) on a memory-
+        // constrained host, and ran cleanly with an unlimited one --
+        // exactly the shape of a stack overflow from one oversized frame,
+        // not a real memory leak or infinite recursion.
+        //
+        // `JoinSet` gives each controller its own independently
+        // heap-allocated task instead, so no stack frame ever has to hold
+        // more than one controller's own state at a time -- the real fix,
+        // not just raising the limit (see service_mgr.rs's own
+        // `limit_stack` field, kept as defense in depth, not the primary
+        // fix anymore).
+        //
+        // Semantics preserved from `try_join!`: if any controller's `run()`
+        // returns an error (or panics), every other controller is aborted
+        // and that error propagates -- `try_join!`'s own "first error wins,
+        // cancel the rest" behavior, reproduced explicitly below instead of
+        // getting it for free from the macro.
+        let mut controllers = tokio::task::JoinSet::new();
+        macro_rules! spawn_controller {
+            ($name:literal, $client:expr, $module:ident) => {{
+                let cfg = cfg.clone();
+                controllers.spawn(async move {
+                    start_controller(&cfg, $name, controllers::$module::run($client, &cfg)).await
+                });
+            }};
+        }
+        spawn_controller!("node-ipam", node_ipam_client, node_ipam);
+        spawn_controller!("node-lifecycle", node_lifecycle_client, node_lifecycle);
+        spawn_controller!("service-account", service_account_client, service_account);
+        spawn_controller!("namespace", namespace_client, namespace);
+        spawn_controller!("endpoint-slice", endpoint_slice_client, endpoint_slice);
+        spawn_controller!("resource-quota", resource_quota_client, resource_quota);
+        spawn_controller!("replica-set", replica_set_client, replica_set);
+        spawn_controller!("deployment", deployment_client, deployment);
+        spawn_controller!("daemon-set", daemon_set_client, daemon_set);
+        spawn_controller!("stateful-set", stateful_set_client, stateful_set);
+        spawn_controller!(
+            "garbage-collector",
+            garbage_collector_client,
+            garbage_collector
+        );
+        spawn_controller!("job", job_client, job);
+        spawn_controller!("cron-job", cron_job_client, cron_job);
+        spawn_controller!(
+            "ttl-after-finished",
+            ttl_after_finished_client,
+            ttl_after_finished
+        );
+        spawn_controller!("attach-detach", attach_detach_client, attach_detach);
+        spawn_controller!("pv-binder", pv_binder_client, pv_binder);
+        spawn_controller!(
+            "storage-protection",
+            storage_protection_client,
+            storage_protection
+        );
+        spawn_controller!(
+            "root-ca-publisher",
+            root_ca_publisher_client,
+            root_ca_publisher
+        );
+        spawn_controller!("resource-claim", resource_claim_client, resource_claim);
+        spawn_controller!(
+            "ephemeral-volume",
+            ephemeral_volume_client,
+            ephemeral_volume
+        );
+        spawn_controller!("csr", csr_client, csr);
+        spawn_controller!("disruption", disruption_client, disruption);
+
+        while let Some(outcome) = controllers.join_next().await {
+            match outcome {
+                Ok(Ok(())) => {} // a controller's run() returning at all is unusual (they run forever), not an error
+                Ok(Err(error)) => {
+                    controllers.abort_all();
+                    return Err(error);
+                }
+                Err(join_error) => {
+                    controllers.abort_all();
+                    return Err(anyhow::anyhow!(join_error).context("a controller task panicked"));
+                }
+            }
+        }
         Ok(())
     })
     .await

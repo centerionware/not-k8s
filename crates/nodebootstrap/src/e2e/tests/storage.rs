@@ -58,6 +58,14 @@ pub(super) async fn pv_binder_binds_a_static_pv_and_protection_finalizers_gate_d
             }
         })
         .await;
+    if wait_result.is_err() {
+        // Capture before cleanup: a timeout may mean either side of the
+        // binding handshake, its phase, or the protection finalizer stalled.
+        eprintln!("static PVC at binding failure: {:?}", pvcs.get_opt(pvc_name).await);
+        eprintln!("static PV at binding failure: {:?}", pvs.get_opt(pv_name).await);
+        let classes: Api<StorageClass> = Api::all(context.client.clone());
+        eprintln!("static StorageClass at binding failure: {:?}", classes.get_opt(class).await);
+    }
     let _ = pvcs.delete(pvc_name, &DeleteParams::default()).await;
     let _ = pvs.delete(pv_name, &DeleteParams::default()).await;
     wait_result

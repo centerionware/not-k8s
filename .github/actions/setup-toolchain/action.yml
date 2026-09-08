@@ -1,10 +1,10 @@
-name: Setup Rust + protoc toolchain
+name: Setup toolchain
 description: Installs the CI Rust toolchain and protobuf compiler without the removed shell installer tree.
 
 runs:
   using: composite
   steps:
-    - name: Install Rust toolchain
+    - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Install protoc

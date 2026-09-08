@@ -24,12 +24,31 @@ use kube::api::{Api, DeleteParams, DynamicObject, ListParams, PostParams};
 use kube::discovery::{verbs, ApiCapabilities, ApiResource, Discovery, Scope};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
-use k8s_openapi::api::core::v1::{Namespace, NamespaceSpec};
-use std::collections::HashMap;
+use k8s_openapi::api::core::v1::{Namespace, NamespaceSpec, Pod};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 const NAMESPACE_FINALIZER: &str = "kubernetes";
 const RETRY_PERIOD: Duration = Duration::from_secs(5);
+/// Every cleanup request is bounded so one unavailable API call cannot park
+/// the namespace controller's only reconciliation task forever. The retry
+/// timer below will enqueue the terminating Namespace again after a transient
+/// apiserver outage.
+const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Issue #557: a backstop, not the primary mechanism -- normal namespace
+/// deletion is finalizer-gated (#541) and cleans up contents before the
+/// Namespace object itself goes away, so this should almost never find
+/// anything. It exists for whatever *does* slip through that (a bug
+/// elsewhere, a race, a hand-edited store) — real Kubernetes' garbage
+/// collector controller plays the same backstop role behind normal
+/// owner-reference/finalizer-driven deletion, not a replacement for it.
+/// Low frequency on purpose: a cluster-wide Pod list is real, non-trivial
+/// work, and this project's whole point is that idle cost stays close to
+/// zero — matching the "permanently broken pod settles at one wakeup
+/// every 5 minutes" cost model `pods.rs`'s own `schedule_retry()` already
+/// established for its own backstop retry.
+const ORPHAN_SWEEP_PERIOD: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 struct CleanupResource {
@@ -98,10 +117,10 @@ async fn delete_namespace_contents(
     for resource in resources {
         let api: Api<DynamicObject> =
             Api::namespaced_with(client.clone(), namespace, &resource.api_resource);
-        let objects = match api.list(&ListParams::default()).await {
-            Ok(objects) => objects,
-            Err(kube::Error::Api(status)) if status.is_not_found() => continue,
-            Err(error) => {
+        let objects = match tokio::time::timeout(API_REQUEST_TIMEOUT, api.list(&ListParams::default())).await {
+            Ok(Ok(objects)) => objects,
+            Ok(Err(kube::Error::Api(status))) if status.is_not_found() => continue,
+            Ok(Err(error)) => {
                 needs_retry = true;
                 tracing::warn!(
                     namespace,
@@ -112,12 +131,29 @@ async fn delete_namespace_contents(
                 );
                 continue;
             }
+            Err(_) => {
+                needs_retry = true;
+                tracing::warn!(
+                    namespace,
+                    kind = %resource.api_resource.kind,
+                    api_version = %resource.api_resource.api_version,
+                    timeout_secs = API_REQUEST_TIMEOUT.as_secs(),
+                    "namespace-controller timed out listing namespaced objects"
+                );
+                continue;
+            }
         };
+
+        // A terminating namespace can have a large discovered-resource
+        // surface.  Do not let a long run of immediately-ready list/delete
+        // futures monopolize the executor that also drives the shared
+        // namespace informer.
+        tokio::task::yield_now().await;
 
         for object in objects.items {
             let name = object.name_any();
-            match api.delete(&name, &delete_params).await {
-                Ok(_) => {
+            match tokio::time::timeout(API_REQUEST_TIMEOUT, api.delete(&name, &delete_params)).await {
+                Ok(Ok(_)) => {
                     needs_retry = true;
                     tracing::debug!(
                         namespace,
@@ -126,8 +162,8 @@ async fn delete_namespace_contents(
                         "namespace-controller requested deletion of namespaced object"
                     );
                 }
-                Err(kube::Error::Api(status)) if status.is_not_found() => {}
-                Err(error) => {
+                Ok(Err(kube::Error::Api(status))) if status.is_not_found() => {}
+                Ok(Err(error)) => {
                     needs_retry = true;
                     tracing::warn!(
                         namespace,
@@ -137,7 +173,18 @@ async fn delete_namespace_contents(
                         "namespace-controller failed to delete namespaced object"
                     );
                 }
+                Err(_) => {
+                    needs_retry = true;
+                    tracing::warn!(
+                        namespace,
+                        kind = %resource.api_resource.kind,
+                        name = %name,
+                        timeout_secs = API_REQUEST_TIMEOUT.as_secs(),
+                        "namespace-controller timed out deleting namespaced object"
+                    );
+                }
             }
+            tokio::task::yield_now().await;
         }
     }
 
@@ -157,13 +204,71 @@ async fn finalize_namespace(client: &Client, namespace: &Namespace) {
     });
 
     let api: Api<Namespace> = Api::all(client.clone());
-    if let Err(error) = api
-        .replace_subresource("finalize", &name, &PostParams::default(), &finalized)
-        .await
+    match tokio::time::timeout(
+        API_REQUEST_TIMEOUT,
+        api.replace_subresource("finalize", &name, &PostParams::default(), &finalized),
+    )
+    .await
     {
-        tracing::warn!(namespace = %name, error = ?error, "namespace-controller failed to remove the kubernetes finalizer");
-    } else {
-        tracing::info!(namespace = %name, "namespace-controller finalized Namespace");
+        Ok(Ok(_)) => tracing::info!(namespace = %name, "namespace-controller finalized Namespace"),
+        Ok(Err(error)) => tracing::warn!(namespace = %name, error = ?error, "namespace-controller failed to remove the kubernetes finalizer"),
+        Err(_) => tracing::warn!(namespace = %name, timeout_secs = API_REQUEST_TIMEOUT.as_secs(), "namespace-controller timed out removing the kubernetes finalizer"),
+    }
+}
+
+/// Delete any Pod whose namespace isn't in `namespaces` — issue #557's
+/// backstop. Scoped to Pods only, not every namespaced kind `resources`
+/// covers: Pods are both the highest-volume object namespace deletion
+/// ever orphans in practice (a workload's own contents dwarf everything
+/// else in a namespace) and, live-measured this session, the ones that
+/// actually cost real CPU sitting around reconciled forever -- a
+/// still-running container, a node agent still writing its status,
+/// re-minting tokens, retrying CSI attaches. Broadening this to every
+/// discovered kind is a real possible future generalization, not done
+/// here to keep this backstop's blast radius and cost narrow and
+/// well-understood.
+/// Pure predicate behind `sweep_orphaned_pods()` — pulled out so the
+/// decision itself ("is this pod's namespace known to still exist") is
+/// unit-testable without a real client, the same pure/impure split every
+/// other helper in this file already keeps.
+fn is_orphaned(pod_namespace: &str, namespaces: &HashMap<String, Namespace>) -> bool {
+    !namespaces.contains_key(pod_namespace)
+}
+
+async fn sweep_orphaned_pods(client: &Client, namespaces: &HashMap<String, Namespace>) {
+    let api: Api<Pod> = Api::all(client.clone());
+    let pods = match tokio::time::timeout(API_REQUEST_TIMEOUT, api.list(&ListParams::default())).await {
+        Ok(Ok(pods)) => pods,
+        Ok(Err(error)) => {
+            tracing::warn!(error = ?error, "namespace-controller: orphan sweep failed to list Pods");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(timeout_secs = API_REQUEST_TIMEOUT.as_secs(), "namespace-controller: orphan sweep timed out listing Pods");
+            return;
+        }
+    };
+    let delete_params = DeleteParams {
+        grace_period_seconds: Some(0),
+        ..Default::default()
+    };
+    for pod in pods.items {
+        let Some(namespace) = pod.metadata.namespace.as_deref() else { continue };
+        if !is_orphaned(namespace, namespaces) {
+            continue;
+        }
+        let name = pod.name_any();
+        match tokio::time::timeout(
+            API_REQUEST_TIMEOUT,
+            Api::<Pod>::namespaced(client.clone(), namespace).delete(&name, &delete_params),
+        )
+        .await
+        {
+            Ok(Ok(_)) => tracing::info!(namespace, name = %name, "namespace-controller: orphan sweep deleted a Pod whose namespace no longer exists"),
+            Ok(Err(kube::Error::Api(status))) if status.is_not_found() => {}
+            Ok(Err(error)) => tracing::warn!(namespace, name = %name, error = ?error, "namespace-controller: orphan sweep failed to delete a Pod"),
+            Err(_) => tracing::warn!(namespace, name = %name, timeout_secs = API_REQUEST_TIMEOUT.as_secs(), "namespace-controller: orphan sweep timed out deleting a Pod"),
+        }
     }
 }
 
@@ -185,6 +290,40 @@ async fn reconcile_namespace(
     finalize_namespace(client, namespace).await;
 }
 
+fn apply_namespace_event(
+    namespaces: &mut HashMap<String, Namespace>,
+    pending: &mut Option<HashMap<String, Namespace>>,
+    queue: &crate::workqueue::KeyedWorkQueue<String>,
+    event: Event<Namespace>,
+) {
+    match event {
+        Event::Init => *pending = Some(HashMap::new()),
+        Event::InitApply(namespace) => {
+            pending.get_or_insert_with(HashMap::new)
+                .insert(namespace.name_any(), namespace);
+        }
+        Event::InitDone => {
+            if let Some(snapshot) = pending.take() {
+                // Replace, don't merge: deletes can occur while disconnected.
+                // Publish only a complete snapshot so orphan sweeps cannot
+                // mistake namespaces on a later LIST page for missing ones.
+                *namespaces = snapshot;
+                for name in namespaces.keys() {
+                    queue.enqueue(name.clone());
+                }
+            }
+        }
+        Event::Apply(namespace) => {
+            let name = namespace.name_any();
+            namespaces.insert(name.clone(), namespace);
+            queue.enqueue(name);
+        }
+        Event::Delete(namespace) => {
+            namespaces.remove(&namespace.name_any());
+        }
+    }
+}
+
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let discovery = crate::watch::discover_api(&client, "namespace-controller").await;
     let mut resources = discover_cleanup_resources(&discovery);
@@ -194,8 +333,14 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     );
 
     let mut namespaces: HashMap<String, Namespace> = HashMap::new();
+    let mut pending_namespaces = Some(HashMap::new());
     let mut crds: HashMap<String, CustomResourceDefinition> = HashMap::new();
     let queue: crate::workqueue::KeyedWorkQueue<String> = Default::default();
+    let cleanup_permits = Arc::new(tokio::sync::Semaphore::new(2));
+    let mut cleanup_tasks = tokio::task::JoinSet::new();
+    let mut cleanup_task_names = HashMap::new();
+    let mut cleanup_in_flight = HashSet::new();
+    let mut cleanup_dirty = HashSet::new();
     let mut stream = crate::watch::watch_namespaces(&client);
     let mut crd_stream = crate::watch::watch_custom_resource_definitions(&client);
     let (refresh_sender, mut refresh_receiver) = tokio::sync::mpsc::channel(1);
@@ -206,19 +351,27 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         RETRY_PERIOD,
     );
     retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut orphan_sweep = tokio::time::interval_at(
+        tokio::time::Instant::now() + ORPHAN_SWEEP_PERIOD,
+        ORPHAN_SWEEP_PERIOD,
+    );
+    orphan_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             ev = stream.next() => match ev {
-                Some(Ok(Event::Apply(namespace))) | Some(Ok(Event::InitApply(namespace))) => {
-                    let name = namespace.name_any();
-                    namespaces.insert(name.clone(), namespace);
-                    queue.enqueue(name);
+                Some(Ok(event)) => {
+                    let changed = match &event {
+                        Event::Apply(namespace) | Event::InitApply(namespace) | Event::Delete(namespace) => Some(namespace.name_any()),
+                        Event::Init | Event::InitDone => None,
+                    };
+                    apply_namespace_event(&mut namespaces, &mut pending_namespaces, &queue, event);
+                    if let Some(name) = changed {
+                        if cleanup_in_flight.contains(&name) {
+                            cleanup_dirty.insert(name);
+                        }
+                    }
                 }
-                Some(Ok(Event::Delete(namespace))) => {
-                    namespaces.remove(&namespace.name_any());
-                }
-                Some(Ok(Event::Init | Event::InitDone)) => {}
                 Some(Err(error)) => tracing::warn!(error = ?error, "namespace watch error in namespace-controller"),
                 None => return Ok(()),
             },
@@ -276,8 +429,42 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                 }
             }
             name = queue.pop() => {
-                if let Some(namespace) = namespaces.get(&name) {
-                    reconcile_namespace(&client, namespace, &resources).await;
+                if cleanup_in_flight.contains(&name) {
+                    cleanup_dirty.insert(name);
+                } else if let Some(namespace) = namespaces.get(&name) {
+                    let namespace = namespace.clone();
+                    let resources = resources.clone();
+                    let client = client.clone();
+                    let permits = cleanup_permits.clone();
+                    cleanup_in_flight.insert(name.clone());
+                    let task_name = name.clone();
+                    let task = cleanup_tasks.spawn(async move {
+                        let _permit = permits
+                            .acquire_owned()
+                            .await
+                            .expect("namespace cleanup semaphore was closed");
+                        reconcile_namespace(&client, &namespace, &resources).await;
+                        task_name
+                    });
+                    cleanup_task_names.insert(task.id(), name.clone());
+                }
+            }
+            result = cleanup_tasks.join_next(), if !cleanup_tasks.is_empty() => {
+                match result {
+                    Some(Ok(name)) => {
+                        cleanup_in_flight.remove(&name);
+                        if cleanup_dirty.remove(&name) {
+                            queue.enqueue(name);
+                        }
+                    }
+                    Some(Err(error)) => {
+                        if let Some(name) = cleanup_task_names.remove(&error.id()) {
+                            cleanup_in_flight.remove(&name);
+                            queue.enqueue(name);
+                        }
+                        tracing::warn!(error = ?error, "namespace cleanup task failed");
+                    }
+                    None => {}
                 }
             }
             _ = retry.tick() => {
@@ -287,6 +474,13 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                     }
                 }
             }
+            _ = orphan_sweep.tick(), if pending_namespaces.is_none() => {
+                let client = client.clone();
+                let namespaces = namespaces.clone();
+                tokio::spawn(async move {
+                    sweep_orphaned_pods(&client, &namespaces).await;
+                });
+            }
         }
     }
 }
@@ -294,6 +488,34 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relist_replaces_namespace_snapshot_only_after_completion() {
+        let mut old = namespace(Some(vec![NAMESPACE_FINALIZER]), true);
+        old.metadata.name = Some("deleted-while-disconnected".into());
+        let mut live = namespace(None, false);
+        live.metadata.name = Some("live".into());
+        let mut namespaces = HashMap::from([(old.name_any(), old.clone())]);
+        let mut pending = None;
+        let queue = crate::workqueue::KeyedWorkQueue::default();
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::Init);
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitApply(live.clone()));
+        assert!(pending.is_some(), "orphan sweep must remain disabled during LIST");
+        assert!(namespaces.contains_key(&old.name_any()), "partial LIST must not replace the snapshot");
+        assert!(!namespaces.contains_key("live"));
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitDone);
+        assert!(pending.is_none());
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains_key("live"));
+        assert!(!namespaces.contains_key(&old.name_any()), "relist must remove missed deletes");
+
+        // Restarting an interrupted LIST must discard its partial contents.
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::Init);
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitApply(old));
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::Init);
+        apply_namespace_event(&mut namespaces, &mut pending, &queue, Event::InitDone);
+        assert!(namespaces.is_empty(), "empty replacement LIST must not retain stale namespaces");
+    }
 
     fn namespace(finalizers: Option<Vec<&str>>, terminating: bool) -> Namespace {
         Namespace {
@@ -306,6 +528,23 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_pod_in_a_known_namespace_is_not_orphaned() {
+        let mut namespaces = HashMap::new();
+        namespaces.insert("real-ns".to_string(), namespace(Some(vec![NAMESPACE_FINALIZER]), false));
+        assert!(!is_orphaned("real-ns", &namespaces));
+    }
+
+    #[test]
+    fn a_pod_in_an_unknown_namespace_is_orphaned() {
+        // Issue #557: this is the state a namespace deletion that skipped
+        // proper finalization (#541) leaves behind -- the Namespace object
+        // is gone, but its contents (a Pod, live-observed still running
+        // and reconciled forever) are not.
+        let namespaces: HashMap<String, Namespace> = HashMap::new();
+        assert!(is_orphaned("gone-ns", &namespaces));
     }
 
     #[test]

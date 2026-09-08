@@ -7,6 +7,64 @@ use serde_json::json;
 use std::process::Command;
 use std::time::Duration;
 
+pub(super) async fn paginated_list_watch_preserves_concurrent_updates(context: &E2eContext) -> Result<()> {
+    use futures::StreamExt;
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use kube::api::{Patch, PatchParams, WatchEvent, WatchParams};
+
+    let maps: Api<ConfigMap> = Api::namespaced(context.client.clone(), &context.namespace);
+    for name in ["snapshot-a", "snapshot-b", "snapshot-c"] {
+        let map: ConfigMap = serde_json::from_value(json!({
+            "apiVersion":"v1", "kind":"ConfigMap",
+            "metadata":{"name":name,"labels":{"snapshot-test":"yes"}},
+            "data":{"value":"before"}
+        }))?;
+        maps.create(&PostParams::default(), &map).await?;
+    }
+    let params = ListParams::default().labels("snapshot-test=yes").limit(1);
+    let mut first = maps.list(&params).await?;
+    let revision = first.metadata.resource_version.clone().context("first page missing resourceVersion")?;
+    // Storage pagination may return an empty filtered page (for example the
+    // namespace's kube-root-ca.crt). Follow its token rather than treating
+    // that valid response as a failure or skipping the snapshot check.
+    while first.items.is_empty() {
+        let token = first.metadata.continue_.as_deref().filter(|token| !token.is_empty())
+            .context("LIST ended before any test ConfigMap")?;
+        first = maps.list(&params.clone().continue_token(token)).await?;
+        anyhow::ensure!(first.metadata.resource_version.as_deref() == Some(revision.as_str()),
+            "LIST snapshot advanced while following an empty filtered page");
+    }
+    anyhow::ensure!(first.items.len() == 1, "expected one object on the first page");
+    let changed_name = first.items[0].metadata.name.as_deref().context("first item missing name")?;
+    let changed = maps.patch(changed_name, &PatchParams::default(),
+        &Patch::Merge(json!({"data":{"value":"after"}}))).await?;
+    let changed_revision = changed.metadata.resource_version.context("PATCH missing resourceVersion")?;
+    let mut token = first.metadata.continue_.context("first page missing continue token")?;
+    let mut count = 1;
+    while !token.is_empty() {
+        let page = maps.list(&params.clone().continue_token(&token)).await?;
+        anyhow::ensure!(page.metadata.resource_version.as_deref() == Some(revision.as_str()),
+            "LIST snapshot advanced across a concurrent write: expected {revision}, got {:?}", page.metadata.resource_version);
+        count += page.items.len();
+        anyhow::ensure!(count <= 3, "pagination duplicated objects");
+        token = page.metadata.continue_.unwrap_or_default();
+    }
+    anyhow::ensure!(count == 3, "pagination lost objects");
+    let watch = maps.watch(&WatchParams::default().labels("snapshot-test=yes").timeout(20), &revision).await?;
+    futures::pin_mut!(watch);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while let Some(event) = watch.next().await {
+            match event? {
+                WatchEvent::Modified(map) if map.metadata.name.as_deref() == Some(changed_name)
+                    && map.metadata.resource_version.as_deref() == Some(changed_revision.as_str()) => return Ok(()),
+                WatchEvent::Error(error) => anyhow::bail!("watch returned an error: {error:?}"),
+                _ => {}
+            }
+        }
+        anyhow::bail!("watch ended without the update made between LIST pages")
+    }).await.context("watch lost the update made between LIST pages")?
+}
+
 fn needs_cri() -> Result<()> {
     anyhow::ensure!(
         crate::config::Config::from_env()?.nodelet_runtime() == "cri",
@@ -16,8 +74,16 @@ fn needs_cri() -> Result<()> {
 }
 
 fn active_control_plane_unit() -> Option<&'static str> {
-    ["kube-apiserver.service", "k3s.service"]
+    let configured = crate::config::Config::from_env()
+        .ok()
+        .map(|cfg| cfg.apiserver_service());
+    configured
         .into_iter()
+        .chain([
+            "nodeapiserver.service",
+            "kube-apiserver.service",
+            "k3s.service",
+        ])
         .find(|unit| {
             Command::new("systemctl")
                 .args(["is-active", "--quiet", unit])
@@ -70,7 +136,7 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
     }
     let Some(unit) = active_control_plane_unit() else {
         return Err(skip_test(
-            "no kube-apiserver.service or k3s.service is active to restart",
+            "no configured apiserver, nodeapiserver.service, kube-apiserver.service, or k3s.service is active to restart",
         ));
     };
 
@@ -86,9 +152,11 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
     restart_unit(unit)?;
     let namespaces: Api<Namespace> = Api::all(context.client.clone());
     context
-        .wait_until("the apiserver to become ready after restart", Duration::from_secs(180), || async {
-            Ok(namespaces.list(&ListParams::default()).await.is_ok())
-        })
+        .wait_until(
+            "the apiserver to become ready after restart",
+            Duration::from_secs(180),
+            || async { Ok(namespaces.list(&ListParams::default()).await.is_ok()) },
+        )
         .await?;
 
     let service_accounts: Api<ServiceAccount> =
@@ -103,6 +171,23 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
             },
         )
         .await?;
+
+    // An account created before the restart proves only persistence. Require
+    // new Namespace events to reach both credential-producing controllers.
+    let fresh = E2eContext::create(context.client.clone()).await?;
+    let maps: Api<k8s_openapi::api::core::v1::ConfigMap> =
+        Api::namespaced(context.client.clone(), &fresh.namespace);
+    let trust_ready = fresh.wait_until("root CA in a namespace created after restart", Duration::from_secs(30), || {
+        let maps = maps.clone();
+        async move {
+            Ok(maps.get_opt("kube-root-ca.crt").await?
+                .and_then(|map| map.data)
+                .and_then(|data| data.get("ca.crt").cloned())
+                .is_some_and(|pem| pem.contains("BEGIN CERTIFICATE")))
+        }
+    }).await;
+    fresh.cleanup().await;
+    trust_ready?;
 
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let name = "watch-recovery-check";

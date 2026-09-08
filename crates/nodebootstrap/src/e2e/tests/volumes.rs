@@ -182,17 +182,34 @@ pub(super) async fn projected_volume_merges_configmap_and_downward_api(
                 {"configMap": {"name": "projected-config"}},
                 {"downwardAPI": {"items": [{"path": "name", "fieldRef": {"fieldPath": "metadata.name"}}]}}
             ]}}],
-            "containers": [{"name": "app", "image": "busybox:latest", "command": ["sh", "-c", "cat /projected/config /projected/name > /dev/termination-log"], "volumeMounts": [{"name": "projected", "mountPath": "/projected"}] }]
+            "containers": [{"name": "app", "image": "busybox:latest",
+                "command": ["sh", "-c", "exec 3</projected/config; touch /tmp/reader-ready; while [ \"$(cat /projected/config)\" != updated-value ]; do sleep 1; done; { cat <&3; echo; cat /projected/config; echo; cat /projected/name; } > /dev/termination-log"],
+                "readinessProbe": {"exec": {"command": ["test", "-f", "/tmp/reader-ready"]}, "periodSeconds": 1},
+                "volumeMounts": [{"name": "projected", "mountPath": "/projected"}] }]
         }),
     )
     .await?;
+    // Hold a reader across a real projection refresh. An in-place rewrite
+    // changes that reader's bytes; atomic publication leaves the old complete
+    // file available while new opens see the updated file.
+    let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
+    context.wait_until("projected-volume reader to open its file", Duration::from_secs(90), || {
+        let pods = pods.clone();
+        async move {
+            Ok(pods.get(name).await?.status.and_then(|status| status.conditions)
+                .unwrap_or_default().iter().any(|condition|
+                    condition.type_ == "Ready" && condition.status == "True"))
+        }
+    }).await?;
+    configmaps.patch("projected-config", &PatchParams::default(),
+        &Patch::Merge(&json!({"data": {"config": "updated-value"}}))).await?;
     context
         .wait_until("projected volume content", Duration::from_secs(90), || {
             let context = context.clone();
             async move {
                 Ok(terminated_message(&context, name)
                     .await?
-                    .is_some_and(|message| message.contains("projected-value") && message.contains(name)))
+                    .is_some_and(|message| message == format!("projected-value\nupdated-value\n{name}")))
             }
         })
         .await
@@ -303,7 +320,7 @@ pub(super) async fn projected_service_account_token_waits_for_service_account(
                         .and_then(|status| status.phase.as_deref())
                         == Some("Pending")
                         && pod.status.as_ref().and_then(|status| status.message.as_deref()).is_some_and(
-                            |message| message.starts_with("waiting for projected ServiceAccount token(s)"),
+                            |message| message.starts_with("waiting for projected volume(s)"),
                         ))
                 }
             })
@@ -1007,6 +1024,17 @@ pub(super) async fn recursive_read_only_enabled_blocks_writes_in_a_nested_mount_
     if !privileged_available() {
         return Err(skip_test("nested recursive read-only checks require root or passwordless sudo"));
     }
+    // Issue #550: this test asserts real kernel/runtime enforcement
+    // (mount_setattr(2) with AT_RECURSIVE | MOUNT_ATTR_RDONLY, Linux
+    // 5.12+, plumbed through by the OCI runtime) without checking whether
+    // this node's runtime handler advertises that capability at all --
+    // its sibling test (recursive_read_only_if_possible) already gates on
+    // this and skips cleanly when absent. The capability-check factoring
+    // landed, but wiring it into *this* function did not (found live
+    // re-verifying this session's other fixes) -- applying it now.
+    if recursive_read_only_mounts_capability(context).await?.is_none() {
+        return Err(skip_test("runtime handler did not advertise a boolean recursiveReadOnlyMounts capability"));
+    }
     let host_path = host_path_test_dir("recursive-readonly-nested");
     let source_path = host_path_test_dir("recursive-readonly-nested-source");
     let nested_path = format!("{host_path}/nested");
@@ -1044,14 +1072,13 @@ pub(super) async fn recursive_read_only_enabled_blocks_writes_in_a_nested_mount_
     result
 }
 
-async fn recursive_read_only_if_possible(
-    context: &E2eContext,
-    name: &str,
-    require_capability_match: bool,
-) -> Result<()> {
-    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
-        return Err(skip_test("recursive read-only checks require the CRI runtime"));
-    }
+/// Whether this node's runtime handler advertises a boolean
+/// `recursiveReadOnlyMounts` feature -- `None` means it didn't advertise
+/// any runtime handler capability at all (e.g. `Node.status.runtimeHandlers`
+/// absent), which real recursive-read-only enforcement (`mount_setattr(2)`
+/// with `AT_RECURSIVE | MOUNT_ATTR_RDONLY`, Linux 5.12+, plumbed through by
+/// the OCI runtime) cannot be assumed to work without.
+async fn recursive_read_only_mounts_capability(context: &E2eContext) -> Result<Option<bool>> {
     let nodes: Api<Node> = Api::all(context.client.clone());
     let node = nodes
         .list(&Default::default())
@@ -1061,9 +1088,20 @@ async fn recursive_read_only_if_possible(
         .next()
         .context("cluster has no Node")?;
     let node_value = serde_json::to_value(node)?;
-    let capability = node_value
+    Ok(node_value
         .pointer("/status/runtimeHandlers/0/features/recursiveReadOnlyMounts")
-        .and_then(serde_json::Value::as_bool);
+        .and_then(serde_json::Value::as_bool))
+}
+
+async fn recursive_read_only_if_possible(
+    context: &E2eContext,
+    name: &str,
+    require_capability_match: bool,
+) -> Result<()> {
+    if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
+        return Err(skip_test("recursive read-only checks require the CRI runtime"));
+    }
+    let capability = recursive_read_only_mounts_capability(context).await?;
     if require_capability_match && capability.is_none() {
         return Err(skip_test("runtime handler did not advertise a boolean recursiveReadOnlyMounts capability"));
     }

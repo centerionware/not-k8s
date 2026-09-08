@@ -45,7 +45,7 @@ impl E2eContext {
         let service_accounts: Api<ServiceAccount> =
             Api::namespaced(client.clone(), &namespace);
         let context = Self { client, namespace };
-        context
+        if let Err(error) = context
             .wait_until(
                 "the e2e namespace's default ServiceAccount",
                 Duration::from_secs(30),
@@ -54,7 +54,15 @@ impl E2eContext {
                     async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
                 },
             )
-            .await?;
+            .await
+        {
+            // A failed context setup used to leak its Namespace. Every
+            // subsequent setup then added more terminating objects while the
+            // namespace controller was already behind, turning one missed
+            // ServiceAccount into a shard-wide cascade of timeouts.
+            context.cleanup().await;
+            return Err(error);
+        }
 
         Ok(context)
     }
@@ -111,6 +119,43 @@ impl E2eContext {
                 },
             )
             .await;
+    }
+
+    pub(super) async fn capture_failure(&self) {
+        // Collect before namespace cleanup destroys the evidence. Independent,
+        // bounded reads cannot replace the original test error or hang cleanup.
+        let dump = |prefix: &'static str, resource: &'static str| async move {
+            let uri = format!("{prefix}/namespaces/{}/{resource}", self.namespace);
+            let read = async {
+                let request = http::Request::builder().uri(&uri)
+                    .body(Vec::new())?;
+                let mut value = self.client.request::<serde_json::Value>(request).await?;
+                if resource == "pods" {
+                    // Status plus scheduling identity suffice; don't dump
+                    // container environment variables into a public CI log.
+                    if let Some(items) = value["items"].as_array_mut() {
+                        for pod in items {
+                            let metadata = serde_json::json!({
+                                "name": pod["metadata"]["name"],
+                                "namespace": pod["metadata"]["namespace"],
+                                "uid": pod["metadata"]["uid"],
+                                "resourceVersion": pod["metadata"]["resourceVersion"],
+                            });
+                            *pod = serde_json::json!({"metadata":metadata,
+                                "nodeName":pod["spec"]["nodeName"], "status":pod["status"]});
+                        }
+                    }
+                }
+                Ok::<_, anyhow::Error>(value)
+            };
+            match tokio::time::timeout(Duration::from_secs(8), read).await {
+                Ok(Ok(value)) => eprintln!("failure snapshot {uri}: {value}"),
+                Ok(Err(error)) => eprintln!("failure snapshot {uri} unavailable: {error:#}"),
+                Err(_) => eprintln!("failure snapshot {uri} exceeded 8 seconds"),
+            }
+        };
+        tokio::join!(dump("/api/v1", "pods"), dump("/api/v1", "services"),
+            dump("/apis/discovery.k8s.io/v1", "endpointslices"), dump("/api/v1", "events"));
     }
 }
 

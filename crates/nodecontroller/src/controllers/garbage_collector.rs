@@ -7,7 +7,7 @@
 //! produced a real owner chain — Deployment→ReplicaSet→Pod — worth
 //! cleaning up before then).
 //!
-//! # How it works (event-driven, no polling, no explicit graph walk)
+//! # How it works (event-driven with a bounded re-sync safety net)
 //!
 //! One watch per discovered resource kind, all funneled into a single event
 //! loop that tracks two things purely from watch events: which
@@ -23,11 +23,38 @@
 //!
 //! Also handles the "owner was already gone before the child was ever
 //! observed" case (a relist redelivering a child as `InitApply` after its
-//! dead owner has long since been swept elsewhere): once every discovered
-//! kind's *own* initial list has completed at least once (tracked per
-//! kind, all-or-nothing before this controller acts on anything), any
+//! dead owner has long since been swept elsewhere): once the child's owner
+//! kinds have completed their initial lists, any
 //! object whose owners are *all* already known-dead is deleted right away
 //! instead of only reacting to a live Delete event.
+//!
+//! **A bounded periodic re-sync is the recovery path for silently missed
+//! watch events.** The graph above is built from watch events alone, and
+//! this apiserver has twice been observed (e2e) to miss an event for a
+//! healthy connection: a Service Add the GC never saw, which led it to
+//! delete the Service's live EndpointSlice as an "orphan", and a
+//! Certificate Add the GC never saw, which left a genuinely orphaned
+//! Certificate in place forever because nothing but that event could ever
+//! teach the graph about it. No new event arrives for a missed event, so
+//! the only bounded recovery is to re-establish ground truth from the
+//! datastore: every `GC_RESYNC_PERIOD`, this generation exits and `run`
+//! rebuilds it from a fresh discovery + per-kind LIST. The existing
+//! snapshot-install orphan check then re-decides every owner-linked record
+//! against the fresh graph — a missed child Add is corrected (the child
+//! enters via `InitApply` and its dead owners are spotted), and a missed
+//! owner Add is corrected the other way (a live owner is no longer
+//! mistaken for dead). Built-in kinds ride the shared informers' snapshots
+//! (no duplicate LIST); only the dynamic/metadata kinds re-LIST, and the
+//! one-stream-per-second admission keeps the burst bounded.
+//!
+//! **Staged records respect deletes.** While a kind is relisting, its
+//! `Apply` events are staged in a per-kind buffer until `InitDone` installs
+//! the snapshot. A `Delete` for a staged object cancels the staged record
+//! (the same way it removes the live bookkeeping) so the snapshot install
+//! cannot resurrect a deleted object into `exists` — observed live as a
+//! deleted owner ConfigMap keeping its orphaned Certificate alive forever
+//! because the stale staged record made every later orphan decision see a
+//! live owner.
 //!
 //! # Scope of this slice
 //!
@@ -62,8 +89,9 @@
 //! built-in or CRD — is covered generically.
 
 use anyhow::Result;
-use futures::stream::{select_all, BoxStream, StreamExt};
+use futures::stream::{select_all, BoxStream, FuturesUnordered, StreamExt};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, DeleteParams, DynamicObject, Preconditions, PropagationPolicy};
 use kube::core::PartialObjectMeta;
 use kube::discovery::{verbs, Discovery, Scope};
@@ -71,6 +99,8 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+use tokio::time::Instant;
 
 const EXCLUDED_GROUPS: &[&str] = &["coordination.k8s.io", "events.k8s.io"];
 const EXCLUDED_KINDS: &[&str] = &["Event"];
@@ -138,18 +168,27 @@ struct ObjRecord {
     namespace: String,
     name: String,
     owner_uids: Vec<String>,
+    owner_kinds: Vec<String>,
+    /// The full owner references (not just UIDs/kinds): enough identity to
+    /// re-check an owner with a direct GET before deleting, so a stale
+    /// watch graph can never be the sole evidence a live owner is dead.
+    owner_refs: Vec<OwnerReference>,
     deleting: bool,
 }
 
-fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
+fn owner_refs_of(obj: &DynamicObject) -> Vec<OwnerReference> {
     obj.metadata
         .owner_references
         .as_ref()
         .into_iter()
         .flatten()
         .filter(|o| !o.uid.is_empty())
-        .map(|o| o.uid.clone())
+        .cloned()
         .collect()
+}
+
+fn owner_uids_of(obj: &DynamicObject) -> Vec<String> {
+    owner_refs_of(obj).into_iter().map(|o| o.uid).collect()
 }
 
 /// An object with no owner references is not an orphan. `Iterator::all()` is
@@ -165,17 +204,112 @@ fn should_delete_orphan(record: &ObjRecord, ready: bool, exists: &HashSet<String
     ready && !record.deleting && all_owners_dead(&record.owner_uids, exists)
 }
 
+/// An owner to re-check directly before deleting a child: its name plus the
+/// `ApiResource` needed to GET it. Owners are same-namespace by the API's
+/// own rule (`OwnerReference` carries no namespace field — see this
+/// module's doc comment), so the child's namespace is the owner's.
+#[derive(Debug, Clone)]
+struct OwnerTarget {
+    namespace: String,
+    name: String,
+    ar: kube::discovery::ApiResource,
+}
+
+/// Result of re-checking a child's owners against the apiserver itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerCheck {
+    /// At least one owner still exists — the child must not be deleted.
+    Alive,
+    /// Every owner is confirmed gone — safe to delete.
+    AllGone,
+    /// The check itself failed (a transient error): never delete on
+    /// uncertain evidence; requeue and re-check on the next retry.
+    Uncertain,
+}
+
+/// Re-checks every owner of the child with a direct GET. The watch graph
+/// (`exists`) is rebuilt from watch events and can miss an owner event — a
+/// lagging or selectively-missed informer leaves a live owner looking dead
+/// (observed live in e2e: a healthy Service's EndpointSlice was deleted as
+/// an "orphan" repeatedly because the Service UID never reached `exists`
+/// even though the watch connection itself was healthy). A direct GET is
+/// the same final authority upstream's real GC consults before deleting.
+async fn check_owners_dead(client: &Client, owners: &[OwnerTarget]) -> OwnerCheck {
+    for owner in owners {
+        let api: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), &owner.namespace, &owner.ar);
+        match api.get(&owner.name).await {
+            Ok(_) => return OwnerCheck::Alive,
+            Err(kube::Error::Api(status)) if status.is_not_found() => {}
+            Err(error) => {
+                tracing::warn!(
+                    api_version = %owner.ar.api_version, kind = %owner.ar.kind,
+                    namespace = %owner.namespace, name = %owner.name, error = ?error,
+                    "garbage-collector-controller could not confirm an owner is gone; deferring the orphan deletion"
+                );
+                return OwnerCheck::Uncertain;
+            }
+        }
+    }
+    OwnerCheck::AllGone
+}
+
+/// Runs the owner re-check and, only when every owner is confirmed gone,
+/// deletes the orphan. Returns whether another attempt is needed (the
+/// existing delete-retry contract). A live owner cancels the deletion for
+/// good — the owner's own eventual Delete event re-enqueues the child
+/// through the normal cascade — and an uncertain check requeues for a fresh
+/// re-check after backoff rather than deleting on uncertain evidence.
+async fn attempt_orphan_delete(
+    client: &Client,
+    ar: &kube::discovery::ApiResource,
+    record: &ObjRecord,
+    owners: &[OwnerTarget],
+) -> bool {
+    match check_owners_dead(client, owners).await {
+        OwnerCheck::Alive => {
+            tracing::info!(
+                kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+                uid = %record.uid,
+                "garbage-collector-controller cancelled orphan deletion: an owner still exists (the watch graph was stale; the owner's own Delete event will re-enqueue this child)"
+            );
+            return false;
+        }
+        OwnerCheck::Uncertain => {
+            tracing::warn!(
+                kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+                uid = %record.uid,
+                "garbage-collector-controller deferred orphan deletion: owners not confirmed gone; will re-check on the next retry"
+            );
+            return true;
+        }
+        OwnerCheck::AllGone => {}
+    }
+    tracing::debug!(
+        kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+        uid = %record.uid, "garbage-collector-controller attempting orphan deletion"
+    );
+    match tokio::time::timeout(Duration::from_secs(15), delete_object(client, ar, record)).await {
+        Ok(retry) => retry,
+        Err(_) => {
+            tracing::warn!(
+                kind = %record.gvk_key, namespace = %record.namespace, name = %record.name,
+                uid = %record.uid, "garbage-collector-controller orphan deletion timed out; retry queued"
+            );
+            true
+        }
+    }
+}
+
 /// Deletes `record`, background-propagated. Silently ignores "already
 /// gone" — the routine outcome of two cascade paths reaching the same
 /// child (e.g. discovered both directly and via a since-vanished owner).
+/// Returns whether the UID needs another attempt after backoff.
 async fn delete_object(
     client: &Client,
-    resources: &HashMap<String, kube::discovery::ApiResource>,
+    ar: &kube::discovery::ApiResource,
     record: &ObjRecord,
-) {
-    let Some(ar) = resources.get(&record.gvk_key) else {
-        return;
-    };
+) -> bool {
     let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &record.namespace, ar);
     let dp = DeleteParams {
         propagation_policy: Some(PropagationPolicy::Background),
@@ -187,13 +321,30 @@ async fn delete_object(
     };
     match api.delete(&record.name, &dp).await {
         Ok(_) => {
-            tracing::info!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, "garbage-collector-controller deleted an orphaned object")
+            tracing::info!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, uid = %record.uid, "garbage-collector-controller deleted an orphaned object");
+            false
         }
-        Err(kube::Error::Api(ref status)) if status.is_not_found() || status.code == 409 => {}
+        Err(kube::Error::Api(ref status)) if status.is_not_found() => false,
         Err(e) => {
-            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, error = ?e, "garbage-collector-controller failed to delete an orphaned object")
+            // A 409 can be a storage CAS race, not just a replacement UID.
+            // Never delete a replacement, but do retry the original object.
+            if matches!(&e, kube::Error::Api(status) if status.code == 409) {
+                match api.get(&record.name).await {
+                    Ok(current) if current.uid().as_deref() != Some(record.uid.as_str()) => return false,
+                    Err(kube::Error::Api(status)) if status.is_not_found() => return false,
+                    _ => {}
+                }
+            }
+            let retry = !matches!(&e, kube::Error::Api(status) if matches!(status.code, 400 | 401 | 403 | 405 | 422));
+            tracing::warn!(kind = %record.gvk_key, namespace = %record.namespace, name = %record.name, uid = %record.uid, retry, error = ?e, "garbage-collector-controller failed to delete an orphaned object");
+            retry
         }
     }
+}
+
+struct DeleteRetry {
+    due: Instant,
+    delay: Duration,
 }
 
 struct State {
@@ -204,11 +355,30 @@ struct State {
     pending_init: HashSet<String>,
     uid_to_kind: HashMap<String, String>,
     relist: HashMap<String, HashMap<String, ObjRecord>>,
+    deletes: HashMap<String, DeleteRetry>,
 }
 
 impl State {
-    fn ready(&self) -> bool {
-        self.pending_init.is_empty()
+    fn enqueue_delete(&mut self, uid: String) {
+        self.deletes.entry(uid).or_insert(DeleteRetry {
+            due: Instant::now(),
+            delay: Duration::from_secs(1),
+        });
+    }
+
+    fn complete_delete(&mut self, uid: &str, retry: bool) {
+        if !retry {
+            self.deletes.remove(uid);
+        } else if let Some(entry) = self.deletes.get_mut(uid) {
+            entry.due = Instant::now() + entry.delay;
+            entry.delay = (entry.delay * 2).min(Duration::from_secs(30));
+        }
+    }
+
+    fn owners_initialized(&self, record: &ObjRecord) -> bool {
+        record.owner_kinds.iter().all(|kind| {
+            self.resources.contains_key(kind) && !self.pending_init.contains(kind)
+        })
     }
 
     fn store_record(&mut self, record: ObjRecord) {
@@ -238,21 +408,26 @@ impl State {
         self.objects_with_owners.insert(uid, record);
     }
 
-    async fn handle_apply(
+    fn handle_apply(
         &mut self,
-        client: &Client,
         kind_key: &str,
         obj: DynamicObject,
         staged: bool,
     ) {
         let Some(uid) = obj.uid() else { return };
         let owner_uids = owner_uids_of(&obj);
+        let owner_refs = owner_refs_of(&obj);
         let record = ObjRecord {
             uid: uid.clone(),
             gvk_key: kind_key.to_string(),
             namespace: obj.namespace().unwrap_or_default(),
             name: obj.name_any(),
             owner_uids: owner_uids.clone(),
+            owner_kinds: owner_refs
+                .iter()
+                .map(|owner| format!("{}/{}", owner.api_version, owner.kind))
+                .collect(),
+            owner_refs,
             deleting: obj.metadata.deletion_timestamp.is_some(),
         };
         if staged {
@@ -263,8 +438,8 @@ impl State {
             return;
         }
         self.store_record(record.clone());
-        if should_delete_orphan(&record, self.ready(), &self.exists) {
-            delete_object(client, &self.resources, &record).await;
+        if should_delete_orphan(&record, self.owners_initialized(&record), &self.exists) {
+            self.enqueue_delete(record.uid);
         }
     }
 
@@ -273,7 +448,13 @@ impl State {
         self.relist.insert(kind_key.to_string(), HashMap::new());
     }
 
-    async fn finish_relist(&mut self, client: &Client, kind_key: &str) {
+    fn finish_relist(&mut self, kind_key: &str) {
+        for record in self.install_snapshot(kind_key) {
+            self.enqueue_delete(record.uid);
+        }
+    }
+
+    fn install_snapshot(&mut self, kind_key: &str) -> Vec<ObjRecord> {
         let snapshot = self.relist.remove(kind_key).unwrap_or_default();
         let old_uids: Vec<String> = self
             .uid_to_kind
@@ -291,7 +472,8 @@ impl State {
                     }
                 }
             }
-            self.children_of.remove(&uid);
+            // This index belongs to the children, not the owner snapshot.
+            // A Deployment relist must retain ReplicaSet -> Deployment edges.
         }
         self.children_of.retain(|_, children| !children.is_empty());
         let records: Vec<ObjRecord> = snapshot.into_values().collect();
@@ -299,21 +481,36 @@ impl State {
             self.store_record(record.clone());
         }
         self.pending_init.remove(kind_key);
+        tracing::info!(kind = kind_key, pending = ?self.pending_init,
+            "garbage-collector-controller installed resource snapshot");
 
         // Only after the complete per-kind snapshot is installed may an
         // orphan decision be made. This also lets owners from another kind
         // that finished relisting in the meantime be considered correctly.
-        if self.ready() {
-            for record in records {
-                if should_delete_orphan(&record, true, &self.exists) {
-                    delete_object(client, &self.resources, &record).await;
-                }
-            }
-        }
+        // An owner's completed snapshot can unblock children of ANY kind.
+        // Unrelated initial lists must not block a known Deployment -> RS
+        // chain. Unknown/uninitialized owner kinds remain protected.
+        self.objects_with_owners
+            .values()
+            .filter(|record| should_delete_orphan(record, self.owners_initialized(record), &self.exists))
+            .cloned()
+            .collect()
     }
 
-    async fn handle_delete(&mut self, client: &Client, obj: DynamicObject) {
+    fn handle_delete(&mut self, kind_key: &str, obj: DynamicObject) {
         let Some(uid) = obj.uid() else { return };
+        // A delete must cancel the object's *staged* record too: the object's
+        // create was buffered in `relist[kind]` while its kind was still
+        // relisting, and the delete arrives before the kind's snapshot
+        // installs. If the staged record survives, `install_snapshot` treats
+        // it as a live snapshot entry and resurrects the deleted object into
+        // `exists` — poisoning every later orphan decision that names it as
+        // an owner (observed live: a deleted ConfigMap kept its orphaned
+        // Certificate alive for the test's full timeout).
+        if let Some(staged) = self.relist.get_mut(kind_key) {
+            staged.remove(&uid);
+        }
+        self.deletes.remove(&uid);
         self.exists.remove(&uid);
         self.uid_to_kind.remove(&uid);
         if let Some(record) = self.objects_with_owners.remove(&uid) {
@@ -331,9 +528,8 @@ impl State {
             let Some(record) = self.objects_with_owners.get(&child_uid).cloned() else {
                 continue;
             };
-            let any_owner_alive = record.owner_uids.iter().any(|o| self.exists.contains(o));
-            if !record.deleting && !any_owner_alive {
-                delete_object(client, &self.resources, &record).await;
+            if should_delete_orphan(&record, self.owners_initialized(&record), &self.exists) {
+                self.enqueue_delete(record.uid);
             }
         }
     }
@@ -342,6 +538,295 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn empty_state() -> State {
+        State {
+            resources: HashMap::from([(
+                "apps/v1/Deployment".into(),
+                kube::discovery::ApiResource::from_gvk(
+                    &kube::core::GroupVersionKind::gvk("apps", "v1", "Deployment"),
+                ),
+            )]),
+            exists: HashSet::new(),
+            objects_with_owners: HashMap::new(),
+            children_of: HashMap::new(),
+            pending_init: HashSet::new(),
+            uid_to_kind: HashMap::new(),
+            relist: HashMap::new(),
+            deletes: HashMap::new(),
+        }
+    }
+
+    fn record(uid: &str, kind: &str, owners: &[&str]) -> ObjRecord {
+        ObjRecord {
+            uid: uid.into(),
+            gvk_key: kind.into(),
+            namespace: "default".into(),
+            name: uid.into(),
+            owner_uids: owners.iter().map(|owner| (*owner).into()).collect(),
+            owner_kinds: owners.iter().map(|_| "apps/v1/Deployment".into()).collect(),
+            owner_refs: owners
+                .iter()
+                .map(|owner| OwnerReference {
+                    api_version: "apps/v1".into(),
+                    kind: "Deployment".into(),
+                    name: (*owner).into(),
+                    uid: (*owner).into(),
+                    controller: None,
+                    block_owner_deletion: None,
+                })
+                .collect(),
+            deleting: false,
+        }
+    }
+
+    fn deployment_ar() -> kube::discovery::ApiResource {
+        kube::discovery::ApiResource::from_gvk(&kube::core::GroupVersionKind::gvk(
+            "apps", "v1", "Deployment",
+        ))
+    }
+
+    /// A kube client whose GETs and DELETEs come from `get_status` (a
+    /// `200` response body, a `404`, or a transient error) and
+    /// `delete_status` (an HTTP status code). GETs are identified by the
+    /// path ending in `/deployment` (the owner name the helpers GET);
+    /// anything else on the GET path is unexpected. DELETEs return the
+    /// configured status.
+    fn gc_client(
+        get_status: u16,
+        get_body: serde_json::Value,
+        delete_status: u16,
+        deleted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Client {
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let deleted = deleted.clone();
+            let get_body = get_body.clone();
+            async move {
+                let (status, body) = if request.method() == http::Method::GET {
+                    (
+                        get_status,
+                        serde_json::to_vec(&get_body).unwrap_or_default(),
+                    )
+                } else {
+                    assert_eq!(request.method(), http::Method::DELETE);
+                    deleted.fetch_add(1, Ordering::Relaxed);
+                    (
+                        delete_status,
+                        serde_json::to_vec(&serde_json::json!({
+                            "apiVersion": "v1", "kind": "Status", "status": "Success", "code": 200,
+                        })).unwrap_or_default(),
+                    )
+                };
+                Ok::<_, std::convert::Infallible>(http::Response::builder()
+                    .status(status)
+                    .body(kube::client::Body::from(body))
+                    .unwrap())
+            }
+        });
+        Client::new(service, "default")
+    }
+
+    #[test]
+    fn failed_delete_remains_queued_without_another_watch_event() {
+        let mut state = empty_state();
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["deployment"]));
+        let owner = DynamicObject {
+            types: None,
+            data: serde_json::Value::Null,
+            metadata: kube::api::ObjectMeta {
+                uid: Some("deployment".into()),
+                ..Default::default()
+            },
+        };
+        state.handle_delete("apps/v1/Deployment", owner);
+        assert!(state.deletes.contains_key("replicaset"));
+        state.complete_delete("replicaset", true);
+        let due = state.deletes["replicaset"].due;
+        assert_eq!(state.deletes["replicaset"].delay, Duration::from_secs(2));
+        // A noisy child watch must not bypass the failed request's backoff.
+        state.enqueue_delete("replicaset".into());
+        assert_eq!(state.deletes["replicaset"].due, due);
+        for _ in 0..10 {
+            state.complete_delete("replicaset", true);
+        }
+        assert_eq!(state.deletes["replicaset"].delay, Duration::from_secs(30));
+        state.complete_delete("replicaset", false);
+        assert!(state.deletes.is_empty());
+    }
+
+    #[test]
+    fn child_delete_cancels_a_pending_retry() {
+        let mut state = empty_state();
+        state.enqueue_delete("old-uid".into());
+        state.handle_delete("apps/v1/ReplicaSet", DynamicObject {
+            types: None,
+            data: serde_json::Value::Null,
+            metadata: kube::api::ObjectMeta {
+                uid: Some("old-uid".into()),
+                ..Default::default()
+            },
+        });
+        // Completion of an already-running failed request cannot resurrect it.
+        state.complete_delete("old-uid", true);
+        assert!(state.deletes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_conflict_retries_same_uid_but_preserves_replacement() {
+        for (live_uid, expected_retry) in [("child-uid", true), ("replacement-uid", false)] {
+            let service = tower::service_fn(move |request: http::Request<kube::client::Body>| async move {
+                let (status, body) = if request.method() == http::Method::DELETE {
+                    (409, serde_json::json!({
+                        "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                        "reason": "Conflict", "message": "compare failed", "code": 409,
+                    }))
+                } else {
+                    assert_eq!(request.method(), http::Method::GET);
+                    (200, serde_json::json!({
+                        "apiVersion": "apps/v1", "kind": "ReplicaSet",
+                        "metadata": {"name": "child-uid", "uid": live_uid},
+                    }))
+                };
+                Ok::<_, std::convert::Infallible>(http::Response::builder()
+                    .status(status)
+                    .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap())
+            });
+            let client = Client::new(service, "default");
+            let ar = kube::discovery::ApiResource::from_gvk(
+                &kube::core::GroupVersionKind::gvk("apps", "v1", "ReplicaSet"),
+            );
+            let child = record("child-uid", "apps/v1/ReplicaSet", &["gone"]);
+            assert_eq!(delete_object(&client, &ar, &child).await, expected_retry);
+        }
+    }
+
+    #[test]
+    fn owner_relist_preserves_children_from_other_kinds() {
+        let mut state = empty_state();
+        let owner = record("deployment", "apps/v1/Deployment", &[]);
+        state.store_record(owner.clone());
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["deployment"]));
+        state.begin_relist(&owner.gvk_key);
+        state.relist.get_mut(&owner.gvk_key).unwrap().insert(owner.uid.clone(), owner.clone());
+        assert!(state.install_snapshot(&owner.gvk_key).is_empty());
+        assert!(state.children_of["deployment"].contains("replicaset"));
+    }
+
+    #[test]
+    fn final_initial_list_checks_orphans_from_earlier_kinds() {
+        let mut state = empty_state();
+        state.begin_relist("apps/v1/ReplicaSet");
+        state.begin_relist("apps/v1/Deployment");
+        state.relist.get_mut("apps/v1/ReplicaSet").unwrap().insert(
+            "replicaset".into(), record("replicaset", "apps/v1/ReplicaSet", &["gone"]),
+        );
+        assert!(state.install_snapshot("apps/v1/ReplicaSet").is_empty());
+        let orphans = state.install_snapshot("apps/v1/Deployment");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "replicaset");
+    }
+
+    #[test]
+    fn owner_missing_from_relist_exposes_existing_child_as_orphan() {
+        let mut state = empty_state();
+        state.store_record(record("deployment", "apps/v1/Deployment", &[]));
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["deployment"]));
+        state.begin_relist("apps/v1/Deployment");
+        let orphans = state.install_snapshot("apps/v1/Deployment");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "replicaset");
+    }
+
+    #[test]
+    fn child_kind_snapshot_exposes_staged_child_whose_owner_was_never_seen() {
+        // The e2e failure this guards: a Certificate's live Add was silently
+        // missed on a healthy watch connection, so it entered the graph only
+        // when its kind was next re-LISTed. Its owner (a ConfigMap) had
+        // already been deleted and its owner kind was already initialized, so
+        // the child's own snapshot install must spot the orphan and enqueue
+        // the delete — the periodic re-sync's whole reason to exist.
+        let mut state = empty_state();
+        // Owner kind is initialized (not pending) and the owner UID is absent
+        // from `exists` — deleted before the graph ever heard about it.
+        state.pending_init.remove("apps/v1/Deployment");
+        state.begin_relist("cert-manager.io/v1/Certificate");
+        state
+            .relist
+            .get_mut("cert-manager.io/v1/Certificate")
+            .unwrap()
+            .insert(
+                "certificate".into(),
+                record("certificate", "cert-manager.io/v1/Certificate", &["gone"]),
+            );
+        let orphans = state.install_snapshot("cert-manager.io/v1/Certificate");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "certificate");
+    }
+
+    #[test]
+    fn delete_of_a_staged_owner_is_not_resurrected_by_its_snapshot_install() {
+        // The e2e failure this guards: an owner ConfigMap was created while
+        // its kind was still relisting (so its record was staged, not live),
+        // then deleted before the kind's snapshot installed. The staged
+        // record used to survive the delete and get installed as if live,
+        // poisoning `exists` with a dead owner UID and permanently hiding
+        // the orphaned child from every later decision.
+        let mut state = empty_state();
+        // The child kind finished relisting first, so the child is live in
+        // the graph with an edge to the not-yet-initialized owner kind.
+        state.store_record(record("certificate", "cert-manager.io/v1/Certificate", &["cm-uid"]));
+        // The owner kind is still relisting; the owner was created in that
+        // window and its record went into the staged buffer.
+        state.begin_relist("v1/ConfigMap");
+        state
+            .relist
+            .get_mut("v1/ConfigMap")
+            .unwrap()
+            .insert("cm-uid".into(), record("cm-uid", "v1/ConfigMap", &[]));
+        // The owner is deleted before its kind finishes relisting.
+        state.handle_delete("v1/ConfigMap", DynamicObject {
+            types: None,
+            data: serde_json::Value::Null,
+            metadata: kube::api::ObjectMeta {
+                uid: Some("cm-uid".into()),
+                ..Default::default()
+            },
+        });
+        // The snapshot install must not resurrect the deleted owner, and its
+        // final scan must expose the child as an orphan.
+        let orphans = state.install_snapshot("v1/ConfigMap");
+        assert!(
+            !state.exists.contains("cm-uid"),
+            "a deleted staged owner must not be installed as live"
+        );
+        assert_eq!(orphans.len(), 1, "the orphaned child must be enqueued");
+        assert_eq!(orphans[0].uid, "certificate");
+    }
+
+    #[test]
+    fn unrelated_initial_list_does_not_block_a_known_orphan() {
+        let mut state = empty_state();
+        state.begin_relist("resource.k8s.io/v1/ResourceClaim");
+        state.begin_relist("apps/v1/Deployment");
+        state.store_record(record("replicaset", "apps/v1/ReplicaSet", &["gone"]));
+        let orphans = state.install_snapshot("apps/v1/Deployment");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "replicaset");
+        assert!(!state.pending_init.is_empty());
+    }
+
+    #[test]
+    fn unknown_or_uninitialized_owner_kinds_are_not_assumed_dead() {
+        let mut state = empty_state();
+        let child = record("replicaset", "apps/v1/ReplicaSet", &["owner"]);
+        state.begin_relist("apps/v1/Deployment");
+        assert!(!state.owners_initialized(&child));
+        state.pending_init.clear();
+        state.resources.clear();
+        assert!(!state.owners_initialized(&child));
+    }
 
     #[test]
     fn an_object_without_owner_references_is_not_an_orphan() {
@@ -367,18 +852,108 @@ mod tests {
             namespace: "default".to_string(),
             name: "child".to_string(),
             owner_uids: vec!["dead-owner".to_string()],
+            owner_kinds: vec!["apps/v1/Deployment".to_string()],
+            owner_refs: Vec::new(),
             deleting: true,
         };
         assert!(!should_delete_orphan(&record, true, &HashSet::new()));
+    }
+
+    #[tokio::test]
+    async fn delete_is_cancelled_when_an_owner_still_exists() {
+        // The watch graph claims the owner is dead (`exists` lacks it), but
+        // a direct GET finds the owner alive — the live e2e failure (a
+        // healthy Service's EndpointSlice deleted as an "orphan"). The
+        // deletion must be cancelled, not attempted.
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner_body = serde_json::json!({
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": "deployment", "uid": "deployment"},
+        });
+        let client = gc_client(200, owner_body, 200, deleted.clone());
+        let child = record("child", "apps/v1/ReplicaSet", &["deployment"]);
+        let owner = OwnerTarget {
+            namespace: "default".into(),
+            name: "deployment".into(),
+            ar: deployment_ar(),
+        };
+        let retry = attempt_orphan_delete(&client, &deployment_ar(), &child, &[owner]).await;
+        assert!(
+            !retry,
+            "a live owner must cancel the deletion outright, not requeue it"
+        );
+        assert_eq!(
+            deleted.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a live owner must never reach the DELETE call"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_proceeds_when_every_owner_is_confirmed_gone() {
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let not_found = serde_json::json!({
+            "apiVersion": "v1", "kind": "Status", "status": "Failure",
+            "reason": "NotFound", "message": "deployments.apps \"deployment\" not found", "code": 404,
+        });
+        let client = gc_client(404, not_found, 200, deleted.clone());
+        let child = record("child", "apps/v1/ReplicaSet", &["deployment"]);
+        let owner = OwnerTarget {
+            namespace: "default".into(),
+            name: "deployment".into(),
+            ar: deployment_ar(),
+        };
+        let retry = attempt_orphan_delete(&client, &deployment_ar(), &child, &[owner]).await;
+        assert!(!retry, "a confirmed orphan should delete once and not retry");
+        assert_eq!(deleted.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_is_deferred_when_the_owner_check_cannot_confirm() {
+        // A transient GET error is not evidence the owner is dead: never
+        // delete on uncertain evidence — requeue for a fresh re-check.
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_error = serde_json::json!({
+            "apiVersion": "v1", "kind": "Status", "status": "Failure",
+            "message": "temporary", "code": 500,
+        });
+        let client = gc_client(500, server_error, 200, deleted.clone());
+        let child = record("child", "apps/v1/ReplicaSet", &["deployment"]);
+        let owner = OwnerTarget {
+            namespace: "default".into(),
+            name: "deployment".into(),
+            ar: deployment_ar(),
+        };
+        let retry = attempt_orphan_delete(&client, &deployment_ar(), &child, &[owner]).await;
+        assert!(retry, "an uncertain owner check must requeue for re-checking");
+        assert_eq!(
+            deleted.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "an uncertain owner check must never reach the DELETE call"
+        );
     }
 }
 
 enum GenerationExit {
     CrdChanged,
+    Resync,
     StreamsEnded,
 }
 
 const CRD_REFRESH_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How often the owner graph is rebuilt from fresh LISTs. This is the
+/// safety net for the silently-missed watch events documented in the
+/// module header: the GC is otherwise event-only, and a missed event
+/// produces no future event to recover from. The period bounds both how
+/// long a missed child Add can keep a real orphan alive and how long a
+/// missed owner Add can make a live object look orphaned. Forty-five
+/// seconds converges a missed event inside the e2e GC contract (90s) with
+/// room for the one-stream-per-second re-LIST admission, while keeping
+/// the metadata-LIST cost bounded; the steady-state watch-timeout re-LIST
+/// cadence is already ~5 minutes, so this makes the implicit recovery
+/// explicit and much tighter rather than adding a new scan class.
+const GC_RESYNC_PERIOD: std::time::Duration = std::time::Duration::from_secs(45);
 
 fn update_crd_cache(
     crds: &mut HashMap<String, CustomResourceDefinition>,
@@ -456,13 +1031,11 @@ async fn run_generation(
                 // `.metadata` off these events (see `from_partial_metadata`'s
                 // own comment for why, and issue #40 for the profiling data
                 // that found the full-body path expensive).
-                let api: Api<PartialObjectMeta<DynamicObject>> =
-                    Api::all_with((*client).clone(), &ar);
                 // Discovery can yield dozens of resource kinds. Admit one
                 // ordinary LIST+WATCH at a time below; keeping the initial
                 // LIST short avoids holding a long-running watch-list request
                 // while CSI sidecars are trying to establish their own.
-                watcher(api, watcher::Config::default())
+                crate::watch::watch_dynamic_metadata_resource(client, &ar)
                     .map(|ev| ev.map(map_partial_metadata_event))
                     .boxed()
             };
@@ -490,6 +1063,7 @@ async fn run_generation(
         children_of: HashMap::new(),
         uid_to_kind: HashMap::new(),
         relist: HashMap::new(),
+        deletes: HashMap::new(),
     };
 
     // Discovery commonly returns dozens of kinds. Starting every dynamic
@@ -509,9 +1083,66 @@ async fn run_generation(
         tokio::time::Instant::now() + admission_period,
         admission_period,
     );
+    // One active request, one queued entry per UID. Keep consuming watches
+    // during network I/O; an unavailable API must not freeze the owner graph.
+    let mut deleting: FuturesUnordered<futures::future::BoxFuture<'static, (String, bool)>> =
+        FuturesUnordered::new();
+    // Bounded graph re-sync (see `GC_RESYNC_PERIOD`): when this fires, the
+    // generation exits and `run` rebuilds it from fresh discovery + LISTs,
+    // correcting silently-missed watch events in either direction.
+    let resync_due = Instant::now() + GC_RESYNC_PERIOD;
 
     loop {
+        let next_delete = state.deletes.iter()
+            .min_by_key(|(_, entry)| entry.due)
+            .map(|(uid, entry)| (uid.clone(), entry.due));
+        let delete_due = next_delete.as_ref().map(|(_, due)| *due)
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(30));
         tokio::select! {
+            Some((uid, retry)) = deleting.next(), if !deleting.is_empty() => {
+                state.complete_delete(&uid, retry);
+            }
+            _ = tokio::time::sleep_until(delete_due), if deleting.is_empty() && next_delete.is_some() => {
+                let Some((uid, _)) = next_delete else { continue };
+                let Some(record) = state.objects_with_owners.get(&uid).cloned() else {
+                    state.deletes.remove(&uid);
+                    continue;
+                };
+                // Recompute from the latest graph, never retry a stale orphan
+                // decision after adoption, deletion, or an incomplete relist.
+                if !should_delete_orphan(&record, state.owners_initialized(&record), &state.exists) {
+                    state.deletes.remove(&uid);
+                    continue;
+                }
+                let Some(ar) = state.resources.get(&record.gvk_key).cloned() else {
+                    state.deletes.remove(&uid);
+                    continue;
+                };
+                // Resolve each owner to a direct GET target before moving
+                // into the spawned future. The watch graph can be stale
+                // (see `check_owners_dead`), so the future re-checks every
+                // owner against the apiserver and only deletes when all
+                // are confirmed gone.
+                let owner_targets: Vec<OwnerTarget> = record
+                    .owner_refs
+                    .iter()
+                    .filter_map(|owner| {
+                        let key = format!("{}/{}", owner.api_version, owner.kind);
+                        let owner_ar = state.resources.get(&key).cloned()?;
+                        Some(OwnerTarget {
+                            namespace: record.namespace.clone(),
+                            name: owner.name.clone(),
+                            ar: owner_ar,
+                        })
+                    })
+                    .collect();
+                let client = client.clone();
+                deleting.push(Box::pin(async move {
+                    let retry =
+                        attempt_orphan_delete(&client, &ar, &record, &owner_targets).await;
+                    (uid, retry)
+                }));
+            }
             crd_event = crd_stream.next() => {
                 match crd_event {
                     Some(Ok(event)) => {
@@ -528,6 +1159,13 @@ async fn run_generation(
                     None => return Ok(GenerationExit::StreamsEnded),
                 }
             }
+            _ = tokio::time::sleep_until(resync_due) => {
+                tracing::info!(
+                    period_secs = GC_RESYNC_PERIOD.as_secs(),
+                    "garbage-collector-controller rebuilding the owner graph from fresh lists"
+                );
+                return Ok(GenerationExit::Resync);
+            }
             event = combined.next() => {
                 let Some((kind_key, ev)) = event else {
                     if let Some(stream) = pending_streams.next() {
@@ -539,17 +1177,17 @@ async fn run_generation(
                 match ev {
                     Ok(Event::Apply(obj)) => {
                         let staged = state.pending_init.contains(&kind_key);
-                        state.handle_apply(client, &kind_key, obj, staged).await;
+                        state.handle_apply(&kind_key, obj, staged);
                     }
                     Ok(Event::InitApply(obj)) => {
-                        state.handle_apply(client, &kind_key, obj, true).await;
+                        state.handle_apply(&kind_key, obj, true);
                     }
                     Ok(Event::Delete(obj)) => {
-                        state.handle_delete(client, obj).await;
+                        state.handle_delete(&kind_key, obj);
                     }
                     Ok(Event::Init) => state.begin_relist(&kind_key),
                     Ok(Event::InitDone) => {
-                        state.finish_relist(client, &kind_key).await;
+                        state.finish_relist(&kind_key);
                     }
                     Err(e) => {
                         tracing::warn!(kind = %kind_key, error = ?e, "watch error in garbage-collector-controller")
@@ -574,6 +1212,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         let discovery = crate::watch::discover_api(&client, "garbage-collector-controller").await;
         match run_generation(&client, discovery, &mut crd_stream, &mut crds).await? {
             GenerationExit::CrdChanged => {}
+            GenerationExit::Resync => {}
             GenerationExit::StreamsEnded => return Ok(()),
         }
     }

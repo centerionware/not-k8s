@@ -33,6 +33,17 @@ pub struct SupervisedService<'a> {
     /// Another unit/service name to order after, or `None`.
     pub after: Option<&'a str>,
     pub env: &'a [(&'a str, &'a str)],
+    /// systemd `LimitSTACK=` value (e.g. `"infinity"`), or `None` for the
+    /// system default (typically 8MB). Issue #528: an unoptimized debug
+    /// build's per-task stack frame for a generic-heavy async state
+    /// machine can exceed that default under real memory pressure --
+    /// confirmed live, `nodecontroller` specifically, reproducibly
+    /// segfaulting on startup ("starting all controllers" spawns many
+    /// tokio tasks at once) under the system default stack limit, and
+    /// running cleanly with an unlimited one. Only meaningful for the
+    /// systemd tier; OpenRC/fallback installs ignore it (no equivalent
+    /// stack-limit-only control at that layer here).
+    pub limit_stack: Option<&'a str>,
 }
 
 pub fn install(cfg: &Config, svc: &SupervisedService) -> Result<()> {
@@ -83,6 +94,7 @@ fn env_lines_shell(env: &[(&str, &str)]) -> String {
 /// test host.
 fn systemd_unit(svc: &SupervisedService) -> String {
     let after = svc.after.map(|a| format!(" {a}")).unwrap_or_default();
+    let limit_stack = svc.limit_stack.map(|v| format!("LimitSTACK={v}\n")).unwrap_or_default();
     format!(
         "[Unit]\n\
          Description={desc}\n\
@@ -94,6 +106,7 @@ fn systemd_unit(svc: &SupervisedService) -> String {
          ExecStart=/bin/sh -c '{exec_cmd}'\n\
          Restart=always\n\
          RestartSec=5s\n\
+         {limit_stack}\
          {envs}\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -285,6 +298,7 @@ mod tests {
             exec_cmd: "/var/lib/nodebootstrap/toolchain/bin/flanneld -kubeconfig-file=/etc/nodebootstrap/admin.kubeconfig",
             after: Some("nodestore.service"),
             env: &[("NODE_NAME", "test-node"), ("IP_FAMILY", "ipv4")],
+            limit_stack: None,
         }
     }
 
@@ -296,6 +310,19 @@ mod tests {
         assert!(unit.contains("After=network-online.target nodestore.service"));
         assert!(unit.contains("Environment=NODE_NAME=test-node"));
         assert!(unit.contains("Environment=IP_FAMILY=ipv4"));
+    }
+
+    #[test]
+    fn limit_stack_is_absent_by_default() {
+        assert!(!systemd_unit(&test_svc()).contains("LimitSTACK"));
+    }
+
+    #[test]
+    fn limit_stack_is_emitted_when_set() {
+        // Issue #528.
+        let mut svc = test_svc();
+        svc.limit_stack = Some("infinity");
+        assert!(systemd_unit(&svc).contains("LimitSTACK=infinity\n"));
     }
 
     #[test]

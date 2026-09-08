@@ -144,7 +144,8 @@ async fn write_condition(
         ..Default::default()
     };
     let api: Api<Pod> = Api::namespaced(client.clone(), &pod.namespace);
-    api.patch_status(&pod.name, &params, &Patch::Strategic(patch)).await?;
+    api.patch_status(&pod.name, &params, &Patch::Strategic(patch))
+        .await?;
     Ok(())
 }
 

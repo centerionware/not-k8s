@@ -3,15 +3,14 @@
 //! Watches only the Pods bound to this node (`fieldSelector spec.nodeName=...`),
 //! reconciles them against the pluggable runtime, and writes back `Pod.status`.
 //!
-//! Two event sources drive a single `select!` loop — and that's the whole design:
-//!   * the apiserver **watch** stream (desired state changes), and
-//!   * the runtime **event** channel (actual state changes).
-//! There is no periodic relist and no per-second polling (no PLEG). We react to
-//! edges, then reconcile the one pod that changed.
+//! A single `select!` loop consumes the apiserver watch and runtime event
+//! channels, then hands work to keyed Pod workers. There is no periodic relist
+//! and no per-second polling (no PLEG): we react to edges, reconcile different
+//! Pods concurrently, and preserve ordering for each individual Pod.
 
 use crate::probes::{self, HealthMap};
 use crate::runtime::{pod_key, Phase, PodRuntime, RuntimeStatus};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
@@ -26,10 +25,14 @@ use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
 use kube::{Api, Client};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -51,8 +54,8 @@ pub struct PodController {
     /// the one-time initial reconcile, because nothing ever re-ran
     /// write_status() to pick up the health map's new value. This
     /// channel is probes.rs's own way to say "re-check this pod's status
-    /// now" — same handler (`on_runtime_event`) the CRI event channel
-    /// already uses, since it already reads `self.health` on every call.
+    /// now" — it feeds the same keyed worker as the CRI event channel, which
+    /// reads `self.health` when it reconciles.
     probe_events_tx: UnboundedSender<String>,
     probe_events_rx: Option<UnboundedReceiver<String>>,
     /// Per-container liveness/readiness state, written by probe supervisor
@@ -66,7 +69,7 @@ pub struct PodController {
     priority_events: Option<UnboundedReceiver<String>>,
     /// One probe-supervisor task per pod key, so re-reconciling an
     /// unchanged pod doesn't spawn duplicates. Aborted on teardown.
-    probe_tasks: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
+    probe_tasks: Arc<Mutex<HashMap<String, Vec<JoinHandle<()>>>>>,
     /// Pod UIDs already torn down (see `reconcile()`'s deletion branch) —
     /// keyed by UID rather than namespace/name, so a same-named pod
     /// recreated after this one is genuinely gone still gets a real
@@ -81,7 +84,7 @@ pub struct PodController {
     /// The latest UID/resourceVersion seen for each namespace/name in the
     /// Pod watch. Kept across delete events so a late event for an old UID
     /// cannot tear down a replacement Pod with the same name.
-    observed_pods: Mutex<HashMap<String, ObservedPod>>,
+    observed_pods: Arc<Mutex<HashMap<String, ObservedPod>>>,
     /// Every pod this node currently runs, keyed by `pod_key(ns, name)`, to
     /// the ConfigMap/Secret names its own volumes reference — a local
     /// mirror of exactly what `on_referenced_object_changed()` needs,
@@ -94,7 +97,95 @@ pub struct PodController {
     /// real `api.list()` RPC against every namespace on the node for each
     /// one; a single unrelated object changing anywhere in the cluster
     /// used to cost a full pod list before this existed (issue #133).
-    pod_refs: Mutex<HashMap<String, PodRefs>>,
+    pod_refs: Arc<Mutex<HashMap<String, PodRefs>>>,
+    /// Keyed pod workers keep the watch loop responsive while preserving
+    /// ordering for each individual Pod.
+    reconcile_workers: Arc<ReconcileWorkers>,
+}
+
+/// Work delivered to a per-Pod reconciler. A refresh asks the worker to GET
+/// the current object, which coalesces bursts of runtime events without
+/// carrying stale Pod snapshots through the queue.
+enum ReconcileRequest {
+    Pod(Pod),
+    Refresh,
+}
+
+struct ReconcileWorker {
+    id: u64,
+    request: Option<ReconcileRequest>,
+    latest: Option<ReconcileRequest>,
+    cancel: Arc<WorkerCancellation>,
+    running: bool,
+}
+
+struct WorkerCancellation {
+    tx: watch::Sender<bool>,
+}
+
+impl WorkerCancellation {
+    fn new() -> Self {
+        let (tx, _) = watch::channel(false);
+        Self { tx }
+    }
+
+    fn cancel(&self) {
+        let _ = self.tx.send_replace(true);
+    }
+}
+
+struct ReconcileWorkers {
+    next_id: AtomicU64,
+    active: Mutex<HashMap<String, ReconcileWorker>>,
+    pending: Mutex<VecDeque<(String, u64)>>,
+    running: AtomicU64,
+    max_concurrent: u64,
+}
+
+const MAX_CONCURRENT_RECONCILES_CAP: u64 = 16;
+
+impl ReconcileWorkers {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            active: Mutex::new(HashMap::new()),
+            pending: Mutex::new(VecDeque::new()),
+            running: AtomicU64::new(0),
+            max_concurrent: max_concurrent_reconciles(),
+        }
+    }
+}
+
+fn max_concurrent_reconciles() -> u64 {
+    if let Ok(value) = std::env::var("NODELET_MAX_CONCURRENT_RECONCILES") {
+        if let Ok(value) = value.parse::<u64>() {
+            return value.clamp(1, MAX_CONCURRENT_RECONCILES_CAP);
+        }
+    }
+    let cpus = std::thread::available_parallelism().map_or(1, |count| count.get() as u64);
+    cpus.saturating_mul(2).clamp(2, MAX_CONCURRENT_RECONCILES_CAP)
+}
+
+impl Clone for PodController {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            runtime: self.runtime.clone(),
+            node_name: self.node_name.clone(),
+            host_ip: self.host_ip.clone(),
+            dns_gate_enabled: self.dns_gate_enabled,
+            events: None,
+            probe_events_tx: self.probe_events_tx.clone(),
+            probe_events_rx: None,
+            health: self.health.clone(),
+            priority_events: None,
+            probe_tasks: self.probe_tasks.clone(),
+            torn_down: self.torn_down.clone(),
+            observed_pods: self.observed_pods.clone(),
+            pod_refs: self.pod_refs.clone(),
+            reconcile_workers: self.reconcile_workers.clone(),
+        }
+    }
 }
 
 /// One pod's ConfigMap/Secret volume references, plus its namespace (so
@@ -238,21 +329,40 @@ impl Backoff for WatchBackoffPolicy {
 const RETRY_FIRST_DELAY: Duration = Duration::from_secs(5);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
 
-/// How many times a teardown retries `remove_pod` before giving up and
-/// leaving it to the next event.
-///
-/// Bounded, unlike `schedule_retry`'s open-ended loop, and the asymmetry is
-/// deliberate: that one retries a pod that is *supposed to be running*, so
-/// giving up would strand a workload. This one retries a pod that is already
-/// gone from the apiserver — the cost of stopping is a warn and some leftover
-/// containers that the next event or a restart will collect, whereas retrying
-/// forever would pin a task per undead pod for the process's whole lifetime.
-/// Six attempts spans roughly five minutes on the shared backoff curve.
-const TEARDOWN_MAX_ATTEMPTS: u32 = 6;
+/// A pod teardown is the last actor that can remove a terminating Pod. Both
+/// runtime cleanup and the final API delete therefore retry until the
+/// transient dependency recovers; giving up is indistinguishable from
+/// intentionally leaking a terminating Pod because this controller is
+/// watch-driven and no later Pod event is guaranteed to arrive.
+const TEARDOWN_API_TIMEOUT: Duration = Duration::from_secs(30);
+const TEARDOWN_RUNTIME_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Runtime cleanup gets its own budget after the one shared shutdown grace.
+/// Retrying must not restart a Pod's grace period from zero.
+fn teardown_attempt_budget(pod: &Pod, elapsed: Duration) -> (i64, Duration) {
+    let grace = pod.metadata.deletion_grace_period_seconds
+        .filter(|seconds| *seconds >= 0)
+        .or_else(|| pod.spec.as_ref().and_then(|spec| spec.termination_grace_period_seconds)
+            .filter(|seconds| *seconds >= 0))
+        .unwrap_or(30);
+    let remaining = Duration::from_secs(grace as u64).saturating_sub(elapsed);
+    // CRI accepts whole seconds; round up so truncation never kills early.
+    let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0);
+    (seconds as i64, Duration::from_secs(seconds) + TEARDOWN_RUNTIME_TIMEOUT)
+}
 
 const COREDNS_NAMESPACE: &str = "kube-system";
 const COREDNS_SELECTOR: &str = "k8s-app=kube-dns";
+const CNI_SEED_NAME: &str = "nodebootstrap-cni-seed";
 const COREDNS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const COREDNS_API_TIMEOUT: Duration = Duration::from_secs(5);
+/// A single slow CRI or apiserver call must not stop this controller from
+/// consuming events for every other Pod. In particular, kube-rs clients can
+/// queue an ordinary request behind a long-lived HTTP watch when they share a
+/// transport; the watch clients below prevent the normal case, and this is
+/// the last-resort bound for the cases they cannot prevent (a wedged CRI,
+/// storage, or apiserver request).
+const RECONCILE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Double the delay, up to the ceiling.
 ///
@@ -293,10 +403,11 @@ impl PodController {
             probe_events_rx: Some(probe_events_rx),
             health: probes::new_health_map(),
             priority_events,
-            probe_tasks: Mutex::new(HashMap::new()),
+            probe_tasks: Arc::new(Mutex::new(HashMap::new())),
             torn_down: Arc::new(Mutex::new(HashSet::new())),
-            observed_pods: Mutex::new(HashMap::new()),
-            pod_refs: Mutex::new(HashMap::new()),
+            observed_pods: Arc::new(Mutex::new(HashMap::new())),
+            pod_refs: Arc::new(Mutex::new(HashMap::new())),
+            reconcile_workers: Arc::new(ReconcileWorkers::new()),
         }
     }
 
@@ -304,6 +415,16 @@ impl PodController {
     /// accepted for this namespace/name. Kubernetes resource versions are
     /// decimal etcd revisions in this implementation; if an implementation
     /// supplies a non-numeric version, there is no safe ordering comparison.
+    fn pod_uid_changed(&self, pod: &Pod) -> bool {
+        let Some((namespace, name)) = key_parts(pod) else { return false };
+        let Some(uid) = pod.metadata.uid.as_deref() else { return false };
+        self.observed_pods
+            .lock()
+            .unwrap()
+            .get(&pod_key(&namespace, &name))
+            .is_some_and(|previous| previous.uid != uid)
+    }
+
     fn observe_watch_pod(&self, pod: &Pod) -> bool {
         let Some((namespace, name)) = key_parts(pod) else { return true };
         let Some(uid) = pod.metadata.uid.clone() else { return true };
@@ -325,6 +446,197 @@ impl PodController {
         true
     }
 
+    /// Enqueue the newest desired Pod state without waiting for runtime or
+    /// apiserver I/O. One worker owns a key at a time; ordinary updates are
+    /// coalesced behind an in-flight operation, while UID replacement uses
+    /// the cancellation path below.
+    fn enqueue_pod_reconcile(&self, pod: Pod) {
+        let Some((namespace, name)) = key_parts(&pod) else { return };
+        self.enqueue_reconcile_request(pod_key(&namespace, &name), ReconcileRequest::Pod(pod), false);
+    }
+
+    fn enqueue_pod_reconcile_replacing(&self, pod: Pod) {
+        let Some((namespace, name)) = key_parts(&pod) else { return };
+        self.enqueue_reconcile_request(pod_key(&namespace, &name), ReconcileRequest::Pod(pod), true);
+    }
+
+    /// Runtime and probe events carry only a key. Let that Pod's worker fetch
+    /// the latest object, rather than blocking the watch loop on a GET.
+    fn enqueue_runtime_reconcile(&self, key: String) {
+        if key.split_once('/').is_some() {
+            self.enqueue_reconcile_request(key, ReconcileRequest::Refresh, false);
+        }
+    }
+
+    /// Queue a request for one Pod. Normal events never cancel a running CRI
+    /// mutation: they replace a queued request or become the single latest
+    /// request to run after the current operation. Only deletion and UID
+    /// replacement pass `cancel_running=true`, because continuing work for
+    /// the old object could mutate the replacement Pod.
+    fn enqueue_reconcile_request(&self, key: String, request: ReconcileRequest, cancel_running: bool) {
+        {
+            let mut active = self.reconcile_workers.active.lock().unwrap();
+            if cancel_running {
+                if let Some(stale) = active.remove(&key) {
+                    stale.cancel.cancel();
+                }
+            } else if let Some(worker) = active.get_mut(&key) {
+                if worker.running {
+                    // Do not abort an in-flight CRI mutation for an ordinary
+                    // status/runtime event. Keep only the newest follow-up;
+                    // it will be appended to the FIFO queue when this run
+                    // completes.
+                    worker.latest = Some(request);
+                    return;
+                } else {
+                    // A queued worker has not started I/O yet, so replacing
+                    // its request preserves its existing FIFO position.
+                    worker.request = Some(request);
+                    return;
+                }
+            }
+            self.insert_reconcile_worker(&mut active, key, request);
+        }
+        self.start_reconcile_workers();
+    }
+
+    fn insert_reconcile_worker(
+        &self,
+        active: &mut HashMap<String, ReconcileWorker>,
+        key: String,
+        request: ReconcileRequest,
+    ) {
+        let id = self.reconcile_workers.next_id.fetch_add(1, Ordering::Relaxed);
+        let cancel = Arc::new(WorkerCancellation::new());
+        active.insert(
+            key.clone(),
+            ReconcileWorker {
+                id,
+                request: Some(request),
+                latest: None,
+                cancel,
+                running: false,
+            },
+        );
+        self.reconcile_workers.pending.lock().unwrap().push_back((key, id));
+    }
+
+    /// Start queued workers strictly in arrival order. Pending entries carry
+    /// their worker id, so a canceled older entry cannot accidentally start a
+    /// replacement worker for the same key.
+    fn start_reconcile_workers(&self) {
+        loop {
+            let next = {
+                let mut active = self.reconcile_workers.active.lock().unwrap();
+                let mut pending = self.reconcile_workers.pending.lock().unwrap();
+                if self.reconcile_workers.running.load(Ordering::Acquire) >= self.reconcile_workers.max_concurrent {
+                    None
+                } else {
+                    let mut next = None;
+                    while let Some((key, id)) = pending.pop_front() {
+                        let Some(worker) = active.get_mut(&key) else { continue };
+                        if worker.id != id {
+                            continue;
+                        }
+                        if worker.running {
+                            continue;
+                        }
+                        let Some(request) = worker.request.take() else { continue };
+                        worker.running = true;
+                        self.reconcile_workers.running.fetch_add(1, Ordering::AcqRel);
+                        next = Some((key, worker.id, request, worker.cancel.clone()));
+                        break;
+                    }
+                    next
+                }
+            };
+            let Some((key, id, request, cancel)) = next else { return };
+            let cancel_receiver = cancel.tx.subscribe();
+            let controller = self.clone();
+            tokio::spawn(async move {
+                controller.reconcile_worker(key, id, request, cancel, cancel_receiver).await;
+            });
+        }
+    }
+
+    /// Stop normal reconciliation before teardown starts. The cancellation
+    /// channel is watched by both the API fetch and the runtime reconcile, so
+    /// a terminating Pod cannot leave an in-flight worker holding a slot.
+    fn cancel_reconcile(&self, key: &str) {
+        if let Some(worker) = self.reconcile_workers.active.lock().unwrap().remove(key) {
+            worker.cancel.cancel();
+        }
+    }
+
+    async fn reconcile_worker(
+        self,
+        key: String,
+        id: u64,
+        request: ReconcileRequest,
+        _cancel: Arc<WorkerCancellation>,
+        mut cancel_receiver: watch::Receiver<bool>,
+    ) {
+        if !*cancel_receiver.borrow() {
+            let pod = tokio::select! {
+                _ = cancel_receiver.changed() => None,
+                pod = self.resolve_reconcile_request(&key, request) => pod,
+            };
+            if let Some(pod) = pod {
+                tokio::select! {
+                    _ = cancel_receiver.changed() => {}
+                    _ = self.reconcile_with_timeout(pod) => {}
+                }
+            }
+        }
+        self.finish_reconcile_worker(&key, id);
+    }
+
+    fn finish_reconcile_worker(&self, key: &str, id: u64) {
+        self.reconcile_workers.running.fetch_sub(1, Ordering::AcqRel);
+        let mut active = self.reconcile_workers.active.lock().unwrap();
+        let mut pending = self.reconcile_workers.pending.lock().unwrap();
+        let mut remove = false;
+        if let Some(worker) = active.get_mut(key) {
+            if worker.id == id {
+                if let Some(latest) = worker.latest.take() {
+                    worker.request = Some(latest);
+                    worker.running = false;
+                    pending.push_back((key.to_string(), id));
+                } else {
+                    remove = true;
+                }
+            }
+        }
+        if remove {
+            active.remove(key);
+        }
+        drop(pending);
+        drop(active);
+        self.start_reconcile_workers();
+    }
+
+    async fn resolve_reconcile_request(&self, key: &str, request: ReconcileRequest) -> Option<Pod> {
+        match request {
+            ReconcileRequest::Pod(pod) => Some(pod),
+            ReconcileRequest::Refresh => {
+                let Some((namespace, name)) = key.split_once('/') else { return None };
+                let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+                match tokio::time::timeout(RECONCILE_TIMEOUT, api.get_opt(name)).await {
+                    Ok(Ok(Some(pod))) => Some(pod),
+                    Ok(Ok(None)) => None,
+                    Ok(Err(error)) => {
+                        warn!(pod = %key, ?error, "failed to fetch Pod for runtime event");
+                        None
+                    }
+                    Err(_) => {
+                        warn!(pod = %key, timeout_secs = RECONCILE_TIMEOUT.as_secs(), "timed out fetching Pod for runtime event");
+                        None
+                    }
+                }
+            }
+        }
+    }
+
     /// Wait for cluster DNS before allowing ordinary workloads to start.
     /// During a node restart, the API can retain a stale CoreDNS Pod status
     /// while containerd has no corresponding task. Reconcile the local
@@ -333,14 +645,40 @@ impl PodController {
     async fn wait_for_coredns(&self) {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
         let params = ListParams::default().labels(COREDNS_SELECTOR);
+        let seed_api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
         let mut logged_wait = false;
 
         info!("waiting for CoreDNS to become ready before reconciling workloads");
         loop {
-            let pods = match api.list(&params).await {
-                Ok(pods) => pods,
-                Err(error) => {
+            // The bootstrapper creates this one disposable Pod specifically
+            // to make the first CNI network namespace appear. Reconcile it
+            // before checking CoreDNS: a slow or stuck readiness LIST must
+            // not prevent the seed from creating cni0, which would leave
+            // CoreDNS unable to start and make this gate permanent.
+            match tokio::time::timeout(COREDNS_API_TIMEOUT, seed_api.get_opt(CNI_SEED_NAME)).await {
+                Ok(Ok(Some(seed)))
+                    if seed
+                        .spec
+                        .as_ref()
+                        .and_then(|spec| spec.node_name.as_deref())
+                        == Some(&self.node_name) =>
+                {
+                    self.reconcile_with_timeout(seed).await;
+                }
+                Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
+                Ok(Err(error)) => warn!(?error, "failed to inspect the CNI seed Pod; retrying"),
+                Err(_) => warn!(timeout_secs = COREDNS_API_TIMEOUT.as_secs(), "timed out inspecting the CNI seed Pod; retrying"),
+            }
+
+            let pods = match tokio::time::timeout(COREDNS_API_TIMEOUT, api.list(&params)).await {
+                Ok(Ok(pods)) => pods,
+                Ok(Err(error)) => {
                     warn!(?error, "failed to inspect CoreDNS readiness; retrying");
+                    tokio::time::sleep(COREDNS_POLL_INTERVAL).await;
+                    continue;
+                }
+                Err(_) => {
+                    warn!(timeout_secs = COREDNS_API_TIMEOUT.as_secs(), "timed out inspecting CoreDNS readiness; retrying");
                     tokio::time::sleep(COREDNS_POLL_INTERVAL).await;
                     continue;
                 }
@@ -374,7 +712,7 @@ impl PodController {
                     status.pod_ip.is_none() || !probe_supervisor_running
                 });
                 if needs_reconcile {
-                    self.reconcile(pod.clone()).await;
+                    self.reconcile_with_timeout(pod.clone()).await;
                     runtime_status = match self.runtime.status(&namespace, &name).await {
                         Ok(status) => status,
                         Err(error) => {
@@ -487,7 +825,24 @@ impl PodController {
         if self.dns_gate_enabled {
             self.wait_for_coredns().await;
         }
-        let api: Api<Pod> = Api::all(self.client.clone());
+        // A kube-rs Client clone shares its underlying tower service. On an
+        // HTTP/1.1 apiserver that can queue normal requests behind a
+        // long-lived watch until the watch's five-minute server timeout. A
+        // projected ServiceAccount token request hit exactly that path in
+        // live CI: RunPodSandbox completed immediately, but the TokenRequest
+        // was not received by the apiserver for 4m50s, blocking this whole
+        // serial event loop. Give every long-lived watch its own transport;
+        // the regular client remains available for reconcile/status traffic.
+        let pod_watch_client = kube::Client::try_default()
+            .await
+            .context("building the Pod watch client")?;
+        let cm_watch_client = kube::Client::try_default()
+            .await
+            .context("building the ConfigMap watch client")?;
+        let sec_watch_client = kube::Client::try_default()
+            .await
+            .context("building the Secret watch client")?;
+        let api: Api<Pod> = Api::all(pod_watch_client);
         let wc = watcher::Config::default()
             .fields(&format!("spec.nodeName={}", self.node_name));
         // .backoff() on every one of these — see WatchBackoffPolicy's own
@@ -512,10 +867,10 @@ impl PodController {
         // for exactly this case (`Api<PartialObjectMeta<K>>` requests and
         // decodes only `ObjectMeta`, not the whole object) — this crate's
         // own reference-tracking never needed the body at all.
-        let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(self.client.clone());
+        let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(cm_watch_client);
         let mut cm_stream =
             watcher(cm_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
-        let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(self.client.clone());
+        let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(sec_watch_client);
         let mut sec_stream =
             watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
@@ -536,20 +891,20 @@ impl PodController {
                 biased;
                 key = next_event(&mut priority_events), if priority_burst < MAX_PRIORITY_BURST => {
                     priority_burst += 1;
-                    self.on_runtime_event(&key).await;
+                    self.enqueue_runtime_reconcile(key);
                 }
                 key = next_event(&mut events) => {
                     priority_burst = 0;
-                    self.on_runtime_event(&key).await;
+                    self.enqueue_runtime_reconcile(key);
                 }
                 key = next_event(&mut probe_events) => {
                     priority_burst = 0;
-                    self.on_runtime_event(&key).await;
+                    self.enqueue_runtime_reconcile(key);
                 }
                 item = stream.next() => {
                     priority_burst = 0;
                     match item {
-                        Some(Ok(ev)) => self.on_watch(ev).await,
+                        Some(Ok(ev)) => self.on_watch(ev),
                         Some(Err(e)) => warn!(error = ?e, "pod watch error; watcher will retry"),
                         None => {
                             warn!("pod watch stream ended; restarting");
@@ -577,7 +932,7 @@ impl PodController {
                         // initial state from the Pod watch's own InitApply —
                         // this watch's whole purpose is catching *live*
                         // updates after that, not re-doing pod bootstrap.
-                        Some(Ok(ev)) => self.on_referenced_object_event(ev, ReferencedKind::ConfigMap).await,
+                        Some(Ok(ev)) => self.dispatch_referenced_object_event(ev, ReferencedKind::ConfigMap),
                         Some(Err(e)) => warn!(error = ?e, "configmap watch error; watcher will retry"),
                         None => {
                             warn!("configmap watch stream ended; restarting");
@@ -592,7 +947,7 @@ impl PodController {
                         // See the ConfigMap arm's own comment above — same
                         // "InitApply isn't a real change" reasoning applies
                         // identically here.
-                        Some(Ok(ev)) => self.on_referenced_object_event(ev, ReferencedKind::Secret).await,
+                        Some(Ok(ev)) => self.dispatch_referenced_object_event(ev, ReferencedKind::Secret),
                         Some(Err(e)) => warn!(error = ?e, "secret watch error; watcher will retry"),
                         None => {
                             warn!("secret watch stream ended; restarting");
@@ -605,6 +960,7 @@ impl PodController {
         }
     }
 
+    #[cfg(test)]
     async fn on_referenced_object_event<T>(&self, event: Event<T>, kind: ReferencedKind)
     where
         T: kube::Resource<DynamicType = ()>,
@@ -618,13 +974,45 @@ impl PodController {
         }
     }
 
+    /// ConfigMap/Secret changes are uncommon, but their follow-up Pod GETs
+    /// are still network I/O. Keep them out of the watch select loop just as
+    /// runtime refreshes are; the keyed worker coalesces duplicate updates.
+    fn dispatch_referenced_object_event<T>(&self, event: Event<T>, kind: ReferencedKind)
+    where
+        T: kube::Resource<DynamicType = ()> + Send + 'static,
+    {
+        let object = match event {
+            Event::Apply(object) | Event::Delete(object) => object,
+            Event::Init | Event::InitApply(_) | Event::InitDone => return,
+        };
+        let Some(namespace) = object.meta().namespace.clone() else { return };
+        let Some(name) = object.meta().name.clone() else { return };
+        let controller = self.clone();
+        tokio::spawn(async move {
+            controller
+                .on_referenced_object_changed_inner(&namespace, &name, kind, true)
+                .await;
+        });
+    }
+
     /// A ConfigMap or Secret changed. Re-reconcile every pod on this node
     /// whose volumes reference it, so the bind-mounted files get fresh
     /// content within seconds — no pod/container restart needed, matching
     /// real kubelet's config-map-manager live-update behavior. Env vars
     /// (envFrom/valueFrom) are deliberately NOT covered: kubelet captures
     /// those once at container start, by design, and never refreshes them.
+    #[cfg(test)]
     async fn on_referenced_object_changed(&self, namespace: &str, name: &str, kind: ReferencedKind) {
+        self.on_referenced_object_changed_inner(namespace, name, kind, false).await;
+    }
+
+    async fn on_referenced_object_changed_inner(
+        &self,
+        namespace: &str,
+        name: &str,
+        kind: ReferencedKind,
+        enqueue: bool,
+    ) {
         // Purely local — no I/O — thanks to `pod_refs` (issue #133): a
         // ConfigMap/Secret `Apply`/`Delete` event is watched cluster-wide (this
         // controller has no informer cache to consult the way real
@@ -652,15 +1040,32 @@ impl PodController {
                 }
             };
             info!(pod = %format!("{namespace}/{pod_name}"), namespace, name, ?kind, "re-materializing volumes after referenced object changed");
-            self.reconcile(pod).await;
+            if enqueue {
+                self.enqueue_pod_reconcile(pod);
+            } else {
+                self.reconcile_with_timeout(pod).await;
+            }
         }
     }
 
-    async fn on_watch(&self, ev: Event<Pod>) {
+    fn on_watch(&self, ev: Event<Pod>) {
         match ev {
             Event::Apply(pod) | Event::InitApply(pod) => {
+                let uid_replaced = self.pod_uid_changed(&pod);
                 if self.observe_watch_pod(&pod) {
-                    self.reconcile(pod).await;
+                    let key = key_parts(&pod).map(|(namespace, name)| pod_key(&namespace, &name));
+                    if pod.metadata.deletion_timestamp.is_some() {
+                        if let Some(key) = key {
+                            self.cancel_reconcile(&key);
+                        }
+                        self.spawn_teardown(pod);
+                    } else {
+                        if uid_replaced {
+                            self.enqueue_pod_reconcile_replacing(pod);
+                        } else {
+                            self.enqueue_pod_reconcile(pod);
+                        }
+                    }
                 }
             }
             Event::Delete(pod) => {
@@ -671,10 +1076,32 @@ impl PodController {
                 // UID guard means the common case (both events for one pod)
                 // does not start a second concurrent teardown at all.
                 if self.observe_watch_pod(&pod) {
+                    if let Some((namespace, name)) = key_parts(&pod) {
+                        self.cancel_reconcile(&pod_key(&namespace, &name));
+                    }
                     self.spawn_teardown(pod);
                 }
             }
             Event::Init | Event::InitDone => {}
+        }
+    }
+
+    /// Keep a stalled API/CRI operation from blocking all later watch events.
+    ///
+    /// The watch event has already been consumed when this returns, so a
+    /// timeout must schedule a retry rather than simply dropping the pod.
+    async fn reconcile_with_timeout(&self, pod: Pod) {
+        let Some((ns, name)) = key_parts(&pod) else { return };
+        match tokio::time::timeout(RECONCILE_TIMEOUT, self.reconcile(pod)).await {
+            Ok(()) => {}
+            Err(_) => {
+                warn!(
+                    pod = %format!("{ns}/{name}"),
+                    timeout_secs = RECONCILE_TIMEOUT.as_secs(),
+                    "pod reconcile timed out; continuing event loop"
+                );
+                self.schedule_retry(ns, name);
+            }
         }
     }
 
@@ -693,13 +1120,8 @@ impl PodController {
             // dispatches on deletion_timestamp alone, so without this
             // check every one of those re-ran the full teardown() (real
             // network round-trips: CSI unmount RPCs, PVC re-fetches)
-            // instead of a no-op. Found live (round 123): this single
-            // serial watch-event loop processes one event at a time, so a
-            // burst of redundant teardown() calls for one pod could delay
-            // it from reaching a completely unrelated pod's own creation
-            // event — a real, if unconfirmed, contributor to pods
-            // intermittently taking far longer than expected to reach
-            // Running in CI.
+            // instead of a no-op. The keyed worker now serializes this Pod's
+            // own updates while leaving unrelated Pod workers free to run.
             // No UID at all is a real apiserver-watch-event anomaly, not
             // something normal to dedupe against — fall through to a
             // real teardown() every time rather than risk collapsing
@@ -764,7 +1186,7 @@ impl PodController {
 
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
-                debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "ensured");
+                debug!(target: "nk_watch_trace", pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "runtime ensure completed; publishing status");
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
@@ -772,6 +1194,7 @@ impl PodController {
                 if let Err(e) = write_status(&self.client, &self.host_ip, &ns, &name, &status, prev, &gates, &self.health, qos, pod.metadata.generation).await {
                     warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status");
                 }
+                debug!(target: "nk_watch_trace", pod = %format!("{ns}/{name}"), "pod status publication finished");
                 // Round 124: a still-pending CSI volume attach or device-
                 // plugin resource (pending_csi_volume_names()/pending_
                 // device_plugin_resources()) touches nothing on the Pod
@@ -917,11 +1340,8 @@ impl PodController {
     /// visible as an error: the node stays Ready and every delayed pod
     /// simply looks slow to start.
     ///
-    /// `reconcile()`'s own comment already recorded the serial loop as "a
-    /// real, if unconfirmed, contributor to pods intermittently taking far
-    /// longer than expected to reach Running in CI" — this is that
-    /// mechanism, and detaching removes it rather than merely deduplicating
-    /// the calls into it.
+    /// The keyed worker and detached teardown together ensure this long
+    /// operation cannot hold up unrelated Pod workers.
     ///
     /// The probe supervisor is stopped **synchronously**, before the spawn.
     /// It is pure local bookkeeping (aborting tasks, clearing a map) with
@@ -981,26 +1401,29 @@ impl PodController {
             // retry here the pod stays Terminating forever and its
             // containers keep running.
             //
-            // Bounded rather than endless, and the guard is deliberately
-            // still held across the whole loop: a teardown genuinely is in
-            // flight, and a duplicate event must not start a second one
-            // beside it. When the attempts are exhausted the guard drops,
-            // which is what lets a later event try again from scratch.
+            // The guard is deliberately held across the whole loop: a
+            // teardown genuinely is in flight, and a duplicate event must
+            // not start a second one beside it. The backoff reaches the same
+            // five-minute ceiling used by ordinary pod recovery, so an API or
+            // runtime that is permanently broken costs one wakeup per ceiling
+            // interval while a fixed dependency eventually makes progress.
             let mut attempt: u32 = 0;
             let mut delay = RETRY_FIRST_DELAY;
+            let teardown_started = tokio::time::Instant::now();
             loop {
                 attempt += 1;
-                match runtime.remove_pod(&pod).await {
-                    Ok(()) => break,
-                    Err(e) if attempt >= TEARDOWN_MAX_ATTEMPTS => {
-                        warn!(
-                            pod = %format!("{ns}/{name}"), error = ?e, attempt,
-                            "remove_pod still failing after the last attempt — giving up;                              the next watch event for this pod will start over"
-                        );
-                        return;
-                    }
-                    Err(e) => {
+                let (remaining_grace, timeout) = teardown_attempt_budget(&pod, teardown_started.elapsed());
+                let mut attempt_pod = pod.clone();
+                attempt_pod.metadata.deletion_grace_period_seconds = Some(remaining_grace);
+                match tokio::time::timeout(timeout, runtime.remove_pod(&attempt_pod)).await {
+                    Ok(Ok(())) => break,
+                    Ok(Err(e)) => {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, attempt, "remove_pod failed; retrying");
+                        tokio::time::sleep(delay).await;
+                        delay = next_retry_delay(delay);
+                    }
+                    Err(_) => {
+                        warn!(pod = %format!("{ns}/{name}"), timeout_secs = timeout.as_secs(), remaining_grace, attempt, "remove_pod timed out; retrying");
                         tokio::time::sleep(delay).await;
                         delay = next_retry_delay(delay);
                     }
@@ -1027,28 +1450,34 @@ impl PodController {
                 }),
                 ..Default::default()
             };
-            match api.delete(&name, &dp).await {
-                Ok(_) => {}
-                Err(kube::Error::Api(e)) if e.code == 404 || e.code == 409 => {}
-                Err(e) => warn!(pod = %format!("{ns}/{name}"), error = ?e, "final delete of pod object failed"),
+            let mut attempt: u32 = 0;
+            let mut delay = RETRY_FIRST_DELAY;
+            loop {
+                attempt += 1;
+                match tokio::time::timeout(TEARDOWN_API_TIMEOUT, api.delete(&name, &dp)).await {
+                    Ok(Ok(_)) => break,
+                    Ok(Err(kube::Error::Api(error))) if error.code == 404 => break,
+                    Ok(Err(kube::Error::Api(error))) if error.code == 409 => {
+                        // Status writes can exhaust the server's CAS retries
+                        // without changing UID. Only stop for a proven
+                        // replacement; keep retrying deletion of this Pod.
+                        match tokio::time::timeout(TEARDOWN_API_TIMEOUT, api.get(&name)).await {
+                            Ok(Ok(current)) if current.metadata.uid.as_ref()
+                                != dp.preconditions.as_ref().and_then(|p| p.uid.as_ref()) => break,
+                            Ok(Err(kube::Error::Api(status))) if status.code == 404 => break,
+                            _ => warn!(pod = %format!("{ns}/{name}"), attempt,
+                                "final pod delete conflicted without a confirmed replacement; retrying"),
+                        }
+                    }
+                    Ok(Err(error)) => warn!(pod = %format!("{ns}/{name}"), error = ?error, attempt, "final delete of pod object failed; retrying"),
+                    Err(_) => warn!(pod = %format!("{ns}/{name}"), timeout_secs = TEARDOWN_API_TIMEOUT.as_secs(), attempt, "timed out deleting pod object; retrying"),
+                }
+                tokio::time::sleep(delay).await;
+                delay = next_retry_delay(delay);
             }
         });
     }
 
-    /// Runtime told us a pod's actual state changed — reconcile the desired
-    /// Pod against the runtime, then report the resulting status. This is also
-    /// used for the startup inventory: CRI events are not replayed after a
-    /// nodelet restart, and an API status from before the restart is not proof
-    /// that the corresponding runtime task still exists.
-    async fn on_runtime_event(&self, key: &str) {
-        let Some((ns, name)) = key.split_once('/') else { return };
-        let api: Api<Pod> = Api::namespaced(self.client.clone(), ns);
-        match api.get_opt(name).await {
-            Ok(Some(p)) => self.reconcile(p).await,
-            Ok(None) => debug!(pod = %key, "pod gone; skipping status write"),
-            Err(e) => warn!(pod = %key, error = ?e, "get_opt failed"),
-        }
-    }
 }
 
 /// Free functions (not PodController methods) so schedule_retry()'s
@@ -1435,7 +1864,10 @@ fn build_pod_status(
             state: Some(container_state(c, rt.started_at.map(Time), "ContainerCreating")),
             last_state: c.last_terminated.as_ref().map(|info| last_container_state(Some(info))),
             resources: c.resources.clone(),
-            allocated_resources: c.allocated_resources.clone(),
+            // Empty protobuf maps have no wire entries and read back absent.
+            // Reporting Some({}) would therefore differ on every watch event
+            // and keep the status PATCH -> watch -> PATCH loop alive.
+            allocated_resources: c.allocated_resources.clone().filter(|resources| !resources.is_empty()),
             allocated_resources_status: allocated_resources_status_field(&c.allocated_resources_status),
             user: container_user_field(c.container_user.as_ref()),
             volume_mounts: volume_mount_statuses_field(&c.volume_mount_statuses),
@@ -1600,7 +2032,7 @@ fn is_waiting_for_external_resource(status: &RuntimeStatus) -> bool {
     if status.message.as_deref().is_some_and(|m| {
         m.starts_with("waiting for CSI volume(s) to be mounted")
             || m.starts_with("waiting for device plugin resource(s) to be available")
-            || m.starts_with("waiting for projected ServiceAccount token(s) to be materialized")
+            || m.starts_with("waiting for projected volume(s) to be materialized")
     }) {
         return true;
     }

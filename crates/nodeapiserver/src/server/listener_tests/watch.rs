@@ -1,0 +1,319 @@
+// Exercise the actual HTTP transport, not just Body::collect. Hyper #4143
+// showed that EOF arriving on its write re-check could remain unflushed.
+#[tokio::test]
+async fn watch_eof_is_flushed_when_the_body_finishes_on_the_write_recheck() {
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[derive(Default)]
+    struct EndOnRecheck(u8);
+    impl http_body::Body for EndOnRecheck {
+        type Data = hyper::body::Bytes;
+        type Error = Infallible;
+        fn poll_frame(mut self: std::pin::Pin<&mut Self>, _: &mut Context<'_>)
+            -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>>
+        {
+            self.0 += 1;
+            match self.0 {
+                1 => Poll::Ready(Some(Ok(http_body::Frame::data(hyper::body::Bytes::from_static(b"{}\n"))))),
+                // Arrange readiness changing between the two write polls.
+                2 => Poll::Pending,
+                _ => Poll::Ready(None),
+            }
+        }
+    }
+    let (server, mut client) = tokio::io::duplex(4096);
+    let task = tokio::spawn(async move {
+        let service = hyper::service::service_fn(|_| async {
+            Ok::<_, Infallible>(Response::new(EndOnRecheck::default()))
+        });
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(hyper_util::rt::TokioIo::new(server), service).await
+    });
+    client.write_all(b"GET /watch HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+    let mut received = Vec::new();
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut buffer = [0; 512];
+        while !received.ends_with(b"\r\n0\r\n\r\n") {
+            let count = client.read(&mut buffer).await.unwrap();
+            if count == 0 { break; }
+            received.extend_from_slice(&buffer[..count]);
+        }
+    }).await;
+    task.abort();
+    let _ = task.await;
+    assert!(completed.is_ok(), "watch EOF was stranded: {}", String::from_utf8_lossy(&received));
+    assert!(received.ends_with(b"\r\n0\r\n\r\n"));
+}
+
+#[tokio::test]
+async fn watch_response_body_streams_the_replay_then_live_events() {
+    use http_body_util::BodyExt;
+
+    // An unrelated event at revision 2 first, purely so `watch_from`'s
+    // own "not older than the oldest retained history entry" check
+    // has something at or before the requested start_revision (same
+    // pre-existing `watch_from` quirk `cacher::store`'s own tests hit
+    // — untouched by, and unrelated to, what this test is proving).
+    // The event actually under test needs a real encoded envelope —
+    // `to_watch_event_json` decodes it for real, same as
+    // `server::watch_event`'s own tests do.
+    let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+    let object_bytes = crate::codec::protobuf::encode_message(
+        schema,
+        &serde_json::json!({"metadata": {"name": "default"}}),
+    )
+    .unwrap();
+    let envelope = crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes);
+
+    let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
+    let shared = crate::cacher::store::SharedCache::new(cache);
+    shared.apply(
+        crate::cacher::store::EventKind::Added,
+        b"seed".to_vec(),
+        b"unrelated".to_vec(),
+        2,
+    );
+    shared.apply(
+        crate::cacher::store::EventKind::Added,
+        b"a".to_vec(),
+        envelope,
+        3,
+    );
+    let (replay, rx) = shared.watch_from(2).unwrap();
+    assert_eq!(
+        replay.len(),
+        1,
+        "only the revision-3 event should be in the replay"
+    );
+    // Drop the cache (and its own broadcast::Sender) before consuming
+    // the stream to completion below — otherwise the live half of
+    // `watch_response_body` never ends (a real watch stream is
+    // meant to run forever; only exercised for the replay half here,
+    // the live half is real end-to-end behavior, not something a
+    // `.collect()`-to-completion unit test can observe without
+    // artificially closing the channel first).
+    drop(shared);
+
+    let body = watch_response_body(
+        replay,
+        rx,
+        "Namespace".to_string(),
+        "v1".to_string(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        String::new(),
+        "namespaces".to_string(),
+        "v1".to_string(),
+        false,
+        true,
+        None,
+        None,
+        None,
+    );
+    let collected = body.collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(collected.to_vec()).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    let parsed: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(parsed["type"], "ADDED");
+}
+
+#[tokio::test]
+async fn watch_response_body_honors_bookmark_negotiation_and_timeout() {
+    use http_body_util::BodyExt;
+
+    let bookmark = crate::cacher::store::WatchEvent {
+        kind: crate::cacher::store::EventKind::Bookmark,
+        key: Vec::new(),
+        value: Vec::new(),
+        revision: 9,
+    };
+    let (_, rx) = {
+        let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+        cache.watch_from(0).unwrap()
+    };
+    let body = watch_response_body(
+        vec![bookmark.clone()],
+        rx,
+        "Namespace".to_string(),
+        "v1".to_string(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        String::new(),
+        "namespaces".to_string(),
+        "v1".to_string(),
+        false,
+        false,
+        None,
+        None,
+        None,
+    );
+    let bytes = body.collect().await.unwrap().to_bytes();
+    assert!(bytes.is_empty(), "bookmarks must be opt-in");
+
+    let (_, rx) = {
+        let cache = crate::cacher::store::WatchCache::new(vec![], 0, 16, 16);
+        cache.watch_from(0).unwrap()
+    };
+    let body = watch_response_body(
+        Vec::new(),
+        rx,
+        "Namespace".to_string(),
+        "v1".to_string(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        String::new(),
+        "namespaces".to_string(),
+        "v1".to_string(),
+        false,
+        false,
+        Some(std::time::Duration::from_millis(10)),
+        None,
+        None,
+    );
+    let bytes = tokio::time::timeout(std::time::Duration::from_secs(1), body.collect())
+        .await
+        .unwrap()
+        .unwrap()
+        .to_bytes();
+    assert!(
+        bytes.is_empty(),
+        "an idle watch must terminate at timeoutSeconds"
+    );
+}
+
+#[tokio::test]
+async fn watch_response_body_sends_streaming_list_initial_events_end_bookmark() {
+    use http_body_util::BodyExt;
+
+    let initial = crate::cacher::store::WatchEvent {
+        kind: crate::cacher::store::EventKind::Added,
+        key: b"/registry/namespaces/default".to_vec(),
+        value: envelope_for("default", serde_json::json!({})),
+        revision: 5,
+    };
+    let cache = crate::cacher::store::WatchCache::new(vec![], 5, 16, 16);
+    let (_, rx) = cache.watch_from(5).unwrap();
+    drop(cache);
+
+    let body = watch_response_body_with_initial_events(
+        Vec::new(),
+        rx,
+        "Namespace".to_string(),
+        "v1".to_string(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        String::new(),
+        "namespaces".to_string(),
+        "v1".to_string(),
+        false,
+        true,
+        None,
+        None,
+        Some((vec![initial], 5)),
+        None,
+    );
+    let bytes = body.collect().await.unwrap().to_bytes();
+    let lines: Vec<serde_json::Value> = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["type"], "ADDED");
+    assert_eq!(lines[1]["type"], "BOOKMARK");
+    assert_eq!(lines[1]["object"]["metadata"]["resourceVersion"], "5");
+    assert_eq!(
+        lines[1]["object"]["metadata"]["annotations"]["k8s.io/initial-events-end"],
+        "true"
+    );
+}
+
+#[tokio::test]
+async fn expired_watch_is_an_in_band_error_event_in_an_http_success_response() {
+    use http_body_util::BodyExt;
+
+    let response = watch_resource_expired_response("/api/v1/watch/namespaces");
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/json"
+    );
+
+    let (_, body) = response.into_parts();
+    let bytes = body.collect().await.unwrap().to_bytes();
+    let event: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(event["type"], "ERROR");
+    assert_eq!(event["object"]["reason"], "Gone");
+    assert_eq!(event["object"]["code"], 410);
+}
+
+/// A bookmark-negotiated watch body armed with an idle guard must still
+/// stream its replay untouched (the watchdog only observes), and must bump
+/// the frame tracker — the signal that keeps the watchdog from killing the
+/// connection — on every frame it hands to hyper.
+#[tokio::test]
+async fn watch_body_with_idle_guard_streams_and_tracks_frames() {
+    use http_body_util::BodyExt;
+
+    let schema = crate::codec::protobuf::schema_for_gvk("", "v1", "Namespace").unwrap();
+    let object_bytes = crate::codec::protobuf::encode_message(
+        schema,
+        &serde_json::json!({"metadata": {"name": "default"}}),
+    )
+    .unwrap();
+    let envelope = crate::codec::protobuf::wrap_unknown("v1", "Namespace", &object_bytes);
+    let cache = crate::cacher::store::WatchCache::new(vec![], 1, 16, 16);
+    let shared = crate::cacher::store::SharedCache::new(cache);
+    shared.apply(
+        crate::cacher::store::EventKind::Added,
+        b"a".to_vec(),
+        envelope,
+        3,
+    );
+    let (replay, rx) = shared.watch_from(2).unwrap();
+    drop(shared);
+
+    let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
+    let guard = WatchIdleGuard::spawn(
+        WatchConnectionKill(kill_tx),
+        "v1/namespaces".to_string(),
+        "test-client".to_string(),
+        None,
+    );
+    let tracker = guard.tracker();
+    let body = watch_response_body(
+        replay,
+        rx,
+        "Namespace".to_string(),
+        "v1".to_string(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        String::new(),
+        "namespaces".to_string(),
+        "v1".to_string(),
+        false,
+        true,
+        None,
+        None,
+        Some(guard),
+    );
+    let collected = body.collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(collected.to_vec()).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    assert!(
+        tracker.last_frame_at() != 0,
+        "the idle guard's tracker must record the frame the body produced"
+    );
+    // The body ended (the cache behind it was dropped), which stops the
+    // watchdog; it must never have killed the connection.
+    assert!(
+        !*kill_rx.borrow(),
+        "an ended watch body must not fire the connection kill switch"
+    );
+}

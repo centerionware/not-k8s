@@ -12,6 +12,7 @@ use crate::config::Config;
 const SERVICES: &[&str] = &[
     "flanneld",
     "kube-apiserver",
+    "nodeapiserver",
     "nodestore",
     "nodescheduler",
     "nodecontroller",
@@ -146,6 +147,7 @@ mod tests {
         for service in [
             "flanneld",
             "kube-apiserver",
+            "nodeapiserver",
             "nodestore",
             "nodescheduler",
             "nodecontroller",

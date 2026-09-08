@@ -44,6 +44,8 @@ fn discard_notify() -> tokio::sync::mpsc::UnboundedSender<String> {
 
 struct FakeRuntime {
     exec_ok: AtomicBool,
+    live_checks: AtomicUsize,
+    ready_checks: AtomicUsize,
     restart_count: AtomicUsize,
     last_grace_period_seconds: AtomicI64,
 }
@@ -52,6 +54,8 @@ impl FakeRuntime {
     fn new(initially_ok: bool) -> Arc<Self> {
         Arc::new(Self {
             exec_ok: AtomicBool::new(initially_ok),
+            live_checks: AtomicUsize::new(0),
+            ready_checks: AtomicUsize::new(0),
             restart_count: AtomicUsize::new(0),
             last_grace_period_seconds: AtomicI64::new(-1),
         })
@@ -72,7 +76,12 @@ impl PodRuntime for FakeRuntime {
     fn take_event_rx(&self) -> Option<UnboundedReceiver<String>> {
         None
     }
-    async fn exec(&self, _ns: &str, _name: &str, _container: &str, _command: &[String]) -> anyhow::Result<bool> {
+    async fn exec(&self, _ns: &str, _name: &str, _container: &str, command: &[String]) -> anyhow::Result<bool> {
+        match command.first().map(String::as_str) {
+            Some("live-check") => { self.live_checks.fetch_add(1, Ordering::SeqCst); }
+            Some("ready-check") => { self.ready_checks.fetch_add(1, Ordering::SeqCst); }
+            _ => {}
+        }
         Ok(self.exec_ok.load(Ordering::SeqCst))
     }
     async fn restart_container(&self, _ns: &str, _name: &str, _container: &str, grace_period_seconds: i64) -> anyhow::Result<()> {
@@ -90,6 +99,43 @@ fn exec_probe(command: &str, failure_threshold: i32) -> Probe {
         success_threshold: Some(1),
         ..Default::default()
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn readiness_does_not_wait_for_liveness_initial_delay() {
+    let runtime = FakeRuntime::new(true);
+    let health = new_health_map();
+    let mut liveness = exec_probe("live-check", 1);
+    liveness.initial_delay_seconds = Some(60);
+    let container = Container {
+        name: "app".into(), liveness_probe: Some(liveness),
+        readiness_probe: Some(exec_probe("ready-check", 1)), ..Default::default()
+    };
+    let (notify, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::spawn(probe_container(runtime.clone(), not_found_client(), health.clone(),
+        notify, "default".into(), "web".into(), container, "10.0.0.5".into(), 30));
+    tokio::time::timeout(Duration::from_secs(1), events.recv()).await
+        .expect("readiness must not inherit the 60-second liveness delay").unwrap();
+    assert!(container_health(&health, "default", "web", "app").ready);
+    assert_eq!(runtime.live_checks.load(Ordering::SeqCst), 0);
+    handle.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn liveness_does_not_inherit_the_faster_readiness_period() {
+    let runtime = FakeRuntime::new(true);
+    let mut liveness = exec_probe("live-check", 1);
+    liveness.period_seconds = Some(10);
+    let container = Container {
+        name: "app".into(), liveness_probe: Some(liveness),
+        readiness_probe: Some(exec_probe("ready-check", 1)), ..Default::default()
+    };
+    let handle = tokio::spawn(probe_container(runtime.clone(), not_found_client(), new_health_map(),
+        discard_notify(), "default".into(), "web".into(), container, "10.0.0.5".into(), 30));
+    tokio::time::sleep(Duration::from_secs(35)).await;
+    assert_eq!(runtime.live_checks.load(Ordering::SeqCst), 4);
+    assert!(runtime.ready_checks.load(Ordering::SeqCst) >= 30);
+    handle.abort();
 }
 
 #[tokio::test]

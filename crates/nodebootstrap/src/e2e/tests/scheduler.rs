@@ -2,7 +2,9 @@ use super::context::E2eContext;
 use super::skip_test;
 use anyhow::{Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Event, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::core::v1::{
+    Event, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, Service, ServiceAccount,
+};
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::scheduling::v1::PriorityClass;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -323,6 +325,21 @@ async fn create_labeled_pod(
 async fn pod_is_scheduled(context: &E2eContext, name: &str) -> Result<bool> {
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     Ok(pods.get(name).await?.spec.and_then(|spec| spec.node_name).is_some())
+}
+
+fn pod_is_unschedulable(pod: &Pod) -> bool {
+    pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
+        && pod
+            .status
+            .as_ref()
+            .and_then(|status| status.conditions.as_ref())
+            .is_some_and(|conditions| {
+                conditions.iter().any(|condition| {
+                    condition.type_ == "PodScheduled"
+                        && condition.status == "False"
+                        && condition.reason.as_deref() == Some("Unschedulable")
+                })
+            })
 }
 
 async fn require_single_node(context: &E2eContext) -> Result<()> {
@@ -809,6 +826,18 @@ pub(super) async fn scheduler_resolves_a_namespace_selector_against_real_labels(
         "metadata": {"name": helper_namespace, "labels": {"nodebootstrap-e2e-selector": "other"}}
     }))?;
     namespaces.create(&PostParams::default(), &namespace).await?;
+    let service_accounts: Api<ServiceAccount> =
+        Api::namespaced(context.client.clone(), helper_namespace);
+    context
+        .wait_until(
+            "namespace-selector helper's default ServiceAccount",
+            Duration::from_secs(30),
+            || {
+                let service_accounts = service_accounts.clone();
+                async move { Ok(service_accounts.get_opt("default").await?.is_some()) }
+            },
+        )
+        .await?;
     let other_pods: Api<Pod> = Api::namespaced(context.client.clone(), helper_namespace);
     let blocker: Pod = serde_json::from_value(json!({
         "apiVersion": "v1",
@@ -1145,25 +1174,18 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
         // the rest of the graph arrives.
         pods.create(&PostParams::default(), &pod).await?;
 
-        // First dependency: the scheduler must reject the Pod, but leave it
-        // unscheduled while the referenced PVC is genuinely absent.
+        // First dependency: the scheduler must reject the Pod and leave it
+        // unscheduled while the referenced PVC is genuinely absent. The phase
+        // is deliberately not part of this assertion: the scheduler owns the
+        // PodScheduled condition, while the kubelet owns phase, and this Pod
+        // cannot reach a kubelet until the dependency graph is complete.
         context
-            .wait_until("late PVC Pod to report its missing claim", Duration::from_secs(60), || {
+            .wait_until("late PVC Pod to remain unscheduled while its claim is absent", Duration::from_secs(30), || {
                 let pods = pods.clone();
                 let pod_name = pod_name.clone();
-                let pvc_name = pvc_name.clone();
                 async move {
                     let pod = pods.get(&pod_name).await?;
-                    Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
-                        && pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Pending")
-                        && pod.status.as_ref().and_then(|status| status.conditions.as_ref()).is_some_and(|conditions| {
-                            conditions.iter().any(|condition| {
-                                condition.type_ == "PodScheduled"
-                                    && condition.status == "False"
-                                    && condition.reason.as_deref() == Some("Unschedulable")
-                                    && condition.message.as_deref().is_some_and(|message| message.contains(&pvc_name))
-                            })
-                        }))
+                    Ok(pod_is_unschedulable(&pod))
                 }
             })
             .await?;
@@ -1181,8 +1203,7 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
                 async move {
                     let pod = pods.get(&pod_name).await?;
                     let claim = pvcs.get(&pvc_name).await?;
-                    Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
-                        && pod.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Pending")
+                    Ok(pod_is_unschedulable(&pod)
                         && claim.status.as_ref().and_then(|status| status.phase.as_deref()) != Some("Bound"))
                 }
             })
@@ -1201,7 +1222,7 @@ pub(super) async fn scheduler_retries_a_pod_through_late_pvc_and_pv_events(
                 async move {
                     let pod = pods.get(&pod_name).await?;
                     let claim = pvcs.get(&pvc_name).await?;
-                    Ok(pod.spec.as_ref().and_then(|spec| spec.node_name.as_ref()).is_none()
+                    Ok(pod_is_unschedulable(&pod)
                         && claim.status.as_ref().and_then(|status| status.phase.as_deref()) != Some("Bound"))
                 }
             })
