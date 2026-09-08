@@ -237,7 +237,7 @@ jobs:
           done
           (( failed == 0 ))
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: notk8s-${{ matrix.arch }}-${{ github.run_id }}
           path: dist/
@@ -289,7 +289,7 @@ jobs:
           grep -q '\.debug_info' /tmp/profiling-sections.txt
           grep -q '\.symtab' /tmp/profiling-sections.txt
       - name: Upload profile
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: profiling-${{ github.run_id }}
           path: profile-dist/
@@ -315,7 +315,7 @@ jobs:
           fetch-depth: 0
       - name: Download artifacts
         if: inputs.reuse_release_tag == ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist
           pattern: notk8s-*-${{ github.run_id }}
@@ -637,7 +637,7 @@ jobs:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
       - name: Download profile
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: profiling-${{ github.run_id }}
           path: profile-bin
