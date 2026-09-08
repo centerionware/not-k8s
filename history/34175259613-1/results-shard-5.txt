@@ -1,0 +1,778 @@
+commit: e38fb3534c9baa41b4792bf87fc60deacf2c9a19
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/34175259613
+timestamp (UTC): 2026-09-08T01:32:45Z
+shard: 5/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 62 test(s), shard 5/5
+▶ 2026-09-08T01:11:37.233Z test_coredns_is_a_healthy_deployment ... PASS (30078ms)
+▶ 2026-09-08T01:12:07.312Z test_nodeapiserver_rejects_invalid_builtin_schema_constraints ... PASS (5021ms)
+▶ 2026-09-08T01:12:12.334Z test_nodeapiserver_applies_pure_admission_to_apply ... PASS (4034ms)
+▶ 2026-09-08T01:12:16.368Z test_nodeapiserver_defaults_storage_class_on_apply ... PASS (5023ms)
+▶ 2026-09-08T01:12:21.392Z test_nodeapiserver_applies_namespace_node_selector ... PASS (5043ms)
+▶ 2026-09-08T01:12:26.436Z test_nodeapiserver_advertises_subresources ... PASS (5014ms)
+▶ 2026-09-08T01:12:31.451Z test_nodeapiserver_apf_labels_requests ... PASS (5222ms)
+▶ 2026-09-08T01:12:36.673Z test_nodeapiserver_rejects_unsupported_field_selector ... PASS (5014ms)
+▶ 2026-09-08T01:12:41.687Z test_nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers ... PASS (33087ms)
+▶ 2026-09-08T01:13:14.775Z test_nodeapiserver_rejects_unsupported_resource_route ... PASS (2008ms)
+▶ 2026-09-08T01:13:16.783Z test_nodeapiserver_mutating_admission_policy_mutates_create ... PASS (31072ms)
+▶ 2026-09-08T01:13:47.856Z test_nodeapiserver_honors_finalizers ... PASS (4019ms)
+▶ 2026-09-08T01:13:51.876Z test_nodeapiserver_honors_dry_run_and_delete_preconditions ... PASS (5019ms)
+▶ 2026-09-08T01:13:56.895Z test_installed_component_binaries_are_runnable_whatever_the_layout ... PASS (5023ms)
+▶ 2026-09-08T01:14:01.919Z test_basic_pod_runs ... PASS (32068ms)
+▶ 2026-09-08T01:14:33.987Z test_crashing_container_restarts_and_increments_restart_count ... PASS (13035ms)
+▶ 2026-09-08T01:14:47.023Z test_disruption_controller_computes_pdb_status ... PASS (32074ms)
+▶ 2026-09-08T01:15:19.097Z test_eviction_priority_tiebreak_manual_procedure ... SKIP (priority-based eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 3012ms)
+▶ 2026-09-08T01:15:22.110Z test_pressure_conditions_are_present_and_normally_false ... PASS (5013ms)
+▶ 2026-09-08T01:15:27.123Z test_job_controller_runs_pods_to_completion ... PASS (5019ms)
+▶ 2026-09-08T01:15:32.142Z test_deployment_creates_replicaset_and_rolls_update ... PASS (63168ms)
+▶ 2026-09-08T01:16:35.311Z test_hugepages_limit_is_enforced_via_cgroup ... PASS (7027ms)
+▶ 2026-09-08T01:16:42.338Z test_env_resource_field_ref_reports_the_containers_own_limits ... PASS (4022ms)
+▶ 2026-09-08T01:16:46.361Z test_datastore_enforces_compare_and_swap ... PASS (5279ms)
+▶ 2026-09-08T01:16:51.640Z test_datastore_expires_a_lease_and_its_keys ... PASS (5279ms)
+▶ 2026-09-08T01:16:56.920Z test_datastore_refuses_a_cluster_it_cannot_be_part_of ... PASS (5017ms)
+▶ 2026-09-08T01:17:01.937Z test_the_cluster_keeps_serving_when_a_follower_dies ... PASS (9872ms)
+▶ 2026-09-08T01:17:11.810Z test_a_partitioned_leader_steps_down_and_the_majority_elects_another ... SKIP (partition tests require the isolated network-namespace harness; set NOTK8S_E2E_ENABLE_PACKET_SHAPING=1 on a disposable root test host; 5012ms)
+▶ 2026-09-08T01:17:16.822Z test_pod_cgroup_reflects_its_qos_class ... PASS (32070ms)
+▶ 2026-09-08T01:17:48.892Z test_host_network_pod_uses_the_node_network_namespace ... PASS (32074ms)
+▶ 2026-09-08T01:18:20.966Z test_cluster_dns_resolves_service_names ... PASS (6026ms)
+▶ 2026-09-08T01:18:26.992Z test_plugin_registry_directory_exists ... PASS (5014ms)
+▶ 2026-09-08T01:18:32.007Z test_scheduler_honours_a_node_selector_that_matches_nothing ... PASS (5022ms)
+▶ 2026-09-08T01:18:37.029Z test_scheduler_honours_topology_spread ... PASS (35076ms)
+▶ 2026-09-08T01:19:12.106Z test_restart_policy_never_exit_nonzero_is_failed ... PASS (5022ms)
+▶ 2026-09-08T01:19:17.128Z test_container_status_container_id_has_a_runtime_scheme_prefix ... PASS (32066ms)
+▶ 2026-09-08T01:19:49.194Z test_pod_status_reports_host_ips_plural ... PASS (32070ms)
+▶ 2026-09-08T01:20:21.264Z test_liveness_probe_failure_restarts_the_container ... PASS (63130ms)
+▶ 2026-09-08T01:21:24.394Z test_http_get_readiness_probe_against_a_real_server ... PASS (32065ms)
+▶ 2026-09-08T01:21:56.459Z test_downward_api_volume_writes_pod_metadata ... PASS (5022ms)
+▶ 2026-09-08T01:22:01.482Z test_host_aliases_still_work_under_host_users_false ... PASS (5021ms)
+▶ 2026-09-08T01:22:06.504Z test_host_path_directory_mounts_the_real_host_directory ... PASS (5022ms)
+▶ 2026-09-08T01:22:11.526Z test_mount_propagation_private_default_does_not_see_a_new_host_mount ... PASS (35118ms)
+▶ 2026-09-08T01:22:46.645Z test_host_path_directory_type_rejects_a_nonexistent_path ... PASS (5023ms)
+▶ 2026-09-08T01:22:51.668Z test_run_as_user_is_applied ... PASS (5021ms)
+▶ 2026-09-08T01:22:56.690Z test_host_users_volume_ownership_translation_is_correct ... PASS (5030ms)
+▶ 2026-09-08T01:23:01.721Z test_topology_manager_cross_provider_alignment_manual_note ... SKIP (cross-provider CPU/device NUMA alignment needs real multi-NUMA hardware and a device plugin advertising NUMA affinity; 5012ms)
+▶ 2026-09-08T01:23:06.734Z test_containers_get_isolated_pid_namespaces_by_default ... PASS (33069ms)
+▶ 2026-09-08T01:23:39.803Z test_lifecycle_stop_signal_is_honored_by_the_runtime ... PASS (7028ms)
+▶ 2026-09-08T01:23:46.831Z test_nodeapiserver_proxy_subresources_relay_requests ... PASS (63078ms)
+▶ 2026-09-08T01:24:49.910Z test_nodeproxy_runs_as_its_own_service_separate_from_nodelet ... PASS (2022ms)
+▶ 2026-09-08T01:24:51.932Z test_session_affinity_pins_a_client_to_one_backend ... PASS (34097ms)
+▶ 2026-09-08T01:25:26.030Z test_kubectl_logs_follow_streams_new_output ... PASS (33089ms)
+▶ 2026-09-08T01:25:59.120Z test_metrics_resource_returns_real_pod_usage ... PASS (32111ms)
+▶ 2026-09-08T01:26:31.231Z test_nodeapiserver_writes_audit_log ... PASS (5848ms)
+▶ 2026-09-08T01:26:42.095Z test_cert_manager_crds_are_usable_without_nodecontroller_restart ... Client Version: v1.37.0
+Kustomize Version: v5.8.1
+cert-manager diagnostics: kubectl -n cert-manager get pods,deployments,replicasets -o wide
+NAME                                                 READY   STATUS    RESTARTS   AGE   IP           NODE            NOMINATED NODE   READINESS GATES
+pod/cert-manager-c0bd3e6191d14a2-8tqcs               1/1     Running   0          1m    10.42.0.41   runnervmejwal   <none>           <none>
+pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz   1/1     Running   0          1m    10.42.0.40   runnervmejwal   <none>           <none>
+pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf      1/1     Running   0          1m    10.42.0.42   runnervmejwal   <none>           <none>
+
+NAME                                      READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS                IMAGES                                             SELECTOR
+deployment.apps/cert-manager              1/1     1            1           1m    cert-manager-controller   quay.io/jetstack/cert-manager-controller:v1.18.2   app.kubernetes.io/component=controller,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/name=cert-manager
+deployment.apps/cert-manager-cainjector   1/1     1            1           1m    cert-manager-cainjector   quay.io/jetstack/cert-manager-cainjector:v1.18.2   app.kubernetes.io/component=cainjector,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/name=cainjector
+deployment.apps/cert-manager-webhook      1/1     1            1           1m    cert-manager-webhook      quay.io/jetstack/cert-manager-webhook:v1.18.2      app.kubernetes.io/component=webhook,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/name=webhook
+
+NAME                                                       DESIRED   CURRENT   READY   AGE   CONTAINERS                IMAGES                                             SELECTOR
+replicaset.apps/cert-manager-c0bd3e6191d14a2               1         1         1       1m    cert-manager-controller   quay.io/jetstack/cert-manager-controller:v1.18.2   app.kubernetes.io/component=controller,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/name=cert-manager,pod-template-hash=c0bd3e6191d14a2
+replicaset.apps/cert-manager-cainjector-ff2de2c3d9ca84ba   1         1         1       1m    cert-manager-cainjector   quay.io/jetstack/cert-manager-cainjector:v1.18.2   app.kubernetes.io/component=cainjector,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/name=cainjector,pod-template-hash=ff2de2c3d9ca84ba
+replicaset.apps/cert-manager-webhook-60f1444fdb0f2895      1         1         1       1m    cert-manager-webhook      quay.io/jetstack/cert-manager-webhook:v1.18.2      app.kubernetes.io/component=webhook,app.kubernetes.io/instance=cert-manager,app.kubernetes.io/name=webhook,pod-template-hash=60f1444fdb0f2895
+cert-manager diagnostics: kubectl -n cert-manager describe pods
+Name:             cert-manager-c0bd3e6191d14a2-8tqcs
+Namespace:        cert-manager
+Priority:         0
+Service Account:  cert-manager
+Node:             runnervmejwal/10.1.1.195
+Start Time:       Tue, 08 Sep 2026 01:26:53 +0000
+Labels:           app=cert-manager
+                  app.kubernetes.io/component=controller
+                  app.kubernetes.io/instance=cert-manager
+                  app.kubernetes.io/name=cert-manager
+                  app.kubernetes.io/version=v1.18.2
+                  pod-template-hash=c0bd3e6191d14a2
+Annotations:      prometheus.io/path: /metrics
+                  prometheus.io/port: 9402
+                  prometheus.io/scrape: true
+Status:           Running
+SeccompProfile:   RuntimeDefault
+IP:               10.42.0.41
+IPs:
+  IP:           10.42.0.41
+Controlled By:  ReplicaSet/cert-manager-c0bd3e6191d14a2
+Containers:
+  cert-manager-controller:
+    Container ID:  containerd://47ab88454446b80d2a040d4af9908f030ed895d64a91d8099f135c3bb87682e0
+    Image:         quay.io/jetstack/cert-manager-controller:v1.18.2
+    Image ID:      sha256:0b9b5651e43cf33b460d46bba7ef179ec42f90d61cebf24ad8076252f5886177
+    Ports:         9402/TCP (http-metrics), 9403/TCP (http-healthz)
+    Host Ports:    0/TCP (http-metrics), 0/TCP (http-healthz)
+    Args:
+      --v=2
+      --cluster-resource-namespace=$(POD_NAMESPACE)
+      --leader-election-namespace=kube-system
+      --acme-http01-solver-image=quay.io/jetstack/cert-manager-acmesolver:v1.18.2
+      --max-concurrent-challenges=60
+    State:          Running
+      Started:      Tue, 08 Sep 2026 01:26:53 +0000
+    Ready:          True
+    Restart Count:  0
+    Liveness:       http-get http://:http-healthz/livez delay=10s timeout=15s period=10s successThreshold=1 failureThreshold=8
+    Environment:
+      POD_NAMESPACE:  cert-manager (:metadata.namespace)
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-6b097 (ro)
+Conditions:
+  Type                  Status
+  PodScheduled          True 
+  Initialized           True 
+  ContainersReady       True 
+  Ready                 True 
+  PodResizeInProgress   False 
+Volumes:
+  kube-api-access-6b097:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              kubernetes.io/os=linux
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             cert-manager-cainjector-ff2de2c3d9ca84ba-564pz
+Namespace:        cert-manager
+Priority:         0
+Service Account:  cert-manager-cainjector
+Node:             runnervmejwal/10.1.1.195
+Start Time:       Tue, 08 Sep 2026 01:26:53 +0000
+Labels:           app=cainjector
+                  app.kubernetes.io/component=cainjector
+                  app.kubernetes.io/instance=cert-manager
+                  app.kubernetes.io/name=cainjector
+                  app.kubernetes.io/version=v1.18.2
+                  pod-template-hash=ff2de2c3d9ca84ba
+Annotations:      prometheus.io/path: /metrics
+                  prometheus.io/port: 9402
+                  prometheus.io/scrape: true
+Status:           Running
+SeccompProfile:   RuntimeDefault
+IP:               10.42.0.40
+IPs:
+  IP:           10.42.0.40
+Controlled By:  ReplicaSet/cert-manager-cainjector-ff2de2c3d9ca84ba
+Containers:
+  cert-manager-cainjector:
+    Container ID:  containerd://54da80e13acae76877bf875ec4cbda86aae9ea45f61c4f92293a4a9ef2b51842
+    Image:         quay.io/jetstack/cert-manager-cainjector:v1.18.2
+    Image ID:      sha256:c9dc06fbdcc157c93c6dd47dd90513900f891844366b78c123742a18d9c0ec7e
+    Port:          9402/TCP (http-metrics)
+    Host Port:     0/TCP (http-metrics)
+    Args:
+      --v=2
+      --leader-election-namespace=kube-system
+    State:          Running
+      Started:      Tue, 08 Sep 2026 01:26:53 +0000
+    Ready:          True
+    Restart Count:  0
+    Environment:
+      POD_NAMESPACE:  cert-manager (:metadata.namespace)
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-0d41c (ro)
+Conditions:
+  Type                  Status
+  PodScheduled          True 
+  Initialized           True 
+  ContainersReady       True 
+  Ready                 True 
+  PodResizeInProgress   False 
+Volumes:
+  kube-api-access-0d41c:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              kubernetes.io/os=linux
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+
+
+Name:             cert-manager-webhook-60f1444fdb0f2895-5jpwf
+Namespace:        cert-manager
+Priority:         0
+Service Account:  cert-manager-webhook
+Node:             runnervmejwal/10.1.1.195
+Start Time:       Tue, 08 Sep 2026 01:26:53 +0000
+Labels:           app=webhook
+                  app.kubernetes.io/component=webhook
+                  app.kubernetes.io/instance=cert-manager
+                  app.kubernetes.io/name=webhook
+                  app.kubernetes.io/version=v1.18.2
+                  pod-template-hash=60f1444fdb0f2895
+Annotations:      prometheus.io/path: /metrics
+                  prometheus.io/port: 9402
+                  prometheus.io/scrape: true
+Status:           Running
+SeccompProfile:   RuntimeDefault
+IP:               10.42.0.42
+IPs:
+  IP:           10.42.0.42
+Controlled By:  ReplicaSet/cert-manager-webhook-60f1444fdb0f2895
+Containers:
+  cert-manager-webhook:
+    Container ID:  containerd://a3e6beec6b000ec0be23d7ed29a2f833c653598ef1ef951fc2f1b5601a7720ed
+    Image:         quay.io/jetstack/cert-manager-webhook:v1.18.2
+    Image ID:      sha256:8f2c78201d80e51ee0849eb2df1f5d0be9fb2dff53b03cde78fa3dec0601c4f8
+    Ports:         10250/TCP (https), 6080/TCP (healthcheck), 9402/TCP (http-metrics)
+    Host Ports:    0/TCP (https), 0/TCP (healthcheck), 0/TCP (http-metrics)
+    Args:
+      --v=2
+      --secure-port=10250
+      --dynamic-serving-ca-secret-namespace=$(POD_NAMESPACE)
+      --dynamic-serving-ca-secret-name=cert-manager-webhook-ca
+      --dynamic-serving-dns-names=cert-manager-webhook
+      --dynamic-serving-dns-names=cert-manager-webhook.$(POD_NAMESPACE)
+      --dynamic-serving-dns-names=cert-manager-webhook.$(POD_NAMESPACE).svc
+    State:          Running
+      Started:      Tue, 08 Sep 2026 01:26:53 +0000
+    Ready:          True
+    Restart Count:  0
+    Liveness:       http-get http://:healthcheck/livez delay=60s timeout=1s period=10s successThreshold=1 failureThreshold=3
+    Readiness:      http-get http://:healthcheck/healthz delay=5s timeout=1s period=5s successThreshold=1 failureThreshold=3
+    Environment:
+      POD_NAMESPACE:  cert-manager (:metadata.namespace)
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-b15c1 (ro)
+Conditions:
+  Type                  Status
+  PodScheduled          True 
+  Initialized           True 
+  ContainersReady       True 
+  Ready                 True 
+  PodResizeInProgress   False 
+Volumes:
+  kube-api-access-b15c1:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              kubernetes.io/os=linux
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+cert-manager diagnostics: kubectl -n cert-manager logs --all-containers --prefix --tail=200 -l app.kubernetes.io/instance=cert-manager
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.063416       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.113649       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.163656       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.213183       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.263303       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.313323       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.365052       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.413187       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.463532       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.513665       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.563689       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.613644       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.663114       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.713469       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.764093       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.813085       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.863033       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.913336       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:22.996412       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.014113       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.063024       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.113304       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.163339       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.213046       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.262801       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.313708       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.363722       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.413189       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.463363       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.513615       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.563531       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.613629       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.663533       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.713031       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.773634       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.813396       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.863633       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.912841       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:23.963743       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.012956       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.063505       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.113721       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.163624       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.213424       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.263566       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.313984       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.363302       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.413646       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.463632       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.513645       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.564008       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.613201       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.663533       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.713659       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.763767       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.812867       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.863041       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.913535       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:24.962841       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.013110       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.063177       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.113111       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.163305       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.213195       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.263170       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.313182       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.363211       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.413275       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.463181       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.513265       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.563261       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.613571       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.663516       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.713145       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.764230       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.813096       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.862953       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.913385       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:25.963093       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.013394       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.063322       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.113394       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.163224       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.213251       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.263262       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.313266       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.393097       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.433371       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.463764       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.513016       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.562850       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.612953       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.662896       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.712744       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.764073       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.824991       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.863650       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.913242       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:26.963451       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.013469       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.063718       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.112950       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.162937       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.212874       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.263828       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.313111       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.364380       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.412606       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.463459       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.513600       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.564522       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.612925       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.663460       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.713189       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.764122       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.813474       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.863703       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.912989       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:27.962874       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.013735       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.063075       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.113298       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.163505       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.213524       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.263740       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.313132       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.363342       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.413569       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.463507       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.513595       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.563150       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.613185       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.663318       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.713551       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.764064       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.812954       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.863335       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.913182       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:28.963424       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.013284       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.080760       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.113475       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.163516       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.213509       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.263842       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.314306       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.363137       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.413063       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.462927       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.513649       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.564086       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.613580       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.663497       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.713796       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.764389       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.813626       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.875763       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.912927       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:29.963619       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.012878       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.063134       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.113190       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.163415       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.213668       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.262781       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.312848       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.362953       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.413141       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.463035       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.513410       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.563678       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.614666       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.663594       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.712822       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.764094       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.813088       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.863018       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.914680       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:30.965599       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.014842       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.064256       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.113149       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.163310       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.213584       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.263598       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.313425       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.392354       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.433365       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.463211       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.513065       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.563117       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.613056       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.663361       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.713567       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.764257       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.813421       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.863450       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.913546       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:31.964394       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="validatingwebhookconfiguration" kind="validatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-cainjector-ff2de2c3d9ca84ba-564pz/cert-manager-cainjector] I0908 01:28:32.013005       1 reconciler.go:141] "Updated object" logger="cert-manager" kind="mutatingwebhookconfiguration" kind="mutatingwebhookconfiguration" name="cert-manager-webhook"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.601518       1 envvar.go:172] "Feature gate default state" feature="InformerResourceVersion" enabled=false
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.601549       1 envvar.go:172] "Feature gate default state" feature="WatchListClient" enabled=false
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.601552       1 envvar.go:172] "Feature gate default state" feature="ClientsAllowCBOR" enabled=false
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.601555       1 envvar.go:172] "Feature gate default state" feature="ClientsPreferCBOR" enabled=false
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.602754       1 webhook.go:132] "using dynamic certificate generating using CA stored in Secret resource" logger="cert-manager.webhook.webhook" secret_namespace="cert-manager" secret_name="cert-manager-webhook-ca"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.602769       1 webhook.go:144] "serving insecurely as tls certificate data not provided" logger="cert-manager.webhook.webhook"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603119       1 server.go:192] "listening for insecure healthz connections" logger="cert-manager.webhook" address=6080
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603201       1 server.go:183] "Registering webhook" logger="cert-manager.controller-runtime.webhook" path="/mutate"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603241       1 server.go:183] "Registering webhook" logger="cert-manager.controller-runtime.webhook" path="/validate"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603288       1 server.go:208] "Starting metrics server" logger="cert-manager.controller-runtime.metrics"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603322       1 server.go:247] "Serving metrics server" logger="cert-manager.controller-runtime.metrics" bindAddress="0.0.0.0:9402" secure=false
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603355       1 server.go:191] "Starting webhook server" logger="cert-manager.controller-runtime.webhook"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.603373       1 server.go:242] "Serving webhook server" logger="cert-manager.controller-runtime.webhook" host="" port=10250
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] E0908 01:26:53.608676       1 dynamic_source.go:221] "Failed to generate serving certificate, retrying..." err="no tls.Certificate available yet, try again later" logger="cert-manager" interval="1s"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.612692       1 reflector.go:376] Caches populated for *v1.Secret from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.705071       1 authority.go:273] "Will regenerate CA" logger="cert-manager" reason="CA secret not found"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.719805       1 authority.go:416] "Created new root CA Secret" logger="cert-manager"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:53.720265       1 authority.go:293] "Detected change in CA secret data, update current CA data and notify watches" logger="cert-manager"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:54.604998       1 dynamic_source.go:290] "Updated cert-manager TLS certificate" logger="cert-manager" DNSNames=["cert-manager-webhook","cert-manager-webhook.cert-manager","cert-manager-webhook.cert-manager.svc"]
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:54.605035       1 dynamic_source.go:172] "Detected root CA rotation - regenerating serving certificates" logger="cert-manager"
+[pod/cert-manager-webhook-60f1444fdb0f2895-5jpwf/cert-manager-webhook] I0908 01:26:54.606348       1 dynamic_source.go:290] "Updated cert-manager TLS certificate" logger="cert-manager" DNSNames=["cert-manager-webhook","cert-manager-webhook.cert-manager","cert-manager-webhook.cert-manager.svc"]
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.691206       1 controller.go:284] "configured acme dns01 nameservers" logger="cert-manager.controller.build-context" nameservers=["10.43.0.10:53"]
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.691517       1 envvar.go:172] "Feature gate default state" feature="ClientsPreferCBOR" enabled=false
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.691527       1 envvar.go:172] "Feature gate default state" feature="InformerResourceVersion" enabled=false
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.691530       1 envvar.go:172] "Feature gate default state" feature="WatchListClient" enabled=false
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.691533       1 envvar.go:172] "Feature gate default state" feature="ClientsAllowCBOR" enabled=false
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.693526       1 controller.go:88] "enabled controllers: [certificaterequests-approver certificaterequests-issuer-acme certificaterequests-issuer-ca certificaterequests-issuer-selfsigned certificaterequests-issuer-vault certificaterequests-issuer-venafi certificates-issuing certificates-key-manager certificates-metrics certificates-readiness certificates-request-manager certificates-revision-manager certificates-trigger challenges clusterissuers ingress-shim issuers orders]" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.693582       1 controller.go:437] "serving insecurely as tls certificate data not provided" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.693597       1 controller.go:101] "listening for insecure connections" logger="cert-manager.controller" address="0.0.0.0:9402"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.694109       1 controller.go:125] "starting metrics server" logger="cert-manager.controller" address="[::]:9402"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.694138       1 controller.go:176] "starting leader election" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.694150       1 controller.go:169] "starting healthz server" logger="cert-manager.controller" address="[::]:9403"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.700222       1 leaderelection.go:257] attempting to acquire leader lease kube-system/cert-manager-controller...
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.724655       1 leaderelection.go:271] successfully acquired lease kube-system/cert-manager-controller
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.724784       1 controller.go:223] "skipping disabled controller" logger="cert-manager.controller" controller="certificatesigningrequests-issuer-selfsigned"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.726554       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="clusterissuers"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.728093       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="issuers"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.729944       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="challenges"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.733107       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificaterequests-issuer-acme"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.734768       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificaterequests-issuer-ca"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.735923       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificaterequests-approver"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.738864       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-issuing"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.740000       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-key-manager"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.741059       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-metrics"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.742785       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-trigger"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.745798       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="orders"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.746997       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="ingress-shim"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.747980       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-request-manager"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.748894       1 controller.go:223] "skipping disabled controller" logger="cert-manager.controller" controller="certificatesigningrequests-issuer-ca"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.748908       1 controller.go:223] "skipping disabled controller" logger="cert-manager.controller" controller="certificatesigningrequests-issuer-vault"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.748979       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-revision-manager"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.749935       1 controller.go:223] "skipping disabled controller" logger="cert-manager.controller" controller="gateway-shim"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.750044       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificaterequests-issuer-selfsigned"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.751052       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificates-readiness"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.752154       1 controller.go:223] "skipping disabled controller" logger="cert-manager.controller" controller="certificatesigningrequests-issuer-venafi"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.752276       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificaterequests-issuer-vault"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.753221       1 controller.go:223] "skipping disabled controller" logger="cert-manager.controller" controller="certificatesigningrequests-issuer-acme"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.754255       1 controller.go:240] "starting controller" logger="cert-manager.controller" controller="certificaterequests-issuer-venafi"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.756611       1 reflector.go:376] Caches populated for *v1.Ingress from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.777550       1 reflector.go:376] Caches populated for *v1.PartialObjectMetadata from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.780095       1 reflector.go:376] Caches populated for *v1.Secret from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.781028       1 reflector.go:376] Caches populated for *v1.PartialObjectMetadata from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.817720       1 reflector.go:376] Caches populated for *v1.CertificateRequest from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.821256       1 reflector.go:376] Caches populated for *v1.PartialObjectMetadata from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.878647       1 reflector.go:376] Caches populated for *v1.Certificate from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.879764       1 reflector.go:376] Caches populated for *v1.Issuer from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.879940       1 reflector.go:376] Caches populated for *v1.Challenge from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.901063       1 reflector.go:376] Caches populated for *v1.Order from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:53.905484       1 reflector.go:376] Caches populated for *v1.ClusterIssuer from k8s.io/client-go@v0.32.0/tools/cache/reflector.go:251
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.038271       1 conditions.go:102] "Setting lastTransitionTime for Issuer condition" logger="cert-manager" issuer="nodebootstrap-e2e-issuer-4060" condition="Ready" lastTransitionTime="2026-09-08 01:26:59.038246165 +0000 UTC m=+5.366173981"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.147500       1 trigger_controller.go:225] "Certificate must be re-issued" logger="cert-manager.controller" key="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate" reason="DoesNotExist" message="Issuing certificate as Secret does not exist"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.147512       1 conditions.go:217] "Setting lastTransitionTime for Certificate condition" logger="cert-manager" certificate="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate" condition="Ready" lastTransitionTime="2026-09-08 01:26:59.1475037 +0000 UTC m=+5.475431516"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.147522       1 conditions.go:217] "Setting lastTransitionTime for Certificate condition" logger="cert-manager" certificate="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate" condition="Issuing" lastTransitionTime="2026-09-08 01:26:59.147517901 +0000 UTC m=+5.475445718"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.202594       1 controller.go:152] "re-queuing item due to optimistic locking on resource" logger="cert-manager.controller" error="/apis/cert-manager.io/v1/namespaces/nk-e2e-4060-0a2bc829/certificates/nodebootstrap-e2e-certificate/status: the object has been modified; please apply your changes to the latest version and try again"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.202730       1 conditions.go:217] "Setting lastTransitionTime for Certificate condition" logger="cert-manager" certificate="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate" condition="Ready" lastTransitionTime="2026-09-08 01:26:59.202708493 +0000 UTC m=+5.530636308"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.412047       1 controller.go:152] "re-queuing item due to optimistic locking on resource" logger="cert-manager.controller" error="/apis/cert-manager.io/v1/namespaces/nk-e2e-4060-0a2bc829/certificates/nodebootstrap-e2e-certificate/status: the object has been modified; please apply your changes to the latest version and try again"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.469806       1 conditions.go:285] "Setting lastTransitionTime for CertificateRequest condition" logger="cert-manager" certificateRequest="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate-1" condition="Approved" lastTransitionTime="2026-09-08 01:26:59.469792324 +0000 UTC m=+5.797720136"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.497570       1 conditions.go:285] "Setting lastTransitionTime for CertificateRequest condition" logger="cert-manager" certificateRequest="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate-1" condition="Ready" lastTransitionTime="2026-09-08 01:26:59.497556916 +0000 UTC m=+5.825484731"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.532040       1 conditions.go:201] "Found status change for Certificate condition; setting lastTransitionTime" logger="cert-manager" certificate="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate" condition="Ready" oldStatus="False" status="True" lastTransitionTime="2026-09-08 01:26:59.532026465 +0000 UTC m=+5.859954275"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:26:59.553632       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.585419       1 controller.go:152] "re-queuing item due to optimistic locking on resource" logger="cert-manager.controller" error="/apis/cert-manager.io/v1/namespaces/nk-e2e-4060-0a2bc829/certificates/nodebootstrap-e2e-certificate/status: the object has been modified; please apply your changes to the latest version and try again"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.585959       1 controller.go:152] "re-queuing item due to optimistic locking on resource" logger="cert-manager.controller" error="/apis/cert-manager.io/v1/namespaces/nk-e2e-4060-0a2bc829/certificates/nodebootstrap-e2e-certificate/status: the object has been modified; please apply your changes to the latest version and try again"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] I0908 01:26:59.586398       1 conditions.go:201] "Found status change for Certificate condition; setting lastTransitionTime" logger="cert-manager" certificate="nk-e2e-4060-0a2bc829/nodebootstrap-e2e-certificate" condition="Ready" oldStatus="False" status="True" lastTransitionTime="2026-09-08 01:26:59.586390944 +0000 UTC m=+5.914318748"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:26:59.606488       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:27:00.413560       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:27:04.414759       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:27:12.416007       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:27:28.418049       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:27:58.419878       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+[pod/cert-manager-c0bd3e6191d14a2-8tqcs/cert-manager-controller] E0908 01:28:28.421694       1 controller.go:157] "re-queuing item due to error processing" err="/api/v1/namespaces/nk-e2e-4060-0a2bc829/secrets/nodebootstrap-e2e-certificate-64753: protobuf DELETE options are not decoded yet" logger="cert-manager.controller"
+cert-manager diagnostics: kubectl get clusterrole cert-manager-cainjector -o yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"annotations":{},"labels":{"app":"cainjector","app.kubernetes.io/component":"cainjector","app.kubernetes.io/instance":"cert-manager","app.kubernetes.io/name":"cainjector","app.kubernetes.io/version":"v1.18.2"},"name":"cert-manager-cainjector"},"rules":[{"apiGroups":["cert-manager.io"],"resources":["certificates"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["secrets"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["events"],"verbs":["get","create","update","patch"]},{"apiGroups":["admissionregistration.k8s.io"],"resources":["validatingwebhookconfigurations","mutatingwebhookconfigurations"],"verbs":["get","list","watch","update","patch"]},{"apiGroups":["apiregistration.k8s.io"],"resources":["apiservices"],"verbs":["get","list","watch","update","patch"]},{"apiGroups":["apiextensions.k8s.io"],"resources":["customresourcedefinitions"],"verbs":["get","list","watch","update","patch"]}]}
+  creationTimestamp: "2026-09-08T01:26:48Z"
+  generation: 1
+  labels:
+    app: cainjector
+    app.kubernetes.io/component: cainjector
+    app.kubernetes.io/instance: cert-manager
+    app.kubernetes.io/name: cainjector
+    app.kubernetes.io/version: v1.18.2
+  name: cert-manager-cainjector
+  resourceVersion: "1971"
+  uid: 940c4097-547d-4fa3-97ce-130f7fba0dea
+rules:
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - get
+  - create
+  - update
+  - patch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - apiregistration.k8s.io
+  resources:
+  - apiservices
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+cert-manager diagnostics: kubectl get clusterrolebinding cert-manager-cainjector -o yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRoleBinding","metadata":{"annotations":{},"labels":{"app":"cainjector","app.kubernetes.io/component":"cainjector","app.kubernetes.io/instance":"cert-manager","app.kubernetes.io/name":"cainjector","app.kubernetes.io/version":"v1.18.2"},"name":"cert-manager-cainjector"},"roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"cert-manager-cainjector"},"subjects":[{"kind":"ServiceAccount","name":"cert-manager-cainjector","namespace":"cert-manager"}]}
+  creationTimestamp: "2026-09-08T01:26:49Z"
+  generation: 1
+  labels:
+    app: cainjector
+    app.kubernetes.io/component: cainjector
+    app.kubernetes.io/instance: cert-manager
+    app.kubernetes.io/name: cainjector
+    app.kubernetes.io/version: v1.18.2
+  name: cert-manager-cainjector
+  resourceVersion: "1985"
+  uid: 77ada023-e5f9-4acf-be4b-11a50f22148d
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-manager-cainjector
+subjects:
+- kind: ServiceAccount
+  name: cert-manager-cainjector
+  namespace: cert-manager
+cert-manager diagnostics: kubectl -n cert-manager get role cert-manager-webhook:dynamic-serving -o yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":{"annotations":{},"labels":{"app":"webhook","app.kubernetes.io/component":"webhook","app.kubernetes.io/instance":"cert-manager","app.kubernetes.io/name":"webhook","app.kubernetes.io/version":"v1.18.2"},"name":"cert-manager-webhook:dynamic-serving","namespace":"cert-manager"},"rules":[{"apiGroups":[""],"resourceNames":["cert-manager-webhook-ca"],"resources":["secrets"],"verbs":["get","list","watch","update"]},{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]}
+  creationTimestamp: "2026-09-08T01:26:50Z"
+  generation: 1
+  labels:
+    app: webhook
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/instance: cert-manager
+    app.kubernetes.io/name: webhook
+    app.kubernetes.io/version: v1.18.2
+  name: cert-manager-webhook:dynamic-serving
+  namespace: cert-manager
+  resourceVersion: "1998"
+  uid: 0b672555-2f1f-4f79-90bd-d19acab916d0
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - cert-manager-webhook-ca
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+cert-manager diagnostics: kubectl -n cert-manager get rolebinding cert-manager-webhook:dynamic-serving -o yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":{"annotations":{},"labels":{"app":"webhook","app.kubernetes.io/component":"webhook","app.kubernetes.io/instance":"cert-manager","app.kubernetes.io/name":"webhook","app.kubernetes.io/version":"v1.18.2"},"name":"cert-manager-webhook:dynamic-serving","namespace":"cert-manager"},"roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"Role","name":"cert-manager-webhook:dynamic-serving"},"subjects":[{"kind":"ServiceAccount","name":"cert-manager-webhook","namespace":"cert-manager"}]}
+  creationTimestamp: "2026-09-08T01:26:50Z"
+  generation: 1
+  labels:
+    app: webhook
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/instance: cert-manager
+    app.kubernetes.io/name: webhook
+    app.kubernetes.io/version: v1.18.2
+  name: cert-manager-webhook:dynamic-serving
+  namespace: cert-manager
+  resourceVersion: "2003"
+  uid: 5acc41db-9267-49dc-8371-98f54ad79cd7
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cert-manager-webhook:dynamic-serving
+subjects:
+- kind: ServiceAccount
+  name: cert-manager-webhook
+  namespace: cert-manager
+FAIL (119911ms)
+    timed out waiting for nodecontroller to garbage-collect the CRD-backed Certificate
+failure snapshot /api/v1/namespaces/nk-e2e-4060-0a2bc829/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"4308"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4060-0a2bc829/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"4338"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-4060-0a2bc829/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"4310"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4060-0a2bc829/events: {"apiVersion":"v1","items":[{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2244","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-venafi/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d3342715c35a9a","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2248","uid":"96e94aad-a452-4721-b0d8-3fd04387c535"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-venafi","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-venafi"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2244","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-ca/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d3342715c409b2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2255","uid":"6bfdf1cd-ad1e-4f13-a108-def61061f2cd"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-ca","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-ca"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2244","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-acme/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d3342715c41798","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2249","uid":"1c58d537-e063-4d0f-808b-8d927d61c902"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-acme","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-acme"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2244","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-vault/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d3342715c47aef","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2245","uid":"e911e9a3-8274-4357-93b7-ab8903d1c520"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-vault","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-vault"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2244","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-selfsigned/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d3342715c5969e","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2253","uid":"5aa838d1-5f81-49e5-8167-7a0863bb8b14"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-selfsigned","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-selfsigned"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2244","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Certificate request has been approved by cert-manager.io","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-approver/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d334271748aabc","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2257","uid":"7707d359-1dd3-4801-b62d-038df96085ff"},"reason":"cert-manager.io","reportingComponent":"cert-manager-certificaterequests-approver","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-approver"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2247","uid":"2bac1a91-b848-4ff5-8021-47b7a0f91b80"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Certificate fetched from issuer successfully","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-selfsigned/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate-1.18d33427176c0fe5","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2258","uid":"42f089ad-f02b-4b67-84f2-c6e50637bfdb"},"reason":"CertificateIssued","reportingComponent":"cert-manager-certificaterequests-issuer-selfsigned","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-selfsigned"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4243","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-ca/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc5410b59","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4253","uid":"4293e562-5c99-4b7d-97f0-9cb88fcdcd5f"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-ca","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-ca"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4243","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-selfsigned/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc54471a3","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4250","uid":"558ef056-26fe-4d0f-abaa-8e7cf3c0d869"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-selfsigned","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-selfsigned"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4243","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-venafi/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc54ab5e9","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4251","uid":"d2bd5bb9-13d1-4700-8c3a-ff5de979015e"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-venafi","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-venafi"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4243","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-vault/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc54ce583","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4255","uid":"9025290f-d473-43ae-8f03-b670f7705e76"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-vault","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-vault"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4243","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Not signing CertificateRequest until it is Approved","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-acme/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc54ce67d","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4254","uid":"7667e017-7a47-48da-8c24-e9c7578324ac"},"reason":"WaitingForApproval","reportingComponent":"cert-manager-certificaterequests-issuer-acme","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-acme"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4246","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Referenced \"ClusterIssuer\" not found: clusterissuer.cert-manager.io \"nodebootstrap-e2e-issuer-4060\" not found","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-venafi/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc7b6832d","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4259","uid":"da2c8a15-bc8b-44fe-a215-0ae726c8ccbb"},"reason":"IssuerNotFound","reportingComponent":"cert-manager-certificaterequests-issuer-venafi","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-venafi"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4246","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Referenced \"ClusterIssuer\" not found: clusterissuer.cert-manager.io \"nodebootstrap-e2e-issuer-4060\" not found","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-vault/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc7b70a7e","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4262","uid":"22f00205-7fdb-4b68-a8f0-423f62e801f4"},"reason":"IssuerNotFound","reportingComponent":"cert-manager-certificaterequests-issuer-vault","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-vault"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4243","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Certificate request has been approved by cert-manager.io","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-approver/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc7b93c51","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4256","uid":"93e691a8-32c3-4ca3-8c31-a85e74f9b15c"},"reason":"cert-manager.io","reportingComponent":"cert-manager-certificaterequests-approver","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-approver"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4246","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Referenced \"ClusterIssuer\" not found: clusterissuer.cert-manager.io \"nodebootstrap-e2e-issuer-4060\" not found","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-selfsigned/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc7ba93f1","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4258","uid":"b49b548b-82c0-429e-8234-b09b3d6eee15"},"reason":"IssuerNotFound","reportingComponent":"cert-manager-certificaterequests-issuer-selfsigned","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-selfsigned"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4246","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Referenced \"ClusterIssuer\" not found: clusterissuer.cert-manager.io \"nodebootstrap-e2e-issuer-4060\" not found","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-acme/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc7bca3f2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4261","uid":"de557014-a7fe-4bb0-8fa0-4be204c1c24c"},"reason":"IssuerNotFound","reportingComponent":"cert-manager-certificaterequests-issuer-acme","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-acme"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"CertificateRequest","name":"nodebootstrap-e2e-certificate-2","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4246","uid":"e697983c-e916-4a71-9202-2c3cd605bc31"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Referenced \"ClusterIssuer\" not found: clusterissuer.cert-manager.io \"nodebootstrap-e2e-issuer-4060\" not found","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificaterequests-issuer-ca/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate-2.18d3343cc7c4109d","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4260","uid":"a41ed4d3-f92f-4cc9-94f2-25592714e22c"},"reason":"IssuerNotFound","reportingComponent":"cert-manager-certificaterequests-issuer-ca","reportingInstance":"","source":{"component":"cert-manager-certificaterequests-issuer-ca"},"type":"Normal"},{"apiVersion":"v1","count":2,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"nodebootstrap-e2e-certificate","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2231","uid":"c9bae68a-6d9c-4a43-b300-80ff1de3c017"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Issuing certificate as Secret does not exist","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificates-trigger/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate.18d3342705d4d2d5","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4240","uid":"035941f3-93b0-419e-a366-9d57847cccfa"},"reason":"Issuing","reportingComponent":"cert-manager-certificates-trigger","reportingInstance":"","source":{"component":"cert-manager-certificates-trigger"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"nodebootstrap-e2e-certificate","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2232","uid":"c9bae68a-6d9c-4a43-b300-80ff1de3c017"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Stored new private key in temporary Secret resource \"nodebootstrap-e2e-certificate-64753\"","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificates-key-manager/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate.18d33427113a8e21","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2241","uid":"e53fd488-3321-426c-aa14-e852865d6b7a"},"reason":"Generated","reportingComponent":"cert-manager-certificates-key-manager","reportingInstance":"","source":{"component":"cert-manager-certificates-key-manager"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"nodebootstrap-e2e-certificate","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2243","uid":"c9bae68a-6d9c-4a43-b300-80ff1de3c017"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"Created new CertificateRequest resource \"nodebootstrap-e2e-certificate-1\"","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificates-request-manager/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate.18d3342715c8c388","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2251","uid":"1f2862f9-73cf-4f07-b107-59168fd12334"},"reason":"Requested","reportingComponent":"cert-manager-certificates-request-manager","reportingInstance":"","source":{"component":"cert-manager-certificates-request-manager"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:26:59Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"nodebootstrap-e2e-certificate","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2243","uid":"c9bae68a-6d9c-4a43-b300-80ff1de3c017"},"kind":"Event","lastTimestamp":"2026-09-08T01:26:59Z","message":"The certificate has been successfully issued","metadata":{"creationTimestamp":"2026-09-08T01:26:59Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificates-issuing/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:26:59Z"}],"name":"nodebootstrap-e2e-certificate.18d334271aa2576a","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"2259","uid":"80b72917-887d-4899-913d-8c8a6adc8cdb"},"reason":"Issuing","reportingComponent":"cert-manager-certificates-issuing","reportingInstance":"","source":{"component":"cert-manager-certificates-issuing"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"nodebootstrap-e2e-certificate","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4238","uid":"c9bae68a-6d9c-4a43-b300-80ff1de3c017"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Created new CertificateRequest resource \"nodebootstrap-e2e-certificate-2\"","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificates-request-manager/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate.18d3343cc5378a3e","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4244","uid":"986b3001-4351-4896-89d0-f067aa5bd0d4"},"reason":"Requested","reportingComponent":"cert-manager-certificates-request-manager","reportingInstance":"","source":{"component":"cert-manager-certificates-request-manager"},"type":"Normal"},{"apiVersion":"v1","count":1,"firstTimestamp":"2026-09-08T01:28:32Z","involvedObject":{"apiVersion":"cert-manager.io/v1","kind":"Certificate","name":"nodebootstrap-e2e-certificate","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4241","uid":"c9bae68a-6d9c-4a43-b300-80ff1de3c017"},"kind":"Event","lastTimestamp":"2026-09-08T01:28:32Z","message":"Failed to create CertificateRequest: /apis/cert-manager.io/v1/namespaces/nk-e2e-4060-0a2bc829/certificaterequests: object already exists","metadata":{"creationTimestamp":"2026-09-08T01:28:32Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:count":{},"f:eventTime":{},"f:firstTimestamp":{},"f:involvedObject":{".":{},"f:apiVersion":{},"f:kind":{},"f:name":{},"f:namespace":{},"f:resourceVersion":{},"f:uid":{}},"f:kind":{},"f:lastTimestamp":{},"f:message":{},"f:metadata":{".":{},"f:generation":{},"f:name":{},"f:namespace":{}},"f:reason":{},"f:reportingComponent":{},"f:reportingInstance":{},"f:source":{".":{},"f:component":{}},"f:type":{}},"manager":"cert-manager-certificates-request-manager/v1.18.2 (linux/amd64) cert-manager/686afa62160249022a0205d3a9bf5f059476c684","operation":"Update","subresource":"","time":"2026-09-08T01:28:32Z"}],"name":"nodebootstrap-e2e-certificate.18d3343cce45a710","namespace":"nk-e2e-4060-0a2bc829","resourceVersion":"4257","uid":"c7399f4e-3b2c-4866-8729-d9c885094097"},"reason":"RequestFailed","reportingComponent":"cert-manager-certificates-request-manager","reportingInstance":"","source":{"component":"cert-manager-certificates-request-manager"},"type":"Warning"}],"kind":"EventList","metadata":{"resourceVersion":"4273"}}
+▶ 2026-09-08T01:28:52.042Z test_log_rotation_creates_a_rotated_file ... PASS (42105ms)
+▶ 2026-09-08T01:29:37.163Z test_a_pending_pod_recovers_after_the_node_failure_is_fixed ... PASS (37168ms)
+▶ 2026-09-08T01:30:17.345Z test_config_file_precedence_a_real_env_var_still_wins ... PASS (4440ms)
+▶ 2026-09-08T01:30:26.804Z test_image_gc_removes_unreferenced_images_above_the_watermark ... # /etc/systemd/system/nodelet.service
+[Unit]
+Description=nodelet -- not-k8s node agent (kubelet replacement)
+After=network-online.target nodeapiserver.service
+Wants=network-online.target nodeapiserver.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/var/lib/nodebootstrap/toolchain/bin/nodelet'
+Restart=always
+RestartSec=5s
+Environment=KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
+Environment=NODELET_RUNTIME=cri
+Environment=NODELET_SERVER_CERT_DIR=/var/lib/nodelet/pki
+Environment=NODELET_NODE_NAME=runnervmejwal
+Environment=NOTK8S_COMPONENT=nodelet
+Environment=NOTK8S_COMPONENT_BINARY=/var/lib/nodebootstrap/toolchain/bin/nodelet
+Environment=NODELET_CLUSTER_DNS=10.43.0.10
+Environment=NODELET_CLUSTER_DOMAIN=cluster.local
+Environment=NODELET_CLIENT_CA_FILE=/var/lib/nodebootstrap/pki/ca.crt
+[Install]
+WantedBy=multi-user.target
+PASS (40095ms)
+▶ 2026-09-08T01:31:11.915Z test_scheduler_schedules_a_pod_an_http_extender_approves ... # /etc/systemd/system/nodescheduler.service
+[Unit]
+Description=nodescheduler -- not-k8s scheduler (kube-scheduler replacement)
+After=network-online.target nodeapiserver.service
+Wants=network-online.target nodeapiserver.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/var/lib/nodebootstrap/toolchain/bin/nodescheduler'
+Restart=always
+RestartSec=5s
+Environment=KUBECONFIG=/etc/nodebootstrap/kube-scheduler.kubeconfig
+Environment=NOTK8S_COMPONENT=nodescheduler
+Environment=NOTK8S_COMPONENT_BINARY=/var/lib/nodebootstrap/toolchain/bin/nodescheduler
+Environment=RUST_LOG=info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
+[Install]
+WantedBy=multi-user.target
+PASS (34525ms)
+▶ 2026-09-08T01:31:51.456Z test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers ... UNIT FILE       STATE   PRESET
+nodelet.service enabled enabled
+
+1 unit files listed.
+PASS (40118ms)
+Error: bootstrap e2e failed: 1 test(s): test_cert_manager_crds_are_usable_without_nodecontroller_restart
