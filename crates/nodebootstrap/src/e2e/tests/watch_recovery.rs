@@ -172,6 +172,23 @@ pub(super) async fn node_still_reconciles_pods_after_an_apiserver_restart(
         )
         .await?;
 
+    // An account created before the restart proves only persistence. Require
+    // new Namespace events to reach both credential-producing controllers.
+    let fresh = E2eContext::create(context.client.clone()).await?;
+    let maps: Api<k8s_openapi::api::core::v1::ConfigMap> =
+        Api::namespaced(context.client.clone(), &fresh.namespace);
+    let trust_ready = fresh.wait_until("root CA in a namespace created after restart", Duration::from_secs(30), || {
+        let maps = maps.clone();
+        async move {
+            Ok(maps.get_opt("kube-root-ca.crt").await?
+                .and_then(|map| map.data)
+                .and_then(|data| data.get("ca.crt").cloned())
+                .is_some_and(|pem| pem.contains("BEGIN CERTIFICATE")))
+        }
+    }).await;
+    fresh.cleanup().await;
+    trust_ready?;
+
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
     let name = "watch-recovery-check";
     let pod: Pod = serde_json::from_value(json!({

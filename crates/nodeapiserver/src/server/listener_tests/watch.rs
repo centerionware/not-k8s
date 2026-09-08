@@ -1,3 +1,51 @@
+// Exercise the actual HTTP transport, not just Body::collect. Hyper #4143
+// showed that EOF arriving on its write re-check could remain unflushed.
+#[tokio::test]
+async fn watch_eof_is_flushed_when_the_body_finishes_on_the_write_recheck() {
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[derive(Default)]
+    struct EndOnRecheck(u8);
+    impl http_body::Body for EndOnRecheck {
+        type Data = bytes::Bytes;
+        type Error = Infallible;
+        fn poll_frame(mut self: std::pin::Pin<&mut Self>, _: &mut Context<'_>)
+            -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>>
+        {
+            self.0 += 1;
+            match self.0 {
+                1 => Poll::Ready(Some(Ok(http_body::Frame::data(bytes::Bytes::from_static(b"{}\n"))))),
+                // Arrange readiness changing between the two write polls.
+                2 => Poll::Pending,
+                _ => Poll::Ready(None),
+            }
+        }
+    }
+    let (server, mut client) = tokio::io::duplex(4096);
+    let task = tokio::spawn(async move {
+        let service = hyper::service::service_fn(|_| async {
+            Ok::<_, Infallible>(Response::new(EndOnRecheck::default()))
+        });
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(hyper_util::rt::TokioIo::new(server), service).await
+    });
+    client.write_all(b"GET /watch HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+    let mut received = Vec::new();
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut buffer = [0; 512];
+        while !received.ends_with(b"\r\n0\r\n\r\n") {
+            let count = client.read(&mut buffer).await.unwrap();
+            if count == 0 { break; }
+            received.extend_from_slice(&buffer[..count]);
+        }
+    }).await;
+    task.abort();
+    let _ = task.await;
+    assert!(completed.is_ok(), "watch EOF was stranded: {}", String::from_utf8_lossy(&received));
+    assert!(received.ends_with(b"\r\n0\r\n\r\n"));
+}
+
 #[tokio::test]
 async fn watch_response_body_streams_the_replay_then_live_events() {
     use http_body_util::BodyExt;

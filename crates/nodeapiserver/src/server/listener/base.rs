@@ -318,6 +318,36 @@ fn decode_audit_object(bytes: &[u8], content_type: Option<&str>) -> Option<Value
     }
 }
 
+/// Decode virtual resources and request options through the same wire codec
+/// as persisted objects. They cannot use REST resource lookup: DeleteOptions
+/// is metadata, and authorization reviews must never be persisted.
+fn decode_virtual_request(bytes: &[u8], content_type: Option<&str>, group: &str,
+    version: &str, kind: &str) -> Result<Value, String>
+{
+    match content_type.and_then(negotiation::content_type).unwrap_or(negotiation::Format::Json) {
+        negotiation::Format::Json => crate::codec::json::decode(bytes).map_err(|e| e.to_string()),
+        negotiation::Format::Yaml => crate::codec::yaml::decode(bytes).map_err(|e| e.to_string()),
+        negotiation::Format::Protobuf => {
+            let (api_version, body_kind, raw) = crate::codec::protobuf::unwrap_unknown(bytes).map_err(|e| e.to_string())?;
+            let expected_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+            if body_kind != kind || (api_version != expected_version
+                && !(kind == "DeleteOptions" && api_version == "meta.k8s.io/v1")) {
+                return Err(format!("expected {expected_version} {kind}, got {api_version} {body_kind}"));
+            }
+            let schema = if kind == "DeleteOptions" {
+                "io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions"
+            } else {
+                crate::codec::protobuf::schema_for_gvk(group, version, kind)
+                    .ok_or_else(|| format!("no protobuf schema for {expected_version} {kind}"))?
+            };
+            let mut value = crate::codec::protobuf::decode_message(schema, &raw).map_err(|e| e.to_string())?;
+            value["apiVersion"] = Value::String(api_version);
+            value["kind"] = Value::String(body_kind);
+            Ok(value)
+        }
+    }
+}
+
 fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxedBody> {
     json_response_with_content_type(status, value, "application/json")
 }

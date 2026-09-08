@@ -29,7 +29,7 @@
 //! current behavior, not something this port owes -- tracked as
 //! follow-up, not a gap introduced here.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::pkg::{PkgNames, command_exists, pkg_install};
@@ -200,72 +200,122 @@ pub fn remove_nodelet(cfg: &Config) {
     service_mgr::remove(cfg, "nodelet");
 }
 
-/// Waits (bounded) for the freshly started or restarted control plane to be
-/// ready to serve real workloads: the nodecontroller holds its
-/// `kube-system/kube-controller-manager` leader lease, and its
-/// service-account controller has created the `default` ServiceAccount in
-/// every existing namespace — the exact readiness the e2e harness waits on
-/// per test namespace.
-///
-/// Bootstrap restarts nodecontroller after the flannel endpoint refresh
-/// (so it does not keep watches from the pre-refresh apiserver), and
-/// leadership acquisition plus informer startup is a tens-of-seconds
-/// process — without this wait, a harness that starts the moment bootstrap
-/// returns races that transition (observed live: a per-test namespace's
-/// default ServiceAccount appeared 41s late, after the test's own deadline,
-/// because the restarted controller had only just acquired leadership).
+/// Prove that the restarted controllers can process a new namespace. A
+/// persisted leader lease and old ServiceAccounts survive process exit and
+/// cannot demonstrate that the current Namespace informer has initialized.
 pub fn wait_for_control_plane_readiness(cfg: &Config) -> Result<()> {
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
-    loop {
-        let ready = crate::kube_api::block_on(&kubeconfig, control_plane_ready)
-            .context("checking control-plane readiness")?;
-        if ready {
-            tracing::info!("control plane is ready: leader lease held and every namespace has its default ServiceAccount");
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            bail!(
-                "control plane did not become ready within 150s (nodecontroller never held the kube-controller-manager lease with default ServiceAccounts in every namespace); check: journalctl -u nodecontroller -n 100"
-            );
-        }
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    }
+    let ca = std::fs::read_to_string(cfg.pki_dir().join("ca.crt"))
+        .context("reading the expected namespace trust bundle")?;
+    crate::kube_api::block_on(&kubeconfig, |client| control_plane_ready(client, ca))
+        .context("checking control-plane readiness")
 }
 
-async fn control_plane_ready(client: kube::Client) -> Result<bool> {
-    use k8s_openapi::api::coordination::v1::Lease;
-    use k8s_openapi::api::core::v1::{Namespace, ServiceAccount};
-    use kube::api::{Api, ListParams};
-    // The nodecontroller must hold its leader lease before its controllers
-    // are doing anything at all.
-    let leases: Api<Lease> = Api::namespaced(client.clone(), "kube-system");
-    let holds_lease = match leases.get_opt("kube-controller-manager").await? {
-        Some(lease) => lease
-            .spec
-            .and_then(|spec| spec.holder_identity)
-            .map(|identity| !identity.is_empty())
-            .unwrap_or(false),
-        None => false,
-    };
-    if !holds_lease {
-        return Ok(false);
-    }
-    // Every existing namespace must already have its `default`
-    // ServiceAccount (the service-account controller's output).
+async fn control_plane_ready(client: kube::Client, ca: String) -> Result<()> {
+    use k8s_openapi::api::core::v1::{ConfigMap, Namespace, ServiceAccount};
+    use kube::api::{Api, DeleteParams, PostParams, Preconditions};
+    use std::time::Duration;
+    let request_timeout = Duration::from_secs(10);
     let namespaces: Api<Namespace> = Api::all(client.clone());
-    let namespaces = namespaces.list(&ListParams::default()).await?;
-    for namespace in &namespaces.items {
-        let name = namespace.metadata.name.as_deref().unwrap_or_default();
-        if name.is_empty() {
-            continue;
+    let mut probe = Namespace::default();
+    probe.metadata.generate_name = Some("nodebootstrap-ready-".into());
+    let probe = tokio::time::timeout(request_timeout,
+        namespaces.create(&PostParams::default(), &probe)).await
+        .context("readiness namespace create timed out")??;
+    let name = probe.metadata.name.as_deref().context("readiness namespace has no name")?;
+    let accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), name);
+    let maps: Api<ConfigMap> = Api::namespaced(client, name);
+    let result = tokio::time::timeout(Duration::from_secs(150), async {
+        loop {
+            let check = async {
+                let account = accounts.get_opt("default").await?;
+                let bundle = maps.get_opt("kube-root-ca.crt").await?;
+                Ok::<_, kube::Error>(account.is_some() && bundle
+                    .and_then(|map| map.data)
+                    .and_then(|data| data.get("ca.crt").cloned())
+                    .as_deref() == Some(ca.as_str()))
+            };
+            match tokio::time::timeout(request_timeout, check).await {
+                Ok(Ok(true)) => return Ok(()),
+                Ok(Ok(false)) => {},
+                Ok(Err(kube::Error::Api(error))) if error.code < 500 && error.code != 429 =>
+                    return Err(anyhow::Error::from(kube::Error::Api(error))),
+                Ok(Err(error)) => tracing::warn!(namespace = name, %error, "readiness probe request failed; retrying"),
+                Err(_) => tracing::warn!(namespace = name, "readiness probe request timed out; retrying"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), name);
-        if service_accounts.get_opt("default").await?.is_none() {
-            return Ok(false);
-        }
+    }).await.context("controllers did not populate the new readiness namespace within 150s")
+        .and_then(|result| result);
+    let delete = DeleteParams {
+        preconditions: Some(Preconditions { uid: probe.metadata.uid, resource_version: None }),
+        ..Default::default()
+    };
+    if !matches!(tokio::time::timeout(request_timeout, namespaces.delete(name, &delete)).await, Ok(Ok(_))) {
+        tracing::warn!(namespace = name, "could not remove the readiness probe namespace");
     }
-    Ok(true)
+    result?;
+    tracing::info!("control plane is ready: controllers populated a new namespace with credentials");
+    Ok(())
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_waits_for_new_controller_output_and_cleans_up() {
+        let published = Arc::new(AtomicBool::new(false));
+        let deleted = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(tokio::sync::Notify::new());
+        let service = tower::service_fn({
+            let published = published.clone();
+            let deleted = deleted.clone();
+            let observed = observed.clone();
+            move |request: http::Request<kube::client::Body>| {
+                let published = published.clone();
+                let deleted = deleted.clone();
+                let observed = observed.clone();
+                async move {
+                    let mut status = 200;
+                    let body = match (request.method().as_str(), request.uri().path()) {
+                        ("POST", "/api/v1/namespaces") => serde_json::json!({
+                            "apiVersion":"v1", "kind":"Namespace",
+                            "metadata":{"name":"nodebootstrap-ready-test", "uid":"probe-uid"}
+                        }),
+                        ("GET", "/api/v1/namespaces/nodebootstrap-ready-test/serviceaccounts/default") => {
+                            if published.load(Ordering::SeqCst) {
+                                serde_json::json!({"apiVersion":"v1", "kind":"ServiceAccount", "metadata":{"name":"default"}})
+                            } else {
+                                observed.notify_one();
+                                status = 404;
+                                serde_json::json!({"apiVersion":"v1", "kind":"Status", "status":"Failure", "reason":"NotFound", "code":404})
+                            }
+                        }
+                        ("GET", "/api/v1/namespaces/nodebootstrap-ready-test/configmaps/kube-root-ca.crt") =>
+                            serde_json::json!({"apiVersion":"v1", "kind":"ConfigMap", "data":{"ca.crt":"expected-ca"}}),
+                        ("DELETE", "/api/v1/namespaces/nodebootstrap-ready-test") => {
+                            let body = request.into_body().collect_bytes().await.unwrap();
+                            let options: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                            assert_eq!(options["preconditions"]["uid"], "probe-uid");
+                            deleted.store(true, Ordering::SeqCst);
+                            serde_json::json!({"apiVersion":"v1", "kind":"Status", "status":"Success"})
+                        }
+                        _ => panic!("readiness must inspect new controller output: {} {}", request.method(), request.uri()),
+                    };
+                    Ok::<_, std::convert::Infallible>(http::Response::builder().status(status)
+                        .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap())).unwrap())
+                }
+            }
+        });
+        let task = tokio::spawn(control_plane_ready(kube::Client::new(service, "default"), "expected-ca".into()));
+        observed.notified().await;
+        assert!(!task.is_finished(), "old persisted state cannot satisfy readiness");
+        published.store(true, Ordering::SeqCst);
+        task.await.unwrap().unwrap();
+        assert!(deleted.load(Ordering::SeqCst));
+    }
 }
 
 /// Called last in `run_all()`, alongside `ensure_nodelet` (same ordering

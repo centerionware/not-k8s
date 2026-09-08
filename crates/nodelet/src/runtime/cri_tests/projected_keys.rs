@@ -65,3 +65,38 @@ fn multiple_sources_merge_into_the_same_directory() {
     assert_eq!(std::fs::read_to_string(dir.join("from-secret")).unwrap(), "y");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn refreshing_a_projection_preserves_an_open_readers_complete_contents() {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = tmp("atomic-reader");
+    write_projected_keys(&dir, Some(text_map(&[("ca.crt", "old-complete-certificate")])), None, None).unwrap();
+    let path = dir.join("ca.crt");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
+    let before = std::fs::metadata(&path).unwrap();
+    let mut reader = std::fs::File::open(&path).unwrap();
+    write_projected_keys(&dir, Some(text_map(&[("ca.crt", "new-certificate")])), None, None).unwrap();
+    let mut held = String::new();
+    reader.read_to_string(&mut held).unwrap();
+    assert_eq!(held, "old-complete-certificate");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new-certificate");
+    let after = std::fs::metadata(&path).unwrap();
+    assert_eq!(after.mode(), before.mode());
+    assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unchanged_projection_keeps_the_file_and_its_refresh_time() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tmp("unchanged");
+    write_projected_keys(&dir, Some(text_map(&[("ca.crt", "complete-certificate")])), None, None).unwrap();
+    let path = dir.join("ca.crt");
+    let before = std::fs::metadata(&path).unwrap();
+    write_projected_keys(&dir, Some(text_map(&[("ca.crt", "complete-certificate")])), None, None).unwrap();
+    let after = std::fs::metadata(&path).unwrap();
+    assert_eq!(after.ino(), before.ino());
+    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+    std::fs::remove_dir_all(dir).unwrap();
+}

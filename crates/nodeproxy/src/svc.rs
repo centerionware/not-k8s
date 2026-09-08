@@ -125,6 +125,7 @@ use k8s_openapi::api::core::v1::{Service, ServicePort};
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
+use kube::runtime::WatchStreamExt;
 use kube::{Api, Client, ResourceExt};
 use std::collections::HashMap;
 use std::io::Write;
@@ -337,14 +338,16 @@ fn watch_services(
     client: &Client,
 ) -> futures::stream::BoxStream<'static, watcher::Result<Event<Service>>> {
     let api: Api<Service> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).boxed()
+    // watcher retries a failed watch start immediately unless paced. During
+    // API restarts that otherwise becomes a connection/error-log hot loop.
+    watcher(api, watcher::Config::default()).default_backoff().boxed()
 }
 
 fn watch_endpoint_slices(
     client: &Client,
 ) -> futures::stream::BoxStream<'static, watcher::Result<Event<EndpointSlice>>> {
     let api: Api<EndpointSlice> = Api::all(client.clone());
-    watcher(api, watcher::Config::default()).boxed()
+    watcher(api, watcher::Config::default()).default_backoff().boxed()
 }
 
 fn obj_key<T: ResourceExt>(obj: &T) -> String {
@@ -1122,6 +1125,29 @@ fn apply_nft(ruleset: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn unavailable_api_does_not_spin_either_proxy_watch() {
+        use futures::StreamExt;
+        crate::install_crypto_provider();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = kube::Client::try_from(kube::Config::new(
+            format!("http://{address}").parse().unwrap(),
+        )).unwrap();
+        let streams = [
+            super::watch_services(&client).map(|event| event.is_err()).boxed(),
+            super::watch_endpoint_slices(&client).map(|event| event.is_err()).boxed(),
+        ];
+        for mut stream in streams {
+            assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await.unwrap(), Some(false));
+            // The first event is Init, followed by the failed initial LIST.
+            assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await.unwrap(), Some(true));
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(100), stream.next()).await.is_err(),
+                "a failed API request must back off before attempting another request");
+        }
+    }
+
     use super::*;
 
     /// Requires a real `nft` binary and CAP_NET_ADMIN (root); skips itself

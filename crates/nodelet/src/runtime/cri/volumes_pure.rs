@@ -704,12 +704,62 @@ pub(crate) fn write_volume_dir(
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     for (k, v) in text.into_iter().flatten() {
-        std::fs::write(dir.join(k), v)?;
+        write_volume_file(&dir.join(k), v.as_bytes())?;
     }
     for (k, v) in binary.into_iter().flatten() {
-        std::fs::write(dir.join(k), v)?;
+        write_volume_file(&dir.join(k), &v)?;
     }
     Ok(())
+}
+
+/// Publish a complete file without truncating an inode a container may be
+/// reading. In particular, client-go caches the CA bytes it reads at startup;
+/// observing an empty ca.crt during reconciliation breaks TLS until restart.
+/// Unchanged projections retain their inode, ownership and modification time.
+pub(crate) fn write_volume_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+    if std::fs::read(path).is_ok_and(|existing| existing == bytes) {
+        return Ok(());
+    }
+    let parent = path.parent().ok_or_else(|| std::io::Error::new(
+        std::io::ErrorKind::InvalidInput, "volume file has no parent directory",
+    ))?;
+    std::fs::create_dir_all(parent)?;
+    let previous = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    for _ in 0..16 {
+        let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".nodelet-{}-{sequence}", std::process::id()));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true).create_new(true).mode(0o666).open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let result = (|| {
+            file.write_all(bytes)?;
+            if let Some(metadata) = previous.as_ref() {
+                // Preserve fsGroup/user-namespace ownership on live refreshes.
+                std::os::unix::fs::chown(&temporary, Some(metadata.uid()), Some(metadata.gid()))?;
+                file.set_permissions(metadata.permissions())?;
+            }
+            std::fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        return result;
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+        "could not reserve a temporary volume file"))
 }
 
 
@@ -731,7 +781,7 @@ pub(crate) fn write_downward_api_volume(
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(target, value)?;
+        write_volume_file(&target, value.as_bytes())?;
     }
     Ok(())
 }
@@ -755,7 +805,7 @@ pub(crate) fn write_projected_keys(
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(target, bytes)
+        write_volume_file(&target, bytes)
     };
     match items {
         Some(items) => {

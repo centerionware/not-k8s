@@ -7050,6 +7050,79 @@ pub(super) async fn nodeapiserver_honors_dry_run_and_delete_preconditions(contex
     anyhow::ensure!(configmaps.get(&name).await.is_ok(), "a failed delete precondition removed the object");
     configmaps.delete(&name, &DeleteParams::default()).await.context("cleaning up the delete-precondition fixture")?;
     anyhow::ensure!(!resource_version.is_empty(), "fixture resourceVersion was empty");
+    protobuf_reviews_and_secret_writes(context).await?;
+    Ok(())
+}
+
+/// Exercise the actual wire shapes used by kubectl, cert-manager and Helm.
+async fn protobuf_reviews_and_secret_writes(context: &E2eContext) -> Result<()> {
+    use prost::Message;
+    #[derive(Clone, PartialEq, Message)]
+    struct TypeMeta {
+        #[prost(string, tag = "1")]
+        api_version: String,
+        #[prost(string, tag = "2")]
+        kind: String,
+    }
+    #[derive(Clone, PartialEq, Message)]
+    struct Unknown {
+        #[prost(message, optional, tag = "1")]
+        type_meta: Option<TypeMeta>,
+        #[prost(bytes = "vec", tag = "2")]
+        raw: Vec<u8>,
+    }
+    let envelope = |version: &str, kind: &str, raw: Vec<u8>| {
+        let mut wire = b"k8s\0".to_vec();
+        wire.extend(Unknown {
+            type_meta: Some(TypeMeta { api_version: version.into(), kind: kind.into() }),
+            raw,
+        }.encode_to_vec());
+        wire
+    };
+    // spec(2) -> resourceAttributes(1) -> verb(2)="get", resource(5)="pods".
+    let review = envelope("authorization.k8s.io/v1", "SelfSubjectAccessReview",
+        b"\x12\x0d\x0a\x0b\x12\x03get\x2a\x04pods".to_vec());
+    let request = Request::builder().method("POST")
+        .uri("/apis/authorization.k8s.io/v1/selfsubjectaccessreviews")
+        .header("content-type", "application/vnd.kubernetes.protobuf")
+        .header("accept", "application/json").body(review)?;
+    let response: Value = context.client.request(request).await.context("protobuf access review")?;
+    anyhow::ensure!(response["status"]["allowed"] == true, "admin access review was denied: {response}");
+
+    let path = format!("/api/v1/namespaces/{}/secrets", context.namespace);
+    let mut secret = json!({"apiVersion":"v1", "kind":"Secret",
+        "metadata":{"name":"helm-unconditional-update"}, "type":"Opaque", "data":{"release":"b2xk"}});
+    let request = Request::builder().method("POST").uri(&path)
+        .header("content-type", "application/json").body(serde_json::to_vec(&secret)?)?;
+    let created: Value = context.client.request(request).await?;
+    let path = format!("{path}/helm-unconditional-update");
+    secret["data"]["release"] = json!("bmV3");
+    let request = Request::builder().method("PUT").uri(&path)
+        .header("content-type", "application/json").body(serde_json::to_vec(&secret)?)?;
+    let updated: Value = context.client.request(request).await.context("Helm-shaped unconditional Secret update")?;
+    anyhow::ensure!(updated["data"]["release"] == "bmV3" && updated["metadata"]["uid"] == created["metadata"]["uid"], "Secret update lost data or identity: {updated}");
+    for metadata in [
+        json!({"name":"helm-unconditional-update", "resourceVersion":created["metadata"]["resourceVersion"]}),
+        json!({"name":"helm-unconditional-update", "uid":"wrong-uid"}),
+    ] {
+        secret["metadata"] = metadata;
+        let request = Request::builder().method("PUT").uri(&path)
+            .header("content-type", "application/json").body(serde_json::to_vec(&secret)?)?;
+        match context.client.request::<Value>(request).await {
+            Err(KubeError::Api(error)) if error.code == 409 => {}
+            other => anyhow::bail!("conditional Secret update must conflict: {other:?}"),
+        }
+    }
+    let request = Request::builder().method("DELETE").uri(&path)
+        .header("content-type", "application/vnd.kubernetes.protobuf")
+        .header("accept", "application/json")
+        .body(envelope("v1", "DeleteOptions", Vec::new()))?;
+    let _: Value = context.client.request(request).await.context("protobuf Secret delete")?;
+    let request = Request::builder().uri(&path).body(Vec::new())?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 404 => {}
+        other => anyhow::bail!("protobuf delete left the Secret behind: {other:?}"),
+    }
     Ok(())
 }
 

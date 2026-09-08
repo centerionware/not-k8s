@@ -7,6 +7,25 @@ mod tests {
     }
 
     #[test]
+    fn virtual_requests_decode_protobuf_without_persisted_resource_lookup() {
+        for (group, kind, schema, value) in [
+            ("", "DeleteOptions", "io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions",
+             serde_json::json!({"preconditions":{"uid":"original-uid"}})),
+            ("authorization.k8s.io", "SelfSubjectAccessReview", "io.k8s.api.authorization.v1.SelfSubjectAccessReview",
+             serde_json::json!({"spec":{"resourceAttributes":{"verb":"get","resource":"pods"}}})),
+        ] {
+            let version = if group.is_empty() { "v1".to_string() } else { format!("{group}/v1") };
+            let raw = crate::codec::protobuf::encode_message(schema, &value).unwrap();
+            let wire = crate::codec::protobuf::wrap_unknown(&version, kind, &raw);
+            let decoded = decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", kind).unwrap();
+            for (key, expected) in value.as_object().unwrap() {
+                assert_eq!(&decoded[key], expected);
+            }
+            assert!(decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", "WrongKind").is_err());
+        }
+    }
+
+    #[test]
     fn api_root_serves_api_versions() {
         let route = route_discovery(&parts("/api"), None, &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {

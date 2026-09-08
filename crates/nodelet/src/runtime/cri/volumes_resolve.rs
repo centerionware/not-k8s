@@ -382,7 +382,7 @@ impl CriRuntime {
                         if let Some(parent) = target.parent() {
                             std::fs::create_dir_all(parent)?;
                         }
-                        std::fs::write(target, token)?;
+                        write_volume_file(&target, token.as_bytes())?;
                     }
                     Err(e) => {
                         return Err(e).context(

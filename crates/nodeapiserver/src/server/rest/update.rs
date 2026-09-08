@@ -1,7 +1,7 @@
 /// Replaces an existing object. `namespace: None` for a cluster-scoped
 /// resource, same convention as [`get`]/[`create`]. Real optimistic
 /// concurrency: reads the current object first, requires the submitted
-/// body's own `metadata.resourceVersion` to match what's actually
+/// body's own `metadata.resourceVersion` (when required or supplied) to match what's actually
 /// stored, and writes with a `Txn` compared against that same revision
 /// — a concurrent write between the read and this write loses the race
 /// and gets a real `Conflict`, not a silent overwrite.
@@ -94,13 +94,22 @@ pub async fn update_with_options_and_manager(
     // opaque string to a real client, but this build's own encoding of
     // it is always the decimal MVCC revision, so parsing avoids any
     // formatting-mismatch false negative (leading zeros, etc.).
-    let Some(submitted_rv) = body
-        .pointer("/metadata/resourceVersion")
-        .and_then(Value::as_str)
-        .and_then(|s| s.parse::<i64>().ok())
-    else {
-        return Ok(UpdateOutcome::MissingResourceVersion);
+    let submitted_rv = match body.pointer("/metadata/resourceVersion") {
+        None | Some(Value::Null) if group.is_empty() && resource == "secrets" => existing_kv.mod_revision,
+        Some(Value::String(rv)) if rv.is_empty() && group.is_empty() && resource == "secrets" => existing_kv.mod_revision,
+        Some(Value::String(rv)) => match rv.parse::<i64>() {
+            Ok(rv) => rv,
+            Err(_) => return Ok(UpdateOutcome::MissingResourceVersion),
+        },
+        _ => return Ok(UpdateOutcome::MissingResourceVersion),
     };
+    // SecretStrategy allows unconditional updates, which Helm's release
+    // storage uses. Only an omitted/empty version is unconditional; retain
+    // the CAS below and never discard an explicit stale version or UID.
+    if body.pointer("/metadata/uid").and_then(Value::as_str)
+        .is_some_and(|uid| !uid.is_empty() && Some(uid) != existing_object.pointer("/metadata/uid").and_then(Value::as_str)) {
+        return Ok(UpdateOutcome::Conflict);
+    }
     if submitted_rv != existing_kv.mod_revision {
         return Ok(UpdateOutcome::Conflict);
     }
