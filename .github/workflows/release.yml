@@ -547,7 +547,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          # Validation uses the published runtime downloaded below, while its
+          # harness and rendering tools come from this workflow commit.
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Create results index
         id: identity
@@ -608,7 +610,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Get release runtime
         run: bash deploy/download-release-runtime.sh "$RELEASE_TAG" release "$GITHUB_WORKSPACE/dist-bin"
@@ -642,7 +644,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Download profile
         uses: actions/download-artifact@v5
@@ -709,7 +711,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Measure comparison
         uses: ./.github/actions/profile-compare-leg
@@ -730,7 +732,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Publish comparison
         uses: ./.github/actions/profile-compare-publish
@@ -752,7 +754,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Render comparison
         uses: ./.github/actions/profile-compare-report
@@ -772,7 +774,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish-release.outputs.tag }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Write final status
         run: python3 deploy/release-validation-summary.py
