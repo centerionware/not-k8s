@@ -7,7 +7,8 @@ from pathlib import Path
 
 def render(tag, repository, run, attempt, results):
     required = ('prepare-validation', 'release-e2e', 'release-flamegraphs',
-                'release-comparison', 'release-comparison-publish', 'release-comparison-report')
+                'cleanup-profile-artifact', 'release-comparison',
+                'release-comparison-publish', 'release-comparison-report')
     passed = all(results.get(name, {}).get('result') == 'success' for name in required)
     conclusion = 'success' if passed else 'failure'
     lines = [f'# {tag} validation', '', f'**Validation: {conclusion.upper()}**', '',
@@ -23,7 +24,7 @@ def render(tag, repository, run, attempt, results):
               'Latest-profile links can refer to an earlier attempt; check run/attempt identity.', '',
               'Both profiles use heavy load with 300-second idle and loaded windows.',
               'E2e and comparisons execute the checksum-verified published release runtime.',
-              'Flamegraphs execute its additional optimized symbolized diagnostic asset.',
+              'Flamegraphs execute the run-scoped optimized symbolized profiling artifact.',
               'Single-run measurements are diagnostic evidence, not universal performance claims.', '']
     return conclusion, '\n'.join(lines)
 

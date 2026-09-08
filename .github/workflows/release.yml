@@ -35,7 +35,9 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # A cold workspace build can take 40--50 minutes before the unit tests;
+    # keep enough headroom for dependency setup and the complete test list.
+    timeout-minutes: 90
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -81,7 +83,11 @@ jobs:
             runner: ubuntu-latest
             cross: true
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    # Each target builds debug and release assets, then x86_64 also builds the
+    # symbolized profiling asset. Reserve ample room for a cold 40--50 minute
+    # build and the additional profiling build without turning a slow
+    # compiler into an unbounded job.
+    timeout-minutes: 240
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -199,9 +205,26 @@ jobs:
         if: matrix.arch == 'x86_64'
         run: |
           set -euo pipefail
-          RUSTFLAGS='-C force-frame-pointers=yes' cargo build --profile profiling --features cri -p notk8s --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/profiling/notk8s dist/notk8s-linux-x86_64-profiling
-          readelf -SW dist/notk8s-linux-x86_64-profiling > /tmp/profiling-sections.txt
+          # `nodebootstrap fetch` installs system services and therefore
+          # re-executes through sudo. Its cargo builds leave target/ owned by
+          # root; use the same identity here and pass the selected musl
+          # toolchain explicitly so the profile build can create its output.
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          sudo -E env \
+            "PATH=$PATH" \
+            "HOME=$HOME" \
+            "CARGO_HOME=$cargo_home" \
+            "RUSTUP_HOME=$rustup_home" \
+            "RUSTFLAGS=-C force-frame-pointers=yes" \
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" \
+            "CC_x86_64_unknown_linux_musl=$CC_x86_64_unknown_linux_musl" \
+            "MUSL_C_COMPILER=$MUSL_C_COMPILER" \
+            cargo build --profile profiling --features cri -p notk8s --target x86_64-unknown-linux-musl
+          rm -rf profile-dist
+          mkdir -p profile-dist
+          cp target/x86_64-unknown-linux-musl/profiling/notk8s profile-dist/notk8s-linux-x86_64-profiling
+          readelf -SW profile-dist/notk8s-linux-x86_64-profiling > /tmp/profiling-sections.txt
           grep -q '\.debug_info' /tmp/profiling-sections.txt
           grep -q '\.symtab' /tmp/profiling-sections.txt
       - name: Verify static assets
@@ -231,6 +254,16 @@ jobs:
           path: dist/
           # GitHub's minimum is one day; cleanup-release-artifacts removes
           # these run-scoped assets after publication (normally within 15m).
+          retention-days: 1
+      - name: Upload profile
+        if: matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-${{ github.run_id }}
+          path: profile-dist/
+          if-no-files-found: error
+          # Flamegraphs consume this run-scoped diagnostic binary, then the
+          # cleanup-profile-artifact job removes it after capture.
           retention-days: 1
 
   publish-release:
@@ -432,17 +465,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
-            --jq '.artifacts[] | select(.name | startswith("notk8s-")) | .id' \
-            | while read -r artifact_id; do
-                [[ -z "$artifact_id" ]] || gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
-              done
+          artifact_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts"
+          artifact_ids="$(gh api "$artifact_endpoint" \
+            --jq '.artifacts[] | select(.name == ("notk8s-x86_64-" + env.GITHUB_RUN_ID) or .name == ("notk8s-aarch64-" + env.GITHUB_RUN_ID) or .name == ("notk8s-armv7l-" + env.GITHUB_RUN_ID)) | .id')"
+          while IFS= read -r artifact_id; do
+            [[ -z "$artifact_id" ]] || gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          done <<< "$artifact_ids"
+          remaining="$(gh api "$artifact_endpoint" \
+            --jq '.artifacts[] | select(.name == ("notk8s-x86_64-" + env.GITHUB_RUN_ID) or .name == ("notk8s-aarch64-" + env.GITHUB_RUN_ID) or .name == ("notk8s-armv7l-" + env.GITHUB_RUN_ID)) | .name')"
+          [[ -z "$remaining" ]] || {
+            echo "release build artifacts remain after cleanup: $remaining" >&2
+            exit 1
+          }
 
   prepare-validation:
     permissions:
       contents: write
-    needs: publish-release
-    if: ${{ always() && needs.publish-release.outputs.published == 'true' }}
+    needs: [publish-release, cleanup-release-artifacts]
+    if: ${{ always() && needs.publish-release.outputs.published == 'true' && needs.cleanup-release-artifacts.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -478,7 +518,7 @@ jobs:
 
           Heavy workload, 300 seconds idle and 300 seconds load per profile.
           E2e and metrics use the published release binary. Flamegraphs use the
-          additional published optimized symbolized diagnostic binary, not a
+          run-scoped optimized symbolized profiling artifact, not a
           release-performance ratio. Failed/partial captures are not passes.
           EOF
           bash deploy/publish-validation-results.sh "$payload" "$branch"
@@ -530,7 +570,7 @@ jobs:
           results_prefix: e2e/${{ github.run_id }}-${{ github.run_attempt }}
 
   release-flamegraphs:
-    # Publishes large perf bundles without an Actions artifact round trip.
+    # Publishes perf bundles from the run-scoped profiling artifact.
     permissions:
       contents: write
     needs: [publish-release, prepare-validation]
@@ -552,10 +592,46 @@ jobs:
         with:
           ref: ${{ needs.publish-release.outputs.tag }}
           persist-credentials: false
+      - name: Download profile
+        uses: actions/download-artifact@v4
+        with:
+          name: profiling-${{ github.run_id }}
+          path: profile-bin
       - name: Stack flamegraphs
         uses: ./.github/actions/profile-stack-run
         with:
           release_tag: ${{ needs.publish-release.outputs.tag }}
+          profile_binary: ${{ github.workspace }}/profile-bin/notk8s-linux-x86_64-profiling
+
+  cleanup-profile-artifact:
+    # The symbolized diagnostic artifact is needed only while flamegraphs run.
+    # Keep it available for a failed capture, then remove it once the job has
+    # reached a terminal success/failure/cancellation state.
+    needs: [publish-release, release-flamegraphs]
+    if: ${{ always() && needs.publish-release.outputs.published == 'true' && (needs.release-flamegraphs.result == 'success' || needs.release-flamegraphs.result == 'failure' || needs.release-flamegraphs.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete profile
+        run: |
+          set -euo pipefail
+          endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts"
+          artifact_name="profiling-$GITHUB_RUN_ID"
+          artifact_id="$(gh api "$endpoint" \
+            --jq ".artifacts[] | select(.name == \"$artifact_name\") | .id")"
+          if [[ -n "$artifact_id" ]]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          fi
+          remaining="$(gh api "$endpoint" \
+            --jq ".artifacts[] | select(.name == \"$artifact_name\") | .name")"
+          [[ -z "$remaining" ]] || {
+            echo "profiling artifact remains after cleanup: $remaining" >&2
+            exit 1
+          }
 
   release-comparison:
     needs: [publish-release, prepare-validation]
@@ -630,7 +706,7 @@ jobs:
         uses: ./.github/actions/profile-compare-report
 
   validation-summary:
-    needs: [publish-release, prepare-validation, release-e2e, release-flamegraphs, release-comparison, release-comparison-publish, release-comparison-report]
+    needs: [publish-release, prepare-validation, release-e2e, release-flamegraphs, cleanup-profile-artifact, release-comparison, release-comparison-publish, release-comparison-report]
     permissions:
       contents: write
     if: ${{ always() && needs.publish-release.outputs.published == 'true' }}

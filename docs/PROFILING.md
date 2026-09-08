@@ -32,8 +32,9 @@ assets and shares local composite actions with these manual workflows; it does
 not trigger or call another workflow. Results go to `e2e-prof-{release-tag}`,
 linked above the release changelog. See [release validation](RELEASE_VALIDATION.md)
 for executable provenance, parallel jobs and failure reporting. Manual stack mode
-still builds source; release flamegraphs use an additional published symbolized
-asset. A post-publication failure does not undo the published release.
+still builds source; release flamegraphs consume the run-scoped symbolized
+profiling artifact from the release build. A post-publication failure does not
+undo the published release.
 
 ## What is measured
 

@@ -322,6 +322,39 @@ sudo() {
         for name in ('release-flamegraphs', 'release-comparison'):
             self.assertEqual(jobs[name]['env']['PROFILE_WORKLOAD'], 'heavy')
             self.assertEqual(jobs[name]['env']['PROFILE_SECONDS'], '300')
+        self.assertEqual(jobs['release-flamegraphs']['env']['PROFILE_BUILD'], 'profiling')
+        self.assertIn('cleanup-release-artifacts', jobs['prepare-validation']['needs'])
+        self.assertIn('needs.cleanup-release-artifacts.result == \'success\'', jobs['prepare-validation']['if'])
+        self.assertIn('Build profile asset', text)
+        self.assertIn('profile-dist/notk8s-linux-x86_64-profiling', text)
+        profile_upload = next(step for step in jobs['build-release']['steps']
+                              if step.get('name') == 'Upload profile')
+        self.assertEqual(profile_upload['with']['name'], 'profiling-${{ github.run_id }}')
+        self.assertEqual(profile_upload['with']['path'], 'profile-dist/')
+        cleanup_script = next(step['run'] for step in jobs['cleanup-release-artifacts']['steps']
+                              if step.get('name') == 'Delete artifacts')
+        self.assertIn('remaining=', cleanup_script)
+        self.assertIn('release build artifacts remain after cleanup', cleanup_script)
+        self.assertIn('env.GITHUB_RUN_ID', cleanup_script)
+        profile_action = (ROOT / '.github/actions/profile-stack-run/action.yml').read_text()
+        self.assertIn('profile_binary:', profile_action)
+        self.assertIn('PROFILE_BINARY_INPUT', profile_action)
+        self.assertIn("if: inputs.release_tag != ''", profile_action)
+        self.assertNotIn('download-release-runtime.sh "$RELEASE_TAG" profiling', profile_action)
+        flamegraph = jobs['release-flamegraphs']
+        profile_download = next(step for step in flamegraph['steps']
+                                if step.get('name') == 'Download profile')
+        self.assertEqual(profile_download['with']['name'], 'profiling-${{ github.run_id }}')
+        profile_run = next(step for step in flamegraph['steps']
+                           if step.get('name') == 'Stack flamegraphs')
+        self.assertIn('profile_binary', profile_run['with'])
+        self.assertIn('profile-bin/notk8s-linux-x86_64-profiling', profile_run['with']['profile_binary'])
+        self.assertIn('cleanup-profile-artifact', jobs['validation-summary']['needs'])
+        self.assertEqual(jobs['cleanup-profile-artifact']['permissions']['actions'], 'write')
+        profile_cleanup = next(step['run'] for step in jobs['cleanup-profile-artifact']['steps']
+                               if step.get('name') == 'Delete profile')
+        self.assertIn('actions/artifacts/$artifact_id', profile_cleanup)
+        self.assertIn('profiling artifact remains after cleanup', profile_cleanup)
         self.assertIn('e2e-prof-v$VERSION', text)
 
     def test_composite_actions_have_explicit_shells_and_no_caller_matrix(self):
@@ -339,7 +372,8 @@ sudo() {
 
     def test_missing_skipped_cancelled_or_failed_job_is_not_success(self):
         names = ('prepare-validation', 'release-e2e', 'release-flamegraphs',
-                 'release-comparison', 'release-comparison-publish', 'release-comparison-report')
+                 'cleanup-profile-artifact', 'release-comparison',
+                 'release-comparison-publish', 'release-comparison-report')
         results = {name: {'result': 'success'} for name in names}
         self.assertEqual(summary.render('v0.8.0', 'owner/repo', '12', '1', results)[0], 'success')
         for name in names:
