@@ -9,8 +9,8 @@
   "prepare-validation": {
     "result": "success",
     "outputs": {
-      "matrix": "{\"include\":[{\"shard\":1,\"needs_drivers\":true},{\"shard\":2,\"needs_drivers\":true},{\"shard\":3,\"needs_drivers\":false},{\"shard\":4,\"needs_drivers\":false},{\"shard\":5,\"needs_drivers\":false}]}",
-      "branch": "e2e-prof-v0.8.0"
+      "branch": "e2e-prof-v0.8.0",
+      "matrix": "{\"include\":[{\"shard\":1,\"needs_drivers\":true},{\"shard\":2,\"needs_drivers\":true},{\"shard\":3,\"needs_drivers\":false},{\"shard\":4,\"needs_drivers\":false},{\"shard\":5,\"needs_drivers\":false}]}"
     }
   },
   "release-e2e": {
@@ -18,7 +18,7 @@
     "outputs": {}
   },
   "release-flamegraphs": {
-    "result": "failure",
+    "result": "success",
     "outputs": {}
   },
   "cleanup-profile-artifact": {
