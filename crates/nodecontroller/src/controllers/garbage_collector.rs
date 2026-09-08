@@ -7,7 +7,7 @@
 //! produced a real owner chain — Deployment→ReplicaSet→Pod — worth
 //! cleaning up before then).
 //!
-//! # How it works (event-driven, no polling, no explicit graph walk)
+//! # How it works (event-driven with a bounded re-sync safety net)
 //!
 //! One watch per discovered resource kind, all funneled into a single event
 //! loop that tracks two things purely from watch events: which
@@ -27,6 +27,25 @@
 //! kinds have completed their initial lists, any
 //! object whose owners are *all* already known-dead is deleted right away
 //! instead of only reacting to a live Delete event.
+//!
+//! **A bounded periodic re-sync is the recovery path for silently missed
+//! watch events.** The graph above is built from watch events alone, and
+//! this apiserver has twice been observed (e2e) to miss an event for a
+//! healthy connection: a Service Add the GC never saw, which led it to
+//! delete the Service's live EndpointSlice as an "orphan", and a
+//! Certificate Add the GC never saw, which left a genuinely orphaned
+//! Certificate in place forever because nothing but that event could ever
+//! teach the graph about it. No new event arrives for a missed event, so
+//! the only bounded recovery is to re-establish ground truth from the
+//! datastore: every `GC_RESYNC_PERIOD`, this generation exits and `run`
+//! rebuilds it from a fresh discovery + per-kind LIST. The existing
+//! snapshot-install orphan check then re-decides every owner-linked record
+//! against the fresh graph — a missed child Add is corrected (the child
+//! enters via `InitApply` and its dead owners are spotted), and a missed
+//! owner Add is corrected the other way (a live owner is no longer
+//! mistaken for dead). Built-in kinds ride the shared informers' snapshots
+//! (no duplicate LIST); only the dynamic/metadata kinds re-LIST, and the
+//! one-stream-per-second admission keeps the burst bounded.
 //!
 //! # Scope of this slice
 //!
@@ -701,6 +720,32 @@ mod tests {
     }
 
     #[test]
+    fn child_kind_snapshot_exposes_staged_child_whose_owner_was_never_seen() {
+        // The e2e failure this guards: a Certificate's live Add was silently
+        // missed on a healthy watch connection, so it entered the graph only
+        // when its kind was next re-LISTed. Its owner (a ConfigMap) had
+        // already been deleted and its owner kind was already initialized, so
+        // the child's own snapshot install must spot the orphan and enqueue
+        // the delete — the periodic re-sync's whole reason to exist.
+        let mut state = empty_state();
+        // Owner kind is initialized (not pending) and the owner UID is absent
+        // from `exists` — deleted before the graph ever heard about it.
+        state.pending_init.remove("apps/v1/Deployment");
+        state.begin_relist("cert-manager.io/v1/Certificate");
+        state
+            .relist
+            .get_mut("cert-manager.io/v1/Certificate")
+            .unwrap()
+            .insert(
+                "certificate".into(),
+                record("certificate", "cert-manager.io/v1/Certificate", &["gone"]),
+            );
+        let orphans = state.install_snapshot("cert-manager.io/v1/Certificate");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].uid, "certificate");
+    }
+
+    #[test]
     fn unrelated_initial_list_does_not_block_a_known_orphan() {
         let mut state = empty_state();
         state.begin_relist("resource.k8s.io/v1/ResourceClaim");
@@ -831,10 +876,24 @@ mod tests {
 
 enum GenerationExit {
     CrdChanged,
+    Resync,
     StreamsEnded,
 }
 
 const CRD_REFRESH_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How often the owner graph is rebuilt from fresh LISTs. This is the
+/// safety net for the silently-missed watch events documented in the
+/// module header: the GC is otherwise event-only, and a missed event
+/// produces no future event to recover from. The period bounds both how
+/// long a missed child Add can keep a real orphan alive and how long a
+/// missed owner Add can make a live object look orphaned. Forty-five
+/// seconds converges a missed event inside the e2e GC contract (90s) with
+/// room for the one-stream-per-second re-LIST admission, while keeping
+/// the metadata-LIST cost bounded; the steady-state watch-timeout re-LIST
+/// cadence is already ~5 minutes, so this makes the implicit recovery
+/// explicit and much tighter rather than adding a new scan class.
+const GC_RESYNC_PERIOD: std::time::Duration = std::time::Duration::from_secs(45);
 
 fn update_crd_cache(
     crds: &mut HashMap<String, CustomResourceDefinition>,
@@ -968,6 +1027,10 @@ async fn run_generation(
     // during network I/O; an unavailable API must not freeze the owner graph.
     let mut deleting: FuturesUnordered<futures::future::BoxFuture<'static, (String, bool)>> =
         FuturesUnordered::new();
+    // Bounded graph re-sync (see `GC_RESYNC_PERIOD`): when this fires, the
+    // generation exits and `run` rebuilds it from fresh discovery + LISTs,
+    // correcting silently-missed watch events in either direction.
+    let resync_due = Instant::now() + GC_RESYNC_PERIOD;
 
     loop {
         let next_delete = state.deletes.iter()
@@ -1036,6 +1099,13 @@ async fn run_generation(
                     None => return Ok(GenerationExit::StreamsEnded),
                 }
             }
+            _ = tokio::time::sleep_until(resync_due) => {
+                tracing::info!(
+                    period_secs = GC_RESYNC_PERIOD.as_secs(),
+                    "garbage-collector-controller rebuilding the owner graph from fresh lists"
+                );
+                return Ok(GenerationExit::Resync);
+            }
             event = combined.next() => {
                 let Some((kind_key, ev)) = event else {
                     if let Some(stream) = pending_streams.next() {
@@ -1082,6 +1152,7 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
         let discovery = crate::watch::discover_api(&client, "garbage-collector-controller").await;
         match run_generation(&client, discovery, &mut crd_stream, &mut crds).await? {
             GenerationExit::CrdChanged => {}
+            GenerationExit::Resync => {}
             GenerationExit::StreamsEnded => return Ok(()),
         }
     }
