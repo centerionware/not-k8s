@@ -283,7 +283,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
     let sysv = kubelet_init.is_some() && !openrc;
     let service_file = kubelet;
     let binary = first_file(layout, &["/usr/bin/kubeadm", "/usr/local/bin/kubeadm"]);
-    let service_manifest = append(&layout.root, &apiserver_manifest);
+    let service_manifest = apiserver_manifest.clone();
     let controller_manifest = layout.path("/etc/kubernetes/manifests/kube-controller-manager.yaml");
     let service_cidr = manifest_argument(&service_manifest, "--service-cluster-ip-range");
     let cluster_cidr = if controller_manifest.is_file() {
