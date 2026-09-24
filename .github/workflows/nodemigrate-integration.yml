@@ -5,8 +5,10 @@ on:
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
+      - '.github/scripts/nodemigrate-docker-preflight.sh'
       - '.github/scripts/nodemigrate-snapshot-normalize.jq'
       - '.github/scripts/check_nodemigrate_snapshot_filter.sh'
+      - '.github/nodemigrate/**'
       - '.github/workflows/nodemigrate-integration.yml'
       - 'crates/nodemigrate/**'
       - 'docs/NODEMIGRATE.md'
@@ -30,10 +32,40 @@ jobs:
           persist-credentials: false
 
       - name: Check shell syntax
-        run: bash -n .github/scripts/nodemigrate-integration.sh
+        run: |
+          bash -n .github/scripts/nodemigrate-integration.sh
+          bash -n .github/scripts/nodemigrate-docker-preflight.sh
 
       - name: Check snapshot jq
         run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
+
+  docker-preflight:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build node image
+        run: docker build --pull --file five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
+
+      - name: Probe five nodes
+        env:
+          NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
+          NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+        run: bash .github/scripts/nodemigrate-docker-preflight.sh
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-docker-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+          if-no-files-found: warn
+          retention-days: 7
 
   migrate:
     if: github.event_name == 'workflow_dispatch'

@@ -22,6 +22,13 @@ this objective.
   The kubeadm source setup installs `crictl` from the matching cri-tools minor
   release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
   version for static-pod cleanup diagnostics.
+- Manual dispatch also starts the Docker five-node preflight. It builds
+  `.github/nodemigrate/five-node.Dockerfile`, then
+  `.github/scripts/nodemigrate-docker-preflight.sh` starts five disposable
+  systemd containers and checks namespace separation, containerd CRI, a loaded
+  eBPF classifier, per-node volumes, inter-node reachability, and single-node
+  failure isolation. The preflight has not been dispatched; it does not yet
+  provision Kubernetes or test Cilium datapath or migration parity.
 - The script installs the selected upstream distribution first, uses Cilium
   with Flannel disabled in the K3s lane, installs the hostPath CSI test
   driver, cert-manager, Traefik, nginx, static and CSI-backed claims, then
@@ -92,12 +99,14 @@ completed beyond checking destination API readiness where required. No real
 three-CP run verifies this protocol yet. Repeating the current single-host
 script or running it once per node would not satisfy the five-node gate.
 
-Next, add a Docker capability preflight and isolated five-node provisioner,
-then an orchestrated staged control-plane cutover/return lane. The preflight
-must validate Docker's network namespaces, systemd, CRI, per-node storage,
-Cilium/eBPF behavior, and node failure isolation in that same topology. Use
-QEMU only on a runner whose virtualization capability is demonstrated; hosted
-runner support is not guaranteed.
+The Docker capability preflight and systemd node image are implemented but
+not run. Next, use them to provision kubeadm with three control planes and two
+workers inside those nodes, install and validate Cilium and the workload
+fixtures, then add an orchestrated staged control-plane cutover/return lane.
+The existing probe is only an infrastructure check; it is not evidence of
+Kubernetes, Cilium, storage-controller, or nodemigrate behavior. Use QEMU only
+on a runner whose virtualization capability is demonstrated; hosted runner
+support is not guaranteed.
 
 ## Run policy
 
