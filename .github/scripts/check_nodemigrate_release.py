@@ -14,6 +14,8 @@ def require(condition: bool, message: str) -> None:
 
 release = (ROOT / ".github/workflows/release.yml").read_text()
 build = (ROOT / ".github/workflows/build.yml").read_text()
+checks = (ROOT / ".github/workflows/nodemigrate.yml").read_text()
+publisher = (ROOT / ".github/workflows/nodemigrate-release.yml").read_text()
 combined = (ROOT / "crates/notk8s/Cargo.toml").read_text()
 
 # The migration crate lands on its own branch later. Keep these hooks guarded
@@ -30,5 +32,17 @@ require("nodebootstrap notk8s nodemigrate" in build,
         "build workflow does not stage nodemigrate artifacts")
 require("nodemigrate =" not in combined,
         "nodemigrate must remain independent from the combined binary")
+require("needs.detect.outputs.crate_exists == 'true'" in checks,
+        "crate tests must be gated by the checked-out manifest")
+require("hashFiles(" not in checks,
+        "hashFiles is not available in a job-level condition")
+require("releases/latest" in publisher,
+        "standalone publication must read the latest regular release version")
+require('tag=nodemigrate-v$version' in publisher,
+        "standalone publication must use its own tag at the regular release version")
+require('gh release create "$RELEASE_TAG" --target "$GITHUB_SHA"' in publisher,
+        "standalone publication must target the migration build without advancing VERSION")
+require("Advance VERSION" not in publisher and "/contents/VERSION" not in publisher,
+        "standalone publication must not mutate the shared VERSION branch")
 
 print("nodemigrate release hooks are present and remain standalone")
