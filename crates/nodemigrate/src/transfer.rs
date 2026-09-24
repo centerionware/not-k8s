@@ -964,4 +964,50 @@ mod tests {
             [std::path::PathBuf::from("/srv/node-data")]
         );
     }
+
+    #[test]
+    fn node_affinity_ors_terms_and_ands_requirements() {
+        let objects = vec![
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {
+                    "local": {"path": "/srv/matching-term"},
+                    "nodeAffinity": {"required": {"nodeSelectorTerms": [
+                        {"matchExpressions": [
+                            {"key": "topology.kubernetes.io/zone", "operator": "In", "values": ["zone-a"]},
+                            {"key": "disk", "operator": "In", "values": ["ssd"]}
+                        ]},
+                        {"matchFields": [
+                            {"key": "metadata.name", "operator": "In", "values": ["cp-1"]}
+                        ]}
+                    ]}}
+                }
+            }),
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {
+                    "local": {"path": "/srv/non-matching-term"},
+                    "nodeAffinity": {"required": {"nodeSelectorTerms": [{
+                        "matchExpressions": [
+                            {"key": "topology.kubernetes.io/zone", "operator": "In", "values": ["zone-a"]},
+                            {"key": "disk", "operator": "In", "values": ["ssd"]}
+                        ]
+                    }]}}
+                }
+            }),
+        ];
+        let labels = HashMap::from([
+            (
+                "topology.kubernetes.io/zone".to_string(),
+                "zone-a".to_string(),
+            ),
+            ("disk".to_string(), "hdd".to_string()),
+            ("metadata.name".to_string(), "cp-1".to_string()),
+        ]);
+
+        assert_eq!(
+            persistent_host_paths(&objects, Some(&labels)),
+            [std::path::PathBuf::from("/srv/matching-term")]
+        );
+    }
 }
