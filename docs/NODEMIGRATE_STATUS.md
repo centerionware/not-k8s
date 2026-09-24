@@ -25,6 +25,9 @@ separate living documents below.
   passed nodemigrate crate tests at `4ef3585eaea6beae51ffd1116134435b0edc305e`.
 - Source CNI detection and the joined replacement node-agent path passed the
   focused nodemigrate tests at `63cb20cbe75ebdfafee861c41137b334fb6ff95b`.
+- The Cilium health assertions passed shell syntax validation at
+  `21d532991835ff587a918e3bf665ed4f601e6fdf`; the manual migration lanes have
+  not run.
 - No migration integration lane has been dispatched. The user directed that
   general e2e and build gates not run; the dedicated runtime workflow also
   remains undispatched pending explicit authorization.
