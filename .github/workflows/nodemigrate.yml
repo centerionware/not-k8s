@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - '.github/scripts/check_nodemigrate_release.py'
+      - '.github/scripts/summarize_nodemigrate_test_log.py'
       - '.github/workflows/build.yml'
       - '.github/workflows/nodemigrate.yml'
       - '.github/workflows/release.yml'
@@ -68,7 +69,7 @@ jobs:
       - name: Summarize test log
         if: failure()
         run: |
-          summary="$(tail -n 80 "$RUNNER_TEMP/nodemigrate-tests.log")"
+          summary="$(python3 .github/scripts/summarize_nodemigrate_test_log.py "$RUNNER_TEMP/nodemigrate-tests.log")"
           encoded="$(python3 -c 'import sys; value = sys.stdin.read(); print(value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"), end="")' <<< "$summary")"
           echo "::error title=Nodemigrate test output::$encoded"
           {
