@@ -479,8 +479,9 @@ impl KubeApi {
                             format!("listing {} objects from the source API", resource.kind)
                         })?;
                         for object in page.items {
-                            let value = serde_json::to_value(object)
+                            let mut value = serde_json::to_value(object)
                                 .context("serializing Kubernetes object")?;
+                            preserve_discovered_type_meta(&mut value, &resource)?;
                             if !skip_object(&value) {
                                 objects.push(value);
                             }
@@ -1254,6 +1255,30 @@ fn find_resource(
         .find(|(resource, _)| resource.kind == kind && resource.api_version == api_version)
 }
 
+fn preserve_discovered_type_meta(value: &mut Value, resource: &ApiResource) -> Result<()> {
+    let object = value
+        .as_object_mut()
+        .context("serialized Kubernetes object is not a JSON object")?;
+    if object
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        object.insert(
+            "apiVersion".to_string(),
+            Value::String(resource.api_version.clone()),
+        );
+    }
+    if object
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        object.insert("kind".to_string(), Value::String(resource.kind.clone()));
+    }
+    Ok(())
+}
+
 async fn apply_object(
     client: &Client,
     discovery: &Discovery,
@@ -1444,9 +1469,9 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        node_scheduling_patch, persistent_host_paths, restore_cni_path_backups, sanitize,
-        skip_object, snapshot_k3s_cni_paths, write_export_manifest, Export, ExportedObject,
-        KubeApi, NodeSchedulingState,
+        node_scheduling_patch, persistent_host_paths, preserve_discovered_type_meta,
+        restore_cni_path_backups, sanitize, skip_object, snapshot_k3s_cni_paths,
+        write_export_manifest, ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -1562,6 +1587,21 @@ current-context: test
         );
         assert!(sanitized.value["metadata"].get("uid").is_none());
         assert!(sanitized.value.get("status").is_none());
+    }
+
+    #[test]
+    fn migration_export_restores_type_metadata_from_discovery() {
+        let resource = ApiResource::from_gvk(&kube::core::GroupVersionKind::gvk(
+            "apps",
+            "v1",
+            "Deployment",
+        ));
+        let mut object = serde_json::json!({"metadata": {"name": "web"}});
+
+        preserve_discovered_type_meta(&mut object, &resource).unwrap();
+
+        assert_eq!(object["apiVersion"], "apps/v1");
+        assert_eq!(object["kind"], "Deployment");
     }
 
     #[test]

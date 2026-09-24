@@ -148,20 +148,18 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest pushed SHA, `bd088595`, passed nodemigrate crate tests and release
-artifact checks (runs `36048798023` and `36048797913`) and the targeted code
-check (run `36048797939`). Run `36048845512` built nodemigrate and verified
-the `v0.8.0` digest/components. Both source clusters passed full workload and
-storage checks and printed the five-emoji unattended warning. K3s still
-selected the built-in flannel target: its detector defaults to flannel before
-checking for a live external Cilium config when K3s's disable flag is not
-parsed. The detector now prefers a detected active non-Flannel CNI and has a
-regression test for Cilium plus the inactive Flannel backup. Upstream
-Kubernetes reached target startup, but the nodeapiserver could not bind port
-6443; nodestore also logged client CA and port errors. The five-node Docker
-image built, but systemd exited 255 with empty output after the entrypoint
-printed `/usr/lib/systemd/systemd`. No round trip completed. See
-[run 36048845512](https://github.com/centerionware/not-k8s/actions/runs/36048845512).
+The latest pushed SHA, `29797f3f`, passed nodemigrate tests, release
+verification, targeted checks, and commit convention (runs `36050046938`,
+`36050046915`, `36050046887`, `36050041044`). Manual run `36050278348`
+built nodemigrate and verified the `v0.8.0` digest/components. Both source
+clusters passed full workload/storage checks and printed the five-emoji
+unattended warning. K3s bootstrapped without flannel, and upstream passed
+nodeapiserver startup without the earlier port/TLS errors. API object import
+failed in both lanes: 506 K3s and 488 upstream objects lacked top-level
+`apiVersion`. The exporter now restores `apiVersion` and `kind` from
+Kubernetes discovery, with a focused test. The five-node Docker image built,
+but systemd exited 255 before readiness. See
+[run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348).
 No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
@@ -297,6 +295,11 @@ No local Cargo test/build was run.
 | 2026-09-24 | `ef04b0e8c7e59b6f65bb41564139325d7026fdb9` | Release-backed migration workflow | PR utility build and v0.8.0 digest/component verification passed. Both lanes passed Cilium and CSI readiness, then the all-in-one setup failed on its unrelated nodelet DRA registration check; K3s CNI plugin symlinks also broke during setup. Docker image built but systemd did not become ready. No lane invoked nodemigrate. | [Run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929) |
 | 2026-09-24 | `580ae951144e0f2aa753a06e93e7a3f10264da75` | Release-backed migration workflow | Utility build and v0.8.0 verification passed. K3s reached nodemigrate, which aborted on rustls provider ambiguity before transfer. Upstream stopped on Helm's Traefik wait; Docker node exited 255 before systemd readiness. Current runtime fixes are pending. | [Run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369) |
 | 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | Release-backed migration workflow | Utility build and v0.8.0 verification passed. Both source stages passed and both migration commands ran; selected rustls provider fixed the first panic, then Tower aborted because the Tokio runtime was not entered during client construction. Docker image built, but systemd still exited 255 without output. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
+| 2026-09-24 | `29797f3f04489425e06b0f1b57bb0e4e619c0e3e` | Focused nodemigrate checks | Unit tests, targeted checks, release verification, and commit convention passed. | [Tests 36050046938](https://github.com/centerionware/not-k8s/actions/runs/36050046938), [checks 36050046887](https://github.com/centerionware/not-k8s/actions/runs/36050046887), [release 36050046915](https://github.com/centerionware/not-k8s/actions/runs/36050046915) |
+| 2026-09-24 | `29797f3f04489425e06b0f1b57bb0e4e619c0e3e` | K3s + Cilium migration | Cilium target bootstrap passed without starting flanneld; the warning printed. API import then rejected 506 objects missing `apiVersion`. | [Run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348) |
+| 2026-09-24 | `29797f3f04489425e06b0f1b57bb0e4e619c0e3e` | Upstream Kubernetes + Cilium migration | Nodeapiserver target bootstrap passed and the warning printed. API import then rejected 488 objects missing `apiVersion`. | [Run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348) |
+| 2026-09-24 | `29797f3f04489425e06b0f1b57bb0e4e619c0e3e` | Five-node Docker preflight | Image build passed; systemd exited 255 before readiness with no further output. | [Run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348) |
+| 2026-09-24 | Worktree after `29797f3f` | Follow-up | Restores API version and kind from discovery when exporting dynamic Kubernetes objects, with a focused regression test. Retest pending. | — |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
