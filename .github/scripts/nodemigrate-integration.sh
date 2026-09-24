@@ -118,10 +118,12 @@ install_source() {
         cni_plugin_dir="${cni_bridge%/*}"
         [[ -x "$cni_plugin_dir/loopback" ]] \
             || { echo "containernetworking-plugins did not install loopback binary" >&2; return 1; }
-        install -d /opt/cni/bin
-        for plugin in "$cni_plugin_dir"/*; do
-            ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
-        done
+        if [[ "$cni_plugin_dir" != /opt/cni/bin ]]; then
+            install -d /opt/cni/bin
+            for plugin in "$cni_plugin_dir"/*; do
+                ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
+            done
+        fi
         local k3s_version="${K3S_VERSION:-v1.35.0+k3s1}"
         curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh
         INSTALL_K3S_VERSION="$k3s_version" \
@@ -199,6 +201,13 @@ install_hostpath_driver() {
     local kubelet_data_dir="${1:?missing kubelet data directory}"
     git -C "$ROOT" fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
     git -C "$ROOT" show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodemigrate-hostpath-setup.sh
+    if ! grep -q '^# ── DRA: ' /tmp/nodemigrate-hostpath-setup.sh; then
+        echo "archived e2e setup no longer marks the end of its CSI setup section" >&2
+        return 1
+    fi
+    # The full e2e helper also deploys DRA and requires nodelet's DRA
+    # registration. Source K3s/kubelet stages only need the real CSI driver.
+    sed -i '/^# ── DRA: /,$d' /tmp/nodemigrate-hostpath-setup.sh
     mkdir -p "$kubelet_data_dir/plugins" "$kubelet_data_dir/plugins_registry"
     NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh
     kubectl get storageclass csi-hostpath-sc

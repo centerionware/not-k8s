@@ -61,12 +61,22 @@ done
 wait_systemd() {
     local container="$1" state=""
     for _ in $(seq 1 60); do
+        if [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" != true ]]; then
+            echo "Container stopped before systemd became ready: $container"
+            docker inspect --format 'state={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "$container" || true
+            docker logs --tail 100 "$container" || true
+            fail "node container $container stopped during startup"
+        fi
         state="$(docker exec "$container" systemctl is-system-running 2>/dev/null || true)"
         if [[ "$state" == running || "$state" == degraded ]]; then
             return 0
         fi
         sleep 1
     done
+    echo "Systemd readiness timed out in $container"
+    docker inspect --format 'state={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "$container" || true
+    docker exec "$container" sh -c 'ps -p 1 -o pid,comm,args; systemctl status --no-pager --full || true' || true
+    docker logs --tail 100 "$container" || true
     fail "systemd did not reach running state in $container (state=$state)"
 }
 

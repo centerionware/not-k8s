@@ -148,21 +148,21 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest completed targeted nodemigrate check is `0655d0aa` (run
-`36039622199`): crate tests, packaging, and crate detection passed, including
-interactive confirmation and noninteractive warning behavior. At
-`458c52c6`, the authorized manual run built the PR utility and verified the
-`v0.8.0` runtime digest and required components. K3s installed Cilium and the
-hostPath CSI pods, but PVC provisioning stopped because the CSI driver had no
-registered topology keys. The upstream lane stopped during kubelet package
-installation because `containernetworking-plugins` had been installed first
-and conflicted with `kubernetes-cni`. The Docker image built but the probe
-rejected `rw=true` as an invalid mount field. The current fixture changes
-install CNI plugins only in the K3s lane, use the active runtime's kubelet
-data directory for CSI registration at each migration stage, and omit the
-unneeded Docker mount option. These changes await a new runtime run. See
-[run 36040401537](https://github.com/centerionware/not-k8s/actions/runs/36040401537).
-No local Cargo test/build was run.
+The latest completed targeted nodemigrate check is `ef04b0e8` (crate checks
+and validation passed; see runs `36042030548` and `36042030593`). The manual
+runtime run at this SHA built nodemigrate and verified the `v0.8.0` runtime
+digest and required components. Both source lanes installed Cilium and the
+hostPath CSI driver and bound the CSI readiness PVC. They then failed because
+the archived full e2e setup also installed DRA and required nodelet DRA
+registration on native K3s/kubelet sources. The K3s package directory was
+already `/opt/cni/bin`; symlink creation replaced plugin files with self-links,
+so bootstrap pods briefly reported a missing bridge plugin. The Docker image
+build passed, but systemd never became ready in `cp-1`; diagnostics did not yet
+capture the container exit state or logs. Follow-up changes now stop the
+archived helper after its CSI section, avoid self-linking CNI plugins, and
+capture Docker container state/logs on startup failure. See
+[run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929).
+No migration command ran and no local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -188,6 +188,10 @@ No local Cargo test/build was run.
 | 2026-09-24 | `458c52c6247dfab8479cb18f33ae04a3db5b8c8d` | Upstream Kubernetes + Cilium round trip | Failed before kubeadm init: the preinstalled `containernetworking-plugins` package conflicted with kubelet's `kubernetes-cni` dependency. No migration command ran. | [Run 36040401537](https://github.com/centerionware/not-k8s/actions/runs/36040401537) |
 | 2026-09-24 | `458c52c6247dfab8479cb18f33ae04a3db5b8c8d` | Five-node Docker preflight | Docker image build passed; probe failed because `rw=true` is not a valid `--mount` field. | [Run 36040401537](https://github.com/centerionware/not-k8s/actions/runs/36040401537) |
 | 2026-09-24 | Worktree after `458c52c6` | Migration fixture follow-up | Separates CNI packages by source distribution, selects `/var/lib/kubelet` or `/var/lib/nodelet` for CSI driver setup at each stage, and removes the invalid Docker mount option. Shell/runtime validation is pending. | — |
+| 2026-09-24 | `ef04b0e8c7e59b6f65bb41564139325d7026fdb9` | K3s + Cilium round trip | Cilium, CSI deployment, and CSI readiness PVC passed. The archived full setup then failed waiting for DRA registration, which requires nodelet and is not part of a native K3s source. Migration was not invoked. The package's `/opt/cni/bin` files were also replaced with self-links, causing transient bridge errors. | [Run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929) |
+| 2026-09-24 | `ef04b0e8c7e59b6f65bb41564139325d7026fdb9` | Upstream Kubernetes + Cilium round trip | Kubeadm/Cilium, CSI deployment, and CSI readiness PVC passed. The archived full setup then failed waiting for nodelet DRA registration on native kubelet. Migration was not invoked. | [Run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929) |
+| 2026-09-24 | `ef04b0e8c7e59b6f65bb41564139325d7026fdb9` | Five-node Docker preflight | Docker image build passed; systemd did not become ready in the first node container. The probe now records container state and logs on this failure. | [Run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929) |
+| 2026-09-24 | Worktree after `ef04b0e8` | Migration fixture follow-up | Stops the archived setup after its CSI section, avoids replacing `/opt/cni/bin` entries with self-links, and captures Docker startup diagnostics. Shell/runtime validation is pending. | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
@@ -272,6 +276,7 @@ No local Cargo test/build was run.
 | 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | Targeted nodemigrate checks | Crate tests, packaging, and crate detection passed, including interactive risk confirmation and noninteractive warning behavior. | [Run 36039622199](https://github.com/centerionware/not-k8s/actions/runs/36039622199) |
 | 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | Release-backed migration workflow | PR utility build and v0.8.0 runtime digest/component checks passed. Both lanes stopped in CNI plugin prerequisite setup; the Docker node image built, but its probe failed on invalid bind-mount syntax. | [Run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520) |
 | 2026-09-24 | `458c52c6247dfab8479cb18f33ae04a3db5b8c8d` | Release-backed migration workflow | PR utility build and v0.8.0 runtime digest/component checks passed. K3s reached CSI but no topology keys registered; kubeadm hit the CNI package conflict; Docker probe rejected `rw=true`. No migration lane invoked nodemigrate. Current fixes are pending another manual run. | [Run 36040401537](https://github.com/centerionware/not-k8s/actions/runs/36040401537) |
+| 2026-09-24 | `ef04b0e8c7e59b6f65bb41564139325d7026fdb9` | Release-backed migration workflow | PR utility build and v0.8.0 digest/component verification passed. Both lanes passed Cilium and CSI readiness, then the all-in-one setup failed on its unrelated nodelet DRA registration check; K3s CNI plugin symlinks also broke during setup. Docker image built but systemd did not become ready. No lane invoked nodemigrate. | [Run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
