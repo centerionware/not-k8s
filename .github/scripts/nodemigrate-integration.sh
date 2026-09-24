@@ -75,18 +75,7 @@ install_tools() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq apt-transport-https ca-certificates conntrack curl \
-        containernetworking-plugins ebtables ethtool gpg jq socat
-    local cni_bridge cni_plugin_dir
-    cni_bridge="$(dpkg -L containernetworking-plugins | awk '/\/bridge$/ { print; exit }')"
-    [[ -n "$cni_bridge" && -x "$cni_bridge" ]] \
-        || { echo "containernetworking-plugins did not install its bridge binary" >&2; return 1; }
-    cni_plugin_dir="${cni_bridge%/*}"
-    [[ -x "$cni_plugin_dir/loopback" ]] \
-        || { echo "containernetworking-plugins did not install loopback binary" >&2; return 1; }
-    install -d /opt/cni/bin
-    for plugin in "$cni_plugin_dir"/*; do
-        ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
-    done
+        ebtables ethtool gpg jq socat
     mkdir -p /etc/apt/keyrings
     local stable minor
     stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
@@ -121,6 +110,18 @@ install_containerd() {
 install_source() {
     install_containerd
     if [[ "$SOURCE_DIST" == k3s ]]; then
+        apt-get install -y -qq containernetworking-plugins
+        local cni_bridge cni_plugin_dir
+        cni_bridge="$(dpkg -L containernetworking-plugins | awk '/\/bridge$/ { print }' | tail -n 1)"
+        [[ -n "$cni_bridge" && -x "$cni_bridge" ]] \
+            || { echo "containernetworking-plugins did not install its bridge binary" >&2; return 1; }
+        cni_plugin_dir="${cni_bridge%/*}"
+        [[ -x "$cni_plugin_dir/loopback" ]] \
+            || { echo "containernetworking-plugins did not install loopback binary" >&2; return 1; }
+        install -d /opt/cni/bin
+        for plugin in "$cni_plugin_dir"/*; do
+            ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
+        done
         local k3s_version="${K3S_VERSION:-v1.35.0+k3s1}"
         curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh
         INSTALL_K3S_VERSION="$k3s_version" \
@@ -132,6 +133,10 @@ install_source() {
         stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
         minor="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$stable")"
         apt-get install -y -qq kubelet kubeadm
+        [[ -x /opt/cni/bin/bridge && -x /opt/cni/bin/loopback ]] || {
+            echo "kubelet's kubernetes-cni dependency did not install bridge and loopback" >&2
+            return 1
+        }
         local cri_tools_version="${CRI_TOOLS_VERSION:-${minor}.0}"
         local cri_tools_arch
         case "$(uname -m)" in
@@ -191,11 +196,11 @@ install_cilium() {
 }
 
 install_hostpath_driver() {
+    local kubelet_data_dir="${1:?missing kubelet data directory}"
     git -C "$ROOT" fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
     git -C "$ROOT" show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodemigrate-hostpath-setup.sh
-    mkdir -p "${KUBELET_DATA_DIR:-/var/lib/nodelet}/plugins" \
-        "${KUBELET_DATA_DIR:-/var/lib/nodelet}/plugins_registry"
-    timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh
+    mkdir -p "$kubelet_data_dir/plugins" "$kubelet_data_dir/plugins_registry"
+    NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh
     kubectl get storageclass csi-hostpath-sc
 }
 
@@ -698,7 +703,7 @@ main() {
     install_tools
     install_source
     install_cilium
-    install_hostpath_driver
+    KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet
     install_workloads
     verify_stage source "$SOURCE_KUBECONFIG"
 
@@ -711,6 +716,7 @@ main() {
     NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
     NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
         "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
+    KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet
     verify_stage nodestore "$nodestore_kubeconfig"
     assert_migratable_api_state_unchanged source nodestore
 
@@ -719,6 +725,7 @@ main() {
     NODEMIGRATE_SOURCE_KUBECONFIG="$nodestore_kubeconfig" \
     NODEMIGRATE_DESTINATION_KUBECONFIG="$SOURCE_KUBECONFIG" \
         "$MIGRATE" "to=$SOURCE_DIST" from=nodestore
+    KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet
     verify_stage returned "$SOURCE_KUBECONFIG"
     assert_round_trip_unchanged
 }
