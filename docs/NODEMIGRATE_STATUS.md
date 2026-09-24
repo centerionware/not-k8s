@@ -23,6 +23,8 @@ separate living documents below.
   `4e932917080e21412c79625fb2b79d08f5e62c0f`, compilation succeeded but the
   upstream control-plane detection test exposed a rooted-path bug. The fix
   passed nodemigrate crate tests at `4ef3585eaea6beae51ffd1116134435b0edc305e`.
+- Source CNI detection and the joined replacement node-agent path passed the
+  focused nodemigrate tests at `63cb20cbe75ebdfafee861c41137b334fb6ff95b`.
 - No migration integration lane has been dispatched. The user directed that
   general e2e and build gates not run; the dedicated runtime workflow also
   remains undispatched pending explicit authorization.
