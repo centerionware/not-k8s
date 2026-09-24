@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use kube::{
-    api::{Api, DynamicObject, ListParams, Patch, PatchParams},
+    api::{Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams},
     config::Kubeconfig,
     discovery::{verbs, ApiResource, Discovery},
     Client,
@@ -170,6 +170,49 @@ impl KubeApi {
                             && condition.get("status").and_then(Value::as_str) == Some("True")
                     })
                 }))
+        })
+    }
+
+    pub fn node_exists(&self, name: &str) -> Result<bool> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering Kubernetes APIs")?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::GET),
+                "Kubernetes API cannot read nodes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            Ok(api
+                .get_opt(name)
+                .await
+                .context("checking for an existing destination node")?
+                .is_some())
+        })
+    }
+
+    pub fn delete_node(&self, name: &str) -> Result<()> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering Kubernetes APIs")?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::DELETE),
+                "Kubernetes API cannot delete nodes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            api.delete(name, &DeleteParams::default())
+                .await
+                .with_context(|| format!("removing stale destination node {name}"))?;
+            Ok(())
         })
     }
 

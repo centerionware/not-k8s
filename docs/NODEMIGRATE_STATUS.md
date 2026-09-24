@@ -12,7 +12,7 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; code present, reverse paths not runtime-verified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Worker-node migration | K3s agent and upstream worker role detection is being added; worker cutover and ordered cluster replacement remain outstanding | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Worker-node migration | K3s agent/upstream worker inventory is implemented; an existing-cluster cutover path now requires explicit same-name replacement and waits for a fresh Ready registration. Local volume, rollback, and runtime behavior remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Existing single-host lanes now compare private canonical initial/returned state snapshots; the 3-control-plane + 2-worker isolated lane remains unimplemented, and no runtime gate has been run | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |

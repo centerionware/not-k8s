@@ -53,6 +53,9 @@ fn migrate_to_nodestore(
     request: &request::MigrationRequest,
     source: &detect::Installation,
 ) -> Result<()> {
+    if source.role == detect::NodeRole::Worker {
+        return migrate_worker_to_nodestore(request, source);
+    }
     service::validate_disable_support(source)?;
     ensure!(
         is_root(),
@@ -147,6 +150,76 @@ fn migrate_to_nodestore(
             .context("replacement node failed readiness after K3s uninstall cleanup")?;
     }
     println!("Migration completed and the destination API passed readiness checks. Export retained at {}", export.dir.display());
+    Ok(())
+}
+
+fn migrate_worker_to_nodestore(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+) -> Result<()> {
+    ensure!(
+        std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT").is_some(),
+        "worker migration requires NODEBOOTSTRAP_JOIN_ENDPOINT for an existing nodestore cluster"
+    );
+    service::validate_disable_support(source)?;
+    ensure!(
+        is_root(),
+        "run nodemigrate as root so it can preserve service state and replace the worker"
+    );
+    let name = node_name(source);
+    let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
+    target_api.ready()?;
+    let existing_node = target_api.node_exists(&name)?;
+    let replace_existing = std::env::var("NODEMIGRATE_REPLACE_NODE")
+        .map(|value| match value.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => bail!("NODEMIGRATE_REPLACE_NODE must be true or false"),
+        })
+        .unwrap_or(Ok(false))?;
+    validate_destination_node_replacement(existing_node, replace_existing)
+        .with_context(|| format!("destination already has node {name}"))?;
+    let worker = replacement_worker_command(source, &name)?;
+    if request.plan_only {
+        let cni = source
+            .cluster
+            .as_ref()
+            .and_then(|cluster| cluster.cni.as_deref())
+            .unwrap_or("external or undetected");
+        println!("Migration plan: {:?} worker -> existing nodestore cluster; node={name}; source CNI={cni}; replace-existing-node={existing_node}; source service '{}' will be disabled; cluster API objects are managed by the control-plane migration", request.from, source.service_name);
+        return Ok(());
+    }
+
+    let previous_service = service::disable(source)?;
+    if existing_node {
+        if let Err(error) = target_api.delete_node(&name) {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("removing stale destination node {name} failed ({error:#}) and restoring source service failed ({restore_error:#})");
+            }
+            return Err(error).context("removing the explicitly selected stale destination worker");
+        }
+    }
+    if let Err(error) = run_bootstrap(worker) {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("worker bootstrap failed ({error:#}) and restoring source service failed ({restore_error:#})");
+        }
+        return Err(error).context("installing the worker into the joined nodestore cluster");
+    }
+    wait_for_node(&target_api, &name).context(format!(
+        "replacement worker {name} did not become Ready; source remains disabled"
+    ))?;
+    if request.uninstall_after_migrate {
+        service::uninstall_source(source)?;
+    }
+    println!("Worker {name} joined the nodestore cluster and is Ready. Cluster-wide API resources were not re-imported from this worker.");
+    Ok(())
+}
+
+fn validate_destination_node_replacement(existing_node: bool, replace: bool) -> Result<()> {
+    ensure!(
+        !existing_node || replace,
+        "set NODEMIGRATE_REPLACE_NODE=true to replace an existing destination node"
+    );
     Ok(())
 }
 
@@ -273,11 +346,16 @@ fn hostname() -> String {
 }
 
 fn node_name(installation: &detect::Installation) -> String {
-    installation
-        .cluster
-        .as_ref()
-        .and_then(|cluster| cluster.node_name.as_deref())
-        .map(str::to_owned)
+    std::env::var("NODEMIGRATE_NODE_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            installation
+                .cluster
+                .as_ref()
+                .and_then(|cluster| cluster.node_name.as_deref())
+                .map(str::to_owned)
+        })
         .or_else(|| std::env::var("NODELET_NODE_NAME").ok())
         .unwrap_or_else(hostname)
 }
@@ -494,7 +572,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::replacement_worker_args;
+    use super::{replacement_worker_args, validate_destination_node_replacement};
     use crate::detect::{ClusterConfig, K3sDatastore};
     use std::path::Path;
 
@@ -544,5 +622,12 @@ mod tests {
         let config = cluster(Some("flannel"), Some("wireguard-native"));
         let args = replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node");
         assert!(args.iter().any(|arg| arg == "--cni=none"));
+    }
+
+    #[test]
+    fn existing_destination_worker_requires_explicit_replacement() {
+        assert!(validate_destination_node_replacement(true, false).is_err());
+        assert!(validate_destination_node_replacement(true, true).is_ok());
+        assert!(validate_destination_node_replacement(false, false).is_ok());
     }
 }

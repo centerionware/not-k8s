@@ -22,14 +22,16 @@ sudo nodemigrate to=nodestore from=kubernetes
 For a nodestore target, join settings come directly from nodebootstrap's
 environment configuration. Set `NODEBOOTSTRAP_JOIN_ENDPOINT` and
 `NODEBOOTSTRAP_PEER_URL` (and the nodebootstrap join CA, certificate, key, and
-member settings as needed) to replace a node that belongs to an existing
-cluster. `nodemigrate` starts nodebootstrap in control-plane join mode and
-preserves the cluster's CA and datastore membership through nodebootstrap,
-then runs nodebootstrap worker mode against the joined cluster so the
-replacement host registers as a Kubernetes node and starts its node agent.
-Without join settings, nodebootstrap creates a new local cluster. The utility
-derives service and pod CIDRs, cluster domain, DNS addresses, and node name
-from the source installation where available.
+member settings as needed) when migrating a control-plane node into an
+existing cluster. For a worker source, nodemigrate uses nodebootstrap worker
+mode against the destination kubeconfig. Set
+`NODEMIGRATE_REPLACE_NODE=true` only when an existing same-name destination
+Node should be replaced; nodemigrate removes that stale Node after stopping
+the source service and waits for the new worker registration to become Ready.
+`NODEMIGRATE_NODE_NAME` overrides the detected node name. Cluster-wide API
+objects are transferred at the control-plane stage, not re-imported from each
+worker. The utility derives service and pod CIDRs, cluster domain, DNS
+addresses, and node name from the source installation where available.
 
 The supported directions are K3s or upstream Kubernetes to nodestore, and
 nodestore to a retained local K3s or upstream Kubernetes installation. The
@@ -54,9 +56,11 @@ nodebootstrap. Add-on API objects, including Cilium resources, are restored
 after the destination is ready. A CNI provider remains responsible for its
 host binaries, interfaces, routes, and kernel state.
 
-PersistentVolume and PersistentVolumeClaim objects are migrated. For local
-and hostPath PersistentVolumes, nodemigrate snapshots the referenced host path
-into the protected export before changing services. If
+PersistentVolume and PersistentVolumeClaim objects are migrated during the
+control-plane stage. For local and hostPath PersistentVolumes, nodemigrate
+snapshots referenced host paths into the protected export before changing
+control-plane services. Per-worker volume snapshot and rollback handling is
+not yet verified. If
 `uninstall-after-migrate=true` invokes the K3s uninstall script, the host path
 is restored afterward. Network and CSI backed volume payloads stay with their
 storage provider.

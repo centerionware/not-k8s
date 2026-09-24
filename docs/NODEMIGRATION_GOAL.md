@@ -37,6 +37,10 @@ for a nodemigrate-only release.
   control-plane stage, then replace control-plane and worker nodes against the
   joined destination without re-importing the same cluster-wide objects from
   every worker.
+- For worker replacement, use the joined destination API to detect and wait
+  for node registration. If a same-name destination Node exists, require the
+  operator to explicitly select its replacement; never treat its old Ready
+  condition as proof that the new worker joined.
 - Discover and preserve the source CNI arrangement, including Cilium. Do not
   require Flannel, overwrite external CNI host configuration, or assume that
   copying API objects alone recreates host networking state.
