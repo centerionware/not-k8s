@@ -242,20 +242,25 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
     } else {
         None
     };
-    let uses_nodebootstrap_flannel =
-        !config.disable_flannel && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan";
-    let (cni_conf_dir, cni_bin_dir) = if uses_nodebootstrap_flannel {
-        (None, None)
+    let uses_nodebootstrap_flannel = role == NodeRole::ControlPlane
+        && !config.disable_flannel
+        && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan";
+    let (cni, cni_conf_dir, cni_bin_dir) = if uses_nodebootstrap_flannel {
+        (Some("flannel".to_string()), None, None)
     } else {
         let (conf_dir, bin_dir) = k3s_containerd_cni_dirs(layout, &data_dir);
-        (Some(conf_dir), Some(bin_dir))
-    };
-    let cni = if config.disable_flannel {
-        cni_conf_dir
-            .as_deref()
-            .and_then(|conf_dir| detect_cni_provider(layout, conf_dir))
-    } else {
-        Some("flannel".to_string())
+        let active_provider = detect_cni_provider(layout, &conf_dir);
+        if let Some(provider) = active_provider {
+            (Some(provider), Some(conf_dir), Some(bin_dir))
+        } else if let Some(provider) = detect_external_cni(layout) {
+            (
+                Some(provider),
+                Some(PathBuf::from("/etc/cni/net.d")),
+                Some(PathBuf::from("/opt/cni/bin")),
+            )
+        } else {
+            (None, Some(conf_dir), Some(bin_dir))
+        }
     };
     let cluster = ClusterConfig {
         data_dir: data_dir.clone(),
