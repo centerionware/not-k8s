@@ -3,7 +3,7 @@
 //! storage into nodestore.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -563,6 +563,7 @@ impl KubeApi {
             let mut pending = export.objects.clone();
             let mut last_error = String::new();
             let mut uid_map = HashMap::new();
+            let mut source_crd_apis = BTreeSet::new();
             for attempt in 0..5 {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
@@ -578,6 +579,9 @@ impl KubeApi {
                     }
                     if let Some(claim_ref) = initial.pointer_mut("/spec/claimRef").and_then(Value::as_object_mut) {
                         claim_ref.remove("uid");
+                    }
+                    if attempt == 0 {
+                        source_crd_apis.extend(custom_resource_gvks(&initial));
                     }
                     match apply_object(&client, &discovery, &initial).await {
                         Ok(applied) => {
@@ -597,6 +601,28 @@ impl KubeApi {
                 pending = retry;
                 if !failures.is_empty() {
                     last_error = summarize_import_failures(&failures);
+                }
+                let crd_apply_failed = failures
+                    .iter()
+                    .any(|(object_type, _)| object_type.ends_with("/CustomResourceDefinition"));
+                if attempt == 0 && !source_crd_apis.is_empty() && !crd_apply_failed {
+                    let missing = wait_for_custom_resource_apis(
+                        &client,
+                        &source_crd_apis,
+                        std::time::Duration::from_secs(60),
+                    )
+                    .await?;
+                    if !missing.is_empty() {
+                        let missing = missing
+                            .iter()
+                            .map(|(group, version, kind)| format!("{group}/{version}/{kind}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        bail!(
+                            "{} Kubernetes objects could not be restored; export retained at {}. Destination did not expose these source CRD APIs after 60 seconds: {missing}. Last-attempt failures: {}",
+                            pending.len(), export.dir.display(), last_error
+                        );
+                    }
                 }
                 if pending.is_empty() { break; }
                 if attempt < 4 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; }
@@ -1336,6 +1362,67 @@ async fn apply_object(
     Ok(applied)
 }
 
+fn custom_resource_gvks(value: &Value) -> BTreeSet<(String, String, String)> {
+    if value.get("kind").and_then(Value::as_str) != Some("CustomResourceDefinition") {
+        return BTreeSet::new();
+    }
+    let Some(group) = value.pointer("/spec/group").and_then(Value::as_str) else {
+        return BTreeSet::new();
+    };
+    let Some(kind) = value.pointer("/spec/names/kind").and_then(Value::as_str) else {
+        return BTreeSet::new();
+    };
+    value
+        .pointer("/spec/versions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|version| version.get("served").and_then(Value::as_bool) == Some(true))
+        .filter_map(|version| version.get("name").and_then(Value::as_str))
+        .map(|version| (group.to_string(), version.to_string(), kind.to_string()))
+        .collect()
+}
+
+async fn wait_for_custom_resource_apis(
+    client: &Client,
+    expected: &BTreeSet<(String, String, String)>,
+    timeout: std::time::Duration,
+) -> Result<Vec<(String, String, String)>> {
+    let started = std::time::Instant::now();
+    let mut discovery = Discovery::new(client.clone())
+        .run()
+        .await
+        .context("discovering destination APIs after applying source CustomResourceDefinitions")?;
+    let mut missing = missing_custom_resource_apis(&discovery, expected);
+    if !missing.is_empty() {
+        eprintln!(
+            "nodemigrate: waiting for {} of {} source CustomResourceDefinition APIs to appear in destination discovery",
+            missing.len(), expected.len()
+        );
+    }
+    while !missing.is_empty() && started.elapsed() < timeout {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        discovery = Discovery::new(client.clone()).run().await.context(
+            "refreshing destination API discovery for imported CustomResourceDefinitions",
+        )?;
+        missing = missing_custom_resource_apis(&discovery, expected);
+    }
+    Ok(missing)
+}
+
+fn missing_custom_resource_apis(
+    discovery: &Discovery,
+    expected: &BTreeSet<(String, String, String)>,
+) -> Vec<(String, String, String)> {
+    expected
+        .iter()
+        .filter(|(group, version, kind)| {
+            find_resource(discovery, kind, &format!("{group}/{version}")).is_none()
+        })
+        .cloned()
+        .collect()
+}
+
 fn object_type_label(value: &Value) -> String {
     let api_version = value
         .get("apiVersion")
@@ -1515,7 +1602,7 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        node_scheduling_patch, object_type_label, persistent_host_paths,
+        custom_resource_gvks, node_scheduling_patch, object_type_label, persistent_host_paths,
         preserve_discovered_type_meta, restore_cni_path_backups, sanitize, skip_object,
         snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest, ApiResource,
         Export, ExportedObject, KubeApi, NodeSchedulingState,
@@ -1524,6 +1611,36 @@ mod tests {
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn import_wait_tracks_only_served_custom_resource_versions() {
+        let definition = serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "spec": {
+                "group": "cilium.io",
+                "names": {"kind": "CiliumEndpoint"},
+                "versions": [
+                    {"name": "v2", "served": true},
+                    {"name": "v1alpha1", "served": false}
+                ]
+            }
+        });
+
+        let apis = custom_resource_gvks(&definition);
+
+        assert_eq!(
+            apis,
+            [(
+                "cilium.io".to_string(),
+                "v2".to_string(),
+                "CiliumEndpoint".to_string()
+            )]
+            .into_iter()
+            .collect()
+        );
+        assert!(custom_resource_gvks(&serde_json::json!({"kind": "Deployment"})).is_empty());
+    }
 
     #[test]
     fn import_failure_summary_groups_missing_destination_apis() {
