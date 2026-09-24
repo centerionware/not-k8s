@@ -14,12 +14,25 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run 36058570338 passed source setup and target bootstrap in both lanes; the unattended warning appeared in both logs. After 60 seconds, destination discovery still lacked all 51 K3s and 47 upstream source CRD APIs. Import failed with 37 and 26 objects pending. Cause is under investigation. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run 36065059567: K3s → nodestore migration completed and accepted all 48 CRDs, then fixture CSI redeployment reapplied those CRDs and lost snapshot API discovery on the tested v0.8.0 runtime. Upstream import reached two remaining failures: CSR ExtraValue codec incompatibility in v0.8.0 and unsupported ClusterTrustBundle/v1. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | The image built, but the first container exited with code 255 before systemd readiness without container output. The entrypoint now prints the resolved systemd binary and enables debug console logs while retaining private cgroup namespaces. Runs 36051665474, 36053700863, 36055409069, and 36056682815 reproduced the failure. Isolation, CRI, BPF, network, and failure/restart remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- At `336ea350502288d55bb6a57763494fa0aa89a475`, focused quick-check for
+  `nodeapiserver,nodemigrate` passed ([run
+  36065050713](https://github.com/centerionware/not-k8s/actions/runs/36065050713)).
+  Release-backed run [36065059567](https://github.com/centerionware/not-k8s/actions/runs/36065059567)
+  built the utility and verified `v0.8.0`. K3s forward migration completed
+  with all 48 CRDs accepted; the fixture then failed while redeploying CSI
+  because it reapplied migrated VolumeSnapshot CRDs and v0.8.0 returned 404
+  for VolumeSnapshotClass. Upstream import reached two remaining object
+  failures: CertificateSigningRequest ExtraValue encoding and unavailable
+  ClusterTrustBundle/v1. The Docker probe again exited 255 before systemd
+  readiness. Server-side CRD-update and ExtraValue fixes are in the PR code,
+  but cannot change the released runtime under test. No round trip passed.
 
 - At `093f2e440b16c4a2a585b424b816b97ab49480a9`, focused nodemigrate crate
   tests, packaging, integration shell validation, and commit convention passed

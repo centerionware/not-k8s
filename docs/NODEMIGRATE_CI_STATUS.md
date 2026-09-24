@@ -21,10 +21,14 @@ this objective.
   GitHub-published SHA-256 digest and required components, then runs
   `.github/scripts/nodemigrate-integration.sh` as root and uploads its log.
   The latest regular release was verified as `v0.8.0` on 2026-09-24, so the
-  PR utility runs against that release. The latest attempt completed the
-  utility build, runtime download, full source CNI/Cilium/CSI/workload checks,
-  and target bootstrap in both lanes. Import then failed because destination
-  discovery lacked source custom resources; see the verification log below.
+  PR utility runs against that release. Run `36065059567` completed the
+  utility builds, runtime downloads, full source CNI/Cilium/CSI/workload
+  checks, and target bootstrap in both lanes. K3s forward migration completed
+  with 48 CRDs accepted, then the fixture's CSI redeployment reapplied the
+  imported VolumeSnapshot CRDs and v0.8.0 returned 404 for VolumeSnapshotClass.
+  Upstream import now reaches two remaining object failures: CSR ExtraValue
+  encoding and the target's missing ClusterTrustBundle/v1 API. The Docker
+  image builds, but its five-node systemd probe still exits 255.
   The kubeadm source setup installs `crictl` from the matching cri-tools minor
   release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
   version for static-pod cleanup diagnostics.
@@ -323,6 +327,10 @@ No local Cargo test/build was run.
 | 2026-09-24 | `cc020c97bebef3ea9c4618723710df607ccd5bda` | Upstream Kubernetes + Cilium migration | Source emitted the unattended warning and exported 488 objects including 44 CRDs. Target bootstrap passed; API import failed with 26 objects pending because destination discovery lacked cert-manager, Cilium, and snapshot APIs; CertificateSigningRequest and ClusterTrustBundle operations also failed. | [Run 36056682815](https://github.com/centerionware/not-k8s/actions/runs/36056682815) |
 | 2026-09-24 | `cc020c97bebef3ea9c4618723710df607ccd5bda` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36056682815](https://github.com/centerionware/not-k8s/actions/runs/36056682815) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
+| 2026-09-24 | `336ea350502288d55bb6a57763494fa0aa89a475` | Focused quick-check `nodeapiserver,nodemigrate` | Passed, including the CRD update and ExtraValue codec changes. | [Run 36065050713](https://github.com/centerionware/not-k8s/actions/runs/36065050713) |
+| 2026-09-24 | `336ea350502288d55bb6a57763494fa0aa89a475` | K3s+Cilium release-backed migration against `v0.8.0` | Source and target checks passed; utility migration completed and accepted 48 CRDs. CSI redeployment then reapplied migrated snapshot CRDs; v0.8.0 returned 404 before stage verification. Fixture follow-up will skip reapplying those migrated CRDs while still checking their APIs through redeployment. | [Run 36065059567](https://github.com/centerionware/not-k8s/actions/runs/36065059567) |
+| 2026-09-24 | `336ea350502288d55bb6a57763494fa0aa89a475` | Upstream Kubernetes+Cilium release-backed migration against `v0.8.0` | Source and target checks passed; import failed for exactly two objects: CertificateSigningRequest due to the v0.8.0 protobuf ExtraValue codec and ClusterTrustBundle/v1 because the target does not serve that API. The current-branch fixes cannot alter the released target used by this run. | [Run 36065059567](https://github.com/centerionware/not-k8s/actions/runs/36065059567) |
+| 2026-09-24 | `336ea350502288d55bb6a57763494fa0aa89a475` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36065059567](https://github.com/centerionware/not-k8s/actions/runs/36065059567) |
 
 | 2026-09-24 | `093f2e440b16c4a2a585b424b816b97ab49480a9` | Focused nodemigrate checks, shell validation, commit convention | Passed; crate tests include served-CRD-version and interactive/noninteractive risk-warning behavior. | [Checks 36058334362](https://github.com/centerionware/not-k8s/actions/runs/36058334362), [shell 36058334455](https://github.com/centerionware/not-k8s/actions/runs/36058334455), [commit 36058331222](https://github.com/centerionware/not-k8s/actions/runs/36058331222) |
 | 2026-09-24 | `093f2e440b16c4a2a585b424b816b97ab49480a9` | K3s + Cilium migration against `v0.8.0` | Source setup and target bootstrap passed; warning appeared in log; 506 objects/48 CRDs exported. After 60 seconds, destination discovery still lacked all 51 served source CRD APIs; import failed with 37 objects pending. | [Run 36058570338](https://github.com/centerionware/not-k8s/actions/runs/36058570338) |

@@ -199,6 +199,7 @@ install_cilium() {
 
 install_hostpath_driver() {
     local kubelet_data_dir="${1:?missing kubelet data directory}"
+    local skip_snapshot_crds="${2:-false}"
     git -C "$ROOT" fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
     git -C "$ROOT" show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodemigrate-hostpath-setup.sh
     if ! grep -q '^# ── DRA: ' /tmp/nodemigrate-hostpath-setup.sh; then
@@ -208,6 +209,13 @@ install_hostpath_driver() {
     # The full e2e helper also deploys DRA and requires nodelet's DRA
     # registration. Source K3s/kubelet stages only need the real CSI driver.
     sed -i '/^# ── DRA: /,$d' /tmp/nodemigrate-hostpath-setup.sh
+    if [[ "$skip_snapshot_crds" == true ]]; then
+        # These CRDs are part of the migrated API state. Keep them intact so
+        # this redeployment exercises their imported discovery and does not
+        # mutate the objects whose source-to-target identity is being checked.
+        sed -i '\|external-snapshotter/v8\.6\.0/client/config/crd/snapshot\.storage\.k8s\.io_|d' \
+            /tmp/nodemigrate-hostpath-setup.sh
+    fi
     mkdir -p "$kubelet_data_dir/plugins" "$kubelet_data_dir/plugins_registry"
     NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh
     kubectl get storageclass csi-hostpath-sc
@@ -725,7 +733,7 @@ main() {
     NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
     NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
         "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
-    KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet
+    KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet true
     verify_stage nodestore "$nodestore_kubeconfig"
     assert_migratable_api_state_unchanged source nodestore
 
@@ -734,7 +742,7 @@ main() {
     NODEMIGRATE_SOURCE_KUBECONFIG="$nodestore_kubeconfig" \
     NODEMIGRATE_DESTINATION_KUBECONFIG="$SOURCE_KUBECONFIG" \
         "$MIGRATE" "to=$SOURCE_DIST" from=nodestore
-    KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet
+    KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet true
     verify_stage returned "$SOURCE_KUBECONFIG"
     assert_round_trip_unchanged
 }
