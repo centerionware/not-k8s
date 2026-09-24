@@ -37,6 +37,14 @@ pub struct MigrationRequest {
     /// still created and local host paths are still snapshotted.
     #[serde(default)]
     pub skip_api_import: bool,
+    /// Start a retained control plane without waiting for an API that still
+    /// needs another retained control plane to restore datastore quorum.
+    #[serde(default)]
+    pub stage_target: bool,
+    /// Skip source API export after the destination cluster already has the
+    /// imported state and the source datastore no longer has quorum.
+    #[serde(default)]
+    pub skip_api_export: bool,
 }
 
 impl MigrationRequest {
@@ -46,6 +54,8 @@ impl MigrationRequest {
         let mut uninstall_after_migrate = false;
         let mut plan_only = false;
         let mut skip_api_import = false;
+        let mut stage_target = false;
+        let mut skip_api_export = false;
 
         for raw in args {
             let (key, value) = raw
@@ -58,7 +68,9 @@ impl MigrationRequest {
                 "uninstall-after-migrate" => uninstall_after_migrate = parse_bool(value, key)?,
                 "plan-only" | "dry-run" => plan_only = parse_bool(value, key)?,
                 "skip-api-import" => skip_api_import = parse_bool(value, key)?,
-                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, or skip-api-import=)"),
+                "stage-target" => stage_target = parse_bool(value, key)?,
+                "skip-api-export" => skip_api_export = parse_bool(value, key)?,
+                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, stage-target=, or skip-api-export=)"),
             }
         }
 
@@ -93,6 +105,22 @@ impl MigrationRequest {
                 ),
             "skip-api-import is only valid when migrating a source control plane to nodestore"
         );
+        ensure!(
+            !stage_target && !skip_api_export
+                || matches!(
+                    (from, to),
+                    (Distribution::Nodestore, Distribution::K3s | Distribution::Kubernetes)
+                ),
+            "stage-target and skip-api-export are only valid when returning a nodestore control plane to K3s or Kubernetes"
+        );
+        ensure!(
+            !(skip_api_import && (stage_target || skip_api_export)),
+            "skip-api-import cannot be combined with reverse-migration options"
+        );
+        ensure!(
+            !stage_target || !uninstall_after_migrate,
+            "stage-target cannot uninstall the source before the destination control plane is Ready"
+        );
 
         Ok(Self {
             to,
@@ -100,6 +128,8 @@ impl MigrationRequest {
             uninstall_after_migrate,
             plan_only,
             skip_api_import,
+            stage_target,
+            skip_api_export,
         })
     }
 
@@ -191,6 +221,43 @@ mod tests {
             "to=kubernetes",
             "from=nodestore",
             "skip-api-import=true",
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn accepts_staging_and_skip_export_for_reverse_control_plane_cutover() {
+        let staged = MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "stage-target=true",
+        ]))
+        .unwrap();
+        assert!(staged.stage_target);
+
+        let final_member = MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "skip-api-export=true",
+        ]))
+        .unwrap();
+        assert!(final_member.skip_api_export);
+    }
+
+    #[test]
+    fn rejects_staging_with_uninstall_and_conflicting_reverse_options() {
+        assert!(MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "stage-target=true",
+            "uninstall-after-migrate=true",
+        ]))
+        .is_err());
+        assert!(MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "stage-target=true",
+            "skip-api-export=true",
         ]))
         .is_err());
     }

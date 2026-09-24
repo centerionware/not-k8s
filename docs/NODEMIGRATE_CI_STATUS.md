@@ -55,17 +55,21 @@ gates.
 ## Multi-node implementation gap
 
 The present script runs source, not-k8s, and return stages on one host OS. It
-does not provision five independently isolated nodes. The migration code also
-does not yet coordinate reverse control-plane cutover: the original stacked
-etcd quorum must be brought up across at least two retained control planes,
-while the not-k8s Raft membership must remain available for API export and be
-retired safely as each control plane leaves. Repeating the current single-host
-script or running it once per node would not satisfy the five-node gate.
+does not provision five independently isolated nodes. The migration utility
+now exposes an operator-ordered reverse control-plane protocol: `stage-target`
+starts a retained CP without waiting for etcd quorum, a later CP exports and
+imports while both source and destination APIs are available, and the final CP
+can use `skip-api-export` after the destination is ready. The utility does not
+automatically sequence nodes or prove that the required quorum and prior state
+import are present beyond checking destination API readiness for the final
+step. No real three-CP run verifies this protocol yet. Repeating the current
+single-host script or running it once per node would not satisfy the five-node
+gate.
 
-Next, add an isolated five-node provisioner and a staged control-plane
-cutover/return protocol, then validate Docker’s network namespaces, systemd,
-CRI, per-node storage, Cilium behavior, and node failure isolation in that
-same topology. Keep QEMU as the alternative if Docker fails any of those
+Next, add an isolated five-node provisioner and an orchestrated staged
+control-plane cutover/return lane, then validate Docker’s network namespaces,
+systemd, CRI, per-node storage, Cilium behavior, and node failure isolation in
+that same topology. Keep QEMU as the alternative if Docker fails any of those
 checks.
 
 ## Run policy

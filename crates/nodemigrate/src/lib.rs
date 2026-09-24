@@ -276,6 +276,7 @@ fn migrate_to_existing(
         source.distribution == request::Distribution::Nodestore,
         "migration to an existing Kubernetes installation currently starts from nodestore"
     );
+    validate_reverse_control_plane_options(request, source, target)?;
     if source.role == detect::NodeRole::Worker {
         return migrate_worker_from_nodestore(request, source, target);
     }
@@ -284,50 +285,147 @@ fn migrate_to_existing(
         is_root(),
         "run nodemigrate as root to control both service stacks"
     );
-    let source_api = transfer::KubeApi::source(source)?;
     let target_api = transfer::KubeApi::destination(request.to)?;
-    source_api.ready()?;
+    let source_api = if request.skip_api_export {
+        None
+    } else {
+        Some(transfer::KubeApi::source(source)?)
+    };
+    if let Some(source_api) = &source_api {
+        source_api.ready()?;
+    }
+    if request.skip_api_export {
+        target_api.ready().context(
+            "skip-api-export requires the retained destination cluster to be Ready through NODEMIGRATE_DESTINATION_KUBECONFIG",
+        )?;
+    }
     if request.plan_only {
         let cni = target
             .cluster
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; uninstall-after-migrate={}", request.to, target.service_name, request.uninstall_after_migrate);
+        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; source-api-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.stage_target, request.uninstall_after_migrate);
         return Ok(());
     }
-    let mut export = source_api.export(source)?;
-    println!(
-        "Protected API object export saved at {}",
-        export.dir.display()
-    );
-    let previous_service = service::disable(source)?;
-    if let Err(error) = export.snapshot_host_paths() {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#})");
+    let mut export = source_api
+        .as_ref()
+        .map(|source_api| source_api.export(source))
+        .transpose()?;
+    let host_path_snapshot = if request.skip_api_export {
+        Some(target_api.snapshot_host_paths()?)
+    } else {
+        None
+    };
+    if let Some(export) = &export {
+        println!(
+            "Protected API object export saved at {}",
+            export.dir.display()
+        );
+    }
+    if let Some(snapshot) = &host_path_snapshot {
+        println!(
+            "Local-volume recovery snapshot saved at {}",
+            snapshot.recovery_directory().display()
+        );
+    }
+    let recovery_location = export
+        .as_ref()
+        .map(|export| export.dir.display().to_string())
+        .or_else(|| {
+            host_path_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.recovery_directory().display().to_string())
+        })
+        .unwrap_or_else(|| "no new export was created".to_string());
+    let previous_service = service::disable(source).with_context(|| {
+        format!("disabling nodestore failed; recovery data is at {recovery_location}")
+    })?;
+    if let Some(export) = &mut export {
+        if let Err(error) = export.snapshot_host_paths() {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
+            }
+            return Err(error).context(format!(
+                "local persistent volume snapshot failed; nodestore was restored; recovery data is at {recovery_location}"
+            ));
         }
-        return Err(error)
-            .context("local persistent volume snapshot failed; nodestore was restored");
     }
     if let Err(error) = service::activate(target) {
         if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("starting the retained target failed ({error:#}); restoring nodestore also failed ({restore_error:#})");
+            bail!("starting the retained target failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
         }
-        return Err(error).context("starting the retained target; nodestore was restored");
+        return Err(error).context(format!(
+            "starting the retained target failed; nodestore was restored; recovery data is at {recovery_location}"
+        ));
     }
-    wait_for_api(&target_api).context("retained destination API did not become ready")?;
-    if let Err(error) = target_api.import(&export) {
-        bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
+    if request.stage_target {
+        let recovery = export
+            .as_ref()
+            .map(|export| export.dir.display().to_string())
+            .unwrap_or_else(|| "not created".to_string());
+        println!("Retained control plane staged: source nodestore services are disabled and '{}' is running. The destination API may remain unavailable until another retained control plane is started. API export retained at {recovery}", target.service_name);
+        return Ok(());
     }
-    wait_for_node(&target_api, &node_name(target))?;
+    wait_for_api(&target_api).context(format!(
+        "retained destination API did not become ready; nodestore remains stopped and recovery data is at {recovery_location}"
+    ))?;
+    if let Some(export) = &export {
+        if let Err(error) = target_api.import(export) {
+            bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
+        }
+    }
+    wait_for_node(&target_api, &node_name(target)).context(format!(
+        "retained destination node did not become Ready; recovery data is at {recovery_location}"
+    ))?;
     if request.uninstall_after_migrate {
-        service::uninstall_source(source)?;
-        export.restore_host_paths()?;
+        service::uninstall_source(source).with_context(|| {
+            format!("source uninstall failed; recovery data is at {recovery_location}")
+        })?;
+        if let Some(export) = &export {
+            export.restore_host_paths().with_context(|| {
+                format!("restoring local persistent volumes failed; recovery data is at {recovery_location}")
+            })?;
+        }
+        if let Some(snapshot) = &host_path_snapshot {
+            snapshot.restore().with_context(|| {
+                format!("restoring local persistent volumes failed; recovery data is at {recovery_location}")
+            })?;
+        }
     }
+    let recovery = export
+        .as_ref()
+        .map(|export| export.dir.display().to_string())
+        .or_else(|| {
+            host_path_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.recovery_directory().display().to_string())
+        })
+        .unwrap_or_else(|| {
+            "no new export (destination already held the imported state)".to_string()
+        });
     println!(
-        "Migration to {:?} completed. Export retained at {}",
-        request.to,
-        export.dir.display()
+        "Migration to {:?} completed. Recovery data: {recovery}",
+        request.to
+    );
+    Ok(())
+}
+
+fn validate_reverse_control_plane_options(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+    target: &detect::Installation,
+) -> Result<()> {
+    let requested = request.stage_target || request.skip_api_export;
+    ensure!(
+        !requested
+            || (source.role == detect::NodeRole::ControlPlane
+                && target.role == detect::NodeRole::ControlPlane),
+        "stage-target and skip-api-export require both source and retained target to be control planes"
+    );
+    ensure!(
+        !request.skip_api_export || !request.stage_target,
+        "skip-api-export cannot be combined with stage-target"
     );
     Ok(())
 }
@@ -679,6 +777,9 @@ fn print_help() {
          \n\
          Later control-plane nodes joining an already migrated nodestore cluster\n\
          may use skip-api-import=true; the first control plane must import state.\n\
+         For reverse multi-control-plane migration, stage-target=true starts\n\
+         an early retained control plane without waiting for API quorum; use\n\
+         skip-api-export=true only for the final node after target state is imported.\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
@@ -690,7 +791,8 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        replacement_worker_args, validate_destination_node_replacement, validate_skip_api_import,
+        replacement_worker_args, validate_destination_node_replacement,
+        validate_reverse_control_plane_options, validate_skip_api_import,
     };
     use crate::{
         detect::{ClusterConfig, Installation, K3sDatastore, NodeRole},
@@ -779,5 +881,44 @@ mod tests {
         let mut worker = source;
         worker.role = NodeRole::Worker;
         assert!(validate_skip_api_import(&request, &worker, true).is_err());
+    }
+
+    #[test]
+    fn reverse_staging_requires_control_planes_at_both_ends() {
+        let request = MigrationRequest::parse(&[
+            "to=kubernetes".to_string(),
+            "from=nodestore".to_string(),
+            "stage-target=true".to_string(),
+        ])
+        .unwrap();
+        let control_plane = Installation {
+            distribution: Distribution::Nodestore,
+            role: NodeRole::ControlPlane,
+            runtime_endpoint: None,
+            service_manager: None,
+            service_name: "nodestore".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: None,
+        };
+        let target = Installation {
+            distribution: Distribution::Kubernetes,
+            service_name: "kubelet".to_string(),
+            ..control_plane.clone()
+        };
+
+        assert!(validate_reverse_control_plane_options(&request, &control_plane, &target).is_ok());
+
+        let mut worker = control_plane.clone();
+        worker.role = NodeRole::Worker;
+        assert!(validate_reverse_control_plane_options(&request, &worker, &target).is_err());
+
+        let mut worker_target = target;
+        worker_target.role = NodeRole::Worker;
+        assert!(
+            validate_reverse_control_plane_options(&request, &control_plane, &worker_target)
+                .is_err()
+        );
     }
 }

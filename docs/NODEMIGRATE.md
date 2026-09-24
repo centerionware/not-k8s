@@ -37,7 +37,23 @@ the destination is ready, migrate each later control-plane with
 Each later control plane still writes a protected per-node export and snapshots
 local host paths, but does not re-apply cluster-wide objects. This option is
 rejected unless the source is a control plane joining an existing nodestore
-cluster. On the return path, a detected not-k8s worker can start its retained
+cluster.
+
+For an upstream three-control-plane return, stage the first retained
+control-plane with `stage-target=true`. It exports nodestore API state, stops
+its local nodestore services, starts the retained upstream control plane, and
+returns without waiting for upstream API quorum. Migrate the second
+control-plane normally; its source export remains available while two
+nodestore members are active, and starting its retained etcd member should
+restore upstream quorum so the export can be applied. Return the last
+control-plane with `skip-api-export=true` only after that import succeeds.
+This final operation requires `NODEMIGRATE_DESTINATION_KUBECONFIG` to reach
+the ready upstream API and takes its local-volume recovery snapshot from the
+destination PV inventory, since the source API may no longer have quorum.
+Review the plan output before cutover. This staged operator protocol has not
+yet been validated in the multi-node runtime lane.
+
+On the return path, a detected not-k8s worker can start its retained
 K3s-agent or kubelet service against the existing target cluster and wait for
 a fresh Ready registration without importing cluster-wide objects again. Use
 `NODEMIGRATE_DESTINATION_KUBECONFIG` for a cluster-admin kubeconfig that can
