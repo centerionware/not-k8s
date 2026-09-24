@@ -68,14 +68,16 @@ separate living documents below.
   shell syntax, Rust formatting, and whitespace checks pass locally. Targeted
   nodemigrate checks ran at `caed49582952a0743d87a06bbb52fceb737c059e`
   ([run 35972976396](https://github.com/centerionware/not-k8s/actions/runs/35972976396));
-  packaging and detection passed, but crate tests failed. GitHub log retrieval
-  failed, so the diagnostic remains unknown. The crate test failed again at
-  `f791d0e37440a5392bab05c22ece423f69fed7ad` ([run
-  35975029524](https://github.com/centerionware/not-k8s/actions/runs/35975029524));
-  its log artifact uploaded successfully but could not be downloaded from this
-  host. Release policy ([35975029509](https://github.com/centerionware/not-k8s/actions/runs/35975029509))
-  and shell/snapshot validation ([35975029519](https://github.com/centerionware/not-k8s/actions/runs/35975029519))
-  passed. No Cargo build or test was run locally.
+  packaging and detection passed, but crate tests failed. The captured
+  diagnostic showed test temporary directories were group-readable, causing
+  the protected-export loader to reject one fixture; a second path-traversal
+  fixture had been passing on that same early permission check. Both fixtures
+  now use the production mode `0700`. Focused nodemigrate checks passed at
+  `e943bb756ef8568c4e4bd89ee2bb6d16c165107f` ([run
+  35976429487](https://github.com/centerionware/not-k8s/actions/runs/35976429487));
+  release policy ([35976429468](https://github.com/centerionware/not-k8s/actions/runs/35976429468))
+  and shell/snapshot validation ([35976429428](https://github.com/centerionware/not-k8s/actions/runs/35976429428))
+  passed too. No Cargo build or test was run locally.
 
 ## Next actions
 
