@@ -37,6 +37,9 @@ for a nodemigrate-only release.
   control-plane stage, then replace control-plane and worker nodes against the
   joined destination without re-importing the same cluster-wide objects from
   every worker.
+- On upstream control-plane nodes, stop kubelet and its CRI static-pod
+  sandboxes before starting the destination control plane, while retaining the
+  source manifests for a recoverable return migration.
 - For worker replacement, use the joined destination API to detect and wait
   for node registration. If a same-name destination Node exists, require the
   operator to explicitly select its replacement; never treat its old Ready

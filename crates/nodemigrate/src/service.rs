@@ -2,7 +2,7 @@ use std::process::{Command, Output};
 
 use anyhow::{bail, ensure, Context, Result};
 
-use crate::detect::{Installation, ServiceManager};
+use crate::detect::{Distribution, Installation, NodeRole, ServiceManager};
 
 #[derive(Debug, Clone)]
 pub struct PreviousServiceState {
@@ -158,6 +158,63 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
         return Err(error).context("could not disable source service; previous state was restored");
     }
     Ok(previous)
+}
+
+/// Remove kubeadm control-plane static-pod sandboxes after kubelet is stopped.
+/// Kubelet shutdown alone leaves those CRI containers bound to API/etcd ports.
+pub fn stop_upstream_static_pods(installation: &Installation) -> Result<()> {
+    if installation.distribution != Distribution::Kubernetes
+        || installation.role != NodeRole::ControlPlane
+    {
+        return Ok(());
+    }
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    let output = command(
+        "crictl",
+        &["--runtime-endpoint", &endpoint, "pods", "-o", "json"],
+    )
+    .context("listing source static pods; install crictl or set NODEMIGRATE_CRI_ENDPOINT")?;
+    ensure!(
+        output.status.success(),
+        "crictl could not list source pod sandboxes: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let pods: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parsing CRI pod sandbox list")?;
+    let ids = static_pod_sandbox_ids(&pods);
+    for id in &ids {
+        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+            .with_context(|| format!("stopping source static pod sandbox {id}"))?;
+        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+            .with_context(|| format!("removing source static pod sandbox {id}"))?;
+    }
+    Ok(())
+}
+
+fn static_pod_sandbox_ids(pods: &serde_json::Value) -> Vec<String> {
+    pods.get("items")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|pod| {
+            pod.pointer("/metadata/namespace")
+                .and_then(serde_json::Value::as_str)
+                == Some("kube-system")
+                && pod
+                    .pointer("/labels/kubernetes.io~1config.source")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("file")
+        })
+        .filter_map(|pod| {
+            pod.pointer("/id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 pub fn restore(installation: &Installation, previous: PreviousServiceState) -> Result<()> {
@@ -480,4 +537,33 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
         .args(args)
         .output()
         .with_context(|| format!("running {program}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::static_pod_sandbox_ids;
+
+    #[test]
+    fn selects_only_kube_system_file_static_pod_sandboxes() {
+        let pods = serde_json::json!({
+            "items": [
+                {
+                    "id": "static-sandbox",
+                    "metadata": {"namespace": "kube-system"},
+                    "labels": {"kubernetes.io/config.source": "file"}
+                },
+                {
+                    "id": "controller-sandbox",
+                    "metadata": {"namespace": "kube-system"},
+                    "labels": {"kubernetes.io/config.source": "api"}
+                },
+                {
+                    "id": "application-sandbox",
+                    "metadata": {"namespace": "apps"},
+                    "labels": {"kubernetes.io/config.source": "file"}
+                }
+            ]
+        });
+        assert_eq!(static_pod_sandbox_ids(&pods), ["static-sandbox"]);
+    }
 }

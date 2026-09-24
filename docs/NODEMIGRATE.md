@@ -66,7 +66,12 @@ is restored afterward. Network and CSI backed volume payloads stay with their
 storage provider.
 
 The source services are stopped and disabled after the protected export is
-written. The source installation remains available for recovery by default.
+written. On an upstream control-plane source, kubelet is stopped and its
+file-managed static-pod sandboxes are removed through CRI so they release API
+server and etcd ports; their manifests remain installed for a return
+migration. `NODEMIGRATE_CRI_ENDPOINT` overrides the detected CRI endpoint
+(`crictl` is required for this step). The source installation remains
+available for recovery by default.
 The export, including Secrets and local volume snapshots, is stored under
 `/var/lib/nodemigrate/exports` with restrictive permissions. If bootstrap
 fails before the destination API becomes ready, nodemigrate restores the

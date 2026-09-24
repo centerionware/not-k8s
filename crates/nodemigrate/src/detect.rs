@@ -47,6 +47,7 @@ pub struct ClusterConfig {
 pub struct Installation {
     pub distribution: Distribution,
     pub role: NodeRole,
+    pub runtime_endpoint: Option<String>,
     pub service_manager: Option<ServiceManager>,
     pub service_name: String,
     pub service_file: Option<PathBuf>,
@@ -258,6 +259,7 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
     Ok(Some(Installation {
         distribution: Distribution::K3s,
         role,
+        runtime_endpoint: None,
         service_manager: detect_service_manager(
             layout,
             systemd_unit.is_some(),
@@ -308,6 +310,7 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
     Ok(Some(Installation {
         distribution: Distribution::Nodestore,
         role: NodeRole::ControlPlane,
+        runtime_endpoint: None,
         service_manager: detect_service_manager(
             layout,
             systemd_unit.is_some(),
@@ -375,6 +378,14 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
     } else {
         None
     };
+    let runtime_config_path = layout.path("/var/lib/kubelet/instance-config.yaml");
+    let runtime_endpoint = std::fs::read(&runtime_config_path)
+        .ok()
+        .and_then(|bytes| serde_yaml::from_slice::<Value>(&bytes).ok())
+        .and_then(|config| {
+            yaml_string(&config, "criSocket")
+                .or_else(|| yaml_string(&config, "containerRuntimeEndpoint"))
+        });
     let mut config_files = vec![strip_root(&layout.root, apiserver_manifest)];
     if controller_manifest.is_file() {
         config_files.push(strip_root(&layout.root, controller_manifest));
@@ -382,6 +393,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
     Ok(Some(Installation {
         distribution: Distribution::Kubernetes,
         role,
+        runtime_endpoint,
         service_manager: detect_service_manager(
             layout,
             kubelet_systemd.is_some(),
@@ -943,6 +955,11 @@ mod tests {
         fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
         fs::create_dir_all(root.path().join("var/lib/kubelet")).unwrap();
         fs::write(
+            root.path().join("var/lib/kubelet/instance-config.yaml"),
+            "containerRuntimeEndpoint: unix:///run/crio/crio.sock\n",
+        )
+        .unwrap();
+        fs::write(
             root.path().join("etc/systemd/system/kubelet.service"),
             "[Service]\n",
         )
@@ -969,6 +986,10 @@ mod tests {
                 .unwrap();
         assert_eq!(installation.role, NodeRole::Worker);
         assert_eq!(installation.service_name, "kubelet");
+        assert_eq!(
+            installation.runtime_endpoint.as_deref(),
+            Some("unix:///run/crio/crio.sock")
+        );
         let cluster = installation.cluster.unwrap();
         assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
         assert_eq!(cluster.cni.as_deref(), Some("cilium"));

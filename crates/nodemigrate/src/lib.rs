@@ -98,6 +98,13 @@ fn migrate_to_nodestore(
         export.dir.display()
     );
     let previous_service = service::disable(source)?;
+    if let Err(error) = service::stop_upstream_static_pods(source) {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("stopping upstream static pods failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+        }
+        return Err(error)
+            .context("stopping source Kubernetes static pods; source service was restored");
+    }
     if let Err(error) = export.snapshot_host_paths() {
         if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("snapshotting local persistent volumes failed ({error:#}); restoring the source service also failed ({restore_error:#})");
