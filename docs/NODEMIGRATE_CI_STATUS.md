@@ -39,6 +39,14 @@ this objective.
   probability of data loss, external backups, and user responsibility, then
   continue without prompting. Focused crate tests cover exact interactive
   confirmation and noninteractive warning behavior.
+- At SHA `954f1be3d12fb7f0334db8dff6efae28ca0e4250`, object import now falls
+  back to a destination API version only when discovery confirms the same API
+  group and kind, and logs the selected conversion. Focused nodemigrate tests
+  passed in [run 36068373192](https://github.com/centerionware/not-k8s/actions/runs/36068373192).
+  The authorized release-backed migration against latest regular release
+  `v0.8.0` is running in [run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485).
+  Its five-node image built, but the systemd preflight failed; remaining logs
+  will be inspected after the migration lanes finish.
 - Manual dispatch also starts the Docker five-node preflight. The Dockerfile
   path fix worked, but the next image build found Ubuntu 24.04 does not offer
   `bpftool` as an installable package name; the follow-up uses its providing
@@ -335,6 +343,8 @@ No local Cargo test/build was run.
 | 2026-09-24 | `e6963be70467318f19b8c9fb8ef7197c0c9980b2` | K3s+Cilium release-backed migration against `v0.8.0` | Utility migration completed with 48 CRDs accepted. The migrated VolumeSnapshotClass remained usable without CRD reapplication. The target then denied `system:kube-controller-manager` pod creation (403), preventing CSI readiness, workload checks, and reverse migration. | [Run 36066311951](https://github.com/centerionware/not-k8s/actions/runs/36066311951) |
 | 2026-09-24 | `e6963be70467318f19b8c9fb8ef7197c0c9980b2` | Upstream Kubernetes+Cilium release-backed migration against `v0.8.0` | Import again failed for exactly CertificateSigningRequest ExtraValue encoding and unsupported ClusterTrustBundle/v1. Source stayed disabled and the protected export was retained. | [Run 36066311951](https://github.com/centerionware/not-k8s/actions/runs/36066311951) |
 | 2026-09-24 | `e6963be70467318f19b8c9fb8ef7197c0c9980b2` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36066311951](https://github.com/centerionware/not-k8s/actions/runs/36066311951) |
+| 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | Focused nodemigrate checks | API-version negotiation regression and complete nodemigrate crate checks passed. | [Run 36068373192](https://github.com/centerionware/not-k8s/actions/runs/36068373192) |
+| 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | K3s+Cilium and upstream Kubernetes+Cilium against `v0.8.0` | Release-backed migration lanes are running. Five-node image build passed; systemd preflight failed before five-node behavior was verified. | [Run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485) |
 
 | 2026-09-24 | `093f2e440b16c4a2a585b424b816b97ab49480a9` | Focused nodemigrate checks, shell validation, commit convention | Passed; crate tests include served-CRD-version and interactive/noninteractive risk-warning behavior. | [Checks 36058334362](https://github.com/centerionware/not-k8s/actions/runs/36058334362), [shell 36058334455](https://github.com/centerionware/not-k8s/actions/runs/36058334455), [commit 36058331222](https://github.com/centerionware/not-k8s/actions/runs/36058331222) |
 | 2026-09-24 | `093f2e440b16c4a2a585b424b816b97ab49480a9` | K3s + Cilium migration against `v0.8.0` | Source setup and target bootstrap passed; warning appeared in log; 506 objects/48 CRDs exported. After 60 seconds, destination discovery still lacked all 51 served source CRD APIs; import failed with 37 objects pending. | [Run 36058570338](https://github.com/centerionware/not-k8s/actions/runs/36058570338) |
