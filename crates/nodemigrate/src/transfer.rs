@@ -516,10 +516,10 @@ impl KubeApi {
                 object.value.get("kind").and_then(Value::as_str) == Some("CustomResourceDefinition")
             })
             .count();
-        tracing::info!(
-            api_objects = objects.len(),
-            custom_resource_definitions,
-            "captured Kubernetes objects for migration"
+        eprintln!(
+            "nodemigrate: captured {} Kubernetes API objects, including {} CustomResourceDefinitions",
+            objects.len(),
+            custom_resource_definitions
         );
 
         let dir = export_directory()?;
