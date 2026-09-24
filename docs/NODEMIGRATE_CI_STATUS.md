@@ -150,9 +150,11 @@ support is not guaranteed.
 
 The latest pushed SHA, `1c42edc6`, passed the nodemigrate release artifact
 check (run `36046895086`) and shell validation (run `36046895281`). The
-focused crate test run `36046895251` failed only the new kube-client runtime
-regression because its escaped YAML string lost indentation; the corrected
-raw-YAML fixture passed in run `36048275119`. Manual run
+focused crate test run `36046895251` failed because its escaped YAML string
+lost indentation; the corrected raw-YAML fixture passed in run
+`36048275119`. The separate targeted check run `36048275236` then showed that
+the test also needed the explicit rustls provider installed by the binary
+entrypoint; that test setup has been corrected and awaits retest. Manual run
 `36046899524` built nodemigrate and verified the `v0.8.0` digest/components.
 Both source clusters passed full workload and storage checks and printed the
 five-emoji unattended warning. K3s then selected the built-in flannel target

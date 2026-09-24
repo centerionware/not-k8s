@@ -1455,6 +1455,7 @@ mod tests {
 
     #[test]
     fn constructs_kubernetes_client_inside_its_runtime_context() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let temp = tempfile::tempdir().unwrap();
         let kubeconfig = temp.path().join("config");
         fs::write(
