@@ -59,10 +59,13 @@ distribution:
    integration script does not yet implement this lane.
 
 The workflow is manual. The user authorized the dedicated migration runtime
-workflow while excluding the standard e2e and build gates. The latest attempt
-against the `v0.8.0` runtime failed during fixture prerequisite setup, before
-Kubernetes was installed or nodemigrate was invoked. See the
-[CI status](NODEMIGRATE_CI_STATUS.md) for run details.
+workflow while excluding the standard e2e and build gates. Run
+[36058570338](https://github.com/centerionware/not-k8s/actions/runs/36058570338)
+used the `v0.8.0` runtime: both fixture setups and target bootstraps passed,
+then import failed because the target did not expose the source CRD APIs after
+a 60-second wait. The unattended run printed the five-emoji high-risk warning
+to its log. Neither lane completed a round trip. See the [CI status](NODEMIGRATE_CI_STATUS.md)
+for per-lane counts and failure history.
 
 ## Merge-gate status
 
@@ -77,11 +80,13 @@ path. The existing single-host lane captures a fingerprint for every listable
 API object handled by the export sanitizer, compares source→nodestore objects,
 and compares full initial/returned semantic snapshots. It also checks node
 names/roles/readiness, workload/add-on/ingress specs, PV/PVC bindings, Cilium,
-required CRD state, and certificate-secret content by digest. It does not
-provision or verify five distinct isolated nodes. QEMU
+required CRD state, and certificate-secret content by digest. The latest
+single-host run is diagnostic only and failed during API import; it does not
+pass the K3s merge gate. It does not provision or verify five distinct
+isolated nodes. QEMU
 or another suitable isolation method can host those nodes on one CI node;
 Docker is acceptable only if the environment fully simulates the behaviors
-under test. No runtime gate has been dispatched. The new skip-import path
+under test. No runtime merge gate has passed. The new skip-import path
 addresses repeated cluster-wide API application on later forward control-plane
 joins. The staged reverse path still needs an orchestrator to sequence quorum
 recovery and verify freshness for nodes whose staged invocation returns before
