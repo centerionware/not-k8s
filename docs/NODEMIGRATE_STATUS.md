@@ -45,11 +45,12 @@ separate living documents below.
 - Control-plane migration could accept an imported stale Ready Node as proof
   the replacement joined. The current fix requires explicit
   `NODEMIGRATE_REPLACE_NODE=true` and deletes that object before waiting for
-  fresh registration in both directions when the target API is ready. The
-  replacement restores node labels, taints, and unschedulable state after
-  registration. Focused nodemigrate checks passed at
-  `1615131d4141fb6701588e58833b203d8850aa42` ([run
-  35967908377](https://github.com/centerionware/not-k8s/actions/runs/35967908377));
+  fresh registration in both directions when the target API is ready; reverse
+  control-plane returns require that confirmation even when the retained API
+  is stopped. The replacement restores node labels, taints, and unschedulable
+  state after registration. Focused nodemigrate checks passed at
+  `2a9b26c3061e86c29d9f601b3bc7a461a8e718dc` ([run
+  35968225182](https://github.com/centerionware/not-k8s/actions/runs/35968225182));
   staged quorum orchestration and runtime behavior remain unverified.
 - At `8518a99537cc4b98f2cbf8184f49c9927a8d78cf`, nodemigrate checks, shell
   syntax validation, and commit convention passed (runs `35956413580`,
