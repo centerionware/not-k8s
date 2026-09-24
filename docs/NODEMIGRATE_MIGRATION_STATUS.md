@@ -58,11 +58,13 @@ by the user's current instruction.
 
 The required pre-merge runtime evidence is still missing for both the
 single-node K3s+Cilium round trip and the upstream Kubernetes 3-control-plane,
-2-worker round trip. The current script does not yet provision or verify the
-five-node topology or compare the returned state against the initial
-checkpoint with the required no-difference assertions. QEMU or another
-isolated environment is acceptable; Docker requires evidence that it models
-the behaviors under test. No runtime gate has been dispatched.
+2-worker round trip. The existing single-host lanes now compare canonical
+initial and returned snapshots, including node names/roles/readiness,
+workload/add-on/ingress specs, PV/PVC bindings, Cilium and required CRD state,
+and certificate-secret content by digest. They still do not provision or
+verify the five-node topology. QEMU or another isolated environment is
+acceptable; Docker requires evidence that it models the behaviors under test.
+No runtime gate has been dispatched.
 
 ## Verification history
 

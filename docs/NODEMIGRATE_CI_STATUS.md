@@ -20,6 +20,12 @@ this objective.
   driver, cert-manager, Traefik, nginx, static and CSI-backed claims, then
   checks the source → nodestore → retained-source round trip. Every checkpoint
   asserts the Cilium DaemonSet rollout and CiliumEndpoint CRD are present.
+- Every checkpoint now writes a private canonical snapshot of node names and
+  roles, workload and ingress specs, PV/PVC bindings, add-on deployments,
+  Cilium daemonset images and readiness, required CRD schemas, and
+  storage-class configuration. The returned snapshot must match the initial
+  one. The migration Certificate secret is compared by digest, without writing
+  secret data to logs or checkpoint files.
 - Runtime coverage for joining an existing cluster and replacing a member is
   a separate required scenario; the current script does not establish that
   case as verified.
@@ -93,6 +99,7 @@ gates.
 | 2026-09-24 | `2db20f9cc84ec3146197571807387fb1141972e3` | Nodemigrate crate checks | Passed | [Run 35957514584](https://github.com/centerionware/not-k8s/actions/runs/35957514584) |
 | 2026-09-24 | `2db20f9cc84ec3146197571807387fb1141972e3` | PR shell validation | Passed | [Run 35957514687](https://github.com/centerionware/not-k8s/actions/runs/35957514687) |
 | 2026-09-24 | `2db20f9cc84ec3146197571807387fb1141972e3` | Commit convention | Passed | [Run 35957511809](https://github.com/centerionware/not-k8s/actions/runs/35957511809) |
+| — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.

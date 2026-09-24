@@ -13,7 +13,7 @@ separate living documents below.
 | Full bidirectional migration implementation | In progress; code present, reverse paths not runtime-verified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Nodemigrate merge gates | Single-node K3s+Cilium and upstream Kubernetes with 3 control planes + 2 workers are required; isolated round trips and no-difference assertions are not yet implemented or verified | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Nodemigrate merge gates | Existing single-host lanes now compare private canonical initial/returned state snapshots; the 3-control-plane + 2-worker isolated lane remains unimplemented, and no runtime gate has been run | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification

@@ -9,6 +9,7 @@ SOURCE_DIST="${NODEMIGRATE_SOURCE_DIST:?set NODEMIGRATE_SOURCE_DIST to k3s or ku
 LOG="${NODEMIGRATE_TEST_LOG:-/tmp/nodemigrate-integration.log}"
 WORK="/var/lib/nodemigrate-ci"
 STATIC_PATH="$WORK/static-volume"
+CHECKPOINT_DIR="$WORK/checkpoints"
 SOURCE_KUBECONFIG=""
 CURRENT_KUBECONFIG=""
 
@@ -373,7 +374,123 @@ YAML
     kill "$port_forward_pid" 2>/dev/null || true
     trap - RETURN
     kubectl get deploy,svc,ingress,certificate,pv,pvc -A -o wide
+    capture_semantic_checkpoint "$stage"
     echo "PASS stage=$stage"
+}
+
+capture_semantic_checkpoint() {
+    local stage="$1"
+    local stage_dir="$CHECKPOINT_DIR/$stage"
+    mkdir -p "$stage_dir"
+    chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
+
+    # Keep only stable, user-visible state. API-assigned UIDs, resource
+    # versions, managed fields, and status timestamps naturally change during
+    # a round trip; resource specs, bindings, workload identity, and readiness
+    # must still match. Secret data is hashed in a pipe and never written to a
+    # checkpoint or the action log.
+    kubectl get nodes -o json | jq -S '
+      [.items[] | {
+        name: .metadata.name,
+        controlPlane: ((.metadata.labels // {}) | (has("node-role.kubernetes.io/control-plane") or has("node-role.kubernetes.io/master"))),
+        worker: (((.metadata.labels // {}) | (has("node-role.kubernetes.io/worker"))) or
+          ((.metadata.labels // {}) | (has("node-role.kubernetes.io/control-plane") or has("node-role.kubernetes.io/master")) | not)),
+        ready: ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1)
+      }] | sort_by(.name)
+    ' > "$stage_dir/nodes.json"
+
+    kubectl get deployment,service,ingress,pvc -n migration-apps -o json \
+      | canonicalize_api_list > "$stage_dir/application.json"
+    kubectl get pv -o json \
+      | jq -S '[.items[] | select(.spec.claimRef.namespace == "migration-apps") | {
+          kind, name: .metadata.name, labels: (.metadata.labels // {}),
+          annotations: (.metadata.annotations // {}),
+          spec: (.spec | if .claimRef then .claimRef |= del(.uid) else . end)
+        }] | sort_by(.name)' > "$stage_dir/persistent-volumes.json"
+    kubectl get certificate -n migration-apps migration-test -o json \
+      | canonicalize_api_object > "$stage_dir/certificate.json"
+    kubectl get clusterissuer migration-selfsigned -o json \
+      | canonicalize_api_object > "$stage_dir/issuer.json"
+
+    for namespace in cert-manager traefik; do
+        kubectl get deployment -n "$namespace" -o json \
+          | canonicalize_api_list > "$stage_dir/$namespace-deployments.json"
+    done
+    kubectl get daemonset cilium -n kube-system -o json | jq -S '
+      {
+        name: .metadata.name,
+        images: ([.spec.template.spec.containers[].image] | sort),
+        desired: .status.desiredNumberScheduled,
+        ready: .status.numberReady,
+        updated: .status.updatedNumberScheduled
+      }
+    ' > "$stage_dir/cilium.json"
+    kubectl get crd ciliumendpoints.cilium.io certificates.cert-manager.io \
+      clusterissuers.cert-manager.io -o json \
+      | jq -S '[.items[] | {
+          name: .metadata.name,
+          group: .spec.group,
+          scope: .spec.scope,
+          names: .spec.names,
+          versions: [.spec.versions[] | {name, served, storage, schema}]
+        }] | sort_by(.name)' > "$stage_dir/required-crds.json"
+    kubectl get storageclass csi-hostpath-sc -o json \
+      | canonicalize_api_object > "$stage_dir/storageclass.json"
+    kubectl get secret migration-test-tls -n migration-apps -o json \
+      | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
+      > "$stage_dir/certificate-secret.sha256"
+
+    jq -S -n \
+      --slurpfile nodes "$stage_dir/nodes.json" \
+      --slurpfile app "$stage_dir/application.json" \
+      --slurpfile pvs "$stage_dir/persistent-volumes.json" \
+      --slurpfile certificate "$stage_dir/certificate.json" \
+      --slurpfile issuer "$stage_dir/issuer.json" \
+      --slurpfile cert_manager "$stage_dir/cert-manager-deployments.json" \
+      --slurpfile traefik "$stage_dir/traefik-deployments.json" \
+      --slurpfile cilium "$stage_dir/cilium.json" \
+      --slurpfile crds "$stage_dir/required-crds.json" \
+      --slurpfile storageclass "$stage_dir/storageclass.json" \
+      '{nodes:$nodes[0], application:$app[0], persistentVolumes:$pvs[0],
+        certificate:$certificate[0], issuer:$issuer[0],
+        certManager:$cert_manager[0], traefik:$traefik[0], cilium:$cilium[0],
+        requiredCrds:$crds[0], storageClass:$storageclass[0]}' \
+      > "$stage_dir/semantic-state.json"
+    chmod 0600 "$stage_dir"/*.json "$stage_dir"/*.sha256
+}
+
+canonicalize_api_list() {
+    jq -S '[.items[] | {
+      apiVersion, kind, name: .metadata.name,
+      namespace: (.metadata.namespace // ""),
+      labels: (.metadata.labels // {}),
+      annotations: (.metadata.annotations // {}),
+      ownerReferences: [(.metadata.ownerReferences // [])[] | {apiVersion, kind, name, controller}],
+      spec: (.spec // {})
+    }] | sort_by(.kind, .namespace, .name)'
+}
+
+canonicalize_api_object() {
+    jq -S '{apiVersion, kind, name: .metadata.name,
+      namespace: (.metadata.namespace // ""),
+      labels: (.metadata.labels // {}),
+      annotations: (.metadata.annotations // {}),
+      spec: (.spec // {})}'
+}
+
+assert_round_trip_unchanged() {
+    local initial="$CHECKPOINT_DIR/source"
+    local returned="$CHECKPOINT_DIR/returned"
+    if ! cmp -s "$initial/semantic-state.json" "$returned/semantic-state.json"; then
+        echo "Returned Kubernetes semantic state differs from the source checkpoint" >&2
+        diff -u "$initial/semantic-state.json" "$returned/semantic-state.json" || true
+        return 1
+    fi
+    if ! cmp -s "$initial/certificate-secret.sha256" "$returned/certificate-secret.sha256"; then
+        echo "Certificate secret contents changed during the migration round trip" >&2
+        return 1
+    fi
+    echo "PASS: returned semantic state and certificate secret match the source checkpoint"
 }
 
 main() {
@@ -401,6 +518,7 @@ main() {
     NODEMIGRATE_DESTINATION_KUBECONFIG="$SOURCE_KUBECONFIG" \
         "$MIGRATE" "to=$SOURCE_DIST" from=nodestore
     verify_stage returned "$SOURCE_KUBECONFIG"
+    assert_round_trip_unchanged
 }
 
 main "$@"
