@@ -463,7 +463,7 @@ fn detect_service_manager(
 ) -> Option<ServiceManager> {
     if has_systemd_unit || layout.path("/run/systemd/system").is_dir() {
         Some(ServiceManager::Systemd)
-    } else if (has_openrc_script || layout.path("/run/openrc/softlevel").is_file()) {
+    } else if has_openrc_script || layout.path("/run/openrc/softlevel").is_file() {
         Some(ServiceManager::OpenRc)
     } else if has_runit_service || layout.path("/run/runit/service").is_dir() {
         Some(ServiceManager::Runit)
