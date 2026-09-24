@@ -50,10 +50,9 @@ for node in "${NODES[@]}"; do
         --network-alias "$node" \
         --privileged \
         --cgroupns=private \
-        --tmpfs /run \
-        --tmpfs /run/lock \
+        --tmpfs /run:rw,nosuid,nodev,mode=0755 \
+        --tmpfs /run/lock:rw,nosuid,nodev,mode=0755 \
         --tmpfs /sys/fs/bpf \
-        --mount type=bind,src=/sys/fs/cgroup,dst=/sys/fs/cgroup \
         --volume "$volume:/var/lib/nodemigrate-volume" \
         "$IMAGE" >/dev/null
 done
