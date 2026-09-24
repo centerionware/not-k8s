@@ -467,7 +467,7 @@ fn detect_service_manager(
         Some(ServiceManager::OpenRc)
     } else if has_runit_service || layout.path("/run/runit/service").is_dir() {
         Some(ServiceManager::Runit)
-    } else if has_sysv_script && layout.path("/etc/init.d/rc").exists() {
+    } else if has_sysv_script {
         Some(ServiceManager::SysVInit)
     } else {
         None
