@@ -22,6 +22,13 @@ pub enum K3sDatastore {
     Etcd,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeRole {
+    ControlPlane,
+    Worker,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterConfig {
     pub data_dir: PathBuf,
@@ -33,12 +40,13 @@ pub struct ClusterConfig {
     pub node_name: Option<String>,
     pub cni: Option<String>,
     pub flannel_backend: Option<String>,
-    pub datastore: K3sDatastore,
+    pub datastore: Option<K3sDatastore>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installation {
     pub distribution: Distribution,
+    pub role: NodeRole,
     pub service_manager: Option<ServiceManager>,
     pub service_name: String,
     pub service_file: Option<PathBuf>,
@@ -110,15 +118,35 @@ pub fn inspect_distribution(
 }
 
 fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
-    let systemd_unit = first_file(
-        layout,
-        &[
-            "/etc/systemd/system/k3s.service",
-            "/usr/lib/systemd/system/k3s.service",
-            "/lib/systemd/system/k3s.service",
-        ],
-    );
-    let init_script = first_file(layout, &["/etc/init.d/k3s"]);
+    let server_unit = first_file(layout, &[
+        "/etc/systemd/system/k3s.service",
+        "/usr/lib/systemd/system/k3s.service",
+        "/lib/systemd/system/k3s.service",
+    ]);
+    let agent_unit = first_file(layout, &[
+        "/etc/systemd/system/k3s-agent.service",
+        "/usr/lib/systemd/system/k3s-agent.service",
+        "/lib/systemd/system/k3s-agent.service",
+    ]);
+    let server_init = first_file(layout, &["/etc/init.d/k3s"]);
+    let agent_init = first_file(layout, &["/etc/init.d/k3s-agent"]);
+    let server_runit = first_dir(layout, &["/etc/service/k3s", "/var/service/k3s"]);
+    let agent_runit = first_dir(layout, &["/etc/service/k3s-agent", "/var/service/k3s-agent"]);
+    let server_state = layout.path("/var/lib/rancher/k3s/server").is_dir();
+    let agent_state = layout.path("/var/lib/rancher/k3s/agent").is_dir();
+    let role = if server_unit.is_some() || server_init.is_some() || server_runit.is_some() || server_state {
+        NodeRole::ControlPlane
+    } else if agent_unit.is_some() || agent_init.is_some() || agent_runit.is_some() || agent_state {
+        NodeRole::Worker
+    } else {
+        // A lone binary or shared config is not enough to tell a server from
+        // an agent. Do not invent a role when the host has no role-specific
+        // service or state.
+        return Ok(None);
+    };
+    let service_name = if role == NodeRole::ControlPlane { "k3s" } else { "k3s-agent" };
+    let systemd_unit = if role == NodeRole::ControlPlane { server_unit } else { agent_unit };
+    let init_script = if role == NodeRole::ControlPlane { server_init } else { agent_init };
     let openrc_script = init_script
         .as_ref()
         .filter(|path| {
@@ -127,7 +155,7 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
         })
         .cloned();
     let sysv_script = init_script.filter(|_| openrc_script.is_none());
-    let runit_service = first_dir(layout, &["/etc/service/k3s", "/var/service/k3s"]);
+    let runit_service = if role == NodeRole::ControlPlane { server_runit } else { agent_runit };
     let service_file = systemd_unit
         .clone()
         .or_else(|| openrc_script.clone())
@@ -160,18 +188,24 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
     let data_dir = config.data_dir.clone().unwrap_or(data_dir);
     let default_db = append(&layout.root, &data_dir.join("server/db/state.db"));
     let etcd_dir = append(&layout.root, &data_dir.join("server/db/etcd"));
+    let agent_data_dir = append(&layout.root, &data_dir.join("agent"));
 
     let binary = locate_binary(layout, systemd_args.as_deref(), &data_dir);
     let has_installation = service_file.is_some()
         || binary.is_some()
         || !config_files.is_empty()
         || default_db.exists()
-        || etcd_dir.is_dir();
+        || etcd_dir.is_dir()
+        || agent_data_dir.is_dir();
     if !has_installation {
         return Ok(None);
     }
 
-    let datastore = detect_datastore(&config, default_db.exists(), etcd_dir.is_dir())?;
+    let datastore = if role == NodeRole::ControlPlane {
+        Some(detect_datastore(&config, default_db.exists(), etcd_dir.is_dir())?)
+    } else {
+        None
+    };
     let cluster = ClusterConfig {
         data_dir: data_dir.clone(),
         kubeconfig: config.write_kubeconfig,
@@ -180,16 +214,17 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
         cluster_domain: config.cluster_domain,
         cluster_dns: config.cluster_dns,
         node_name: config.node_name,
-        cni: if config.disable_flannel {
-            detect_external_cni(layout)
-        } else {
+        cni: if role == NodeRole::ControlPlane && !config.disable_flannel {
             Some("flannel".to_string())
+        } else {
+            detect_external_cni(layout)
         },
         flannel_backend: config.flannel_backend,
         datastore,
     };
     Ok(Some(Installation {
         distribution: Distribution::K3s,
+        role,
         service_manager: detect_service_manager(
             layout,
             systemd_unit.is_some(),
@@ -197,7 +232,8 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
             sysv_script.is_some(),
             runit_service.is_some(),
         ),
-        service_name: "k3s".to_string(),
+        service_name: service_name.to_string(),
+        role,
         service_file,
         binary,
         config_files,
@@ -239,6 +275,7 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
     }
     Ok(Some(Installation {
         distribution: Distribution::Nodestore,
+        role: NodeRole::ControlPlane,
         service_manager: detect_service_manager(
             layout,
             systemd_unit.is_some(),
@@ -273,9 +310,24 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
         .clone()
         .or_else(|| kubelet_init.clone())
         .or_else(|| kubelet_runit.clone());
-    if kubelet.is_none() || !apiserver_manifest.is_file() {
+    if kubelet.is_none() {
         return Ok(None);
     }
+    let has_control_plane_manifest = apiserver_manifest.is_file();
+    let has_worker_credentials = [
+        "/etc/kubernetes/kubelet.conf",
+        "/etc/kubernetes/bootstrap-kubelet.conf",
+    ]
+    .iter()
+    .any(|path| layout.path(path).is_file())
+        && layout.path("/var/lib/kubelet/config.yaml").is_file();
+    let role = if has_control_plane_manifest {
+        NodeRole::ControlPlane
+    } else if has_worker_credentials {
+        NodeRole::Worker
+    } else {
+        return Ok(None);
+    };
     let openrc = kubelet_init.as_ref().is_some_and(|path| {
         std::fs::read_to_string(append(&layout.root, path))
             .is_ok_and(|contents| contents.starts_with("#!/sbin/openrc-run"))
@@ -297,6 +349,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
     }
     Ok(Some(Installation {
         distribution: Distribution::Kubernetes,
+        role,
         service_manager: detect_service_manager(
             layout,
             kubelet_systemd.is_some(),
@@ -318,7 +371,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
             node_name: None,
             cni: detect_external_cni(layout),
             flannel_backend: None,
-            datastore: K3sDatastore::Etcd,
+            datastore: Some(K3sDatastore::Etcd),
         }),
     }))
 }
@@ -663,7 +716,7 @@ mod tests {
 
     use super::{
         detect_external_cni, inspect_distribution, inspect_host, Distribution, HostLayout,
-        K3sDatastore, ServiceManager,
+        K3sDatastore, NodeRole, ServiceManager,
     };
 
     #[test]
@@ -699,8 +752,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(found.service_manager, Some(ServiceManager::Systemd));
+        assert_eq!(found.role, NodeRole::ControlPlane);
         let cluster = found.cluster.unwrap();
-        assert_eq!(cluster.datastore, K3sDatastore::Kine);
+        assert_eq!(cluster.datastore, Some(K3sDatastore::Kine));
         assert_eq!(cluster.cluster_cidr.as_deref(), Some("10.44.0.0/16"));
         assert_eq!(cluster.service_cidr.as_deref(), Some("10.45.0.0/16"));
         assert_eq!(cluster.cluster_domain.as_deref(), Some("override.local"));
@@ -725,7 +779,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(found.service_manager, Some(ServiceManager::OpenRc));
-        assert_eq!(found.cluster.unwrap().datastore, K3sDatastore::Etcd);
+        assert_eq!(found.cluster.unwrap().datastore, Some(K3sDatastore::Etcd));
     }
 
     #[test]
@@ -808,8 +862,69 @@ mod tests {
                 .unwrap()
                 .unwrap();
         let cluster = installation.cluster.unwrap();
+        assert_eq!(installation.role, NodeRole::ControlPlane);
         assert_eq!(cluster.service_cidr.as_deref(), Some("10.96.0.0/12"));
         assert_eq!(cluster.cluster_cidr.as_deref(), Some("10.244.0.0/16"));
+        assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
+        assert_eq!(cluster.cni.as_deref(), Some("cilium"));
+    }
+
+    #[test]
+    fn detects_k3s_agent_role_without_inventing_a_datastore() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/rancher/k3s")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/k3s-agent.service"),
+            "[Service]\nExecStart=/usr/local/bin/k3s agent\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/rancher/k3s/config.yaml"),
+            "server: https://control.example:6443\nflannel-backend: none\ncluster-domain: corp.example\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::K3s)
+            .unwrap()
+            .unwrap();
+        assert_eq!(installation.role, NodeRole::Worker);
+        assert_eq!(installation.service_name, "k3s-agent");
+        let cluster = installation.cluster.unwrap();
+        assert_eq!(cluster.datastore, None);
+        assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
+        assert_eq!(cluster.cni.as_deref(), Some("cilium"));
+    }
+
+    #[test]
+    fn detects_upstream_kubelet_worker_without_control_plane_manifests() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/kubernetes")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/kubelet")).unwrap();
+        fs::write(root.path().join("etc/systemd/system/kubelet.service"), "[Service]\n").unwrap();
+        fs::write(root.path().join("etc/kubernetes/kubelet.conf"), "apiVersion: v1\n").unwrap();
+        fs::write(root.path().join("var/lib/kubelet/config.yaml"), "clusterDomain: corp.example\n").unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::Kubernetes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(installation.role, NodeRole::Worker);
+        assert_eq!(installation.service_name, "kubelet");
+        let cluster = installation.cluster.unwrap();
         assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
         assert_eq!(cluster.cni.as_deref(), Some("cilium"));
     }

@@ -12,6 +12,7 @@ compile or unit test does not mark a real migration path as verified.
 | Scenario or behavior | Implementation | Verification |
 | --- | --- | --- |
 | Detect local K3s service, Kine/etcd mode, config, and network settings | Implemented | Unit tests only; targeted CI rerun pending after compiler fixes |
+| Detect K3s agent and upstream Kubernetes worker roles | Implemented in inventory, including role-specific services and external CNI detection | Focused role fixtures added; targeted nodemigrate CI pending. Worker cutover/replacement path is still not implemented or verified. |
 | Detect an upstream control plane and read CIDRs and cluster domain | Implemented | Focused fixture passes after the rooted manifest path correction |
 | Identify Cilium and other known CNIs from the active host CNI configuration | Implemented for recognized CNI config names and plugin types | Focused fixture tests passed in [run 35955823452](https://github.com/centerionware/not-k8s/actions/runs/35955823452) |
 | Export all discovered API resource pages, including CRDs and add-ons | Implemented | Not yet exercised against a real cluster |

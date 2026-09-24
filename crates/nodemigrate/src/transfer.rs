@@ -215,7 +215,7 @@ impl KubeApi {
         })?;
 
         if let Some(cluster) = &installation.cluster {
-            if cluster.datastore == K3sDatastore::Etcd {
+            if cluster.datastore == Some(K3sDatastore::Etcd) {
                 tracing::warn!(
                     "K3s uses embedded/external etcd; only Kubernetes API objects will be migrated"
                 );

@@ -506,7 +506,7 @@ mod tests {
             node_name: Some("old-node".to_string()),
             cni: cni.map(str::to_string),
             flannel_backend: backend.map(str::to_string),
-            datastore: K3sDatastore::Etcd,
+            datastore: Some(K3sDatastore::Etcd),
         }
     }
 

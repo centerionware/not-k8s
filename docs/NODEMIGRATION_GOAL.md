@@ -24,15 +24,19 @@ for a nodemigrate-only release.
 ## Required migration behavior
 
 - Detect and inspect supported local K3s, upstream Kubernetes, and nodestore
-  installations, including service manager, API configuration, networking,
-  datastore mode where available, and the state needed to select a valid
-  migration path.
+  installations on both control-plane and worker nodes, including service
+  manager, API configuration, networking, datastore mode where available, and
+  the state needed to select a valid migration path.
 - Migrate K3s and upstream Kubernetes to nodestore, and nodestore back to a
   retained local K3s or upstream Kubernetes installation.
 - Support a destination that joins an existing cluster, including replacement
   of a node that previously belonged to that cluster. Use the established
   nodebootstrap join/environment configuration and preserve its membership,
   CA, and cluster networking requirements.
+- Support ordered cluster migration: transfer cluster API state at the
+  control-plane stage, then replace control-plane and worker nodes against the
+  joined destination without re-importing the same cluster-wide objects from
+  every worker.
 - Discover and preserve the source CNI arrangement, including Cilium. Do not
   require Flannel, overwrite external CNI host configuration, or assume that
   copying API objects alone recreates host networking state.
