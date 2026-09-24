@@ -70,6 +70,29 @@ and expected data in both volume paths. Capture diagnostics and exact artifact
 versions on failure. The scenarios must include a separate existing-cluster
 join/replacement case before full-join support can be called verified.
 
+## Nodemigrate merge gate
+
+Do not merge nodemigrate until both isolated runtime scenarios below pass:
+
+1. A single-node K3s cluster with Cilium must migrate to not-k8s and back to
+   K3s. The returned cluster must have no differences from the initial
+   checkpoint in the state and behavior under test: nodes, workloads, add-ons,
+   ingress, certificates, persistent data, and Cilium health.
+2. An upstream Kubernetes cluster with three control-plane nodes and two
+   worker nodes must complete the same not-k8s round trip. Verify control-plane
+   and worker membership, readiness, workloads, add-ons, ingress, certificates,
+   persistent data, Cilium health, and the replacement/join path.
+
+The scenarios may share one CI host when each cluster is isolated with QEMU or
+another suitable mechanism. Docker is a candidate only if the chosen setup is
+shown to simulate the networking, node identity, service management, storage,
+and failure behavior required by these checks. A passing container-only
+simulation is not evidence for behavior it does not model. Record the
+isolation method, topology, artifact versions, per-stage results, and
+before/after state comparison in the CI status document. These are
+nodemigrate-specific merge gates; the general build and e2e gates remain
+excluded by the task-specific rules below.
+
 ## Build, test, and e2e rules for this objective
 
 These task-specific rules override conflicting general build/e2e/test

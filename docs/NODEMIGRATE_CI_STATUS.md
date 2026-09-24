@@ -24,6 +24,25 @@ this objective.
   a separate required scenario; the current script does not establish that
   case as verified.
 
+## Required merge gates
+
+Nodemigrate needs both isolated round trips green before merge:
+
+- Single-node K3s with Cilium → not-k8s → K3s, with no differences in the
+  checked cluster state, workload behavior, add-ons, ingress, certificates,
+  persistent data, or Cilium health between initial and returned checkpoints.
+- Upstream Kubernetes with three control-plane nodes and two worker nodes →
+  not-k8s → upstream Kubernetes, with all node membership and the same
+  workload, add-on, ingress, certificate, persistent-data, and Cilium checks.
+  Include the existing-cluster join/replacement path.
+
+QEMU or another isolation mechanism may host the cluster lanes on one CI node.
+Docker remains a candidate only after the test setup proves it models the
+networking, node identity, service management, storage, and failure behavior
+under test. Record the simulator and its limitations with the results. The
+current integration workflow does not yet implement or pass these full merge
+gates.
+
 ## Run policy
 
 - General `build.yml`: excluded by the user for this task.
@@ -71,6 +90,9 @@ this objective.
 | 2026-09-24 | `c468627045cae98360bed8a93397407ff934ed86` | Quick-check: `nodebootstrap,nodestore` | Passed | [Run 35957212012](https://github.com/centerionware/not-k8s/actions/runs/35957212012) |
 | 2026-09-24 | `c468627045cae98360bed8a93397407ff934ed86` | PR shell validation | Passed | [Run 35957207356](https://github.com/centerionware/not-k8s/actions/runs/35957207356) |
 | 2026-09-24 | `c468627045cae98360bed8a93397407ff934ed86` | Commit convention | Passed | [Run 35957206090](https://github.com/centerionware/not-k8s/actions/runs/35957206090) |
+| 2026-09-24 | `2db20f9cc84ec3146197571807387fb1141972e3` | Nodemigrate crate checks | Passed | [Run 35957514584](https://github.com/centerionware/not-k8s/actions/runs/35957514584) |
+| 2026-09-24 | `2db20f9cc84ec3146197571807387fb1141972e3` | PR shell validation | Passed | [Run 35957514687](https://github.com/centerionware/not-k8s/actions/runs/35957514687) |
+| 2026-09-24 | `2db20f9cc84ec3146197571807387fb1141972e3` | Commit convention | Passed | [Run 35957511809](https://github.com/centerionware/not-k8s/actions/runs/35957511809) |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.

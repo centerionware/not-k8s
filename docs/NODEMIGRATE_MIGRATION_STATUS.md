@@ -54,6 +54,16 @@ The workflow is manual. Do not run it unless the user authorizes
 real-cluster/e2e execution. The standard e2e and build gates remain excluded
 by the user's current instruction.
 
+## Merge-gate status
+
+The required pre-merge runtime evidence is still missing for both the
+single-node K3s+Cilium round trip and the upstream Kubernetes 3-control-plane,
+2-worker round trip. The current script does not yet provision or verify the
+five-node topology or compare the returned state against the initial
+checkpoint with the required no-difference assertions. QEMU or another
+isolated environment is acceptable; Docker requires evidence that it models
+the behaviors under test. No runtime gate has been dispatched.
+
 ## Verification history
 
 | Date | SHA | Check | Result | Evidence |
