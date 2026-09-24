@@ -223,6 +223,8 @@ fn encode_scalar_or_message(
                 encode_int_or_string(message, field, value)?
             } else if is_quantity_message(&nested_message) {
                 encode_quantity(message, field, value)?
+            } else if is_extra_value_message(&nested_message) {
+                encode_extra_value(value)?
             } else {
                 encode_message(&nested_message, value)?
             };
@@ -231,6 +233,37 @@ fn encode_scalar_or_message(
         }
     }
     Ok(())
+}
+
+/// Kubernetes `ExtraValue` is a protobuf wrapper around `repeated string
+/// items`, but its JSON representation is the string array itself. This
+/// occurs in authentication, authorization, and certificate API `extra`
+/// maps, whose values are arrays rather than `{items: [...]}` objects.
+fn is_extra_value_message(message: &str) -> bool {
+    matches!(
+        message,
+        "io.k8s.api.authentication.v1.ExtraValue"
+            | "io.k8s.api.authentication.v1beta1.ExtraValue"
+            | "io.k8s.api.authorization.v1.ExtraValue"
+            | "io.k8s.api.authorization.v1beta1.ExtraValue"
+            | "io.k8s.api.certificates.v1.ExtraValue"
+            | "io.k8s.api.certificates.v1beta1.ExtraValue"
+    )
+}
+
+fn encode_extra_value(value: &Value) -> Result<Vec<u8>> {
+    let Value::Array(items) = value else {
+        return Err(Error::NotAnObject("ExtraValue".to_string()));
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let text = item
+            .as_str()
+            .ok_or_else(|| Error::NotAnObject("ExtraValue.items".to_string()))?;
+        wire::encode_tag(1, WireType::LengthDelimited, &mut out);
+        wire::encode_length_delimited(text.as_bytes(), &mut out);
+    }
+    Ok(out)
 }
 
 /// `map<K, V>` is encoded on the wire as `repeated` of a synthetic

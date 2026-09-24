@@ -95,8 +95,12 @@ pub async fn update_with_options_and_manager(
     // it is always the decimal MVCC revision, so parsing avoids any
     // formatting-mismatch false negative (leading zeros, etc.).
     let submitted_rv = match body.pointer("/metadata/resourceVersion") {
-        None | Some(Value::Null) if group.is_empty() && resource == "secrets" => existing_kv.mod_revision,
-        Some(Value::String(rv)) if rv.is_empty() && group.is_empty() && resource == "secrets" => existing_kv.mod_revision,
+        None | Some(Value::Null) if group.is_empty() && resource == "secrets" => {
+            existing_kv.mod_revision
+        }
+        Some(Value::String(rv)) if rv.is_empty() && group.is_empty() && resource == "secrets" => {
+            existing_kv.mod_revision
+        }
         Some(Value::String(rv)) => match rv.parse::<i64>() {
             Ok(rv) => rv,
             Err(_) => return Ok(UpdateOutcome::MissingResourceVersion),
@@ -106,8 +110,17 @@ pub async fn update_with_options_and_manager(
     // SecretStrategy allows unconditional updates, which Helm's release
     // storage uses. Only an omitted/empty version is unconditional; retain
     // the CAS below and never discard an explicit stale version or UID.
-    if body.pointer("/metadata/uid").and_then(Value::as_str)
-        .is_some_and(|uid| !uid.is_empty() && Some(uid) != existing_object.pointer("/metadata/uid").and_then(Value::as_str)) {
+    if body
+        .pointer("/metadata/uid")
+        .and_then(Value::as_str)
+        .is_some_and(|uid| {
+            !uid.is_empty()
+                && Some(uid)
+                    != existing_object
+                        .pointer("/metadata/uid")
+                        .and_then(Value::as_str)
+        })
+    {
         return Ok(UpdateOutcome::Conflict);
     }
     if submitted_rv != existing_kv.mod_revision {
@@ -626,6 +639,31 @@ async fn persist_update(
         Ok(object) => object,
         Err(violations) => return Ok(UpdateOutcome::Invalid(violations)),
     };
+
+    // A CRD's status is owned by the API server. Recompute it on every
+    // accepted CRD update, including patch/SSA paths that share this write
+    // boundary, and preserve storedVersions monotonically across revisions.
+    if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
+        let crd_name = object.pointer("/metadata/name").and_then(Value::as_str);
+        let other_crds = list_stored_crds(storage).await?;
+        let others = other_crds
+            .iter()
+            .filter(|other| other.pointer("/metadata/name").and_then(Value::as_str) != crd_name);
+        let stored_versions = existing_object
+            .pointer("/status/storedVersions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        object["status"] = apiextensions::conditions::compute_status(
+            &object,
+            others,
+            &stored_versions,
+            &now_rfc3339(),
+        );
+    }
 
     // Removing the last finalizer from an object already marked for deletion
     // completes the deletion. This mirrors the generic registry's

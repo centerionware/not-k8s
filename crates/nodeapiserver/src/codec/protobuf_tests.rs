@@ -122,12 +122,9 @@ mod tests {
         // really did take the {seconds, nanos} message path, not fall
         // back to string encoding.
         assert!(!bytes.is_empty());
-        let decoded = decode_time_message(
-            "io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "Time",
-            &bytes,
-        )
-        .unwrap();
+        let decoded =
+            decode_time_message("io.k8s.apimachinery.pkg.apis.meta.v1.Time", "Time", &bytes)
+                .unwrap();
         assert_eq!(decoded, json!("2024-01-15T10:30:00Z"));
     }
 
@@ -260,12 +257,9 @@ mod tests {
         // convention this codec already established elsewhere.
         let bytes = encode_time_string("Time", "1970-01-01T00:00:00Z").unwrap();
         assert!(bytes.is_empty());
-        let decoded = decode_time_message(
-            "io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "Time",
-            &bytes,
-        )
-        .unwrap();
+        let decoded =
+            decode_time_message("io.k8s.apimachinery.pkg.apis.meta.v1.Time", "Time", &bytes)
+                .unwrap();
         assert_eq!(decoded, json!("1970-01-01T00:00:00Z"));
     }
 
@@ -458,6 +452,20 @@ mod tests {
             decoded.get("annotations").unwrap(),
             &json!({"a": "1", "b": "2", "c": "3"})
         );
+    }
+
+    #[test]
+    fn certificate_request_extra_values_round_trip_as_json_arrays() {
+        let message = "io.k8s.api.certificates.v1.CertificateSigningRequestSpec";
+        let value = json!({
+            "extra": {
+                "scopes": ["read", "write"],
+                "empty": []
+            }
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
     }
 
     #[test]

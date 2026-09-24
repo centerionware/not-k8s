@@ -83,11 +83,27 @@ fn decode_one(message: &str, field: &ProtoField, raw: &RawField) -> Result<Value
                 decode_int_or_string_message(&label(), as_bytes(&label(), raw)?)
             } else if is_quantity_message(&nested_message) {
                 decode_quantity_message(&label(), as_bytes(&label(), raw)?)
+            } else if is_extra_value_message(&nested_message) {
+                decode_extra_value(as_bytes(&label(), raw)?)
             } else {
                 decode_message(&nested_message, as_bytes(&label(), raw)?)
             }
         }
     }
+}
+
+fn decode_extra_value(bytes: &[u8]) -> Result<Value> {
+    let mut items = Vec::new();
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let (field_number, raw) = wire::decode_field(bytes, &mut pos)?;
+        if field_number == 1 {
+            items.push(Value::String(
+                String::from_utf8_lossy(as_bytes("ExtraValue.items", &raw)?).into_owned(),
+            ));
+        }
+    }
+    Ok(Value::Array(items))
 }
 
 /// Real upstream's own well-known-type special case, confirmed directly
