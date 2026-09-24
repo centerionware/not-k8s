@@ -36,7 +36,10 @@ for a nodemigrate-only release.
 - Support ordered cluster migration: transfer cluster API state at the
   control-plane stage, then replace control-plane and worker nodes against the
   joined destination without re-importing the same cluster-wide objects from
-  every worker.
+  every worker. Preserve all source Node scheduling metadata in the protected
+  export so later nodes can complete after the source API loses quorum; use a
+  private local copy of that export per node for node-specific volume and CNI
+  recovery data.
 - On upstream control-plane nodes, stop kubelet and its CRI static-pod
   sandboxes before starting the destination control plane, while retaining the
   source manifests for a recoverable return migration.

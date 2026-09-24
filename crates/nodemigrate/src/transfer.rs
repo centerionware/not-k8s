@@ -3,7 +3,7 @@
 //! storage into nodestore.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -20,7 +20,10 @@ use kube::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{detect::{Installation, K3sDatastore}, request::Distribution};
+use crate::{
+    detect::{Installation, K3sDatastore},
+    request::Distribution,
+};
 
 const SKIP_KINDS: &[&str] = &[
     "ComponentStatus",
@@ -41,7 +44,8 @@ pub struct KubeApi {
     kubeconfig: PathBuf,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct NodeSchedulingState {
     pub uid: Option<String>,
     pub labels: HashMap<String, String>,
@@ -411,7 +415,7 @@ impl KubeApi {
         self.ready()?;
         let node_name = installation_node_name(installation);
         let (runtime, client) = self.connected()?;
-        let (objects, labels) = runtime.block_on(async {
+        let (objects, labels, node_states) = runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
                 .run()
                 .await
@@ -428,6 +432,34 @@ impl KubeApi {
                 }
             };
             let mut objects = Vec::new();
+            let (node_resource, node_capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                node_capabilities.supports_operation(verbs::LIST),
+                "Kubernetes API cannot list nodes for the protected migration export"
+            );
+            let node_api: Api<DynamicObject> = Api::all_with(client.clone(), &node_resource);
+            let mut node_states = BTreeMap::new();
+            let mut continue_token = None;
+            loop {
+                let mut params = ListParams::default().limit(500);
+                if let Some(token) = continue_token.as_deref() {
+                    params = params.continue_token(token);
+                }
+                let page = node_api
+                    .list(&params)
+                    .await
+                    .context("listing source nodes for protected migration metadata")?;
+                for node in page.items {
+                    if let Some(name) = node.metadata.name.clone() {
+                        node_states.insert(name, NodeSchedulingState::from_node(&node));
+                    }
+                }
+                continue_token = page.metadata.continue_.filter(|token| !token.is_empty());
+                if continue_token.is_none() {
+                    break;
+                }
+            }
             for group in discovery.groups() {
                 for (resource, capabilities) in group.recommended_resources() {
                     if !capabilities.supports_operation(verbs::LIST) || skip_kind(&resource.kind) {
@@ -457,7 +489,7 @@ impl KubeApi {
                     }
                 }
             }
-            Ok::<_, anyhow::Error>((objects, labels))
+            Ok::<_, anyhow::Error>((objects, labels, node_states))
         })?;
 
         if let Some(cluster) = &installation.cluster {
@@ -499,10 +531,11 @@ impl KubeApi {
                 source_uid: object.source_uid.clone(),
             });
         }
-        write_export_manifest(&dir, &exported_objects)?;
+        write_export_manifest(&dir, &exported_objects, &node_states)?;
         Ok(Export {
             dir,
             objects: exported_objects,
+            node_states,
             host_paths,
             host_path_backups: Vec::new(),
             cni_path_backups: Vec::new(),
@@ -596,6 +629,7 @@ impl KubeApi {
 pub struct Export {
     pub dir: PathBuf,
     objects: Vec<ExportedObject>,
+    node_states: BTreeMap<String, NodeSchedulingState>,
     host_paths: Vec<PathBuf>,
     host_path_backups: Vec<HostPathBackup>,
     cni_path_backups: Vec<CniPathBackup>,
@@ -613,6 +647,8 @@ struct ExportedObject {
 struct ExportManifest {
     format_version: u32,
     objects: Vec<ExportManifestObject>,
+    #[serde(default)]
+    node_states: BTreeMap<String, NodeSchedulingState>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -646,6 +682,41 @@ struct HostPathBackup {
 impl Export {
     pub fn object_count(&self) -> usize {
         self.objects.len()
+    }
+
+    pub(crate) fn node_state_count(&self) -> usize {
+        self.node_states.len()
+    }
+
+    pub(crate) fn node_state(&self, name: &str) -> Option<&NodeSchedulingState> {
+        self.node_states.get(name)
+    }
+
+    pub fn snapshot_host_paths_for_node(&mut self, node_name: &str) -> Result<()> {
+        let labels = &self
+            .node_state(node_name)
+            .with_context(|| {
+                format!("migration export has no scheduling metadata for source node {node_name}")
+            })?
+            .labels;
+        let values = self
+            .objects
+            .iter()
+            .map(|object| {
+                serde_json::from_slice::<Value>(&fs::read(&object.path).with_context(|| {
+                    format!("reading migration object {}", object.path.display())
+                })?)
+                .with_context(|| format!("decoding migration object {}", object.path.display()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.host_paths = persistent_host_paths(&values, Some(labels));
+        self.host_path_backups = backup_host_paths_in(
+            &self
+                .dir
+                .join(format!("host-paths-{}", safe_backup_name(node_name))),
+            &self.host_paths,
+        )?;
+        Ok(())
     }
 
     pub fn load(directory: impl Into<PathBuf>) -> Result<Self> {
@@ -691,7 +762,7 @@ impl Export {
             })?)
             .with_context(|| format!("decoding migration manifest {}", manifest_path.display()))?;
         ensure!(
-            manifest.format_version == 1,
+            matches!(manifest.format_version, 1 | 2),
             "unsupported migration export format version {}",
             manifest.format_version
         );
@@ -765,6 +836,7 @@ impl Export {
         Ok(Self {
             dir: directory,
             objects,
+            node_states: manifest.node_states,
             host_paths: Vec::new(),
             host_path_backups: Vec::new(),
             cni_path_backups: Vec::new(),
@@ -781,7 +853,11 @@ impl Export {
     }
 
     pub fn snapshot_k3s_cni_paths(&mut self, installation: &Installation) -> Result<()> {
-        self.cni_path_backups = snapshot_k3s_cni_paths(&self.dir, installation)?;
+        let node_name = installation_node_name(installation);
+        let backup_directory = self
+            .dir
+            .join(format!("cni-node-{}", safe_backup_name(&node_name)));
+        self.cni_path_backups = snapshot_k3s_cni_paths(&backup_directory, installation)?;
         Ok(())
     }
 
@@ -807,7 +883,10 @@ fn backup_cni_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<CniPathBa
     for (index, source) in existing.into_iter().enumerate() {
         let backup = backup_root.join(format!("{index:08}"));
         fs::create_dir(&backup).with_context(|| {
-            format!("creating protected CNI backup directory {}", backup.display())
+            format!(
+                "creating protected CNI backup directory {}",
+                backup.display()
+            )
         })?;
         run_cp_following_symlinks(&source.join("."), &backup)
             .with_context(|| format!("backing up CNI directory {}", source.display()))?;
@@ -856,8 +935,10 @@ fn restore_cni_path_backups(backups: &[CniPathBackup]) -> Result<()> {
                 })?;
                 run_cp_following_symlinks(&item.backup.join("."), &item.source)?;
             }
-            Err(error) => return Err(error)
-                .with_context(|| format!("checking CNI path {}", item.source.display())),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("checking CNI path {}", item.source.display()))
+            }
         }
     }
     Ok(())
@@ -892,7 +973,10 @@ fn snapshot_k3s_cni_paths(
     let Some(cluster) = &installation.cluster else {
         return Ok(Vec::new());
     };
-    let paths = [cluster.cni_conf_dir.as_deref(), cluster.cni_bin_dir.as_deref()];
+    let paths = [
+        cluster.cni_conf_dir.as_deref(),
+        cluster.cni_bin_dir.as_deref(),
+    ];
     for path in paths.into_iter().flatten() {
         if path.starts_with(&cluster.data_dir) {
             ensure!(
@@ -1106,7 +1190,10 @@ fn node_selector_requirement_matches(
 }
 
 fn backup_host_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<HostPathBackup>> {
-    let backup_root = directory.join("host-paths");
+    backup_host_paths_in(&directory.join("host-paths"), paths)
+}
+
+fn backup_host_paths_in(backup_root: &Path, paths: &[PathBuf]) -> Result<Vec<HostPathBackup>> {
     fs::create_dir(&backup_root).context("creating protected persistent volume backup")?;
     let mut backups = Vec::new();
     for (index, source) in paths.iter().enumerate() {
@@ -1123,6 +1210,19 @@ fn backup_host_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<HostPath
         });
     }
     Ok(backups)
+}
+
+fn safe_backup_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn run_cp(source: &Path, destination: &Path) -> Result<()> {
@@ -1236,7 +1336,11 @@ fn sanitize(mut object: Value) -> Option<SanitizedObject> {
     })
 }
 
-fn write_export_manifest(directory: &Path, objects: &[ExportedObject]) -> Result<()> {
+fn write_export_manifest(
+    directory: &Path,
+    objects: &[ExportedObject],
+    node_states: &BTreeMap<String, NodeSchedulingState>,
+) -> Result<()> {
     let entries = objects
         .iter()
         .map(|object| {
@@ -1252,8 +1356,9 @@ fn write_export_manifest(directory: &Path, objects: &[ExportedObject]) -> Result
         })
         .collect::<Result<Vec<_>>>()?;
     let manifest = ExportManifest {
-        format_version: 1,
+        format_version: 2,
         objects: entries,
+        node_states: node_states.clone(),
     };
     let path = directory.join("manifest.json");
     let file = fs::OpenOptions::new()
@@ -1342,7 +1447,7 @@ mod tests {
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::fs;
 
     #[test]
@@ -1468,17 +1573,37 @@ mod tests {
             source_uid: Some("source-uid".to_string()),
         }];
 
-        write_export_manifest(directory.path(), &objects).unwrap();
+        let node_states = BTreeMap::from([(
+            "node-a".to_string(),
+            NodeSchedulingState {
+                uid: Some("node-uid".to_string()),
+                labels: HashMap::from([("zone".to_string(), "west".to_string())]),
+                annotations: HashMap::new(),
+                taints: Vec::new(),
+                unschedulable: Some(true),
+            },
+        )]);
+        write_export_manifest(directory.path(), &objects, &node_states).unwrap();
 
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.path().join("manifest.json")).unwrap())
                 .unwrap();
-        assert_eq!(manifest["formatVersion"], 1);
+        assert_eq!(manifest["formatVersion"], 2);
+        assert_eq!(manifest["nodeStates"]["node-a"]["labels"]["zone"], "west");
         assert_eq!(manifest["objects"][0]["file"], "00000000.json");
         assert_eq!(manifest["objects"][0]["sourceUid"], "source-uid");
         let export = Export::load(directory.path()).unwrap();
         assert_eq!(export.objects.len(), 1);
         assert_eq!(export.objects[0].source_uid.as_deref(), Some("source-uid"));
+        assert_eq!(export.node_state_count(), 1);
+        assert_eq!(
+            export.node_state("node-a").unwrap().uid.as_deref(),
+            Some("node-uid")
+        );
+        assert_eq!(
+            export.node_state("node-a").unwrap().unschedulable,
+            Some(true)
+        );
     }
 
     #[test]

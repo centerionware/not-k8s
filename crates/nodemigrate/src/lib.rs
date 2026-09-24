@@ -64,10 +64,40 @@ fn migrate_to_nodestore(
         is_root(),
         "run nodemigrate as root so it can preserve service state and write the protected export"
     );
-    let source_api = transfer::KubeApi::source(source)?;
-    let source_nodes = source_api.node_count()?;
     let migrating_node_name = node_name(source);
-    let source_node_state = source_api.node_scheduling_state(&migrating_node_name)?;
+    let mut export = request
+        .source_export
+        .as_ref()
+        .map(|path| transfer::Export::load(path))
+        .transpose()?;
+    let source_api = if export.is_some() {
+        None
+    } else {
+        Some(transfer::KubeApi::source(source)?)
+    };
+    let source_nodes = if let Some(api) = &source_api {
+        api.node_count()?
+    } else {
+        let count = export
+            .as_ref()
+            .map_or(0, transfer::Export::node_state_count);
+        ensure!(
+            count > 0,
+            "protected source export contains no source node metadata"
+        );
+        count
+    };
+    let source_node_state = if let Some(api) = &source_api {
+        api.node_scheduling_state(&migrating_node_name)?
+    } else {
+        Some(
+            export
+                .as_ref()
+                .and_then(|export| export.node_state(&migrating_node_name))
+                .with_context(|| format!("protected source export has no scheduling metadata for node {migrating_node_name}"))?
+                .clone(),
+        )
+    };
     let replacement_member_id = if joins_existing {
         std::env::var("NODEBOOTSTRAP_MEMBER_ID")
             .ok()
@@ -99,7 +129,9 @@ fn migrate_to_nodestore(
             )
         })?;
     if request.plan_only {
-        source_api.ready()?;
+        if let Some(api) = &source_api {
+            api.ready()?;
+        }
         let cni = source
             .cluster
             .as_ref()
@@ -112,7 +144,10 @@ fn migrate_to_nodestore(
         return Ok(());
     }
 
-    let mut export = source_api.export(source)?;
+    if let Some(api) = &source_api {
+        export = Some(api.export(source)?);
+    }
+    let mut export = export.context("source API export was not prepared")?;
     println!(
         "Protected API object export saved at {}",
         export.dir.display()
@@ -125,7 +160,12 @@ fn migrate_to_nodestore(
         return Err(error)
             .context("stopping source Kubernetes static pods; source service was restored");
     }
-    if let Err(error) = export.snapshot_host_paths() {
+    let snapshot_result = if request.source_export.is_some() {
+        export.snapshot_host_paths_for_node(&migrating_node_name)
+    } else {
+        export.snapshot_host_paths()
+    };
+    if let Err(error) = snapshot_result {
         if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("snapshotting local persistent volumes failed ({error:#}); restoring the source service also failed ({restore_error:#})");
         }
@@ -233,8 +273,19 @@ fn migrate_worker_to_nodestore(
     let name = node_name(source);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     target_api.ready()?;
-    let local_node_state =
-        local_node_scheduling_state(transfer::KubeApi::source(source), &target_api, &name);
+    let local_node_state = if let Some(path) = request.source_export.as_ref() {
+        let export = transfer::Export::load(path)?;
+        Some(
+            export
+                .node_state(&name)
+                .with_context(|| {
+                    format!("protected source export has no scheduling metadata for worker {name}")
+                })?
+                .clone(),
+        )
+    } else {
+        local_node_scheduling_state(transfer::KubeApi::source(source), &target_api, &name)
+    };
     let local_node_labels = local_node_state.as_ref().map(|state| &state.labels);
     let existing_node = target_api.node_exists(&name)?;
     let replace_existing = replace_existing_node_requested()?;

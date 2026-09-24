@@ -38,6 +38,12 @@ pub struct MigrationRequest {
     /// still created and local host paths are still snapshotted.
     #[serde(default)]
     pub skip_api_import: bool,
+    /// Reuse a protected forward-migration export when the source API is no
+    /// longer available during an ordered multi-node migration. Requires
+    /// skip_api_import because the first control plane already imported the
+    /// cluster-wide objects.
+    #[serde(default)]
+    pub source_export: Option<PathBuf>,
     /// Start a retained control plane without waiting for an API that still
     /// needs another retained control plane to restore datastore quorum.
     #[serde(default)]
@@ -59,6 +65,7 @@ impl MigrationRequest {
         let mut uninstall_after_migrate = false;
         let mut plan_only = false;
         let mut skip_api_import = false;
+        let mut source_export = None;
         let mut stage_target = false;
         let mut skip_api_export = false;
         let mut import_export = None;
@@ -74,13 +81,17 @@ impl MigrationRequest {
                 "uninstall-after-migrate" => uninstall_after_migrate = parse_bool(value, key)?,
                 "plan-only" | "dry-run" => plan_only = parse_bool(value, key)?,
                 "skip-api-import" => skip_api_import = parse_bool(value, key)?,
+                "source-export" => {
+                    ensure!(!value.is_empty(), "source-export requires a directory path");
+                    set_once(&mut source_export, PathBuf::from(value), "source-export")?;
+                }
                 "stage-target" => stage_target = parse_bool(value, key)?,
                 "skip-api-export" => skip_api_export = parse_bool(value, key)?,
                 "import-export" => {
                     ensure!(!value.is_empty(), "import-export requires a directory path");
                     set_once(&mut import_export, PathBuf::from(value), "import-export")?;
                 }
-                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, stage-target=, skip-api-export=, or import-export=)"),
+                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, source-export=, stage-target=, skip-api-export=, or import-export=)"),
             }
         }
 
@@ -148,8 +159,24 @@ impl MigrationRequest {
                 || (!uninstall_after_migrate
                     && !skip_api_import
                     && !stage_target
-                    && !skip_api_export),
+                    && !skip_api_export
+                    && source_export.is_none()),
             "import-export cannot be combined with uninstall or staged migration options"
+        );
+        ensure!(
+            source_export.is_none()
+                || matches!(
+                    (from, to),
+                    (
+                        Distribution::K3s | Distribution::Kubernetes,
+                        Distribution::Nodestore
+                    )
+                ),
+            "source-export is only valid when migrating K3s or Kubernetes to nodestore"
+        );
+        ensure!(
+            source_export.is_none() || skip_api_import,
+            "source-export is for later control-plane or worker migrations after the cluster API state was imported; use skip-api-import=true"
         );
 
         Ok(Self {
@@ -158,6 +185,7 @@ impl MigrationRequest {
             uninstall_after_migrate,
             plan_only,
             skip_api_import,
+            source_export,
             stage_target,
             skip_api_export,
             import_export,
@@ -247,6 +275,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_a_protected_forward_export_for_offline_node_replacement() {
+        let request = MigrationRequest::parse(&args(&[
+            "to=nodestore",
+            "from=kubernetes",
+            "skip-api-import=true",
+            "source-export=/var/lib/nodemigrate/exports/1234-5-0",
+        ]))
+        .unwrap();
+        assert!(request.skip_api_import);
+        assert_eq!(
+            request.source_export.as_deref(),
+            Some(std::path::Path::new(
+                "/var/lib/nodemigrate/exports/1234-5-0"
+            ))
+        );
+    }
+
+    #[test]
     fn rejects_skipping_cluster_import_on_reverse_migration() {
         assert!(MigrationRequest::parse(&args(&[
             "to=kubernetes",
@@ -304,6 +350,26 @@ mod tests {
             "from=nodestore",
             "import-export=/tmp/export",
             "stage-target=true",
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_source_export_for_reverse_migration() {
+        assert!(MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "source-export=/tmp/export",
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn source_export_requires_skipping_repeated_cluster_import() {
+        assert!(MigrationRequest::parse(&args(&[
+            "to=nodestore",
+            "from=kubernetes",
+            "source-export=/tmp/export",
         ]))
         .is_err());
     }
