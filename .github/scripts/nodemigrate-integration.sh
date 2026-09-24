@@ -94,6 +94,17 @@ install_source() {
         stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
         minor="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$stable")"
         apt-get install -y -qq kubelet kubeadm
+        local cri_tools_version="${CRI_TOOLS_VERSION:-${minor}.0}"
+        local cri_tools_arch
+        case "$(uname -m)" in
+            x86_64) cri_tools_arch=amd64 ;;
+            aarch64|arm64) cri_tools_arch=arm64 ;;
+            *) echo "unsupported crictl architecture: $(uname -m)" >&2; return 1 ;;
+        esac
+        curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${cri_tools_version}/crictl-${cri_tools_version}-linux-${cri_tools_arch}.tar.gz" \
+            -o /tmp/crictl.tgz
+        tar -xzf /tmp/crictl.tgz -C /usr/local/bin crictl
+        chmod 0755 /usr/local/bin/crictl
         apt-mark hold kubelet kubeadm kubectl
         swapoff -a
         sed -i.bak '/\sswap\s/s/^/#/' /etc/fstab
