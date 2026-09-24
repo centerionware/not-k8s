@@ -598,6 +598,7 @@ pub struct Export {
     objects: Vec<ExportedObject>,
     host_paths: Vec<PathBuf>,
     host_path_backups: Vec<HostPathBackup>,
+    cni_path_backups: Vec<CniPathBackup>,
 }
 
 #[derive(Debug, Clone)]
@@ -910,7 +911,7 @@ fn snapshot_k3s_cni_paths(
         .into_iter()
         .flatten()
         .filter(|path| path.starts_with(&cluster.data_dir))
-        .cloned()
+        .map(Path::to_path_buf)
         .collect();
     candidates.sort_by_key(|path| path.components().count());
     candidates.dedup();
