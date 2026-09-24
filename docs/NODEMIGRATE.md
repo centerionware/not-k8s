@@ -97,6 +97,14 @@ This also applies when joining a cluster whose CNI is managed outside
 nodebootstrap. Add-on API objects, including Cilium resources, are restored
 after the destination is ready. A CNI provider remains responsible for its
 host binaries, interfaces, routes, and kernel state.
+For K3s with Flannel disabled, nodemigrate reads the active containerd CNI
+config and binary directories, passes those paths to nodebootstrap, and updates
+containerd to keep using them. If an explicit K3s uninstall would remove either
+directory from K3s's data tree, nodemigrate saves its contents to the protected
+recovery export and restores them at the configured paths before reconciling
+the not-k8s services. This protection has focused fixtures; the real K3s
+uninstall and Cilium networking path still require the authorized integration
+run.
 
 PersistentVolume and PersistentVolumeClaim objects are migrated during the
 control-plane stage. For local and hostPath PersistentVolumes, nodemigrate

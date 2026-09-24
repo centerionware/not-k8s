@@ -39,6 +39,8 @@ pub struct ClusterConfig {
     pub cluster_dns: Option<String>,
     pub node_name: Option<String>,
     pub cni: Option<String>,
+    pub cni_conf_dir: Option<PathBuf>,
+    pub cni_bin_dir: Option<PathBuf>,
     pub flannel_backend: Option<String>,
     pub datastore: Option<K3sDatastore>,
 }
@@ -240,6 +242,21 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
     } else {
         None
     };
+    let uses_nodebootstrap_flannel =
+        !config.disable_flannel && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan";
+    let (cni_conf_dir, cni_bin_dir) = if uses_nodebootstrap_flannel {
+        (None, None)
+    } else {
+        let (conf_dir, bin_dir) = k3s_containerd_cni_dirs(layout, &data_dir);
+        (Some(conf_dir), Some(bin_dir))
+    };
+    let cni = if config.disable_flannel {
+        cni_conf_dir
+            .as_deref()
+            .and_then(|conf_dir| detect_cni_provider(layout, conf_dir))
+    } else {
+        Some("flannel".to_string())
+    };
     let cluster = ClusterConfig {
         data_dir: data_dir.clone(),
         kubeconfig: config.write_kubeconfig,
@@ -248,11 +265,9 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
         cluster_domain: config.cluster_domain,
         cluster_dns: config.cluster_dns,
         node_name: config.node_name,
-        cni: if role == NodeRole::ControlPlane && !config.disable_flannel {
-            Some("flannel".to_string())
-        } else {
-            detect_external_cni(layout)
-        },
+        cni,
+        cni_conf_dir,
+        cni_bin_dir,
         flannel_backend: config.flannel_backend,
         datastore,
     };
@@ -371,6 +386,8 @@ fn inspect_nodestore_worker(layout: &HostLayout) -> Result<Option<Installation>>
         cluster_dns: None,
         node_name: None,
         cni: detect_external_cni(layout),
+        cni_conf_dir: None,
+        cni_bin_dir: None,
         flannel_backend: None,
         datastore: None,
     };
@@ -457,6 +474,12 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
     if controller_manifest.is_file() {
         config_files.push(strip_root(&layout.root, controller_manifest));
     }
+    let (cni_conf_dir, cni_bin_dir) = source_containerd_cni_dirs(
+        &layout.path("/etc/containerd/config.toml"),
+        PathBuf::from("/etc/cni/net.d"),
+        PathBuf::from("/opt/cni/bin"),
+    );
+    let cni = detect_cni_provider(layout, &cni_conf_dir);
     Ok(Some(Installation {
         distribution: Distribution::Kubernetes,
         role,
@@ -480,7 +503,9 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
             cluster_domain: kubelet_cluster_domain(layout),
             cluster_dns: None,
             node_name: None,
-            cni: detect_external_cni(layout),
+            cni,
+            cni_conf_dir: Some(cni_conf_dir),
+            cni_bin_dir: Some(cni_bin_dir),
             flannel_backend: None,
             datastore: Some(K3sDatastore::Etcd),
         }),
@@ -521,7 +546,11 @@ fn kubelet_cluster_domain(layout: &HostLayout) -> Option<String> {
 }
 
 fn detect_external_cni(layout: &HostLayout) -> Option<String> {
-    let config_dir = layout.path("/etc/cni/net.d");
+    detect_cni_provider(layout, Path::new("/etc/cni/net.d"))
+}
+
+fn detect_cni_provider(layout: &HostLayout, config_dir: &Path) -> Option<String> {
+    let config_dir = append(&layout.root, config_dir);
     let mut files: Vec<PathBuf> = std::fs::read_dir(config_dir)
         .into_iter()
         .flatten()
@@ -546,6 +575,80 @@ fn detect_external_cni(layout: &HostLayout) -> Option<String> {
     }
 
     None
+}
+
+fn k3s_containerd_cni_dirs(layout: &HostLayout, data_dir: &Path) -> (PathBuf, PathBuf) {
+    let config = append(
+        &layout.root,
+        &data_dir.join("agent/etc/containerd/config.toml"),
+    );
+    source_containerd_cni_dirs(
+        &config,
+        data_dir.join("agent/etc/cni/net.d"),
+        data_dir.join("data/current/bin"),
+    )
+}
+
+fn source_containerd_cni_dirs(
+    config_path: &Path,
+    fallback_conf: PathBuf,
+    fallback_bin: PathBuf,
+) -> (PathBuf, PathBuf) {
+    let parsed = std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|contents| containerd_cni_dirs(&contents));
+    match parsed {
+        Some((conf_dir, bin_dir)) => (
+            conf_dir.unwrap_or(fallback_conf),
+            bin_dir.unwrap_or(fallback_bin),
+        ),
+        None => (fallback_conf, fallback_bin),
+    }
+}
+
+fn containerd_cni_dirs(config: &str) -> Option<(Option<PathBuf>, Option<PathBuf>)> {
+    let mut in_cni = false;
+    let mut conf_dir = None;
+    let mut bin_dir = None;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_cni = matches!(
+                line,
+                "[plugins.\"io.containerd.grpc.v1.cri\".cni]"
+                    | "[plugins.'io.containerd.grpc.v1.cri'.cni]"
+                    | "[plugins.\"io.containerd.cri.v1.runtime\".cni]"
+                    | "[plugins.'io.containerd.cri.v1.runtime'.cni]"
+            );
+            continue;
+        }
+        if !in_cni || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(value) = toml_string_value(value.trim()) else {
+            continue;
+        };
+        match key.trim() {
+            "conf_dir" => conf_dir = Some(PathBuf::from(value)),
+            "bin_dir" => bin_dir = Some(PathBuf::from(value)),
+            _ => {}
+        }
+    }
+    Some((
+        conf_dir.filter(|path| path.is_absolute()),
+        bin_dir.filter(|path| path.is_absolute()),
+    ))
+}
+
+fn toml_string_value(value: &str) -> Option<&str> {
+    let quote = value.chars().next()?;
+    if !matches!(quote, '\'' | '"') || value.chars().last()? != quote {
+        return None;
+    }
+    Some(&value[quote.len_utf8()..value.len() - quote.len_utf8()])
 }
 
 fn cni_provider_in_value(value: &Value) -> Option<&'static str> {
@@ -931,6 +1034,55 @@ mod tests {
         assert_eq!(
             detect_external_cni(&HostLayout::under(root.path())).as_deref(),
             Some("cilium")
+        );
+    }
+
+    #[test]
+    fn detects_k3s_external_cni_runtime_directories() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/rancher/k3s")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/server/db")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/containerd"))
+            .unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/cni/net.d"))
+            .unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/data/current/bin")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/k3s.service"),
+            "[Service]\nExecStart=/usr/local/bin/k3s server\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/rancher/k3s/config.yaml"),
+            "flannel-backend: none\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path()
+                .join("var/lib/rancher/k3s/agent/etc/containerd/config.toml"),
+            "[plugins.\"io.containerd.grpc.v1.cri\".cni]\n  conf_dir = \"/var/lib/rancher/k3s/agent/etc/cni/net.d\"\n  bin_dir = \"/var/lib/rancher/k3s/data/current/bin\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path()
+                .join("var/lib/rancher/k3s/agent/etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::K3s)
+            .unwrap()
+            .unwrap();
+        let cluster = installation.cluster.unwrap();
+        assert_eq!(cluster.cni.as_deref(), Some("cilium"));
+        assert_eq!(
+            cluster.cni_conf_dir.as_deref(),
+            Some(std::path::Path::new("/var/lib/rancher/k3s/agent/etc/cni/net.d"))
+        );
+        assert_eq!(
+            cluster.cni_bin_dir.as_deref(),
+            Some(std::path::Path::new("/var/lib/rancher/k3s/data/current/bin"))
         );
     }
 

@@ -128,11 +128,19 @@ install_source() {
 
 install_cilium() {
     local version="${CILIUM_VERSION:-1.20.2}"
+    local cni_conf_path=/etc/cni/net.d
+    local cni_bin_path=/opt/cni/bin
+    if [[ "$SOURCE_DIST" == k3s ]]; then
+        cni_conf_path=/var/lib/rancher/k3s/agent/etc/cni/net.d
+        cni_bin_path=/var/lib/rancher/k3s/data/current/bin
+    fi
     helm repo add cilium https://helm.cilium.io/ --force-update
     helm repo update cilium
     helm upgrade --install cilium cilium/cilium \
         --version "$version" --namespace kube-system \
         --set ipam.mode=kubernetes \
+        --set cni.confPath="$cni_conf_path" \
+        --set cni.binPath="$cni_bin_path" \
         --set kubeProxyReplacement=false \
         --set operator.replicas=1 \
         --set k8sServiceHost=127.0.0.1 \

@@ -20,7 +20,7 @@ use kube::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::detect::{Installation, K3sDatastore};
+use crate::{detect::{Installation, K3sDatastore}, request::Distribution};
 
 const SKIP_KINDS: &[&str] = &[
     "ComponentStatus",
@@ -400,7 +400,11 @@ impl KubeApi {
         }
         let host_paths = persistent_host_paths(&objects, node_labels);
         let backups = backup_host_paths(&directory, &host_paths)?;
-        Ok(HostPathSnapshot { directory, backups })
+        Ok(HostPathSnapshot {
+            directory,
+            backups,
+            cni_path_backups: Vec::new(),
+        })
     }
 
     pub fn export(&self, installation: &Installation) -> Result<Export> {
@@ -501,6 +505,7 @@ impl KubeApi {
             objects: exported_objects,
             host_paths,
             host_path_backups: Vec::new(),
+            cni_path_backups: Vec::new(),
         })
     }
 
@@ -627,6 +632,7 @@ struct SanitizedObject {
 pub struct HostPathSnapshot {
     directory: PathBuf,
     backups: Vec<HostPathBackup>,
+    cni_path_backups: Vec<CniPathBackup>,
 }
 
 #[derive(Debug)]
@@ -760,6 +766,7 @@ impl Export {
             objects,
             host_paths: Vec::new(),
             host_path_backups: Vec::new(),
+            cni_path_backups: Vec::new(),
         })
     }
 
@@ -771,6 +778,88 @@ impl Export {
     pub fn restore_host_paths(&self) -> Result<()> {
         restore_host_path_backups(&self.host_path_backups)
     }
+
+    pub fn snapshot_k3s_cni_paths(&mut self, installation: &Installation) -> Result<()> {
+        self.cni_path_backups = snapshot_k3s_cni_paths(&self.dir, installation)?;
+        Ok(())
+    }
+
+    pub fn restore_k3s_cni_paths(&self) -> Result<()> {
+        restore_cni_path_backups(&self.cni_path_backups)
+    }
+}
+
+#[derive(Debug)]
+struct CniPathBackup {
+    source: PathBuf,
+    backup: PathBuf,
+}
+
+fn backup_cni_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<CniPathBackup>> {
+    let existing: Vec<_> = paths.iter().filter(|path| path.is_dir()).cloned().collect();
+    if existing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let backup_root = directory.join("cni-paths");
+    fs::create_dir(&backup_root).context("creating protected CNI path backup")?;
+    let mut backups = Vec::with_capacity(existing.len());
+    for (index, source) in existing.into_iter().enumerate() {
+        let backup = backup_root.join(format!("{index:08}"));
+        fs::create_dir(&backup).with_context(|| {
+            format!("creating protected CNI backup directory {}", backup.display())
+        })?;
+        run_cp_following_symlinks(&source.join("."), &backup)
+            .with_context(|| format!("backing up CNI directory {}", source.display()))?;
+        backups.push(CniPathBackup { source, backup });
+    }
+    Ok(backups)
+}
+
+fn run_cp_following_symlinks(source: &Path, destination: &Path) -> Result<()> {
+    let output = Command::new("cp")
+        .args(["-aL", "--"])
+        .arg(source)
+        .arg(destination)
+        .output()
+        .context("running cp to preserve CNI files")?;
+    ensure!(
+        output.status.success(),
+        "cp failed while preserving CNI files: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
+fn restore_cni_path_backups(backups: &[CniPathBackup]) -> Result<()> {
+    for item in backups {
+        match fs::symlink_metadata(&item.source) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                fs::remove_file(&item.source).with_context(|| {
+                    format!("removing stale CNI path link {}", item.source.display())
+                })?;
+                fs::create_dir_all(&item.source).with_context(|| {
+                    format!("recreating CNI directory {}", item.source.display())
+                })?;
+                run_cp_following_symlinks(&item.backup.join("."), &item.source)?;
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                run_cp_following_symlinks(&item.backup.join("."), &item.source)?;
+            }
+            Ok(_) => bail!(
+                "cannot restore CNI path {} because a non-directory exists there",
+                item.source.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(&item.source).with_context(|| {
+                    format!("recreating CNI directory {}", item.source.display())
+                })?;
+                run_cp_following_symlinks(&item.backup.join("."), &item.source)?;
+            }
+            Err(error) => return Err(error)
+                .with_context(|| format!("checking CNI path {}", item.source.display())),
+        }
+    }
+    Ok(())
 }
 
 impl HostPathSnapshot {
@@ -781,6 +870,57 @@ impl HostPathSnapshot {
     pub fn restore(&self) -> Result<()> {
         restore_host_path_backups(&self.backups)
     }
+
+    pub fn snapshot_k3s_cni_paths(&mut self, installation: &Installation) -> Result<()> {
+        self.cni_path_backups = snapshot_k3s_cni_paths(&self.directory, installation)?;
+        Ok(())
+    }
+
+    pub fn restore_k3s_cni_paths(&self) -> Result<()> {
+        restore_cni_path_backups(&self.cni_path_backups)
+    }
+}
+
+fn snapshot_k3s_cni_paths(
+    directory: &Path,
+    installation: &Installation,
+) -> Result<Vec<CniPathBackup>> {
+    if installation.distribution != Distribution::K3s {
+        return Ok(Vec::new());
+    }
+    let Some(cluster) = &installation.cluster else {
+        return Ok(Vec::new());
+    };
+    let paths = [cluster.cni_conf_dir.as_deref(), cluster.cni_bin_dir.as_deref()];
+    for path in paths.into_iter().flatten() {
+        if path.starts_with(&cluster.data_dir) {
+            ensure!(
+                path != cluster.data_dir.as_path(),
+                "detected CNI path {} is the whole K3s data directory; refusing to uninstall without a bounded CNI backup",
+                path.display()
+            );
+            ensure!(
+                path.is_dir(),
+                "detected CNI directory {} is missing; refusing to uninstall K3s without a complete CNI backup",
+                path.display()
+            );
+        }
+    }
+    let mut candidates: Vec<_> = paths
+        .into_iter()
+        .flatten()
+        .filter(|path| path.starts_with(&cluster.data_dir))
+        .cloned()
+        .collect();
+    candidates.sort_by_key(|path| path.components().count());
+    candidates.dedup();
+    let mut roots = Vec::<PathBuf>::new();
+    for path in candidates {
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            roots.push(path);
+        }
+    }
+    backup_cni_paths(directory, &roots)
 }
 
 fn restore_host_path_backups(backups: &[HostPathBackup]) -> Result<()> {
@@ -1195,10 +1335,64 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        node_scheduling_patch, persistent_host_paths, sanitize, skip_object, write_export_manifest,
-        Export, ExportedObject, NodeSchedulingState,
+        node_scheduling_patch, persistent_host_paths, restore_cni_path_backups, sanitize,
+        skip_object, snapshot_k3s_cni_paths, write_export_manifest, Export, ExportedObject,
+        NodeSchedulingState,
     };
+    use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
+    use crate::request::Distribution;
     use std::collections::HashMap;
+    use std::fs;
+
+    #[test]
+    fn restores_k3s_cni_directories_after_data_dir_removal() {
+        let host = tempfile::tempdir().unwrap();
+        let exports = tempfile::tempdir().unwrap();
+        let data_dir = host.path().join("var/lib/rancher/k3s");
+        let conf_dir = data_dir.join("agent/etc/cni/net.d");
+        let bin_dir = data_dir.join("data/current/bin");
+        fs::create_dir_all(&conf_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(conf_dir.join("05-cilium.conflist"), "cilium-config").unwrap();
+        fs::write(bin_dir.join("cilium-cni"), b"cni-binary").unwrap();
+        let installation = Installation {
+            distribution: Distribution::K3s,
+            role: NodeRole::ControlPlane,
+            runtime_endpoint: None,
+            service_manager: Some(ServiceManager::Systemd),
+            service_name: "k3s".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: Some(ClusterConfig {
+                data_dir: data_dir.clone(),
+                kubeconfig: None,
+                service_cidr: None,
+                cluster_cidr: None,
+                cluster_domain: None,
+                cluster_dns: None,
+                node_name: None,
+                cni: Some("cilium".to_string()),
+                cni_conf_dir: Some(conf_dir.clone()),
+                cni_bin_dir: Some(bin_dir.clone()),
+                flannel_backend: None,
+                datastore: Some(K3sDatastore::Kine),
+            }),
+        };
+        let backups = snapshot_k3s_cni_paths(exports.path(), &installation).unwrap();
+
+        fs::remove_dir_all(&data_dir).unwrap();
+        restore_cni_path_backups(&backups).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(conf_dir.join("05-cilium.conflist")).unwrap(),
+            "cilium-config"
+        );
+        let binary = fs::read(bin_dir.join("cilium-cni")).unwrap();
+        assert_eq!(binary.as_slice(), b"cni-binary");
+        assert!(conf_dir.is_dir());
+        assert!(bin_dir.is_dir());
+    }
 
     #[test]
     fn migration_export_keeps_reserved_user_annotation_unchanged() {

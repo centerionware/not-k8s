@@ -132,6 +132,14 @@ fn migrate_to_nodestore(
         return Err(error)
             .context("local persistent volume snapshot failed; original service was restored");
     }
+    if request.uninstall_after_migrate {
+        if let Err(error) = export.snapshot_k3s_cni_paths(source) {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("snapshotting K3s CNI files failed ({error:#}); restoring the source service also failed ({restore_error:#})");
+            }
+            return Err(error).context("K3s CNI snapshot failed; original service was restored");
+        }
+    }
     if let Err(error) = run_bootstrap(bootstrap) {
         if target_api.ready().is_ok() {
             bail!("nodebootstrap failed ({error:#}) but a destination API is already answering; source remains disabled to avoid a port conflict; recovery export: {}", export.dir.display());
@@ -186,8 +194,18 @@ fn migrate_to_nodestore(
         }
     }
     if request.uninstall_after_migrate {
-        service::uninstall_source(source)?;
-        export.restore_host_paths()?;
+        if let Err(uninstall_error) = service::uninstall_source(source) {
+            let host_path_error = export.restore_host_paths().err();
+            let cni_path_error = export.restore_k3s_cni_paths().err();
+            bail!("source uninstall failed ({uninstall_error:#}); persistent-path restore error={host_path_error:#?}; CNI-path restore error={cni_path_error:#?}; recovery export retained at {}", export.dir.display());
+        }
+        let host_path_error = export.restore_host_paths().err();
+        let cni_path_error = export.restore_k3s_cni_paths().err();
+        ensure!(
+            host_path_error.is_none() && cni_path_error.is_none(),
+            "post-uninstall restore failed: persistent-path error={host_path_error:#?}; CNI-path error={cni_path_error:#?}; recovery export retained at {}",
+            export.dir.display()
+        );
         run_bootstrap(bootstrap_command(source)?)
             .context("reconciling nodestore after source uninstall")?;
         wait_for_api(&target_api)
@@ -233,7 +251,10 @@ fn migrate_worker_to_nodestore(
         return Ok(());
     }
 
-    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
+    let mut host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
+    if request.uninstall_after_migrate {
+        host_path_snapshot.snapshot_k3s_cni_paths(source)?;
+    }
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
@@ -265,18 +286,21 @@ fn migrate_worker_to_nodestore(
     restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
         .context("restoring replacement worker labels and scheduling state")?;
     if request.uninstall_after_migrate {
-        service::uninstall_source(source).with_context(|| {
-            format!(
-                "source uninstall failed; worker volume snapshot retained at {}",
+        if let Err(uninstall_error) = service::uninstall_source(source) {
+            let host_path_error = host_path_snapshot.restore().err();
+            let cni_path_error = host_path_snapshot.restore_k3s_cni_paths().err();
+            bail!(
+                "source uninstall failed ({uninstall_error:#}); worker volume restore error={host_path_error:#?}; CNI-path restore error={cni_path_error:#?}; recovery snapshot retained at {}",
                 host_path_snapshot.recovery_directory().display()
-            )
-        })?;
-        host_path_snapshot.restore().with_context(|| {
-            format!(
-                "restoring worker local volumes failed; recovery snapshot is at {}",
-                host_path_snapshot.recovery_directory().display()
-            )
-        })?;
+            );
+        }
+        let host_path_error = host_path_snapshot.restore().err();
+        let cni_path_error = host_path_snapshot.restore_k3s_cni_paths().err();
+        ensure!(
+            host_path_error.is_none() && cni_path_error.is_none(),
+            "post-uninstall worker restore failed: persistent-path error={host_path_error:#?}; CNI-path error={cni_path_error:#?}; recovery snapshot retained at {}",
+            host_path_snapshot.recovery_directory().display()
+        );
     }
     println!("Worker {name} joined the nodestore cluster and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}", host_path_snapshot.recovery_directory().display());
     Ok(())
@@ -952,6 +976,15 @@ fn bootstrap_command_with_config(
         .args(args)
         .env("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", ipv4_cluster_cidr)
         .env("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", ipv6_cluster_cidr);
+    if config.cni.as_deref() != Some("flannel")
+        || config.flannel_backend.as_deref().unwrap_or("vxlan") != "vxlan"
+    {
+        apply_cni_runtime_paths(
+            &mut command,
+            config.cni_conf_dir.as_deref(),
+            config.cni_bin_dir.as_deref(),
+        )?;
+    }
     if let Some(address) = cluster_dns_ipv4 {
         command.env("NODEBOOTSTRAP_CLUSTER_DNS_IP", address);
     }
@@ -959,6 +992,25 @@ fn bootstrap_command_with_config(
         command.env("NODEBOOTSTRAP_CLUSTER_DNS_IP6", address);
     }
     Ok(command)
+}
+
+fn apply_cni_runtime_paths(
+    command: &mut Command,
+    conf_dir: Option<&std::path::Path>,
+    bin_dir: Option<&std::path::Path>,
+) -> Result<()> {
+    match (conf_dir, bin_dir) {
+        (Some(conf_dir), Some(bin_dir)) => {
+            ensure!(conf_dir.is_absolute(), "CNI config directory must be absolute");
+            ensure!(bin_dir.is_absolute(), "CNI binary directory must be absolute");
+            command
+                .env("NODEBOOTSTRAP_CNI_CONF_DIR", conf_dir)
+                .env("NODEBOOTSTRAP_CNI_BIN_DIR", bin_dir);
+        }
+        (None, None) => {}
+        _ => bail!("detected CNI config and binary directories must be provided together"),
+    }
+    Ok(())
 }
 
 fn split_cidrs(value: &str) -> Vec<&str> {
@@ -1026,7 +1078,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        replacement_worker_args, reverse_node_replacement_state,
+        apply_cni_runtime_paths, replacement_worker_args, reverse_node_replacement_state,
         validate_destination_node_replacement, validate_reverse_control_plane_options,
         validate_skip_api_import,
     };
@@ -1036,7 +1088,7 @@ mod tests {
         request::{Distribution, MigrationRequest},
     };
     use std::collections::HashMap;
-    use std::path::Path;
+    use std::{path::Path, process::Command};
 
     fn cluster(cni: Option<&str>, backend: Option<&str>) -> ClusterConfig {
         ClusterConfig {
@@ -1048,6 +1100,8 @@ mod tests {
             cluster_dns: None,
             node_name: Some("old-node".to_string()),
             cni: cni.map(str::to_string),
+            cni_conf_dir: None,
+            cni_bin_dir: None,
             flannel_backend: backend.map(str::to_string),
             datastore: Some(K3sDatastore::Etcd),
         }
@@ -1084,6 +1138,43 @@ mod tests {
         let config = cluster(Some("flannel"), Some("wireguard-native"));
         let args = replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node");
         assert!(args.iter().any(|arg| arg == "--cni=none"));
+    }
+
+    #[test]
+    fn forwards_external_cni_runtime_directories_to_nodebootstrap() {
+        let mut command = Command::new("nodebootstrap");
+        apply_cni_runtime_paths(
+            &mut command,
+            Some(Path::new("/var/lib/rancher/k3s/agent/etc/cni/net.d")),
+            Some(Path::new("/var/lib/rancher/k3s/data/current/bin")),
+        )
+        .unwrap();
+
+        let env: Vec<_> = command.get_envs().collect();
+        assert!(env.contains(&(
+            std::ffi::OsStr::new("NODEBOOTSTRAP_CNI_CONF_DIR"),
+            Some(std::ffi::OsStr::new(
+                "/var/lib/rancher/k3s/agent/etc/cni/net.d"
+            ))
+        )));
+        assert!(env.contains(&(
+            std::ffi::OsStr::new("NODEBOOTSTRAP_CNI_BIN_DIR"),
+            Some(std::ffi::OsStr::new(
+                "/var/lib/rancher/k3s/data/current/bin"
+            ))
+        )));
+    }
+
+    #[test]
+    fn rejects_incomplete_or_relative_cni_runtime_directories() {
+        let mut command = Command::new("nodebootstrap");
+        assert!(apply_cni_runtime_paths(&mut command, Some(Path::new("relative")), None).is_err());
+        assert!(apply_cni_runtime_paths(
+            &mut command,
+            Some(Path::new("relative")),
+            Some(Path::new("/opt/cni/bin"))
+        )
+        .is_err());
     }
 
     #[test]
