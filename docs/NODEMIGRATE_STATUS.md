@@ -14,7 +14,7 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest completed run 36066311951: K3s → nodestore migration completed and snapshot APIs remained usable, but the v0.8.0 target denied `system:kube-controller-manager` permission to create CSI pods (403). Upstream import remained blocked by CSR ExtraValue handling and missing ClusterTrustBundle/v1. A new release-backed run is exercising compatible API version fallback at SHA `954f1be3d12fb7f0334db8dff6efae28ca0e4250`. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run 36068417485 at SHA `954f1be3d12fb7f0334db8dff6efae28ca0e4250`: K3s again reached forward migration then v0.8.0 denied controller-manager pod creation (403); upstream lane failed in the migration script and needs log-level triage. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | The image built, but the first container exited with code 255 before systemd readiness without container output. The entrypoint now prints the resolved systemd binary and enables debug console logs while retaining private cgroup namespaces. Runs 36051665474, 36053700863, 36055409069, and 36056682815 reproduced the failure. Isolation, CRI, BPF, network, and failure/restart remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
@@ -24,9 +24,11 @@ separate living documents below.
 - Compatible API-version import selection was added at SHA
   `954f1be3d12fb7f0334db8dff6efae28ca0e4250`. Focused nodemigrate tests passed
   in [run 36068373192](https://github.com/centerionware/not-k8s/actions/runs/36068373192).
-  The release-backed K3s and upstream lanes are running; the five-node image
-  built but systemd preflight failed in [run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485).
-  Runtime logs are not yet available while the remaining lanes run.
+  The release-backed run [36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485)
+  failed in both single-node lanes. K3s hit the known v0.8.0
+  controller-manager pod-creation 403 after forward migration; upstream
+  stopped in the migration script and needs log-level triage. The Docker
+  image built, but systemd again exited 255 before five-node isolation checks.
 
 - At `336ea350502288d55bb6a57763494fa0aa89a475`, focused quick-check for
   `nodeapiserver,nodemigrate` passed ([run
