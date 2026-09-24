@@ -230,22 +230,30 @@ fn migrate_to_nodestore(
         }
     }
     if let Err(error) = run_bootstrap(bootstrap) {
-        if target_api.ready().is_ok() {
-            bail!("nodebootstrap failed ({error:#}) but a destination API is already answering; source remains disabled to avoid a port conflict; recovery export: {}", export.dir.display());
-        }
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("nodebootstrap failed ({error:#}); restoring the source service also failed ({restore_error:#}); source remains disabled");
-        }
-        return Err(error).context("nodestore bootstrap failed; original service was restored");
+        return Err(rollback_forward_migration(
+            source,
+            previous_service,
+            &export,
+            error.context("nodestore bootstrap failed"),
+        ));
     }
 
-    wait_for_api(&target_api).context(format!(
-        "destination did not become ready; source remains disabled and the protected export is at {}",
-        export.dir.display()
-    ))?;
+    if let Err(error) = wait_for_api(&target_api) {
+        return Err(rollback_forward_migration(
+            source,
+            previous_service,
+            &export,
+            error.context("destination did not become ready"),
+        ));
+    }
     if !request.skip_api_import {
         if let Err(error) = target_api.import(&export) {
-            bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
+            return Err(rollback_forward_migration(
+                source,
+                previous_service,
+                &export,
+                error.context("destination bootstrap succeeded but Kubernetes object import failed"),
+            ));
         }
     }
     let replacement_state = if destination_node_exists {
@@ -304,6 +312,28 @@ fn migrate_to_nodestore(
     }
     println!("Migration completed and the destination API passed readiness checks. Export retained at {}", export.dir.display());
     Ok(())
+}
+
+fn rollback_forward_migration(
+    source: &detect::Installation,
+    previous_service: service::PreviousServiceState,
+    export: &transfer::Export,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    let recovery = export.dir.display();
+    if let Err(stop_error) = service::stop_nodestore_for_rollback(source) {
+        return cause.context(format!(
+            "stopping the partial nodestore stack failed ({stop_error:#}); source remains disabled; protected export retained at {recovery}"
+        ));
+    }
+    if let Err(restore_error) = service::restore(source, previous_service) {
+        return cause.context(format!(
+            "source service restoration failed ({restore_error:#}); source remains disabled; partial nodestore services were stopped; protected export retained at {recovery}"
+        ));
+    }
+    cause.context(format!(
+        "source service was restored after rollback; partial nodestore services were stopped; protected export retained at {recovery}"
+    ))
 }
 
 fn migrate_worker_to_nodestore(

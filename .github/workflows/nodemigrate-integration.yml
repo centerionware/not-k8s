@@ -13,8 +13,10 @@ on:
       - 'crates/nodemigrate/**'
       - 'docs/NODEMIGRATE.md'
       - 'docs/NODEMIGRATION_GOAL.md'
+      - 'docs/NODEMIGRATE_BUGS.md'
       - 'docs/NODEMIGRATE_CI_STATUS.md'
       - 'docs/NODEMIGRATE_MIGRATION_STATUS.md'
+      - 'docs/NODEMIGRATE_RELEASE_STATUS.md'
       - 'docs/NODEMIGRATE_STATUS.md'
 
 permissions:

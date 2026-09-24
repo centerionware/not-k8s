@@ -7,6 +7,12 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+The [bug and fix tracker](NODEMIGRATE_BUGS.md) lists confirmed defects by
+owning component, branch fix, and focused test evidence. The target is the
+coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
+release-backed regression baseline, not a claim that its runtime contains the
+new fixes.
+
 ## Workflow
 
 - `.github/workflows/nodemigrate.yml` runs the focused crate tests and release
@@ -47,9 +53,13 @@ this objective.
   `v0.8.0` completed unsuccessfully in [run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485).
   Both lanes built the utility and downloaded the release runtime. K3s again
   reached migration but hit the v0.8.0 controller-manager 403 during CSI
-  readiness. The upstream lane failed in its migration script; its exact
-  failure point remains under log review. The five-node image built, but its
-  systemd preflight exited 255 before readiness.
+  readiness. Upstream version negotiation successfully applied the source
+  ClusterTrustBundle through `certificates.k8s.io/v1beta1`; the only failed
+  object was a CSR, for which the v0.8.0 server returned HTTP 500 while
+  decoding `certificates.k8s.io/v1.ExtraValue`. The PR already contains a
+  nodeapiserver codec fix, but that code is not present in the release runtime.
+  The five-node image built, but its systemd preflight exited 255 before
+  readiness.
 - Manual dispatch also starts the Docker five-node preflight. The Dockerfile
   path fix worked, but the next image build found Ubuntu 24.04 does not offer
   `bpftool` as an installable package name; the follow-up uses its providing
@@ -348,8 +358,8 @@ No local Cargo test/build was run.
 | 2026-09-24 | `e6963be70467318f19b8c9fb8ef7197c0c9980b2` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36066311951](https://github.com/centerionware/not-k8s/actions/runs/36066311951) |
 | 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | Focused nodemigrate checks | API-version negotiation regression and complete nodemigrate crate checks passed. | [Run 36068373192](https://github.com/centerionware/not-k8s/actions/runs/36068373192) |
 | 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | K3s+Cilium against `v0.8.0` | Utility build and release runtime verification passed. Forward migration reached target CSI readiness, where the v0.8.0 `system:kube-controller-manager` identity received 403 for pod creation; reverse migration was not reached. | [Run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485) |
-| 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | Upstream Kubernetes+Cilium against `v0.8.0` | Utility build and release runtime verification passed, but the migration script failed. The available summary does not identify whether source setup or import stopped; inspect the run log before triage. | [Run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485) |
-| 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | Five-node Docker preflight | Image build passed; the first systemd container exited 255 before readiness, so no isolation assertions ran. | [Run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485) |
+| 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | Upstream Kubernetes+Cilium against `v0.8.0` | Source checkpoint passed. Version fallback applied ClusterTrustBundle through v1beta1. Import then stopped on one CSR: the v0.8.0 server returned HTTP 500, `Decode(NotAnObject("io.k8s.api.certificates.v1.ExtraValue"))`. The source remained disabled and the protected export was retained. The current PR's nodeapiserver codec fix is not present in the released runtime. | [Run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485) |
+| 2026-09-24 | `954f1be3d12fb7f0334db8dff6efae28ca0e4250` | Five-node Docker preflight | Image build passed. The first privileged container started `/usr/lib/systemd/systemd`, then exited 255 before systemd readiness; no node-isolation assertions ran. | [Run 36068417485](https://github.com/centerionware/not-k8s/actions/runs/36068417485) |
 
 | 2026-09-24 | `093f2e440b16c4a2a585b424b816b97ab49480a9` | Focused nodemigrate checks, shell validation, commit convention | Passed; crate tests include served-CRD-version and interactive/noninteractive risk-warning behavior. | [Checks 36058334362](https://github.com/centerionware/not-k8s/actions/runs/36058334362), [shell 36058334455](https://github.com/centerionware/not-k8s/actions/runs/36058334455), [commit 36058331222](https://github.com/centerionware/not-k8s/actions/runs/36058331222) |
 | 2026-09-24 | `093f2e440b16c4a2a585b424b816b97ab49480a9` | K3s + Cilium migration against `v0.8.0` | Source setup and target bootstrap passed; warning appeared in log; 506 objects/48 CRDs exported. After 60 seconds, destination discovery still lacked all 51 served source CRD APIs; import failed with 37 objects pending. | [Run 36058570338](https://github.com/centerionware/not-k8s/actions/runs/36058570338) |

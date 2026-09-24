@@ -730,9 +730,40 @@ main() {
     export NODEBOOTSTRAP_REPO_ROOT="$ROOT"
     local nodestore_kubeconfig=/etc/nodebootstrap/admin.kubeconfig
     echo "Migrating $SOURCE_DIST -> nodestore"
-    NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
-    NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
-        "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
+    local migration_status=0
+    if NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
+        NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
+        "$MIGRATE" to=nodestore "from=$SOURCE_DIST"; then
+        migration_status=0
+    else
+        migration_status=$?
+        echo "Forward migration failed with status $migration_status; checking source rollback"
+        local source_service=k3s
+        [[ "$SOURCE_DIST" == kubernetes ]] && source_service=kubelet
+        systemctl is-active --quiet "$source_service" || {
+            echo "FAIL: source service $source_service was not restored after migration failure" >&2
+            return 1
+        }
+        local attempt
+        for attempt in $(seq 1 60); do
+            if KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get --raw=/readyz >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+        done
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get --raw=/readyz >/dev/null || {
+            echo "FAIL: source API did not recover after migration failure" >&2
+            return 1
+        }
+        local recovery_dir
+        recovery_dir="$(sed -n 's/^Protected API object export saved at //p' "$LOG" | tail -n 1)"
+        [[ -n "$recovery_dir" && -d "$recovery_dir" ]] || {
+            echo "FAIL: protected API export is missing after migration failure" >&2
+            return 1
+        }
+        echo "PASS: source service and API recovered; protected export retained at $recovery_dir"
+        return "$migration_status"
+    fi
     KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet true
     verify_stage nodestore "$nodestore_kubeconfig"
     assert_migratable_api_state_unchanged source nodestore

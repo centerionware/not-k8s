@@ -57,52 +57,7 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
         .context("source service manager could not be identified; refusing to stop the source")?;
     let name = &installation.service_name;
     if installation.distribution == crate::request::Distribution::Nodestore {
-        let mut services = Vec::new();
-        for name in [
-            "nodelet",
-            "nodeproxy",
-            "nodecontroller",
-            "nodescheduler",
-            "flanneld",
-            "kube-apiserver",
-            "nodeapiserver",
-            "nodestore",
-        ] {
-            if service_exists(manager, name) {
-                services.push(ServiceState {
-                    name: name.to_string(),
-                    enabled: service_enabled(manager, name),
-                    active: service_active(manager, name),
-                });
-            }
-        }
-        ensure!(
-            services.iter().any(|service| service.active),
-            "no active nodebootstrap services were found to stop"
-        );
-        let previous = PreviousServiceState {
-            enabled: false,
-            active: false,
-            services,
-        };
-        for service in &previous.services {
-            if service.active || service.enabled {
-                let result = if service.active {
-                    stop_and_disable(manager, &service.name)
-                } else {
-                    disable_named(manager, &service.name)
-                };
-                if let Err(error) = result {
-                    if let Err(restore_error) = restore(installation, previous.clone()) {
-                        bail!("stopping nodebootstrap service '{}' failed ({error:#}) and restoring the stack failed ({restore_error:#})", service.name);
-                    }
-                    return Err(error).with_context(|| {
-                        format!("stopping nodebootstrap service {}", service.name)
-                    });
-                }
-            }
-        }
-        return Ok(previous);
+        return stop_nodestore_stack(manager, true);
     }
     let previous = match manager {
         ServiceManager::Systemd => {
@@ -265,11 +220,7 @@ pub fn restore(installation: &Installation, previous: PreviousServiceState) -> R
         .context("source service manager is unknown")?;
     let name = &installation.service_name;
     if !previous.services.is_empty() {
-        // Restart dependencies in the opposite order from shutdown: datastore,
-        // apiserver and network first, then controllers and node services.
-        for service in previous.services.iter().rev() {
-            restore_named(manager, service)?;
-        }
+        restore_nodestore_stack(manager, &previous)?;
         return Ok(());
     }
     match manager {
@@ -308,6 +259,75 @@ pub fn restore(installation: &Installation, previous: PreviousServiceState) -> R
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Stop any partially started nodestore stack before restoring a failed
+/// forward migration's source distribution. An empty stack is expected when
+/// bootstrap failed before installing units.
+pub fn stop_nodestore_for_rollback(installation: &Installation) -> Result<()> {
+    let manager = installation
+        .service_manager
+        .context("service manager is unknown; cannot stop the partial nodestore stack")?;
+    stop_nodestore_stack(manager, false).map(|_| ())
+}
+
+fn stop_nodestore_stack(
+    manager: ServiceManager,
+    require_active: bool,
+) -> Result<PreviousServiceState> {
+    let services = [
+        "nodelet",
+        "nodeproxy",
+        "nodecontroller",
+        "nodescheduler",
+        "flanneld",
+        "kube-apiserver",
+        "nodeapiserver",
+        "nodestore",
+    ]
+    .into_iter()
+    .filter(|name| service_exists(manager, name))
+    .map(|name| ServiceState {
+        name: name.to_string(),
+        enabled: service_enabled(manager, name),
+        active: service_active(manager, name),
+    })
+    .collect::<Vec<_>>();
+    ensure!(
+        !require_active || services.iter().any(|service| service.active),
+        "no active nodebootstrap services were found to stop"
+    );
+    let previous = PreviousServiceState {
+        enabled: false,
+        active: false,
+        services,
+    };
+    for service in &previous.services {
+        if service.active || service.enabled {
+            let result = if service.active {
+                stop_and_disable(manager, &service.name)
+            } else {
+                disable_named(manager, &service.name)
+            };
+            if let Err(error) = result {
+                if let Err(restore_error) = restore_nodestore_stack(manager, &previous) {
+                    bail!("stopping nodebootstrap service '{}' failed ({error:#}) and restoring the stack failed ({restore_error:#})", service.name);
+                }
+                return Err(error)
+                    .with_context(|| format!("stopping nodebootstrap service {}", service.name));
+            }
+        }
+    }
+    Ok(previous)
+}
+
+fn restore_nodestore_stack(manager: ServiceManager, previous: &PreviousServiceState) -> Result<()> {
+    // Restart dependencies in the opposite order from shutdown: datastore,
+    // apiserver and network first, then controllers and node services.
+    for service in previous.services.iter().rev() {
+        restore_named(manager, service)?;
     }
     Ok(())
 }
