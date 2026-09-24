@@ -12,7 +12,7 @@ compile or unit test does not mark a real migration path as verified.
 | Scenario or behavior | Implementation | Verification |
 | --- | --- | --- |
 | Detect local K3s service, Kine/etcd mode, config, and network settings | Implemented | Unit tests only; targeted CI rerun pending after compiler fixes |
-| Detect an upstream control plane and read CIDRs and cluster domain | Implemented | Focused fixture exposed a doubled-root manifest path at `4e932917`; correction is pending targeted CI rerun |
+| Detect an upstream control plane and read CIDRs and cluster domain | Implemented | Focused fixture passes after the rooted manifest path correction |
 | Export all discovered API resource pages, including CRDs and add-ons | Implemented | Not yet exercised against a real cluster |
 | Carry static hostPath/local PV data and preserve CSI-backed data on the same host | Implemented for host paths; CSI data remains with its local driver | Not yet exercised through a round trip |
 | K3s → nodestore with Flannel | Implemented | No real migration run recorded |
@@ -55,6 +55,7 @@ by the user's current instruction.
 | 2026-09-24 | `daac9ad05285e6ff749d4c51a18f9b71c8fb7dee` | Quick-check `nodebootstrap,nodemigrate` | Passed before bidirectional changes; does not validate reverse migration | [Run 35949477611](https://github.com/centerionware/not-k8s/actions/runs/35949477611) |
 | 2026-09-24 | `55704b1c202c248ab633aac8c74877c46499e59f` | nodemigrate crate checks and targeted quick-check | Failed to compile; fixes are in the current worktree and follow-up runs are pending | [Crate run 35952766075](https://github.com/centerionware/not-k8s/actions/runs/35952766075), [quick-check run 35952782893](https://github.com/centerionware/not-k8s/actions/runs/35952782893) |
 | 2026-09-24 | `4e932917080e21412c79625fb2b79d08f5e62c0f` | nodemigrate crate tests | Compiled; 9 passed, upstream network detection fixture failed due to doubled-root manifest path; correction pending | [Run 35954374767](https://github.com/centerionware/not-k8s/actions/runs/35954374767) |
+| 2026-09-24 | `4ef3585eaea6beae51ffd1116134435b0edc305e` | nodemigrate crate tests | Passed after correcting rooted manifest path | [Run 35954606805](https://github.com/centerionware/not-k8s/actions/runs/35954606805) |
 | — | — | K3s integration round trip | Not run | Manual workflow above |
 | — | — | Upstream Kubernetes integration round trip | Not run | Manual workflow above |
 
