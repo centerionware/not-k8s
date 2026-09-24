@@ -30,8 +30,13 @@ Node should be replaced; nodemigrate removes that stale Node after stopping
 the source service and waits for the new worker registration to become Ready.
 `NODEMIGRATE_NODE_NAME` overrides the detected node name. Cluster-wide API
 objects are transferred at the control-plane stage, not re-imported from each
-worker. The utility derives service and pod CIDRs, cluster domain, DNS
-addresses, and node name from the source installation where available.
+worker. On the return path, a detected not-k8s worker can start its retained
+K3s-agent or kubelet service against the existing target cluster and wait for
+a fresh Ready registration without importing cluster-wide objects again. Use
+`NODEMIGRATE_DESTINATION_KUBECONFIG` for a cluster-admin kubeconfig that can
+read PVs and replace an existing Node. The utility derives service and pod
+CIDRs, cluster domain, DNS addresses, and node name from the source
+installation where available.
 
 The supported directions are K3s or upstream Kubernetes to nodestore, and
 nodestore to a retained local K3s or upstream Kubernetes installation. The
@@ -61,8 +66,8 @@ control-plane stage. For local and hostPath PersistentVolumes, nodemigrate
 snapshots referenced host paths into the protected export before changing
 control-plane services. A worker replacement also reads the target PV list and
 retains a local hostPath/local-volume snapshot without re-importing API
-objects; the runtime preservation and rollback behavior still needs a live
-multi-node check. If
+objects; source uninstall restores that snapshot afterward. The runtime
+preservation and rollback behavior still needs a live multi-node check. If
 `uninstall-after-migrate=true` invokes the K3s uninstall script, the host path
 is restored afterward. Network and CSI backed volume payloads stay with their
 storage provider.

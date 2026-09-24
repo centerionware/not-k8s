@@ -177,13 +177,7 @@ fn migrate_worker_to_nodestore(
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     target_api.ready()?;
     let existing_node = target_api.node_exists(&name)?;
-    let replace_existing = std::env::var("NODEMIGRATE_REPLACE_NODE")
-        .map(|value| match value.as_str() {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => bail!("NODEMIGRATE_REPLACE_NODE must be true or false"),
-        })
-        .unwrap_or(Ok(false))?;
+    let replace_existing = replace_existing_node_requested()?;
     validate_destination_node_replacement(existing_node, replace_existing)
         .with_context(|| format!("destination already has node {name}"))?;
     let worker = replacement_worker_command(source, &name)?;
@@ -246,6 +240,16 @@ fn validate_destination_node_replacement(existing_node: bool, replace: bool) -> 
     Ok(())
 }
 
+fn replace_existing_node_requested() -> Result<bool> {
+    match std::env::var("NODEMIGRATE_REPLACE_NODE") {
+        Ok(value) if value == "true" => Ok(true),
+        Ok(value) if value == "false" => Ok(false),
+        Ok(_) => bail!("NODEMIGRATE_REPLACE_NODE must be true or false"),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(error) => Err(error).context("reading NODEMIGRATE_REPLACE_NODE"),
+    }
+}
+
 fn migrate_to_existing(
     request: &request::MigrationRequest,
     source: &detect::Installation,
@@ -255,6 +259,9 @@ fn migrate_to_existing(
         source.distribution == request::Distribution::Nodestore,
         "migration to an existing Kubernetes installation currently starts from nodestore"
     );
+    if source.role == detect::NodeRole::Worker {
+        return migrate_worker_from_nodestore(request, source, target);
+    }
     service::validate_disable_support(source)?;
     ensure!(
         is_root(),
@@ -305,6 +312,73 @@ fn migrate_to_existing(
         request.to,
         export.dir.display()
     );
+    Ok(())
+}
+
+fn migrate_worker_from_nodestore(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+    target: &detect::Installation,
+) -> Result<()> {
+    ensure!(
+        target.role == detect::NodeRole::Worker,
+        "a nodestore worker must return to a retained worker installation"
+    );
+    service::validate_disable_support(source)?;
+    service::validate_disable_support(target)?;
+    ensure!(
+        is_root(),
+        "run nodemigrate as root to replace both worker services"
+    );
+    let name = node_name(target);
+    let target_api = transfer::KubeApi::destination(request.to)?;
+    target_api.ready()?;
+    let existing_node = target_api.node_exists(&name)?;
+    validate_destination_node_replacement(existing_node, replace_existing_node_requested()?)
+        .with_context(|| format!("destination already has node {name}"))?;
+    if request.plan_only {
+        println!("Migration plan: nodestore worker -> {:?} worker; node={name}; retained target service '{}' will be enabled and started; cluster API objects are managed by the control-plane migration", request.to, target.service_name);
+        return Ok(());
+    }
+
+    let host_path_snapshot = target_api.snapshot_host_paths()?;
+    println!(
+        "Worker local-volume recovery snapshot saved at {}",
+        host_path_snapshot.recovery_directory().display()
+    );
+    let previous_service = service::disable(source)?;
+    if existing_node {
+        if let Err(error) = target_api.delete_node(&name) {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("removing stale destination node {name} failed ({error:#}) and restoring nodestore worker services failed ({restore_error:#})");
+            }
+            return Err(error).context("removing the explicitly selected stale destination worker");
+        }
+    }
+    if let Err(error) = service::activate(target) {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("starting the retained worker service failed ({error:#}) and restoring nodestore services failed ({restore_error:#})");
+        }
+        return Err(error).context("starting the retained Kubernetes worker service");
+    }
+    wait_for_node(&target_api, &name).context(format!(
+        "retained worker {name} did not become Ready; nodestore worker remains disabled"
+    ))?;
+    if request.uninstall_after_migrate {
+        service::uninstall_source(source).with_context(|| {
+            format!(
+                "nodestore worker uninstall failed; worker volume snapshot retained at {}",
+                host_path_snapshot.recovery_directory().display()
+            )
+        })?;
+        host_path_snapshot.restore().with_context(|| {
+            format!(
+                "restoring worker local volumes failed; recovery snapshot is at {}",
+                host_path_snapshot.recovery_directory().display()
+            )
+        })?;
+    }
+    println!("Worker {name} returned to the retained {:?} installation and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}", request.to, host_path_snapshot.recovery_directory().display());
     Ok(())
 }
 

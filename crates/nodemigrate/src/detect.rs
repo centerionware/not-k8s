@@ -305,7 +305,7 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
         .or_else(|| sysv_script.clone())
         .or_else(|| runit_service.clone());
     if service_file.is_none() && binary.is_none() && !data_dir.is_dir() {
-        return Ok(None);
+        return inspect_nodestore_worker(layout);
     }
     Ok(Some(Installation {
         distribution: Distribution::Nodestore,
@@ -323,6 +323,73 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
         binary,
         config_files: Vec::new(),
         cluster: None,
+    }))
+}
+
+fn inspect_nodestore_worker(layout: &HostLayout) -> Result<Option<Installation>> {
+    let systemd_unit = first_file(
+        layout,
+        &[
+            "/etc/systemd/system/nodelet.service",
+            "/usr/lib/systemd/system/nodelet.service",
+            "/lib/systemd/system/nodelet.service",
+        ],
+    );
+    let init_script = first_file(layout, &["/etc/init.d/nodelet"]);
+    let openrc_script = init_script
+        .as_ref()
+        .filter(|path| {
+            std::fs::read_to_string(append(&layout.root, path))
+                .is_ok_and(|text| text.starts_with("#!/sbin/openrc-run"))
+        })
+        .cloned();
+    let sysv_script = init_script.filter(|_| openrc_script.is_none());
+    let runit_service = first_dir(layout, &["/etc/service/nodelet", "/var/service/nodelet"]);
+    let service_file = systemd_unit
+        .clone()
+        .or_else(|| openrc_script.clone())
+        .or_else(|| sysv_script.clone())
+        .or_else(|| runit_service.clone());
+    if service_file.is_none() {
+        return Ok(None);
+    }
+    let binary = first_file(
+        layout,
+        &[
+            "/usr/local/bin/nodelet",
+            "/usr/bin/nodelet",
+            "/usr/local/bin/notk8s",
+            "/usr/bin/notk8s",
+        ],
+    );
+    let cluster = ClusterConfig {
+        data_dir: PathBuf::from("/var/lib/nodebootstrap"),
+        kubeconfig: Some(PathBuf::from("/etc/nodebootstrap/admin.kubeconfig")),
+        service_cidr: None,
+        cluster_cidr: None,
+        cluster_domain: None,
+        cluster_dns: None,
+        node_name: None,
+        cni: detect_external_cni(layout),
+        flannel_backend: None,
+        datastore: None,
+    };
+    Ok(Some(Installation {
+        distribution: Distribution::Nodestore,
+        role: NodeRole::Worker,
+        runtime_endpoint: None,
+        service_manager: detect_service_manager(
+            layout,
+            systemd_unit.is_some(),
+            openrc_script.is_some(),
+            sysv_script.is_some(),
+            runit_service.is_some(),
+        ),
+        service_name: "nodelet".to_string(),
+        service_file,
+        binary,
+        config_files: Vec::new(),
+        cluster: Some(cluster),
     }))
 }
 
@@ -992,6 +1059,33 @@ mod tests {
         );
         let cluster = installation.cluster.unwrap();
         assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
+        assert_eq!(cluster.cni.as_deref(), Some("cilium"));
+    }
+
+    #[test]
+    fn detects_nodestore_nodelet_worker_without_a_local_datastore() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/nodelet.service"),
+            "[Service]\nEnvironment=NOTK8S_COMPONENT=nodelet\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation =
+            inspect_distribution(&HostLayout::under(root.path()), Distribution::Nodestore)
+                .unwrap()
+                .unwrap();
+        assert_eq!(installation.role, NodeRole::Worker);
+        assert_eq!(installation.service_name, "nodelet");
+        let cluster = installation.cluster.unwrap();
+        assert_eq!(cluster.datastore, None);
         assert_eq!(cluster.cni.as_deref(), Some("cilium"));
     }
 
