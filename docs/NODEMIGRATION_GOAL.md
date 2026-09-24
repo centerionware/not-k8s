@@ -81,9 +81,10 @@ instructions in `AGENTS.md` for nodemigrate work:
   host.
 - For nodemigrate Rust changes, use the targeted `nodemigrate checks`
   workflow, which compiles and tests only the `nodemigrate` crate. If
-  `nodebootstrap` changes, use `quick-check.yml` with
-  `components=nodebootstrap`; run both targeted checks only when both crates
-  changed. These focused runs are allowed and are not a general build gate.
+  `nodebootstrap` or `nodestore` changes, use `quick-check.yml` with the
+  corresponding `components=nodebootstrap` or `components=nodestore` input.
+  Run the focused checks for every changed crate. These runs are allowed and
+  are not a general build gate.
 - The dedicated `nodemigrate-integration.yml` workflow is the migration
   runtime test. Its build step only prepares binaries for that test. It is
   manually dispatched and must not be run unless the user authorizes the

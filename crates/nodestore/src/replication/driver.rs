@@ -76,6 +76,7 @@ const LOG_COMPACT_THRESHOLD: u64 = 5_000;
 enum Request {
     Propose { data: Vec<u8>, id: u64 },
     ConfChange { cc: ConfChangeV2, context: Vec<u8>, id: u64 },
+    PromoteLearner { learner_id: u64, cc: ConfChangeV2, context: Vec<u8>, id: u64 },
     Step(Message),
     TransferLeader { to: u64, done: oneshot::Sender<Result<()>> },
     Campaign { done: oneshot::Sender<Result<()>> },
@@ -137,6 +138,24 @@ impl RaftHandle {
         let (id, rx) = self.proposals.register();
         let context = encode_entry(id, cmd);
         if self.tx.send(Request::ConfChange { cc, context, id }).await.is_err() {
+            self.proposals.forget(id);
+            return Err(Error::Unavailable("the raft driver has stopped".to_string()));
+        }
+        self.await_proposal(id, rx).await
+    }
+
+    /// Promote a learner only when the leader has observed it active and
+    /// replicated through the current end of the log. The check and proposal
+    /// run in the Raft owner task, so no other Raft request can interleave.
+    pub async fn promote_learner(
+        &self,
+        learner_id: u64,
+        cc: ConfChangeV2,
+        cmd: &Command,
+    ) -> Result<Applied> {
+        let (id, rx) = self.proposals.register();
+        let context = encode_entry(id, cmd);
+        if self.tx.send(Request::PromoteLearner { learner_id, cc, context, id }).await.is_err() {
             self.proposals.forget(id);
             return Err(Error::Unavailable("the raft driver has stopped".to_string()));
         }
@@ -559,6 +578,32 @@ impl Driver {
                         .complete(id, Err(Error::Unavailable(format!("propose conf change: {e}"))));
                 }
             }
+            Request::PromoteLearner { learner_id, cc, context, id } => {
+                if self.raw.raft.state != StateRole::Leader {
+                    self.proposals.complete(id, Err(Error::Unavailable(
+                        "membership changes must go to the leader".to_string(),
+                    )));
+                    return;
+                }
+                let last_index = self.raw.raft.raft_log.last_index();
+                let progress = self.raw.raft.prs().get(learner_id);
+                let Some(progress) = progress else {
+                    self.proposals.complete(id, Err(Error::InvalidRequest(format!(
+                        "cannot promote member {learner_id}: it is not tracked by this Raft leader"
+                    ))));
+                    return;
+                };
+                if !learner_is_caught_up(progress.matched, last_index, progress.recent_active) {
+                    self.proposals.complete(id, Err(Error::Unavailable(format!(
+                        "cannot promote learner {learner_id}: replicated through {}, leader log ends at {last_index}, active={}",
+                        progress.matched, progress.recent_active
+                    ))));
+                    return;
+                }
+                if let Err(e) = self.raw.propose_conf_change(context, cc) {
+                    self.proposals.complete(id, Err(Error::Unavailable(format!("propose learner promotion: {e}"))));
+                }
+            }
             Request::Step(msg) => {
                 if let Err(e) = self.raw.step(msg) {
                     // Stale terms and messages from removed members land here.
@@ -818,6 +863,10 @@ impl Driver {
     }
 }
 
+fn learner_is_caught_up(matched: u64, leader_last_index: u64, recent_active: bool) -> bool {
+    recent_active && matched >= leader_last_index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +874,14 @@ mod tests {
 
     fn probe(running: bool, voters: Vec<u64>) -> ClusterProbe {
         ClusterProbe { reached_a_peer: !voters.is_empty(), already_running: running, voters }
+    }
+
+    #[test]
+    fn learner_promotion_requires_an_active_replica_at_the_log_tail() {
+        assert!(learner_is_caught_up(12, 12, true));
+        assert!(learner_is_caught_up(13, 12, true));
+        assert!(!learner_is_caught_up(11, 12, true));
+        assert!(!learner_is_caught_up(12, 12, false));
     }
 
     /// The crash this exists to prevent: a member restarted empty under an id

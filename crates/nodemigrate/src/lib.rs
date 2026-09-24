@@ -61,6 +61,17 @@ fn migrate_to_nodestore(
     let source_api = transfer::KubeApi::source(source)?;
     let source_nodes = source_api.node_count()?;
     let joins_existing = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT").is_some();
+    let replacement_member_id = if joins_existing {
+        std::env::var("NODEBOOTSTRAP_MEMBER_ID")
+            .ok()
+            .map(|id| {
+                ensure!(!id.is_empty(), "NODEBOOTSTRAP_MEMBER_ID is empty");
+                id.parse::<u64>().context("NODEBOOTSTRAP_MEMBER_ID must be the old nodestore member id")
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let bootstrap = bootstrap_command(source)?;
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     if request.plan_only {
@@ -70,7 +81,8 @@ fn migrate_to_nodestore(
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if joins_existing { "install node agent on replacement node; " } else { "" }, request.uninstall_after_migrate);
+        let replacement = replacement_member_id.map(|id| format!("; replace existing member {id} after the new node is Ready")).unwrap_or_default();
+        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if joins_existing { "install node agent on replacement node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
     }
 
@@ -113,6 +125,14 @@ fn migrate_to_nodestore(
     }
     let node_name = node_name(source);
     wait_for_node(&target_api, &node_name)?;
+    if joins_existing {
+        if let Some(old_member_id) = replacement_member_id {
+            run_bootstrap(replace_member_command(&old_member_id.to_string())?).with_context(|| format!(
+                "promoting this Ready replacement before retiring old nodestore member {old_member_id}; source remains disabled and recovery export is at {}",
+                export.dir.display()
+            ))?;
+        }
+    }
     if request.uninstall_after_migrate {
         service::uninstall_source(source)?;
         export.restore_host_paths()?;
@@ -310,6 +330,27 @@ fn replacement_worker_command(
         });
     let args = replacement_worker_args(config, &kubeconfig, node_name);
     bootstrap_command_with_config(args, config)
+}
+
+fn replace_member_command(old_member_id: &str) -> Result<Command> {
+    let endpoint = std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT")
+        .context("member replacement requires NODEBOOTSTRAP_JOIN_ENDPOINT")?;
+    let peer_url = std::env::var("NODEBOOTSTRAP_PEER_URL")
+        .context("member replacement requires NODEBOOTSTRAP_PEER_URL")?;
+    let binary = find_executable(&["notk8s", "nodebootstrap"])
+        .context("could not find the combined notk8s or standalone nodebootstrap binary on PATH")?;
+    let mut command = Command::new(binary);
+    if command.get_program().to_string_lossy().ends_with("notk8s") {
+        command.arg("bootstrap");
+    }
+    command.args([
+        "--release".to_string(),
+        format!("--join={endpoint}"),
+        format!("--peer-url={peer_url}"),
+        format!("--member-id={old_member_id}"),
+        "replace-member".to_string(),
+    ]);
+    Ok(command)
 }
 
 fn replacement_worker_args(

@@ -31,9 +31,10 @@ this objective.
 - Local Cargo build/test/e2e: prohibited by repository host constraints.
 - Targeted `nodemigrate checks`: the focused compile and test check for
   nodemigrate Rust changes. `quick-check.yml` does not currently include the
-  nodemigrate crate; use `components=nodebootstrap` there only when
-  nodebootstrap changes. Run both focused checks when both crates changed.
-  Do not run unrelated crates.
+  nodemigrate crate; use `components=nodebootstrap` when nodebootstrap changes
+  and `components=nodestore` when Raft membership code changes. Run the
+  applicable focused checks for every changed crate; do not run unrelated
+  crates.
 - Dedicated migration workflow: do not dispatch until the user authorizes
   migration runtime/e2e execution. Its compile step is test setup, not a
   generic build gate.
@@ -63,6 +64,10 @@ this objective.
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | PR shell validation | Passed, including `bash -n` for the Cilium checkpoint assertions | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Commit convention | Passed | [Run 35956264583](https://github.com/centerionware/not-k8s/actions/runs/35956264583) |
+| 2026-09-24 | `8518a99537cc4b98f2cbf8184f49c9927a8d78cf` | Nodemigrate crate checks | Passed | [Run 35956413580](https://github.com/centerionware/not-k8s/actions/runs/35956413580) |
+| 2026-09-24 | `8518a99537cc4b98f2cbf8184f49c9927a8d78cf` | PR shell validation | Passed | [Run 35956413566](https://github.com/centerionware/not-k8s/actions/runs/35956413566) |
+| 2026-09-24 | `8518a99537cc4b98f2cbf8184f49c9927a8d78cf` | Commit convention | Passed | [Run 35956412012](https://github.com/centerionware/not-k8s/actions/runs/35956412012) |
+| — | — | Replacement membership focused checks | Pending nodestore, nodebootstrap, and nodemigrate changes | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.

@@ -20,6 +20,7 @@ compile or unit test does not mark a real migration path as verified.
 | K3s → nodestore with external CNI such as Cilium | Implemented as external-CNI bootstrap and API-resource transfer | No real migration run recorded |
 | Upstream Kubernetes → nodestore | Implemented for detected local control planes | No real migration run recorded |
 | Join an existing nodestore control plane using nodebootstrap environment settings | Implemented through nodebootstrap join configuration, then a worker bootstrap registers the replacement node | Focused command tests passed in [run 35955823452](https://github.com/centerionware/not-k8s/actions/runs/35955823452); no real replacement-node run recorded |
+| Replace an existing nodestore member | Implemented: wait for the replacement Kubernetes node to become Ready, require the learner to be active and caught up through the leader log tail, promote it, verify voter status, then remove the explicitly identified old member. A failed promotion leaves the old member in place; the membership operation is retryable. | Targeted nodestore/nodebootstrap/nodemigrate checks pending; no real joined replacement run recorded |
 | Nodestore → retained K3s | Implemented; target must already be installed locally | No real migration run recorded |
 | Nodestore → retained upstream Kubernetes | Implemented; target must already be installed locally | No real migration run recorded |
 | Keep source installed and disabled by default | Implemented | No real service-manager cutover run recorded |
@@ -44,6 +45,10 @@ distribution:
    nodebootstrap kubeconfig.
 5. Migrate nodestore → the retained source distribution and repeat the checks
    again.
+6. Exercise a separate existing-cluster replacement lane: join as a learner,
+   wait for the replacement Kubernetes node to become Ready and the learner to
+   catch up, promote it, then retire the configured old member ID. The current
+   integration script does not yet implement this lane.
 
 The workflow is manual. Do not run it unless the user authorizes
 real-cluster/e2e execution. The standard e2e and build gates remain excluded

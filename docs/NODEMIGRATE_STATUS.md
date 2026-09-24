@@ -11,6 +11,7 @@ separate living documents below.
 | Area | State | Detail |
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; code present, reverse paths not runtime-verified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented in the current worktree; targeted checks pending and runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
@@ -28,6 +29,10 @@ separate living documents below.
 - The Cilium health assertions passed shell syntax validation at
   `21d532991835ff587a918e3bf665ed4f601e6fdf`; the manual migration lanes have
   not run.
+- At `8518a99537cc4b98f2cbf8184f49c9927a8d78cf`, nodemigrate checks, shell
+  syntax validation, and commit convention passed (runs `35956413580`,
+  `35956413566`, and `35956412012`). The replacement-membership changes now
+  in the worktree have not yet been checked.
 - No migration integration lane has been dispatched. The user directed that
   general e2e and build gates not run; the dedicated runtime workflow also
   remains undispatched pending explicit authorization.
