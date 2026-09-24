@@ -1983,6 +1983,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodemigrate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kube",
+ "libc",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nodeproxy"
 version = "0.1.0"
 dependencies = [
