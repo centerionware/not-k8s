@@ -10,7 +10,7 @@ separate living documents below.
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | In progress; later forward joins can skip repeated imports, and reverse control planes have staged cutover options; the five-node coordinator and runtime behavior remain unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | In progress; both control-plane directions now require explicit stale-Node replacement and clear it before readiness checks when the API is ready; staged reverse quorum orchestration and the five-node coordinator remain incomplete | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
@@ -37,11 +37,17 @@ separate living documents below.
   PR shell validation ([35962922860](https://github.com/centerionware/not-k8s/actions/runs/35962922860))
   and commit convention ([35962919894](https://github.com/centerionware/not-k8s/actions/runs/35962919894))
   passed. The multi-node runtime behavior remains unverified.
-- The most recent code/test revision `ba9e8ad2d700f766512764e8d093396b9d1609af`
-  adds reverse staged-control-plane handling, node-affinity-aware PV snapshots,
-  and AND/OR node-affinity coverage. Formatting and whitespace checks pass; it
-  is not pushed and targeted CI remains pending because GitHub DNS resolution
-  failed. See the [CI record](NODEMIGRATE_CI_STATUS.md).
+- The reverse staged-control-plane and node-affinity PV changes passed focused
+  nodemigrate checks at `7e16754501e87d5983dcb0335b6d972529dec5b9` ([run
+  35965492161](https://github.com/centerionware/not-k8s/actions/runs/35965492161));
+  shell validation and commit convention passed too. Runtime migration remains
+  unverified. See the [CI record](NODEMIGRATE_CI_STATUS.md).
+- Control-plane migration could accept an imported stale Ready Node as proof
+  the replacement joined. The current fix requires explicit
+  `NODEMIGRATE_REPLACE_NODE=true` and deletes that object before waiting for
+  fresh registration in both directions when the target API is ready. Targeted
+  crate CI is pending; staged quorum orchestration and runtime behavior remain
+  unverified.
 - At `8518a99537cc4b98f2cbf8184f49c9927a8d78cf`, nodemigrate checks, shell
   syntax validation, and commit convention passed (runs `35956413580`,
   `35956413566`, and `35956412012`). The replacement-membership changes now

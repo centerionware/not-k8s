@@ -40,10 +40,10 @@ for a nodemigrate-only release.
 - On upstream control-plane nodes, stop kubelet and its CRI static-pod
   sandboxes before starting the destination control plane, while retaining the
   source manifests for a recoverable return migration.
-- For worker replacement, use the joined destination API to detect and wait
-  for node registration. If a same-name destination Node exists, require the
-  operator to explicitly select its replacement; never treat its old Ready
-  condition as proof that the new worker joined.
+- For control-plane and worker replacement, use the destination API to detect
+  and wait for node registration. If a same-name destination Node exists,
+  require the operator to explicitly select its replacement; never treat its
+  old Ready condition as proof that the new node joined.
 - Discover and preserve the source CNI arrangement, including Cilium. Do not
   require Flannel, overwrite external CNI host configuration, or assume that
   copying API objects alone recreates host networking state.
@@ -87,18 +87,24 @@ Do not merge nodemigrate until both isolated runtime scenarios below pass:
 
 1. A single-node K3s cluster with Cilium must migrate to not-k8s and back to
    K3s. The returned cluster must have no differences from the initial
-   checkpoint in the state and behavior under test: nodes, workloads, add-ons,
-   ingress, certificates, persistent data, and Cilium health.
+   checkpoint for the canonical state being checked: node identity and
+   readiness, workloads, add-ons, ingress, certificates, persistent data, and
+   Cilium state. Repeat the behavioral probes at each stage and require them
+   to pass.
 2. An upstream Kubernetes cluster with three control-plane nodes and two
-   worker nodes must complete the same not-k8s round trip. Verify control-plane
-   and worker membership, readiness, workloads, add-ons, ingress, certificates,
-   persistent data, Cilium health, and the replacement/join path.
+   worker nodes must complete the same not-k8s round trip. Check membership and
+   readiness for all five nodes, along with workloads, add-ons, ingress,
+   certificates, persistent data, Cilium state, and the existing-cluster
+   join/replacement path. Repeat the checks at each stage and compare the
+   returned cluster with the initial checkpoint.
 
 The scenarios may share one CI host when each cluster is isolated with QEMU or
-another suitable mechanism. Docker is a candidate only if the chosen setup is
-shown to simulate the networking, node identity, service management, storage,
-and failure behavior required by these checks. A passing container-only
-simulation is not evidence for behavior it does not model. Record the
+another suitable mechanism so all five upstream nodes remain distinct while
+running on that host. Docker is a candidate if the environment can fully
+simulate the cluster behaviors required by these checks, including networking,
+node identity, service management, storage, and node failure/isolation. A
+passing container-only simulation is not evidence for behavior it does not
+model. Record the
 isolation method, topology, artifact versions, per-stage results, and
 before/after state comparison in the CI status document. These are
 nodemigrate-specific merge gates; the general build and e2e gates remain

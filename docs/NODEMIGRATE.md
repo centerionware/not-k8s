@@ -27,7 +27,13 @@ existing cluster. For a worker source, nodemigrate uses nodebootstrap worker
 mode against the destination kubeconfig. Set
 `NODEMIGRATE_REPLACE_NODE=true` only when an existing same-name destination
 Node should be replaced; nodemigrate removes that stale Node after stopping
-the source service and waits for the new worker registration to become Ready.
+the source service and waits for the new node registration to become Ready.
+For control-plane migration in either direction, the same flag is required
+when the source or destination already contains the local node name. Nodemigrate
+removes the stale Node after API state is imported and before checking fresh
+readiness. A staged reverse control-plane operation can return before the
+destination API is ready; the multi-node coordinator must verify fresh Node
+registration after quorum returns.
 `NODEMIGRATE_NODE_NAME` overrides the detected node name. Cluster-wide API
 objects are transferred at the control-plane stage, not re-imported from each
 worker. For an ordered multi-control-plane migration, migrate the first

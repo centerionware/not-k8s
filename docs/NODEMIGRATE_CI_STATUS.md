@@ -38,17 +38,20 @@ this objective.
 Nodemigrate needs both isolated round trips green before merge:
 
 - Single-node K3s with Cilium → not-k8s → K3s, with no differences in the
-  checked cluster state, workload behavior, add-ons, ingress, certificates,
-  persistent data, or Cilium health between initial and returned checkpoints.
+  canonical checked cluster state between initial and returned checkpoints,
+  and passing workload, add-on, ingress, certificate, persistent-data, and
+  Cilium-health checks at every stage.
 - Upstream Kubernetes with three control-plane nodes and two worker nodes →
-  not-k8s → upstream Kubernetes, with all node membership and the same
-  workload, add-on, ingress, certificate, persistent-data, and Cilium checks.
-  Include the existing-cluster join/replacement path.
+  not-k8s → upstream Kubernetes. Preserve and verify all five node identities,
+  roles, and readiness; run the same checks at every stage; compare the
+  returned state with the initial checkpoint; and include the existing-cluster
+  join/replacement path.
 
-QEMU or another isolation mechanism may host the cluster lanes on one CI node.
-Docker remains a candidate only after the test setup proves it models the
-networking, node identity, service management, storage, and failure behavior
-under test. Record the simulator and its limitations with the results. The
+The five-node lane must run with five distinct isolated nodes, which may share
+one CI host using QEMU or another suitable isolation mechanism. Docker is a
+candidate if the environment fully simulates the networking, node identity,
+service management, storage, and node failure/isolation behavior under test.
+Record the simulator and any unmodeled behavior with the results. The
 current integration workflow does not yet implement or pass these full merge
 gates.
 
@@ -91,16 +94,13 @@ checks.
 
 ## Verification log
 
-The most recent code/test revision is `ba9e8ad2d700f766512764e8d093396b9d1609af`
-(followed by docs-only status commits). It includes reverse
-staged-control-plane commit `49d225a1...`, node-affinity PV snapshot selection
-`d6b7c1b3...`, conservative fallback handling `ed1f2c85...`, and AND/OR
-node-affinity test coverage `ba9e8ad2...`. These commits are not yet on PR #591:
-GitHub DNS resolution
-failed during remote verification and push attempts. Rust formatting and
-`git diff --check` passed locally; the targeted crate run is pending and no
-local Cargo command was run. The last verified remote PR state was open at
-`b44e94cf1bb740de33e36a18a9ab21943128ace1`; recheck it before pushing.
+The last verified PR head `7e16754501e87d5983dcb0335b6d972529dec5b9`
+contains the staged reverse control-plane flow and node-affinity PV snapshot
+work. Its targeted crate tests, shell validation, and commit convention
+passed. The current work adds an explicit stale-Node replacement step before
+forward control-plane readiness; targeted crate CI is pending. The manual
+migration runtime workflow remains undispatched; no local Cargo test/build was
+run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -163,6 +163,12 @@ local Cargo command was run. The last verified remote PR state was open at
 | 2026-09-24 | `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` | Nodemigrate crate checks | Passed, including skip-import request and control-plane joined-cluster validation | [Run 35962922792](https://github.com/centerionware/not-k8s/actions/runs/35962922792) |
 | 2026-09-24 | `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` | PR shell validation | Passed; the manual migration runtime job was skipped on pull request | [Run 35962922860](https://github.com/centerionware/not-k8s/actions/runs/35962922860) |
 | 2026-09-24 | `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` | Commit convention | Passed | [Run 35962919894](https://github.com/centerionware/not-k8s/actions/runs/35962919894) |
+| 2026-09-24 | `0c4236f9467028f93f12f2736a41db8ab0950b71` | Nodemigrate crate checks | Failed: 29 passed and `rejects_staging_with_uninstall_and_conflicting_reverse_options` failed because parser accepted simultaneous `stage-target` and `skip-api-export`; fixed in `7e167545`. | [Run 35965244870](https://github.com/centerionware/not-k8s/actions/runs/35965244870) |
+| 2026-09-24 | `0c4236f9467028f93f12f2736a41db8ab0950b71` | PR shell validation and commit convention | Passed | [Shell run 35965245062](https://github.com/centerionware/not-k8s/actions/runs/35965245062), [commit run 35965242770](https://github.com/centerionware/not-k8s/actions/runs/35965242770) |
+| 2026-09-24 | `7e16754501e87d5983dcb0335b6d972529dec5b9` | Nodemigrate crate checks | Passed; now rejects the conflicting reverse-mode request | [Run 35965492161](https://github.com/centerionware/not-k8s/actions/runs/35965492161) |
+| 2026-09-24 | `7e16754501e87d5983dcb0335b6d972529dec5b9` | PR shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35965492244](https://github.com/centerionware/not-k8s/actions/runs/35965492244) |
+| 2026-09-24 | `7e16754501e87d5983dcb0335b6d972529dec5b9` | Commit convention | Passed | [Run 35965490640](https://github.com/centerionware/not-k8s/actions/runs/35965490640) |
+| — | — | Forward control-plane stale-Node replacement | Added explicit opt-in and delete-before-fresh-readiness handling; focused crate CI pending | — |
 | — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved

@@ -66,6 +66,7 @@ fn migrate_to_nodestore(
     );
     let source_api = transfer::KubeApi::source(source)?;
     let source_nodes = source_api.node_count()?;
+    let migrating_node_name = node_name(source);
     let replacement_member_id = if joins_existing {
         std::env::var("NODEBOOTSTRAP_MEMBER_ID")
             .ok()
@@ -80,6 +81,27 @@ fn migrate_to_nodestore(
     };
     let bootstrap = bootstrap_command(source)?;
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
+    let source_node_exists = source_api.node_exists(&migrating_node_name)?;
+    let destination_node_exists = if joins_existing {
+        target_api.ready().context(
+            "joining an existing nodestore cluster requires its Kubernetes API to be ready before cutover",
+        )?;
+        target_api.node_exists(&migrating_node_name)?
+    } else {
+        false
+    };
+    let replace_existing_node = replace_existing_node_requested()?;
+    validate_node_replacement(
+        source_node_exists,
+        destination_node_exists,
+        replace_existing_node,
+    )
+    .with_context(|| {
+        format!(
+            "control-plane node {} requires explicit replacement",
+            migrating_node_name
+        )
+    })?;
     if request.plan_only {
         source_api.ready()?;
         let cni = source
@@ -90,7 +112,7 @@ fn migrate_to_nodestore(
         let replacement = replacement_member_id
             .map(|id| format!("; replace existing member {id} after the new node is Ready"))
             .unwrap_or_default();
-        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
+        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
     }
 
@@ -133,15 +155,19 @@ fn migrate_to_nodestore(
             bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
         }
     }
+    if let Err(error) =
+        remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node)
+    {
+        bail!("preparing the destination control-plane node failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
+    }
     if joins_existing {
-        let worker = replacement_worker_command(source, &node_name(source))?;
+        let worker = replacement_worker_command(source, &migrating_node_name)?;
         run_bootstrap(worker).with_context(|| format!(
             "installing the node agent on the joined replacement node; source remains disabled and the protected export is at {}",
             export.dir.display()
         ))?;
     }
-    let node_name = node_name(source);
-    wait_for_node(&target_api, &node_name)?;
+    wait_for_node(&target_api, &migrating_node_name)?;
     if joins_existing {
         if let Some(old_member_id) = replacement_member_id {
             run_bootstrap(replace_member_command(&old_member_id.to_string())?).with_context(|| format!(
@@ -157,7 +183,7 @@ fn migrate_to_nodestore(
             .context("reconciling nodestore after source uninstall")?;
         wait_for_api(&target_api)
             .context("destination failed API readiness after K3s uninstall cleanup")?;
-        wait_for_node(&target_api, &node_name)
+        wait_for_node(&target_api, &migrating_node_name)
             .context("replacement node failed readiness after K3s uninstall cleanup")?;
     }
     println!("Migration completed and the destination API passed readiness checks. Export retained at {}", export.dir.display());
@@ -246,6 +272,27 @@ fn validate_destination_node_replacement(existing_node: bool, replace: bool) -> 
     Ok(())
 }
 
+fn validate_node_replacement(
+    source_node_exists: bool,
+    destination_node_exists: bool,
+    replace: bool,
+) -> Result<()> {
+    validate_destination_node_replacement(source_node_exists || destination_node_exists, replace)
+}
+
+fn remove_replaced_node(
+    target_api: &transfer::KubeApi,
+    node_name: &str,
+    replace: bool,
+) -> Result<()> {
+    if target_api.node_exists(node_name)? {
+        validate_destination_node_replacement(true, replace)
+            .with_context(|| format!("destination already has control-plane node {node_name}"))?;
+        target_api.delete_node(node_name)?;
+    }
+    Ok(())
+}
+
 fn validate_skip_api_import(
     request: &request::MigrationRequest,
     source: &detect::Installation,
@@ -301,13 +348,33 @@ fn migrate_to_existing(
             "skip-api-export requires the retained destination cluster to be Ready through NODEMIGRATE_DESTINATION_KUBECONFIG",
         )?;
     }
+    let returning_node_name = node_name(target);
+    let source_node_exists = source_api
+        .as_ref()
+        .map(|api| api.node_exists(&returning_node_name))
+        .transpose()?
+        .unwrap_or(false);
+    let destination_node_exists = if request.skip_api_export {
+        target_api.node_exists(&returning_node_name)?
+    } else {
+        false
+    };
+    let replace_existing_node = replace_existing_node_requested()?;
+    validate_node_replacement(
+        source_node_exists,
+        destination_node_exists,
+        replace_existing_node,
+    )
+    .with_context(|| {
+        format!("returning control-plane node {returning_node_name} requires explicit replacement")
+    })?;
     if request.plan_only {
         let cni = target
             .cluster
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; source-api-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.stage_target, request.uninstall_after_migrate);
+        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; replace-existing-node={replace_existing_node}; source-api-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.stage_target, request.uninstall_after_migrate);
         return Ok(());
     }
     let mut export = source_api
@@ -379,7 +446,12 @@ fn migrate_to_existing(
             bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
         }
     }
-    wait_for_node(&target_api, &node_name(target)).context(format!(
+    if let Err(error) =
+        remove_replaced_node(&target_api, &returning_node_name, replace_existing_node)
+    {
+        bail!("preparing the retained control-plane node failed: {error:#}; nodestore remains stopped and recovery data is at {recovery_location}");
+    }
+    wait_for_node(&target_api, &returning_node_name).context(format!(
         "retained destination node did not become Ready; recovery data is at {recovery_location}"
     ))?;
     if request.uninstall_after_migrate {
@@ -819,7 +891,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        replacement_worker_args, validate_destination_node_replacement,
+        replacement_worker_args, validate_destination_node_replacement, validate_node_replacement,
         validate_reverse_control_plane_options, validate_skip_api_import,
     };
     use crate::{
@@ -877,10 +949,19 @@ mod tests {
     }
 
     #[test]
-    fn existing_destination_worker_requires_explicit_replacement() {
+    fn existing_destination_node_requires_explicit_replacement() {
         assert!(validate_destination_node_replacement(true, false).is_err());
         assert!(validate_destination_node_replacement(true, true).is_ok());
         assert!(validate_destination_node_replacement(false, false).is_ok());
+    }
+
+    #[test]
+    fn source_or_destination_control_plane_node_requires_explicit_replacement() {
+        assert!(validate_node_replacement(true, false, false).is_err());
+        assert!(validate_node_replacement(false, true, false).is_err());
+        assert!(validate_node_replacement(true, false, true).is_ok());
+        assert!(validate_node_replacement(false, true, true).is_ok());
+        assert!(validate_node_replacement(false, false, false).is_ok());
     }
 
     #[test]
