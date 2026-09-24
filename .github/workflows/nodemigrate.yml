@@ -68,10 +68,13 @@ jobs:
       - name: Summarize test log
         if: failure()
         run: |
+          summary="$(tail -n 80 "$RUNNER_TEMP/nodemigrate-tests.log")"
+          encoded="$(python3 -c 'import sys; value = sys.stdin.read(); print(value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"), end="")' <<< "$summary")"
+          echo "::error title=Nodemigrate test output::$encoded"
           {
             echo '### Nodemigrate test failure details'
             echo '```text'
-            tail -n 120 "$RUNNER_TEMP/nodemigrate-tests.log"
+            printf '%s\n' "$summary"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload test log

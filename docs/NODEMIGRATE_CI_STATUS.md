@@ -11,7 +11,7 @@ this objective.
 
 - `.github/workflows/nodemigrate.yml` runs the focused crate tests and release
   policy check. It uploads the complete crate-test log for seven days and adds
-  the final 120 lines to the failed check summary for direct diagnosis.
+  the final 80 lines to both a failure annotation and the step summary.
 - `.github/workflows/nodemigrate-integration.yml` runs shell syntax validation
   on relevant pull requests.
 - Manual `workflow_dispatch` starts isolated K3s and upstream Kubernetes
