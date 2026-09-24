@@ -197,6 +197,11 @@ fn migrate_worker_to_nodestore(
         return Ok(());
     }
 
+    let host_path_snapshot = target_api.snapshot_host_paths()?;
+    println!(
+        "Worker local-volume recovery snapshot saved at {}",
+        host_path_snapshot.recovery_directory().display()
+    );
     let previous_service = service::disable(source)?;
     if existing_node {
         if let Err(error) = target_api.delete_node(&name) {
@@ -216,9 +221,20 @@ fn migrate_worker_to_nodestore(
         "replacement worker {name} did not become Ready; source remains disabled"
     ))?;
     if request.uninstall_after_migrate {
-        service::uninstall_source(source)?;
+        service::uninstall_source(source).with_context(|| {
+            format!(
+                "source uninstall failed; worker volume snapshot retained at {}",
+                host_path_snapshot.recovery_directory().display()
+            )
+        })?;
+        host_path_snapshot.restore().with_context(|| {
+            format!(
+                "restoring worker local volumes failed; recovery snapshot is at {}",
+                host_path_snapshot.recovery_directory().display()
+            )
+        })?;
     }
-    println!("Worker {name} joined the nodestore cluster and is Ready. Cluster-wide API resources were not re-imported from this worker.");
+    println!("Worker {name} joined the nodestore cluster and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}", host_path_snapshot.recovery_directory().display());
     Ok(())
 }
 

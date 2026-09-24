@@ -216,6 +216,53 @@ impl KubeApi {
         })
     }
 
+    /// Back up hostPath/local PV payloads present on this node without
+    /// exporting or re-applying cluster-wide API objects from a worker.
+    pub fn snapshot_host_paths(&self) -> Result<HostPathSnapshot> {
+        let (runtime, client) = self.connected()?;
+        let objects = runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering Kubernetes APIs")?;
+            let (resource, capabilities) = find_resource(&discovery, "PersistentVolume", "v1")
+                .context("Kubernetes API does not expose PersistentVolume")?;
+            ensure!(
+                capabilities.supports_operation(verbs::LIST),
+                "Kubernetes API cannot list PersistentVolumes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            let mut objects = Vec::new();
+            let mut continue_token = None;
+            loop {
+                let mut params = ListParams::default().limit(500);
+                if let Some(token) = continue_token.as_deref() {
+                    params = params.continue_token(token);
+                }
+                let page = api
+                    .list(&params)
+                    .await
+                    .context("listing destination PersistentVolumes for worker data backup")?;
+                for object in page.items {
+                    objects.push(
+                        serde_json::to_value(object)
+                            .context("serializing destination PersistentVolume")?,
+                    );
+                }
+                continue_token = page.metadata.continue_.filter(|token| !token.is_empty());
+                if continue_token.is_none() {
+                    break;
+                }
+            }
+            Ok::<_, anyhow::Error>(objects)
+        })?;
+
+        let directory = export_directory()?;
+        let host_paths = persistent_host_paths(&objects);
+        let backups = backup_host_paths(&directory, &host_paths)?;
+        Ok(HostPathSnapshot { directory, backups })
+    }
+
     pub fn export(&self, installation: &Installation) -> Result<Export> {
         self.ready()?;
         let (runtime, client) = self.connected()?;
@@ -392,6 +439,12 @@ pub struct Export {
 }
 
 #[derive(Debug)]
+pub struct HostPathSnapshot {
+    directory: PathBuf,
+    backups: Vec<HostPathBackup>,
+}
+
+#[derive(Debug)]
 struct HostPathBackup {
     source: PathBuf,
     backup: PathBuf,
@@ -405,26 +458,40 @@ impl Export {
     }
 
     pub fn restore_host_paths(&self) -> Result<()> {
-        for item in &self.host_path_backups {
-            if item.directory {
-                fs::create_dir_all(&item.source).with_context(|| {
-                    format!(
-                        "recreating persistent volume path {}",
-                        item.source.display()
-                    )
-                })?;
-                run_cp(&item.backup.join("."), &item.source)?;
-            } else {
-                if let Some(parent) = item.source.parent() {
-                    fs::create_dir_all(parent).with_context(|| {
-                        format!("creating persistent volume parent {}", parent.display())
-                    })?;
-                }
-                run_cp(&item.backup, &item.source)?;
-            }
-        }
-        Ok(())
+        restore_host_path_backups(&self.host_path_backups)
     }
+}
+
+impl HostPathSnapshot {
+    pub fn recovery_directory(&self) -> &Path {
+        &self.directory
+    }
+
+    pub fn restore(&self) -> Result<()> {
+        restore_host_path_backups(&self.backups)
+    }
+}
+
+fn restore_host_path_backups(backups: &[HostPathBackup]) -> Result<()> {
+    for item in backups {
+        if item.directory {
+            fs::create_dir_all(&item.source).with_context(|| {
+                format!(
+                    "recreating persistent volume path {}",
+                    item.source.display()
+                )
+            })?;
+            run_cp(&item.backup.join("."), &item.source)?;
+        } else {
+            if let Some(parent) = item.source.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("creating persistent volume parent {}", parent.display())
+                })?;
+            }
+            run_cp(&item.backup, &item.source)?;
+        }
+    }
+    Ok(())
 }
 
 fn persistent_host_paths(objects: &[Value]) -> Vec<PathBuf> {
@@ -647,4 +714,37 @@ fn export_directory() -> Result<PathBuf> {
         }
     }
     bail!("could not allocate a unique migration export directory")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persistent_host_paths;
+
+    #[test]
+    fn host_path_backup_includes_safe_hostpath_and_local_volumes_once() {
+        let objects = vec![
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {"hostPath": {"path": "/srv/data"}}
+            }),
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {"local": {"path": "/srv/data/nested"}}
+            }),
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {"hostPath": {"path": "/"}}
+            }),
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {"hostPath": {"path": "/srv/../etc"}}
+            }),
+            serde_json::json!({"kind": "Pod", "spec": {"hostPath": {"path": "/tmp"}}}),
+        ];
+
+        assert_eq!(
+            persistent_host_paths(&objects),
+            [std::path::PathBuf::from("/srv/data")]
+        );
+    }
 }
