@@ -157,7 +157,10 @@ impl KubeApi {
             .enable_all()
             .build()
             .context("building Kubernetes API runtime")?;
-        let client = Client::try_from(kubeconfig).context("building Kubernetes API client")?;
+        let client = {
+            let _runtime_context = runtime.enter();
+            Client::try_from(kubeconfig).context("building Kubernetes API client")?
+        };
         Ok((runtime, client))
     }
 
@@ -1443,12 +1446,43 @@ mod tests {
     use super::{
         node_scheduling_patch, persistent_host_paths, restore_cni_path_backups, sanitize,
         skip_object, snapshot_k3s_cni_paths, write_export_manifest, Export, ExportedObject,
-        NodeSchedulingState,
+        KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn constructs_kubernetes_client_inside_its_runtime_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let kubeconfig = temp.path().join("config");
+        fs::write(
+            &kubeconfig,
+            "apiVersion: v1\n\
+             kind: Config\n\
+             clusters:\n\
+             - name: test\n\
+               cluster:\n\
+                 server: https://127.0.0.1:6443\n\
+                 insecure-skip-tls-verify: true\n\
+             users:\n\
+             - name: test\n\
+               user:\n\
+                 token: test-token\n\
+             contexts:\n\
+             - name: test\n\
+               context:\n\
+                 cluster: test\n\
+                 user: test\n\
+             current-context: test\n",
+        )
+        .unwrap();
+
+        let (_runtime, _client) = KubeApi { kubeconfig }
+            .connected()
+            .expect("Kubernetes client construction should have a Tokio runtime context");
+    }
 
     #[test]
     fn restores_k3s_cni_directories_after_data_dir_removal() {

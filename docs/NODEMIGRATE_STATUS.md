@@ -14,9 +14,9 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest run completed K3s source workload checks and reached the first migration call, which aborted on rustls provider ambiguity. Upstream passed CSI but timed out waiting for Traefik even though its Pod was Running. Fixes for both are pending migration-only retest. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest run passed full source checks in both lanes and invoked nodemigrate. The rustls provider fix worked; both then hit a Tower panic because the Tokio runtime was not entered while creating the Kubernetes client. A focused runtime-context fix and regression test are pending CI. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation preflight | The image built, but the first container exited with code 255 before systemd readiness and Docker had no container output. The fixture now logs systemd to the console and uses the host cgroup namespace. Isolation, CRI, BPF, network, and failure/restart remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation preflight | The image built, but the first container exited with code 255 before systemd readiness without container output. The entrypoint now prints the resolved systemd binary and enables debug console logs while retaining private cgroup namespaces. Isolation, CRI, BPF, network, and failure/restart remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
@@ -73,12 +73,13 @@ separate living documents below.
   registration gap and a package conflict. Run `36042056929` passed source
   Cilium and CSI readiness in both lanes, then failed on the archived setup's
   nodelet DRA registration requirement. Run `36043310369` passed all K3s
-  source-stage checks and invoked nodemigrate, which panicked before transfer
-  because rustls had no selected provider; upstream timed out waiting for
-  Traefik although its pod was Running. The fixture now installs ring as the
-  crypto provider, checks the Traefik Deployment directly, and logs systemd to
-  Docker's console. Migration runtime retest is pending. See
-  [run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369).
+  source-stage checks and both nodemigrate commands ran; selecting rustls ring
+  fixed the first panic. Tower then panicked because client construction did
+  not enter the Tokio runtime. The utility now enters that runtime while
+  constructing the Kubernetes client and has a focused regression test. Docker
+  still exits systemd with code 255 without logs; the entrypoint now prints its
+  resolved binary path and enables debug output. Runtime retest is pending.
+  See [run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585).
 - The current worktree adds protected export UID metadata, Node replacement
   state preservation and UID preconditions, and full migratable-object
   fingerprints in the integration fixture. Focused snapshot-filter checks,

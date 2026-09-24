@@ -148,19 +148,19 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest targeted nodemigrate checks and shell validation passed at
-`580ae951` (runs `36043292298` and `36043292312`). Its manual runtime run built
-nodemigrate and verified the `v0.8.0` digest and required components. K3s
-passed its complete source-stage workload checks, then nodemigrate panicked
-before transfer because both rustls crypto providers were linked and none had
-been installed. The noninteractive five-emoji high-risk warning printed as
-requested. The upstream lane passed CSI readiness and deployed Traefik, but
-Helm's `--wait` timed out after the Traefik Pod was already Running. The Docker
-probe identified an exited node container (exit 255) but captured no systemd
-console output. Current fixes explicitly select rustls ring, use Kubernetes
-rollout status for Traefik, and start systemd with console logs while keeping
-the private cgroup namespace. See [run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369).
-No migration transfer completed and no local Cargo test/build was run.
+The targeted nodemigrate checks and validation passed at `cefadddd` (runs
+`36045613581`, `36045613518`, and `36045610335`). Its manual runtime run built
+nodemigrate and verified the `v0.8.0` digest and required components. Both
+K3s and upstream Kubernetes passed their full source-stage checks: Cilium,
+CSI-backed PVC data, cert-manager issuance, nginx, and Traefik routing. Both
+then invoked nodemigrate. Selecting rustls `ring` resolved the first panic,
+but both lanes now panic during Tower client construction because the Tokio
+runtime is not entered while creating the kube client. The unattended five
+emoji high-risk warning prints on both lanes. The Docker probe still sees
+systemd exit 255 with empty logs; the entrypoint now prints its resolved
+systemd binary and enables debug console logging. See
+[run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585).
+No transfer completed and no local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -194,6 +194,10 @@ No migration transfer completed and no local Cargo test/build was run.
 | 2026-09-24 | `580ae951144e0f2aa753a06e93e7a3f10264da75` | Upstream Kubernetes + Cilium round trip | Kubeadm, Cilium and CSI readiness passed; cert-manager deployed and Traefik's pod was Running, but Helm `--wait` timed out after 10 minutes. Migration was not invoked. | [Run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369) |
 | 2026-09-24 | `580ae951144e0f2aa753a06e93e7a3f10264da75` | Five-node Docker preflight | The image built; the first container exited with code 255 before systemd readiness. `docker logs` was empty. | [Run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369) |
 | 2026-09-24 | Worktree after `580ae951` | Runtime follow-up | Selects the rustls ring provider before the utility runs, waits for Traefik with a Kubernetes Deployment rollout check, and starts systemd with console logs while retaining private cgroup namespaces. Shell/runtime validation is pending. | — |
+| 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | K3s + Cilium round trip | All source-stage checks passed and nodemigrate ran. The explicit rustls provider fixed the earlier panic, but Tower aborted because no Tokio reactor was entered while constructing the Kubernetes client. No transfer completed. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
+| 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | Upstream Kubernetes + Cilium round trip | All source-stage checks passed, including Traefik rollout and route. Nodemigrate ran and hit the same Tower/Tokio runtime panic before transfer. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
+| 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | Five-node Docker preflight | Image build passed; the first container still exited 255 and emitted no systemd console output despite log-target configuration. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
+| 2026-09-24 | Worktree after `cefadddd` | Runtime follow-up | Enters the Tokio runtime while building the Kubernetes API client and adds a focused regression test. The Docker entrypoint now prints the resolved systemd path and enables debug console logs. Shell/runtime validation pending. | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
@@ -280,6 +284,7 @@ No migration transfer completed and no local Cargo test/build was run.
 | 2026-09-24 | `458c52c6247dfab8479cb18f33ae04a3db5b8c8d` | Release-backed migration workflow | PR utility build and v0.8.0 runtime digest/component checks passed. K3s reached CSI but no topology keys registered; kubeadm hit the CNI package conflict; Docker probe rejected `rw=true`. No migration lane invoked nodemigrate. Current fixes are pending another manual run. | [Run 36040401537](https://github.com/centerionware/not-k8s/actions/runs/36040401537) |
 | 2026-09-24 | `ef04b0e8c7e59b6f65bb41564139325d7026fdb9` | Release-backed migration workflow | PR utility build and v0.8.0 digest/component verification passed. Both lanes passed Cilium and CSI readiness, then the all-in-one setup failed on its unrelated nodelet DRA registration check; K3s CNI plugin symlinks also broke during setup. Docker image built but systemd did not become ready. No lane invoked nodemigrate. | [Run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929) |
 | 2026-09-24 | `580ae951144e0f2aa753a06e93e7a3f10264da75` | Release-backed migration workflow | Utility build and v0.8.0 verification passed. K3s reached nodemigrate, which aborted on rustls provider ambiguity before transfer. Upstream stopped on Helm's Traefik wait; Docker node exited 255 before systemd readiness. Current runtime fixes are pending. | [Run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369) |
+| 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | Release-backed migration workflow | Utility build and v0.8.0 verification passed. Both source stages passed and both migration commands ran; selected rustls provider fixed the first panic, then Tower aborted because the Tokio runtime was not entered during client construction. Docker image built, but systemd still exited 255 without output. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
