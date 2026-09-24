@@ -79,6 +79,14 @@ separate living documents below.
   release policy ([35976429468](https://github.com/centerionware/not-k8s/actions/runs/35976429468))
   and shell/snapshot validation ([35976429428](https://github.com/centerionware/not-k8s/actions/runs/35976429428))
   passed too. No Cargo build or test was run locally.
+- External CNI path forwarding and K3s data-dir backup/restore passed focused
+  nodemigrate checks at `c2df44bfd41f7e34f5eb92ce52a2196eb36849a3`
+  ([run 36026420825](https://github.com/centerionware/not-k8s/actions/runs/36026420825)).
+  The nodebootstrap containerd CNI config tests passed in targeted quick-check
+  at `bb82cea88f48d73ca0bbb5ee00c0fd35a00fac20`
+  ([run 36025823559](https://github.com/centerionware/not-k8s/actions/runs/36025823559));
+  nodebootstrap was unchanged after that SHA. No real K3s uninstall or Cilium
+  runtime migration was run.
 
 ## Next actions
 
