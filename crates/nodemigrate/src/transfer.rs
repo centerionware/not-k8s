@@ -1333,6 +1333,32 @@ fn find_resource(
     None
 }
 
+fn same_group_kind(resource: &ApiResource, kind: &str, api_version: &str) -> bool {
+    let source_group = api_version
+        .split_once('/')
+        .map_or("", |(group, _version)| group);
+    resource.kind == kind && resource.group == source_group
+}
+
+fn find_compatible_resource(
+    discovery: &Discovery,
+    kind: &str,
+    api_version: &str,
+) -> Option<(ApiResource, kube::discovery::ApiCapabilities)> {
+    for group in discovery.groups() {
+        for version in group.versions() {
+            if let Some(resource) = group
+                .versioned_resources(version)
+                .into_iter()
+                .find(|(resource, _)| same_group_kind(resource, kind, api_version))
+            {
+                return Some(resource);
+            }
+        }
+    }
+    None
+}
+
 fn preserve_discovered_type_meta(value: &mut Value, resource: &ApiResource) -> Result<()> {
     let object = value
         .as_object_mut()
@@ -1371,13 +1397,28 @@ async fn apply_object(
         .and_then(Value::as_str)
         .context("object has no kind")?;
     let (resource, capabilities) = find_resource(discovery, kind, type_meta)
-        .with_context(|| format!("destination does not expose {type_meta}/{kind}"))?;
+        .or_else(|| find_compatible_resource(discovery, kind, type_meta))
+        .with_context(|| {
+            format!("destination does not expose {type_meta}/{kind} or another version of it")
+        })?;
     ensure!(
         capabilities.supports_operation(verbs::PATCH),
         "destination does not allow applying {kind}"
     );
+    let mut apply_value = value.clone();
+    if resource.api_version != type_meta {
+        let name = apply_value
+            .pointer("/metadata/name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
+        eprintln!(
+            "nodemigrate: destination serves {kind} as {}, applying source version {type_meta} through that API version for {name}",
+            resource.api_version
+        );
+        apply_value["apiVersion"] = Value::String(resource.api_version.clone());
+    }
     let object: DynamicObject =
-        serde_json::from_value(value.clone()).context("decoding migration object")?;
+        serde_json::from_value(apply_value).context("decoding migration object")?;
     let api: Api<DynamicObject> = if let Some(namespace) = object.metadata.namespace.as_deref() {
         Api::namespaced_with(client.clone(), namespace, &resource)
     } else {
@@ -1698,14 +1739,41 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         custom_resource_gvks, node_scheduling_patch, object_type_label, persistent_host_paths,
-        preserve_discovered_type_meta, restore_cni_path_backups, sanitize, skip_object,
-        snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest, ApiResource,
-        Export, ExportedObject, KubeApi, NodeSchedulingState,
+        preserve_discovered_type_meta, restore_cni_path_backups, same_group_kind, sanitize,
+        skip_object, snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest,
+        ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn compatible_api_version_requires_the_same_group_and_kind() {
+        let trust_bundle = ApiResource {
+            group: "certificates.k8s.io".to_string(),
+            version: "v1beta1".to_string(),
+            api_version: "certificates.k8s.io/v1beta1".to_string(),
+            kind: "ClusterTrustBundle".to_string(),
+            plural: "clustertrustbundles".to_string(),
+        };
+
+        assert!(same_group_kind(
+            &trust_bundle,
+            "ClusterTrustBundle",
+            "certificates.k8s.io/v1"
+        ));
+        assert!(!same_group_kind(
+            &trust_bundle,
+            "CertificateSigningRequest",
+            "certificates.k8s.io/v1"
+        ));
+        assert!(!same_group_kind(
+            &trust_bundle,
+            "ClusterTrustBundle",
+            "example.com/v1"
+        ));
+    }
 
     #[test]
     fn import_wait_tracks_only_served_custom_resource_versions() {
