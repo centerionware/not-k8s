@@ -94,13 +94,11 @@ checks.
 
 ## Verification log
 
-The last verified PR head `7e16754501e87d5983dcb0335b6d972529dec5b9`
-contains the staged reverse control-plane flow and node-affinity PV snapshot
-work. Its targeted crate tests, shell validation, and commit convention
-passed. The current work adds an explicit stale-Node replacement step before
-forward control-plane readiness; targeted crate CI is pending. The manual
-migration runtime workflow remains undispatched; no local Cargo test/build was
-run.
+The current PR head `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` adds explicit
+stale-Node replacement before forward and reverse control-plane readiness.
+Targeted crate tests, shell validation, and commit convention passed. The
+manual migration runtime workflow remains undispatched; no local Cargo
+test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -168,7 +166,9 @@ run.
 | 2026-09-24 | `7e16754501e87d5983dcb0335b6d972529dec5b9` | Nodemigrate crate checks | Passed; now rejects the conflicting reverse-mode request | [Run 35965492161](https://github.com/centerionware/not-k8s/actions/runs/35965492161) |
 | 2026-09-24 | `7e16754501e87d5983dcb0335b6d972529dec5b9` | PR shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35965492244](https://github.com/centerionware/not-k8s/actions/runs/35965492244) |
 | 2026-09-24 | `7e16754501e87d5983dcb0335b6d972529dec5b9` | Commit convention | Passed | [Run 35965490640](https://github.com/centerionware/not-k8s/actions/runs/35965490640) |
-| — | — | Forward control-plane stale-Node replacement | Added explicit opt-in and delete-before-fresh-readiness handling; focused crate CI pending | — |
+| 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Nodemigrate crate checks | Passed, including source/destination stale-Node replacement validation | [Run 35966523279](https://github.com/centerionware/not-k8s/actions/runs/35966523279) |
+| 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Integration shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35966522595](https://github.com/centerionware/not-k8s/actions/runs/35966522595) |
+| 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Commit convention | Passed | [Run 35966519686](https://github.com/centerionware/not-k8s/actions/runs/35966519686) |
 | — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
