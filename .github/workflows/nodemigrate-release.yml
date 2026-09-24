@@ -2,12 +2,29 @@ name: nodemigrate release
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/check_nodemigrate_release.py'
+      - '.github/workflows/nodemigrate-release.yml'
 
 permissions:
   contents: read
 
 jobs:
+  publish-policy:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check publish policy
+        run: python3 .github/scripts/check_nodemigrate_release.py
+
   release-identity:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
