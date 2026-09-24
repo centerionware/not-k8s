@@ -148,19 +148,22 @@ support is not guaranteed.
 
 ## Verification log
 
-The targeted nodemigrate checks and validation passed at `cefadddd` (runs
-`36045613581`, `36045613518`, and `36045610335`). Its manual runtime run built
-nodemigrate and verified the `v0.8.0` digest and required components. Both
-K3s and upstream Kubernetes passed their full source-stage checks: Cilium,
-CSI-backed PVC data, cert-manager issuance, nginx, and Traefik routing. Both
-then invoked nodemigrate. Selecting rustls `ring` resolved the first panic,
-but both lanes now panic during Tower client construction because the Tokio
-runtime is not entered while creating the kube client. The unattended five
-emoji high-risk warning prints on both lanes. The Docker probe still sees
-systemd exit 255 with empty logs; the entrypoint now prints its resolved
-systemd binary and enables debug console logging. See
-[run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585).
-No transfer completed and no local Cargo test/build was run.
+The latest pushed SHA, `1c42edc6`, passed the nodemigrate release artifact
+check (run `36046895086`) and shell validation (run `36046895281`). The
+focused crate test run `36046895251` failed only the new kube-client runtime
+regression because its escaped YAML string lost indentation; the fixture has
+been corrected to a raw string and awaits retest. Manual run
+`36046899524` built nodemigrate and verified the `v0.8.0` digest/components.
+Both source clusters passed full workload and storage checks and printed the
+five-emoji unattended warning. K3s then selected the built-in flannel target
+despite its Cilium source, and failed waiting for a flannel subnet. Upstream
+Kubernetes reached target startup, but the nodeapiserver could not bind port
+6443, so readiness failed; its nodestore service also logged client CA and
+port errors. The five-node Docker image built, but systemd exited 255 with
+empty output after the entrypoint printed `/usr/lib/systemd/systemd`. No
+round trip completed. See
+[run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524).
+No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -198,6 +201,11 @@ No transfer completed and no local Cargo test/build was run.
 | 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | Upstream Kubernetes + Cilium round trip | All source-stage checks passed, including Traefik rollout and route. Nodemigrate ran and hit the same Tower/Tokio runtime panic before transfer. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
 | 2026-09-24 | `cefadddd0fa51dfc1a10d535160f1fc64a316b75` | Five-node Docker preflight | Image build passed; the first container still exited 255 and emitted no systemd console output despite log-target configuration. | [Run 36045632585](https://github.com/centerionware/not-k8s/actions/runs/36045632585) |
 | 2026-09-24 | Worktree after `cefadddd` | Runtime follow-up | Enters the Tokio runtime while building the Kubernetes API client and adds a focused regression test. The Docker entrypoint now prints the resolved systemd path and enables debug console logs. Shell/runtime validation pending. | — |
+| 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Focused nodemigrate tests | 49 passed; the new runtime-context regression did not reach client creation because Rust's escaped string removed YAML indentation. Fixture corrected to raw YAML; retest pending. | [Run 36046895251](https://github.com/centerionware/not-k8s/actions/runs/36046895251) |
+| 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | K3s + Cilium migration | Source-stage checks passed and the warning printed. Target bootstrap unexpectedly enabled flanneld, which never wrote its subnet. Need resolve why source detection selected flannel instead of external Cilium. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
+| 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Upstream Kubernetes + Cilium migration | Source-stage checks passed and the warning printed. Target nodeapiserver could not bind 6443; nodestore logged port-in-use and UnknownIssuer errors. No transfer completed. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
+| 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Five-node Docker preflight | Image build passed; systemd executable was resolved to `/usr/lib/systemd/systemd`, but the container exited 255 with no further output. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
+| 2026-09-24 | Worktree after `1c42edc6` | Follow-up | Corrects the runtime-context regression fixture; source CNI detection, upstream static-pod cleanup/port handoff, and Docker systemd startup remain under investigation. | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |

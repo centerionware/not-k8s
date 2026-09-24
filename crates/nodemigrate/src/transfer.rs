@@ -1459,23 +1459,24 @@ mod tests {
         let kubeconfig = temp.path().join("config");
         fs::write(
             &kubeconfig,
-            "apiVersion: v1\n\
-             kind: Config\n\
-             clusters:\n\
-             - name: test\n\
-               cluster:\n\
-                 server: https://127.0.0.1:6443\n\
-                 insecure-skip-tls-verify: true\n\
-             users:\n\
-             - name: test\n\
-               user:\n\
-                 token: test-token\n\
-             contexts:\n\
-             - name: test\n\
-               context:\n\
-                 cluster: test\n\
-                 user: test\n\
-             current-context: test\n",
+            r"apiVersion: v1
+kind: Config
+clusters:
+- name: test
+  cluster:
+    server: https://127.0.0.1:6443
+    insecure-skip-tls-verify: true
+users:
+- name: test
+  user:
+    token: test-token
+contexts:
+- name: test
+  context:
+    cluster: test
+    user: test
+current-context: test
+",
         )
         .unwrap();
 
