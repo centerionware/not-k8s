@@ -465,32 +465,40 @@ impl KubeApi {
                     break;
                 }
             }
+            let mut listed_resources = BTreeSet::new();
             for group in discovery.groups() {
-                for (resource, capabilities) in group.recommended_resources() {
-                    if !capabilities.supports_operation(verbs::LIST) || skip_kind(&resource.kind) {
-                        continue;
-                    }
-                    let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
-                    let mut continue_token = None;
-                    loop {
-                        let mut params = ListParams::default().limit(500);
-                        if let Some(token) = continue_token.as_deref() {
-                            params = params.continue_token(token);
+                for version in group.versions() {
+                    for (resource, capabilities) in group.versioned_resources(version) {
+                        if !capabilities.supports_operation(verbs::LIST)
+                            || skip_kind(&resource.kind)
+                            || !listed_resources
+                                .insert((resource.group.clone(), resource.plural.clone()))
+                        {
+                            continue;
                         }
-                        let page = api.list(&params).await.with_context(|| {
-                            format!("listing {} objects from the source API", resource.kind)
-                        })?;
-                        for object in page.items {
-                            let mut value = serde_json::to_value(object)
-                                .context("serializing Kubernetes object")?;
-                            preserve_discovered_type_meta(&mut value, &resource)?;
-                            if !skip_object(&value) {
-                                objects.push(value);
+                        let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+                        let mut continue_token = None;
+                        loop {
+                            let mut params = ListParams::default().limit(500);
+                            if let Some(token) = continue_token.as_deref() {
+                                params = params.continue_token(token);
                             }
-                        }
-                        continue_token = page.metadata.continue_.filter(|token| !token.is_empty());
-                        if continue_token.is_none() {
-                            break;
+                            let page = api.list(&params).await.with_context(|| {
+                                format!("listing {} objects from the source API", resource.kind)
+                            })?;
+                            for object in page.items {
+                                let mut value = serde_json::to_value(object)
+                                    .context("serializing Kubernetes object")?;
+                                preserve_discovered_type_meta(&mut value, &resource)?;
+                                if !skip_object(&value) {
+                                    objects.push(value);
+                                }
+                            }
+                            continue_token =
+                                page.metadata.continue_.filter(|token| !token.is_empty());
+                            if continue_token.is_none() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1311,10 +1319,18 @@ fn find_resource(
     kind: &str,
     api_version: &str,
 ) -> Option<(ApiResource, kube::discovery::ApiCapabilities)> {
-    discovery
-        .groups()
-        .flat_map(|group| group.recommended_resources())
-        .find(|(resource, _)| resource.kind == kind && resource.api_version == api_version)
+    for group in discovery.groups() {
+        for version in group.versions() {
+            if let Some(resource) = group
+                .versioned_resources(version)
+                .into_iter()
+                .find(|(resource, _)| resource.kind == kind && resource.api_version == api_version)
+            {
+                return Some(resource);
+            }
+        }
+    }
+    None
 }
 
 fn preserve_discovered_type_meta(value: &mut Value, resource: &ApiResource) -> Result<()> {
