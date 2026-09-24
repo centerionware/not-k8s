@@ -37,10 +37,11 @@ separate living documents below.
   PR shell validation ([35962922860](https://github.com/centerionware/not-k8s/actions/runs/35962922860))
   and commit convention ([35962919894](https://github.com/centerionware/not-k8s/actions/runs/35962919894))
   passed. The multi-node runtime behavior remains unverified.
-- The most recent code revision `ed1f2c85cad2551383f2e03997a4429e1e011cfe` adds reverse
-  staged-control-plane handling and node-affinity-aware PV snapshots. Formatting
-  and whitespace checks pass; it is not pushed and targeted CI remains pending
-  because GitHub DNS resolution failed. See the [CI record](NODEMIGRATE_CI_STATUS.md).
+- The most recent code/test revision `ba9e8ad2d700f766512764e8d093396b9d1609af`
+  adds reverse staged-control-plane handling, node-affinity-aware PV snapshots,
+  and AND/OR node-affinity coverage. Formatting and whitespace checks pass; it
+  is not pushed and targeted CI remains pending because GitHub DNS resolution
+  failed. See the [CI record](NODEMIGRATE_CI_STATUS.md).
 - At `8518a99537cc4b98f2cbf8184f49c9927a8d78cf`, nodemigrate checks, shell
   syntax validation, and commit convention passed (runs `35956413580`,
   `35956413566`, and `35956412012`). The replacement-membership changes now

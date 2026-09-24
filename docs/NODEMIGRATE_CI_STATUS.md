@@ -91,11 +91,12 @@ checks.
 
 ## Verification log
 
-The most recent code revision is `ed1f2c85cad2551383f2e03997a4429e1e011cfe`
-(followed by a docs-only status commit). It includes reverse
-staged-control-plane commits `49d225a1...`, node-affinity
-PV snapshot selection `d6b7c1b3...`, and conservative fallback handling
-`ed1f2c85...`. These commits are not yet on PR #591: GitHub DNS resolution
+The most recent code/test revision is `ba9e8ad2d700f766512764e8d093396b9d1609af`
+(followed by docs-only status commits). It includes reverse
+staged-control-plane commit `49d225a1...`, node-affinity PV snapshot selection
+`d6b7c1b3...`, conservative fallback handling `ed1f2c85...`, and AND/OR
+node-affinity test coverage `ba9e8ad2...`. These commits are not yet on PR #591:
+GitHub DNS resolution
 failed during remote verification and push attempts. Rust formatting and
 `git diff --check` passed locally; the targeted crate run is pending and no
 local Cargo command was run. The last verified remote PR state was open at
