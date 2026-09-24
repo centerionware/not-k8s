@@ -69,8 +69,13 @@ separate living documents below.
   nodemigrate checks ran at `caed49582952a0743d87a06bbb52fceb737c059e`
   ([run 35972976396](https://github.com/centerionware/not-k8s/actions/runs/35972976396));
   packaging and detection passed, but crate tests failed. GitHub log retrieval
-  failed, so the diagnostic remains unknown. No Cargo build or test was run
-  locally.
+  failed, so the diagnostic remains unknown. The crate test failed again at
+  `f791d0e37440a5392bab05c22ece423f69fed7ad` ([run
+  35975029524](https://github.com/centerionware/not-k8s/actions/runs/35975029524));
+  its log artifact uploaded successfully but could not be downloaded from this
+  host. Release policy ([35975029509](https://github.com/centerionware/not-k8s/actions/runs/35975029509))
+  and shell/snapshot validation ([35975029519](https://github.com/centerionware/not-k8s/actions/runs/35975029519))
+  passed. No Cargo build or test was run locally.
 
 ## Next actions
 

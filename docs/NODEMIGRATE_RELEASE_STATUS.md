@@ -24,10 +24,23 @@ This is the living release record for
 | --- | --- |
 | Standalone crate and artifact packaging | Present in release workflow; needs current-SHA verification |
 | Excluded from combined `notk8s` binary | Intended and documented; verify package contents with the release artifact when available |
-| Version follows latest regular release | Release identity logic present; current version/tag not recorded here |
+| Version follows latest regular release | Workflow reads the current regular release tag at dispatch; latest observed is `v0.8.0` on 2026-09-24 |
 | Shared `VERSION` unchanged by nodemigrate-only release | Required invariant; no nodemigrate-only publication recorded |
 | Regular-release pointer unchanged by nodemigrate-only publication | `gh release create --latest=false` prevents the standalone release from replacing GitHub's latest-release pointer; workflow policy check enforces the flag |
 | Published nodemigrate release | Not published/recorded for this migration task |
+
+## Policy-check evidence
+
+The PR workflow checked the standalone-release policy, including the
+latest-release pointer guard, at SHA
+`f791d0e37440a5392bab05c22ece423f69fed7ad`; it passed in [run
+35975029509](https://github.com/centerionware/not-k8s/actions/runs/35975029509).
+No publication was performed.
+
+The repository's latest regular release was observed as [`v0.8.0`](https://github.com/centerionware/not-k8s/releases/tag/v0.8.0)
+on 2026-09-24. A nodemigrate-only publication dispatched against that release
+would use version `0.8.0`; the workflow reads the latest tag again at
+publication time rather than relying on this status snapshot.
 
 ## Publication record
 
