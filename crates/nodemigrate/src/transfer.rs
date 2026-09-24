@@ -1245,6 +1245,12 @@ mod tests {
     #[test]
     fn recovery_manifest_keeps_uid_mapping_outside_api_objects() {
         let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
         let object_path = directory.path().join("00000000.json");
         std::fs::write(
             &object_path,
@@ -1283,6 +1289,12 @@ mod tests {
     #[test]
     fn recovery_manifest_rejects_paths_outside_export_directory() {
         let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
         let manifest_path = directory.path().join("manifest.json");
         std::fs::write(
             &manifest_path,
