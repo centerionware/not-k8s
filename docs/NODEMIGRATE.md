@@ -91,6 +91,13 @@ select an alternate source config, `NODEMIGRATE_SOURCE_KUBECONFIG` explicitly
 overrides it, and `NODEMIGRATE_DESTINATION_KUBECONFIG` overrides the target
 config.
 
+Before an interactive migration, `nodemigrate` prints a high-risk warning that
+calls out the probability of data loss and asks for external backups. Continue
+only by typing the exact lowercase response `yes`; any other response cancels
+the operation. Noninteractive migration commands print the same warning to
+their logs and continue without a prompt. Inspection, help, and plan-only
+commands do not start a migration and do not request confirmation.
+
 The utility exports API resources, including custom resources and system
 add-ons such as Cilium, through the source API, then applies them through the
 destination API. Kubernetes-managed transient resources are recreated by the

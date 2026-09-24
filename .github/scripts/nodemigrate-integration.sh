@@ -5,15 +5,22 @@ ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 BIN_DIR="$ROOT/target/release"
 NK="$BIN_DIR/notk8s"
 MIGRATE="$BIN_DIR/nodemigrate"
-SOURCE_DIST="${NODEMIGRATE_SOURCE_DIST:?set NODEMIGRATE_SOURCE_DIST to k3s or kubernetes}"
+LIBRARY_MODE="${NODEMIGRATE_INTEGRATION_LIBRARY:-false}"
+if [[ "$LIBRARY_MODE" == true ]]; then
+    SOURCE_DIST="${NODEMIGRATE_SOURCE_DIST:-kubernetes}"
+else
+    SOURCE_DIST="${NODEMIGRATE_SOURCE_DIST:?set NODEMIGRATE_SOURCE_DIST to k3s or kubernetes}"
+fi
 LOG="${NODEMIGRATE_TEST_LOG:-/tmp/nodemigrate-integration.log}"
-WORK="/var/lib/nodemigrate-ci"
+WORK="${NODEMIGRATE_WORK_DIR:-/var/lib/nodemigrate-ci}"
 STATIC_PATH="$WORK/static-volume"
 CHECKPOINT_DIR="$WORK/checkpoints"
 SOURCE_KUBECONFIG=""
 CURRENT_KUBECONFIG=""
 
-exec > >(tee -a "$LOG") 2>&1
+if [[ "$LIBRARY_MODE" != true ]]; then
+    exec > >(tee -a "$LOG") 2>&1
+fi
 
 diagnostics() {
     status=$?
@@ -30,7 +37,9 @@ diagnostics() {
     fi
     exit "$status"
 }
-trap diagnostics EXIT
+if [[ "$LIBRARY_MODE" != true ]]; then
+    trap diagnostics EXIT
+fi
 
 need_root() {
     [[ "$(id -u)" == 0 ]] || { echo "run this integration script as root" >&2; exit 2; }
@@ -143,7 +152,7 @@ install_cilium() {
         --set cni.binPath="$cni_bin_path" \
         --set kubeProxyReplacement=false \
         --set operator.replicas=1 \
-        --set k8sServiceHost=127.0.0.1 \
+        --set k8sServiceHost="${NODEMIGRATE_CILIUM_API_HOST:-127.0.0.1}" \
         --set k8sServicePort=6443 \
         --wait --timeout 10m
     kubectl rollout status daemonset/cilium -n kube-system --timeout=10m
@@ -175,6 +184,50 @@ install_workloads() {
         --wait --timeout 10m
 
     mkdir -p "$STATIC_PATH"
+    if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
+        [[ "$NODEMIGRATE_STATIC_NODE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || {
+            echo "invalid static PV node name: $NODEMIGRATE_STATIC_NODE" >&2
+            return 1
+        }
+        kubectl apply -f - <<YAML
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: migration-static-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: migration-manual
+  hostPath:
+    path: /var/lib/nodemigrate-ci/static-volume
+    type: Directory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values: ["$NODEMIGRATE_STATIC_NODE"]
+YAML
+    else
+        kubectl apply -f - <<'YAML'
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: migration-static-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: migration-manual
+  hostPath:
+    path: /var/lib/nodemigrate-ci/static-volume
+    type: Directory
+YAML
+    fi
     kubectl apply -f - <<'YAML'
 apiVersion: v1
 kind: Namespace
@@ -192,19 +245,6 @@ data:
   migration-marker: user-config-data
 ---
 apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: migration-static-pv
-spec:
-  capacity:
-    storage: 1Gi
-  accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: migration-manual
-  hostPath:
-    path: /var/lib/nodemigrate-ci/static-volume
-    type: Directory
----
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -353,6 +393,28 @@ verify_stage() {
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
     kubectl wait --for=condition=Ready node --all --timeout=5m
+    if [[ -n "${NODEMIGRATE_EXPECTED_NODES:-}" ]]; then
+        local expected_nodes actual_nodes
+        expected_nodes="$(tr ',' '\n' <<<"$NODEMIGRATE_EXPECTED_NODES" | LC_ALL=C sort | paste -sd, -)"
+        actual_nodes="$(kubectl get nodes -o json | jq -r '[.items[].metadata.name] | sort | join(",")')"
+        [[ "$actual_nodes" == "$expected_nodes" ]] || {
+            echo "node membership differs at stage $stage: expected=$expected_nodes actual=$actual_nodes" >&2
+            return 1
+        }
+        local expected_control_planes expected_workers actual_control_planes actual_workers
+        expected_control_planes="${NODEMIGRATE_EXPECTED_CONTROL_PLANES:-3}"
+        expected_workers="${NODEMIGRATE_EXPECTED_WORKERS:-2}"
+        read -r actual_control_planes actual_workers < <(kubectl get nodes -o json | jq -r '
+          [
+            ([.items[] | select((.metadata.labels // {}) | (has("node-role.kubernetes.io/control-plane") or has("node-role.kubernetes.io/master")))] | length),
+            ([.items[] | select(((.metadata.labels // {}) | (has("node-role.kubernetes.io/control-plane") or has("node-role.kubernetes.io/master"))) | not)] | length)
+          ] | @tsv
+        ')
+        [[ "$actual_control_planes" == "$expected_control_planes" && "$actual_workers" == "$expected_workers" ]] || {
+            echo "node roles differ at stage $stage: expected control-planes=$expected_control_planes workers=$expected_workers actual control-planes=$actual_control_planes workers=$actual_workers" >&2
+            return 1
+        }
+    fi
     kubectl get nodes -o json | jq -e '
       all(.items[];
         .metadata.labels["operator.example/pool"] == "blue" and
@@ -629,4 +691,6 @@ main() {
     assert_round_trip_unchanged
 }
 
-main "$@"
+if [[ "$LIBRARY_MODE" != true ]]; then
+    main "$@"
+fi

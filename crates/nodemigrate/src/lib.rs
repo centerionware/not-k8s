@@ -3,7 +3,11 @@ pub mod request;
 pub mod service;
 pub mod transfer;
 
-use std::{path::PathBuf, process::Command};
+use std::{
+    io::{self, BufRead, IsTerminal, Write},
+    path::PathBuf,
+    process::Command,
+};
 
 use anyhow::{bail, ensure, Context, Result};
 
@@ -37,6 +41,9 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
         service::require_supported_uninstall(&source)?;
     }
     if request.to == request::Distribution::Nodestore {
+        if !request.plan_only {
+            confirm_migration_if_interactive()?;
+        }
         migrate_to_nodestore(&request, &source)
     } else {
         let target = detect::inspect_distribution(&layout, request.to)?.with_context(|| {
@@ -45,8 +52,47 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
                 request.to
             )
         })?;
+        if !request.plan_only {
+            confirm_migration_if_interactive()?;
+        }
         migrate_to_existing(&request, &source, &target)
     }
+}
+
+fn confirm_migration_if_interactive() -> Result<()> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    confirm_migration(
+        stdin.is_terminal() && stdout.is_terminal(),
+        &mut stdin.lock(),
+        &mut stdout.lock(),
+    )
+}
+
+fn confirm_migration(
+    interactive: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<()> {
+    writeln!(
+        output,
+        "\n⚠️⚠️⚠️⚠️⚠️ WARNING: THIS MIGRATION IS HIGH RISK.\n\
+         THERE IS A HIGH PROBABILITY OF DATA LOSS. BACK UP ALL CLUSTER AND HOST DATA\n\
+         USING EXTERNAL BACKUP TOOLS BEFORE CONTINUING. RUN THIS AT YOUR OWN RISK."
+    )?;
+    output.flush()?;
+    if !interactive {
+        return Ok(());
+    }
+
+    write!(output, "Type exactly \"yes\" to continue: ")?;
+    output.flush()?;
+
+    let mut response = String::new();
+    if input.read_line(&mut response)? == 0 || response.trim_end_matches(['\r', '\n']) != "yes" {
+        bail!("migration cancelled; confirmation must be exactly 'yes'");
+    }
+    Ok(())
 }
 
 fn migrate_to_nodestore(
@@ -1132,9 +1178,9 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cni_runtime_paths, replacement_worker_args, reverse_node_replacement_state,
-        validate_destination_node_replacement, validate_reverse_control_plane_options,
-        validate_skip_api_import,
+        apply_cni_runtime_paths, confirm_migration, replacement_worker_args,
+        reverse_node_replacement_state, validate_destination_node_replacement,
+        validate_reverse_control_plane_options, validate_skip_api_import,
     };
     use crate::transfer::NodeSchedulingState;
     use crate::{
@@ -1142,7 +1188,47 @@ mod tests {
         request::{Distribution, MigrationRequest},
     };
     use std::collections::HashMap;
-    use std::{path::Path, process::Command};
+    use std::{io::Cursor, path::Path, process::Command};
+
+    #[test]
+    fn interactive_migration_requires_exact_yes() {
+        let mut input = Cursor::new(b"Yes\n".to_vec());
+        let mut output = Vec::new();
+
+        let error = confirm_migration(true, &mut input, &mut output).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("confirmation must be exactly 'yes'"));
+        let warning = String::from_utf8(output).unwrap();
+        assert!(warning.contains("⚠️⚠️⚠️⚠️⚠️"));
+        assert!(warning.contains("HIGH PROBABILITY OF DATA LOSS"));
+        assert!(warning.contains("EXTERNAL BACKUP TOOLS"));
+    }
+
+    #[test]
+    fn interactive_migration_accepts_exact_yes() {
+        let mut input = Cursor::new(b"yes\n".to_vec());
+        let mut output = Vec::new();
+
+        confirm_migration(true, &mut input, &mut output).unwrap();
+
+        let warning = String::from_utf8(output).unwrap();
+        assert!(warning.contains("Type exactly \"yes\" to continue:"));
+    }
+
+    #[test]
+    fn noninteractive_migration_logs_warning_without_prompting() {
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        confirm_migration(false, &mut input, &mut output).unwrap();
+
+        let warning = String::from_utf8(output).unwrap();
+        assert!(warning.contains("⚠️⚠️⚠️⚠️⚠️"));
+        assert!(warning.contains("HIGH PROBABILITY OF DATA LOSS"));
+        assert!(!warning.contains("Type exactly"));
+    }
 
     fn cluster(cni: Option<&str>, backend: Option<&str>) -> ClusterConfig {
         ClusterConfig {

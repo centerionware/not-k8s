@@ -16,12 +16,19 @@ this objective.
 - `.github/workflows/nodemigrate-integration.yml` runs shell syntax validation
   on relevant pull requests.
 - Manual `workflow_dispatch` starts isolated K3s and upstream Kubernetes
-  lanes. Each lane builds the combined runtime binary and standalone
-  `nodemigrate` binary as test setup, then runs
+  lanes. Each lane builds the PR's standalone `nodemigrate` utility, downloads
+  the combined `notk8s` runtime from the latest regular release, verifies the
+  GitHub-published SHA-256 digest and required components, then runs
   `.github/scripts/nodemigrate-integration.sh` as root and uploads its log.
+  The latest regular release was verified as `v0.8.0` on 2026-09-24, so the
+  next authorized run will exercise the PR utility against that release.
   The kubeadm source setup installs `crictl` from the matching cri-tools minor
   release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
   version for static-pod cleanup diagnostics.
+- The migration CLI warns about the high data-loss risk and requires exact
+  `yes` on an interactive terminal. Noninteractive test runs log the same
+  warning and continue without prompting. Focused crate tests cover both
+  confirmation and noninteractive behavior.
 - Manual dispatch also starts the Docker five-node preflight. It builds
   `.github/nodemigrate/five-node.Dockerfile`, then
   `.github/scripts/nodemigrate-docker-preflight.sh` starts five disposable
@@ -99,6 +106,12 @@ completed beyond checking destination API readiness where required. No real
 three-CP run verifies this protocol yet. Repeating the current single-host
 script or running it once per node would not satisfy the five-node gate.
 
+The integration script now supports source-library mode for a future
+coordinator, optional exact node and control-plane/worker-count checks, an
+optional hostname affinity for the static hostPath PV, and a Cilium API
+endpoint override. These hooks are not yet wired to five Docker nodes and do
+not count as multi-node coverage.
+
 The Docker capability preflight and systemd node image are implemented but
 not run. Next, use them to provision kubeadm with three control planes and two
 workers inside those nodes, install and validate Cilium and the workload
@@ -119,9 +132,10 @@ support is not guaranteed.
   and `components=nodestore` when Raft membership code changes. Run the
   applicable focused checks for every changed crate; do not run unrelated
   crates.
-- Dedicated migration workflow: do not dispatch until the user authorizes
-  migration runtime/e2e execution. Its compile step is test setup, not a
-  generic build gate.
+- Dedicated migration workflow: migration runtime tests are authorized by the
+  user for this task. It builds only `nodemigrate` as test setup and uses the
+  latest regular `notk8s` release runtime; this is not the general build or
+  e2e gate. Do not dispatch general `build.yml` or e2e workflows.
 - Static shell syntax, formatting, diff whitespace, and docs-link checks are
   allowed and must be reported separately from runtime evidence.
 

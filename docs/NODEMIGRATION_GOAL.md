@@ -72,6 +72,10 @@ for a nodemigrate-only release.
   usable recovery location and state when later stages fail.
 - Make plan/inspection output actionable and ensure each operation reports
   its selected source, target, join mode, and consequential actions.
+- Before an interactive migration, show a prominent warning about external
+  backups and the high probability of data loss, then require the exact input
+  `yes` to continue. Noninteractive migration commands write the same warning
+  to their logs and continue without waiting for input.
 
 ## End-to-end acceptance scenarios
 
