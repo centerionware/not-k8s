@@ -91,6 +91,16 @@ checks.
 
 ## Verification log
 
+The most recent code revision is `ed1f2c85cad2551383f2e03997a4429e1e011cfe`
+(followed by a docs-only status commit). It includes reverse
+staged-control-plane commits `49d225a1...`, node-affinity
+PV snapshot selection `d6b7c1b3...`, and conservative fallback handling
+`ed1f2c85...`. These commits are not yet on PR #591: GitHub DNS resolution
+failed during remote verification and push attempts. Rust formatting and
+`git diff --check` passed locally; the targeted crate run is pending and no
+local Cargo command was run. The last verified remote PR state was open at
+`b44e94cf1bb740de33e36a18a9ab21943128ace1`; recheck it before pushing.
+
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
 | 2026-09-24 | `daac9ad05285e6ff749d4c51a18f9b71c8fb7dee` | Targeted quick-check: `nodebootstrap,nodemigrate` | Passed; predates bidirectional changes | [Run 35949477611](https://github.com/centerionware/not-k8s/actions/runs/35949477611) |
