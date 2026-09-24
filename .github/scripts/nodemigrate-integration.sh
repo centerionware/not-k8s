@@ -226,8 +226,7 @@ install_workloads() {
         --wait --timeout 10m
     helm upgrade --install traefik traefik/traefik \
         --namespace traefik --create-namespace \
-        --set service.type=ClusterIP --set ingressClass.enabled=true \
-        --wait --timeout 10m
+        --set service.type=ClusterIP --set ingressClass.enabled=true
 
     mkdir -p "$STATIC_PATH"
     if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
@@ -520,6 +519,7 @@ YAML
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Succeeded pod/migration-data-check --timeout=5m
     kubectl delete pod -n migration-apps migration-data-check --wait=true
 
+    kubectl rollout status -n traefik deployment/traefik --timeout=5m
     kubectl delete pod -n traefik migration-route-check --ignore-not-found --wait=true
     kubectl port-forward -n traefik svc/traefik 18080:80 >/tmp/traefik-port-forward.log 2>&1 &
     local port_forward_pid=$!

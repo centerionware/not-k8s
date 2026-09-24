@@ -14,9 +14,9 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest attempt installed Cilium and the hostPath CSI driver and bound the CSI readiness PVC in both lanes. Both then failed in the archived full e2e setup's unrelated nodelet DRA registration check. The fixture now stops after CSI setup; runtime retest pending. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest run completed K3s source workload checks and reached the first migration call, which aborted on rustls provider ambiguity. Upstream passed CSI but timed out waiting for Traefik even though its Pod was Running. Fixes for both are pending migration-only retest. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation preflight | The mount syntax correction passed image build, but the first container did not reach systemd readiness. The probe now captures container state and startup logs. Five-node Docker, CRI, BPF, network isolation, and failure/restart capabilities remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation preflight | The image built, but the first container exited with code 255 before systemd readiness and Docker had no container output. The fixture now logs systemd to the console and uses the host cgroup namespace. Isolation, CRI, BPF, network, and failure/restart remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
@@ -72,10 +72,13 @@ separate living documents below.
   path setup and Docker mount syntax. Run `36040401537` exposed a topology
   registration gap and a package conflict. Run `36042056929` passed source
   Cilium and CSI readiness in both lanes, then failed on the archived setup's
-  nodelet DRA registration requirement; Docker systemd readiness also failed.
-  The fixture now stops after CSI setup, avoids CNI self-links, and captures
-  Docker container logs. These changes are pending runtime validation. See
-  [run 36042056929](https://github.com/centerionware/not-k8s/actions/runs/36042056929).
+  nodelet DRA registration requirement. Run `36043310369` passed all K3s
+  source-stage checks and invoked nodemigrate, which panicked before transfer
+  because rustls had no selected provider; upstream timed out waiting for
+  Traefik although its pod was Running. The fixture now installs ring as the
+  crypto provider, checks the Traefik Deployment directly, and logs systemd to
+  Docker's console. Migration runtime retest is pending. See
+  [run 36043310369](https://github.com/centerionware/not-k8s/actions/runs/36043310369).
 - The current worktree adds protected export UID metadata, Node replacement
   state preservation and UID preconditions, and full migratable-object
   fingerprints in the integration fixture. Focused snapshot-filter checks,

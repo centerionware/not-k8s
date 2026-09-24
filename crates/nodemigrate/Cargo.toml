@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 serde_yaml = "0.9"
 tracing = { workspace = true }
 tokio = { workspace = true }
+rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
