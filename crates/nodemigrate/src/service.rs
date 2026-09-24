@@ -2,7 +2,10 @@ use std::process::{Command, Output};
 
 use anyhow::{bail, ensure, Context, Result};
 
-use crate::detect::{Distribution, Installation, NodeRole, ServiceManager};
+use crate::{
+    detect::{Installation, NodeRole, ServiceManager},
+    request::Distribution,
+};
 
 #[derive(Debug, Clone)]
 pub struct PreviousServiceState {
