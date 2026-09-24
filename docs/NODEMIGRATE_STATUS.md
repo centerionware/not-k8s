@@ -14,7 +14,7 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Single-host fixture now fingerprints every listable API object handled by the exporter and checks custom Node/ConfigMap metadata; runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed runtime attempt reached source setup but failed in CNI/Cilium initialization before nodemigrate ran; migration behavior is still unverified | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Added a systemd container image and manual workflow job; PR CI validates shell syntax only. Docker, CRI, BPF, network isolation, and failure/restart capabilities have not been exercised on the runner. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
@@ -31,8 +31,11 @@ separate living documents below.
 - Source CNI detection and the joined replacement node-agent path passed the
   focused nodemigrate tests at `63cb20cbe75ebdfafee861c41137b334fb6ff95b`.
 - The Cilium health assertions passed shell syntax validation at
-  `21d532991835ff587a918e3bf665ed4f601e6fdf`; the manual migration lanes have
-  not run.
+  `21d532991835ff587a918e3bf665ed4f601e6fdf`. The manual release-backed
+  attempt at `fc161b8c4262cdeb251abf6bbf2090e180d56c55` failed before migration:
+  the K3s lane could not start hostPath CSI setup pods because the bridge CNI
+  plugin was missing; the kubeadm lane's Cilium config init container and
+  operator crashed. See [run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348).
 - Control-plane join import control passed the focused nodemigrate crate
   checks at `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` (run
   [35962922792](https://github.com/centerionware/not-k8s/actions/runs/35962922792));
@@ -61,9 +64,9 @@ separate living documents below.
   checks (`35957207376`), quick-check for `nodebootstrap,nodestore`
   (`35957212012`), PR shell validation (`35957207356`), and commit convention
   (`35957206090`). The real replacement-member runtime case remains unverified.
-- No migration integration lane has been dispatched. The user directed that
-  general e2e and build gates not run; the dedicated runtime workflow also
-  remains undispatched pending explicit authorization.
+- The user directed that general e2e and build gates not run. They authorized
+  the dedicated migration runtime workflow; its first release-backed attempt
+  failed during source cluster setup before the migration utility ran.
 - The current worktree adds protected export UID metadata, Node replacement
   state preservation and UID preconditions, and full migratable-object
   fingerprints in the integration fixture. Focused snapshot-filter checks,

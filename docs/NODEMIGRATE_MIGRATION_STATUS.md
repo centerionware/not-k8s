@@ -58,9 +58,10 @@ distribution:
    catch up, promote it, then retire the configured old member ID. The current
    integration script does not yet implement this lane.
 
-The workflow is manual. Do not run it unless the user authorizes
-real-cluster/e2e execution. The standard e2e and build gates remain excluded
-by the user's current instruction.
+The workflow is manual. The user authorized the dedicated migration runtime
+workflow while excluding the standard e2e and build gates. Its first attempt
+against the `v0.8.0` runtime failed during CNI/Cilium setup, before nodemigrate
+was invoked. See the [CI status](NODEMIGRATE_CI_STATUS.md) for run details.
 
 ## Merge-gate status
 
@@ -101,8 +102,8 @@ establish no differences across the full migrated state.
 | 2026-09-24 | `4ef3585eaea6beae51ffd1116134435b0edc305e` | nodemigrate crate tests | Passed after correcting rooted manifest path | [Run 35954606805](https://github.com/centerionware/not-k8s/actions/runs/35954606805) |
 | 2026-09-24 | `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` | Nodemigrate crate tests | Passed; covers skip-import parsing and rejection unless a control-plane joins an existing nodestore cluster. Does not verify a live multi-control-plane migration. | [Run 35962922792](https://github.com/centerionware/not-k8s/actions/runs/35962922792) |
 | 2026-09-24 | `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` | PR shell validation and commit convention | Passed | [Shell run 35962922860](https://github.com/centerionware/not-k8s/actions/runs/35962922860), [commit run 35962919894](https://github.com/centerionware/not-k8s/actions/runs/35962919894) |
-| — | — | K3s integration round trip | Not run | Manual workflow above |
-| — | — | Upstream Kubernetes integration round trip | Not run | Manual workflow above |
+| 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | K3s+Cilium integration round trip | Failed before migration: Cilium rollout passed, then the hostPath CSI pod could not start because `/opt/cni/bin/bridge` was missing. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
+| 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Upstream Kubernetes+Cilium integration round trip | Failed before migration: Cilium config init and operator crashed, then rollout timed out. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 
 Update this table after each implementation or verification change. Record the
 exact SHA, workflow run, source distribution, CNI, and whether each stage

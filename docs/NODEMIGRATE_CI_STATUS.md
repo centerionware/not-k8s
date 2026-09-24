@@ -21,21 +21,27 @@ this objective.
   GitHub-published SHA-256 digest and required components, then runs
   `.github/scripts/nodemigrate-integration.sh` as root and uploads its log.
   The latest regular release was verified as `v0.8.0` on 2026-09-24, so the
-  next authorized run will exercise the PR utility against that release.
+  PR utility runs against that release. The first release-backed attempt
+  completed the utility build and runtime download, but both lanes failed
+  during Cilium/CSI setup before invoking nodemigrate; see the verification
+  log below.
   The kubeadm source setup installs `crictl` from the matching cri-tools minor
   release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
   version for static-pod cleanup diagnostics.
 - The migration CLI warns about the high data-loss risk and requires exact
-  `yes` on an interactive terminal. Noninteractive test runs log the same
-  warning and continue without prompting. Focused crate tests cover both
-  confirmation and noninteractive behavior.
-- Manual dispatch also starts the Docker five-node preflight. It builds
+  `yes` on an interactive terminal. Noninteractive runs write the same
+  five-⚠️ warning to stderr for service and CI logs, then continue without
+  prompting. Focused crate tests cover both confirmation and noninteractive
+  behavior.
+- Manual dispatch also starts the Docker five-node preflight. Its first run
+  failed at image build because the Dockerfile path was resolved from the
+  wrong working directory; the follow-up fixes that path. It builds
   `.github/nodemigrate/five-node.Dockerfile`, then
   `.github/scripts/nodemigrate-docker-preflight.sh` starts five disposable
   systemd containers and checks namespace separation, containerd CRI, a loaded
   eBPF classifier, per-node volumes, inter-node reachability, and single-node
-  failure isolation. The preflight has not been dispatched; it does not yet
-  provision Kubernetes or test Cilium datapath or migration parity.
+  failure isolation. It does not yet provision Kubernetes or test Cilium
+  datapath or migration parity.
 - The script installs the selected upstream distribution first, uses Cilium
   with Flannel disabled in the K3s lane, installs the hostPath CSI test
   driver, cert-manager, Traefik, nginx, static and CSI-backed claims, then
@@ -141,12 +147,15 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest completed targeted nodemigrate check is `ad509e5b` (run
-`36031941620`): crate tests, packaging, and crate detection passed. The
-integration workflow's pull-request validation also passed in run
-`36031941811`, including `bash -n` for the new Docker preflight. The preflight
-and migration jobs were skipped on the pull request. No local Cargo test/build
-was run.
+The latest completed targeted nodemigrate check is `fc161b8c` (run
+`36034435197`): crate tests, packaging, and crate detection passed, including
+the interactive confirmation and noninteractive warning tests. The
+integration workflow's pull-request validation passed in run `36034435182`.
+At `fc161b8c`, the authorized manual run built the PR utility and verified the
+`v0.8.0` runtime digest but failed before nodemigrate was invoked. The Docker
+preflight also failed at image build due to a Dockerfile path error; the
+follow-up fixes that path and captures Cilium/CNI diagnostics. No local Cargo
+test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -162,8 +171,8 @@ was run.
 | 2026-09-24 | `63cb20cbe75ebdfafee861c41137b334fb6ff95b` | Nodemigrate crate tests | Passed, including source CNI detection and joined replacement worker command tests | [Run 35955823452](https://github.com/centerionware/not-k8s/actions/runs/35955823452) |
 | 2026-09-24 | `63cb20cbe75ebdfafee861c41137b334fb6ff95b` | PR shell validation | Passed | [Run 35955823568](https://github.com/centerionware/not-k8s/actions/runs/35955823568) |
 | 2026-09-24 | `63cb20cbe75ebdfafee861c41137b334fb6ff95b` | Commit convention | Passed | [Run 35955821523](https://github.com/centerionware/not-k8s/actions/runs/35955821523) |
-| — | — | K3s + Cilium round trip | Not run; manual dispatch pending authorization | — |
-| — | — | Upstream Kubernetes + Cilium round trip | Not run; manual dispatch pending authorization | — |
+| 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | K3s + Cilium round trip | Failed during hostPath CSI setup before nodemigrate was invoked: sandbox CNI selected `bridge`, but `/opt/cni/bin/bridge` was missing. Cilium DaemonSet rollout had completed. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
+| 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Upstream Kubernetes + Cilium round trip | Failed before the first checkpoint: Cilium init `config` and `cilium-operator` crashed, and DaemonSet rollout timed out. The uploaded artifact lacks pod container logs; diagnostics now capture them on the next run. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
@@ -242,6 +251,7 @@ was run.
 | 2026-09-24 | `08fb393c` | Targeted nodemigrate checks | Passed crate tests, packaging, and crate detection; includes offline worker join validation. Runtime quorum-loss and per-node volume recovery remain unverified. | [Run 36028759134](https://github.com/centerionware/not-k8s/actions/runs/36028759134) |
 | 2026-09-24 | `a360ea6c` | Targeted nodemigrate checks | Passed crate tests, packaging, and crate detection; includes node-affined per-node hostPath backup and restore coverage. Real quorum-loss migration remains unverified. | [Run 36029431383](https://github.com/centerionware/not-k8s/actions/runs/36029431383) |
 | 2026-09-24 | `ad509e5b` | Targeted nodemigrate checks and PR validation | Crate tests, packaging, detection, release policy, commit convention, and shell validation passed. Docker isolation preflight and migration runtime jobs were skipped on the pull request. | [Nodemigrate run 36031941620](https://github.com/centerionware/not-k8s/actions/runs/36031941620), [validation run 36031941811](https://github.com/centerionware/not-k8s/actions/runs/36031941811), [policy run 36031941938](https://github.com/centerionware/not-k8s/actions/runs/36031941938), [commit run 36031938595](https://github.com/centerionware/not-k8s/actions/runs/36031938595) |
+| 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Release-backed migration workflow | Building `nodemigrate`, fetching the latest regular combined runtime `v0.8.0`, verifying its digest, and checking components passed. K3s and kubeadm lanes failed during CNI/Cilium setup before nodemigrate was invoked. Docker preflight failed because the Dockerfile path was relative to the wrong directory; fixed in the follow-up. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved

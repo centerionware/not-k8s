@@ -31,7 +31,25 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods,pvc,pv -A -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system deployment/cilium-operator \
+                --all-containers --tail=100 || true
+            local cilium_pod
+            while IFS= read -r cilium_pod; do
+                [[ -n "$cilium_pod" ]] || continue
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system "$cilium_pod" \
+                    -c config --previous --tail=100 || true
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system "$cilium_pod" \
+                    -c cilium-agent --previous --tail=100 || true
+            done < <(KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods -n kube-system \
+                -l k8s-app=cilium -o name 2>/dev/null || true)
         fi
+        for cni_path in /etc/cni/net.d /opt/cni/bin \
+            /var/lib/rancher/k3s/agent/etc/cni/net.d /var/lib/rancher/k3s/data/current/bin; do
+            if [[ -e "$cni_path" ]]; then
+                echo "CNI diagnostic path: $cni_path"
+                ls -la "$cni_path" || true
+            fi
+        done
         journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
             -u kube-apiserver --no-pager -n 250 || true
     fi

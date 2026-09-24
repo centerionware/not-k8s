@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
 
       - name: Build node image
-        run: docker build --pull --file five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
+        run: docker build --pull --file .github/nodemigrate/five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
 
       - name: Probe five nodes
         env:

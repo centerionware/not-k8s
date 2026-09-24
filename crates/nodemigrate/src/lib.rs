@@ -62,11 +62,14 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
 fn confirm_migration_if_interactive() -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    confirm_migration(
-        stdin.is_terminal() && stdout.is_terminal(),
-        &mut stdin.lock(),
-        &mut stdout.lock(),
-    )
+    let interactive = stdin.is_terminal() && stdout.is_terminal();
+    if interactive {
+        confirm_migration(true, &mut stdin.lock(), &mut stdout.lock())
+    } else {
+        // Keep the risk notice visible in service-manager and CI logs when no
+        // terminal is attached, without blocking automated invocations.
+        confirm_migration(false, &mut stdin.lock(), &mut io::stderr().lock())
+    }
 }
 
 fn confirm_migration(
