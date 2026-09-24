@@ -3,7 +3,7 @@
 Last updated: 2026-09-24
 
 This is the living CI record for the scope in
-[NODEMIGRATE_GOAL.md](NODEMIGRATE_GOAL.md). The user-specific testing policy
+[NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
@@ -28,9 +28,11 @@ this objective.
 - General `build.yml`: excluded by the user for this task.
 - General e2e workflow: excluded by the user for this task.
 - Local Cargo build/test/e2e: prohibited by repository host constraints.
-- Targeted `quick-check.yml`: allowed for changed Rust crates and required to
-  check Rust changes; use `components=nodemigrate,nodebootstrap` when both
-  change. Do not run unrelated crates.
+- Targeted `nodemigrate checks`: the focused compile and test check for
+  nodemigrate Rust changes. `quick-check.yml` does not currently include the
+  nodemigrate crate; use `components=nodebootstrap` there only when
+  nodebootstrap changes. Run both focused checks when both crates changed.
+  Do not run unrelated crates.
 - Dedicated migration workflow: do not dispatch until the user authorizes
   migration runtime/e2e execution. Its compile step is test setup, not a
   generic build gate.
@@ -50,6 +52,7 @@ this objective.
 | 2026-09-24 | `4ef3585eaea6beae51ffd1116134435b0edc305e` | Nodemigrate crate tests | Passed | [Run 35954606805](https://github.com/centerionware/not-k8s/actions/runs/35954606805) |
 | 2026-09-24 | `4ef3585eaea6beae51ffd1116134435b0edc305e` | PR shell validation | Passed | [Run 35954606851](https://github.com/centerionware/not-k8s/actions/runs/35954606851) |
 | 2026-09-24 | `4ef3585eaea6beae51ffd1116134435b0edc305e` | Commit convention | Passed | [Run 35954605041](https://github.com/centerionware/not-k8s/actions/runs/35954605041) |
+| — | — | CNI detection and joined replacement worker bootstrap | Implementation updated; targeted crate CI pending | — |
 | — | — | K3s + Cilium round trip | Not run; manual dispatch pending authorization | — |
 | — | — | Upstream Kubernetes + Cilium round trip | Not run; manual dispatch pending authorization | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |

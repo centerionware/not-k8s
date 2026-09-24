@@ -3,7 +3,7 @@
 Last updated: 2026-09-24
 
 This is the living implementation status record for the full scope in
-[NODEMIGRATE_GOAL.md](NODEMIGRATE_GOAL.md). Capability marks describe code
+[NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
@@ -13,12 +13,13 @@ compile or unit test does not mark a real migration path as verified.
 | --- | --- | --- |
 | Detect local K3s service, Kine/etcd mode, config, and network settings | Implemented | Unit tests only; targeted CI rerun pending after compiler fixes |
 | Detect an upstream control plane and read CIDRs and cluster domain | Implemented | Focused fixture passes after the rooted manifest path correction |
+| Identify Cilium and other known CNIs from the active host CNI configuration | Implemented for recognized CNI config names and plugin types | Focused fixture tests added; CI pending |
 | Export all discovered API resource pages, including CRDs and add-ons | Implemented | Not yet exercised against a real cluster |
 | Carry static hostPath/local PV data and preserve CSI-backed data on the same host | Implemented for host paths; CSI data remains with its local driver | Not yet exercised through a round trip |
 | K3s → nodestore with Flannel | Implemented | No real migration run recorded |
 | K3s → nodestore with external CNI such as Cilium | Implemented as external-CNI bootstrap and API-resource transfer | No real migration run recorded |
 | Upstream Kubernetes → nodestore | Implemented for detected local control planes | No real migration run recorded |
-| Join an existing nodestore control plane using nodebootstrap environment settings | Implemented through nodebootstrap join configuration | No real replacement-node run recorded |
+| Join an existing nodestore control plane using nodebootstrap environment settings | Implemented through nodebootstrap join configuration, then a worker bootstrap registers the replacement node | Focused command tests added; no real replacement-node run recorded |
 | Nodestore → retained K3s | Implemented; target must already be installed locally | No real migration run recorded |
 | Nodestore → retained upstream Kubernetes | Implemented; target must already be installed locally | No real migration run recorded |
 | Keep source installed and disabled by default | Implemented | No real service-manager cutover run recorded |

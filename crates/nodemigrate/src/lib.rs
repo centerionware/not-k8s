@@ -61,15 +61,16 @@ fn migrate_to_nodestore(
     let source_api = transfer::KubeApi::source(source)?;
     let source_nodes = source_api.node_count()?;
     let joins_existing = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT").is_some();
-    ensure!(
-        source_nodes <= 1 || joins_existing,
-        "the source cluster has {source_nodes} nodes; set NODEBOOTSTRAP_JOIN_ENDPOINT and NODEBOOTSTRAP_PEER_URL to replace this node in a nodestore cluster"
-    );
     let bootstrap = bootstrap_command(source)?;
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     if request.plan_only {
         source_api.ready()?;
-        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, request.uninstall_after_migrate);
+        let cni = source
+            .cluster
+            .as_ref()
+            .and_then(|cluster| cluster.cni.as_deref())
+            .unwrap_or("external or undetected");
+        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if joins_existing { "install node agent on replacement node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
     }
 
@@ -102,6 +103,13 @@ fn migrate_to_nodestore(
     ))?;
     if let Err(error) = target_api.import(&export) {
         bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
+    }
+    if joins_existing {
+        let worker = replacement_worker_command(source, &node_name(source))?;
+        run_bootstrap(worker).with_context(|| format!(
+            "installing the node agent on the joined replacement node; source remains disabled and the protected export is at {}",
+            export.dir.display()
+        ))?;
     }
     let node_name = node_name(source);
     wait_for_node(&target_api, &node_name)?;
@@ -137,7 +145,12 @@ fn migrate_to_existing(
     let target_api = transfer::KubeApi::destination(request.to)?;
     source_api.ready()?;
     if request.plan_only {
-        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; uninstall-after-migrate={}", request.to, target.service_name, request.uninstall_after_migrate);
+        let cni = target
+            .cluster
+            .as_ref()
+            .and_then(|cluster| cluster.cni.as_deref())
+            .unwrap_or("external or undetected");
+        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; uninstall-after-migrate={}", request.to, target.service_name, request.uninstall_after_migrate);
         return Ok(());
     }
     let mut export = source_api.export(source)?;
@@ -260,7 +273,7 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
     let config = installation
         .cluster
         .as_ref()
-        .context("K3s cluster config was not detected")?;
+        .context("source cluster config was not detected")?;
     // nodebootstrap installs Flannel itself; all other providers remain
     // externally managed on the host and are restored from the API export.
     args.push(
@@ -272,11 +285,65 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
             "--cni=none".to_string()
         },
     );
+    if let Some(node_name) = &config.node_name {
+        args.push(format!("--node-name={node_name}"));
+    }
+    bootstrap_command_with_config(args, config)
+}
+
+fn replacement_worker_command(
+    installation: &detect::Installation,
+    node_name: &str,
+) -> Result<Command> {
+    let config = installation
+        .cluster
+        .as_ref()
+        .context("source cluster config was not detected")?;
+    let kubeconfig = std::env::var_os("NODEBOOTSTRAP_WORKER_KUBECONFIG")
+        .or_else(|| std::env::var_os("NODEMIGRATE_DESTINATION_KUBECONFIG"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("NODEBOOTSTRAP_KUBECONFIG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/etc/nodebootstrap"))
+                .join("admin.kubeconfig")
+        });
+    let args = replacement_worker_args(config, &kubeconfig, node_name);
+    bootstrap_command_with_config(args, config)
+}
+
+fn replacement_worker_args(
+    config: &detect::ClusterConfig,
+    kubeconfig: &std::path::Path,
+    node_name: &str,
+) -> Vec<String> {
+    let mut args = vec![
+        "--release".to_string(),
+        "--worker".to_string(),
+        format!("--kubeconfig={}", kubeconfig.display()),
+        format!("--node-name={node_name}"),
+        if config.cni.as_deref() == Some("flannel")
+            && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan"
+        {
+            "--cni=flannel".to_string()
+        } else {
+            "--cni=none".to_string()
+        },
+    ];
     if let Some(domain) = &config.cluster_domain {
         args.push(format!("--cluster-domain={domain}"));
     }
-    if let Some(node_name) = &config.node_name {
-        args.push(format!("--node-name={node_name}"));
+    args
+}
+
+fn bootstrap_command_with_config(
+    mut args: Vec<String>,
+    config: &detect::ClusterConfig,
+) -> Result<Command> {
+    if let Some(domain) = &config.cluster_domain {
+        if !args.iter().any(|arg| arg.starts_with("--cluster-domain=")) {
+            args.push(format!("--cluster-domain={domain}"));
+        }
     }
     let service_cidrs = split_cidrs(config.service_cidr.as_deref().unwrap_or("10.43.0.0/16"));
     if let Some(ipv4) = service_cidrs.iter().find(|cidr| !cidr.contains(':')) {
@@ -302,7 +369,7 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
         for address in split_cidrs(dns) {
             match address
                 .parse::<std::net::IpAddr>()
-                .context("K3s cluster-dns must contain IP addresses")?
+                .context("source cluster-dns must contain IP addresses")?
             {
                 std::net::IpAddr::V4(address) => cluster_dns_ipv4 = Some(address.to_string()),
                 std::net::IpAddr::V6(address) => cluster_dns_ipv6 = Some(address.to_string()),
@@ -379,4 +446,59 @@ fn print_help() {
          disables the source service, and keeps the export. Source uninstall\n\
          happens only with uninstall-after-migrate=true."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replacement_worker_args;
+    use crate::detect::{ClusterConfig, K3sDatastore};
+    use std::path::Path;
+
+    fn cluster(cni: Option<&str>, backend: Option<&str>) -> ClusterConfig {
+        ClusterConfig {
+            data_dir: "/var/lib/test".into(),
+            kubeconfig: None,
+            service_cidr: Some("10.96.0.0/12".to_string()),
+            cluster_cidr: Some("10.244.0.0/16".to_string()),
+            cluster_domain: Some("cluster.example".to_string()),
+            cluster_dns: None,
+            node_name: Some("old-node".to_string()),
+            cni: cni.map(str::to_string),
+            flannel_backend: backend.map(str::to_string),
+            datastore: K3sDatastore::Etcd,
+        }
+    }
+
+    #[test]
+    fn joined_replacement_runs_worker_bootstrap_with_destination_kubeconfig() {
+        let config = cluster(None, None);
+        let args = replacement_worker_args(
+            &config,
+            Path::new("/etc/nodebootstrap/admin.kubeconfig"),
+            "old-node",
+        );
+        assert!(args.iter().any(|arg| arg == "--worker"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--kubeconfig=/etc/nodebootstrap/admin.kubeconfig"));
+        assert!(args.iter().any(|arg| arg == "--node-name=old-node"));
+        assert!(args.iter().any(|arg| arg == "--cni=none"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--cluster-domain=cluster.example"));
+    }
+
+    #[test]
+    fn joined_replacement_preserves_explicit_flannel_setup() {
+        let config = cluster(Some("flannel"), Some("vxlan"));
+        let args = replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node");
+        assert!(args.iter().any(|arg| arg == "--cni=flannel"));
+    }
+
+    #[test]
+    fn joined_replacement_does_not_replace_non_vxlan_or_external_cni() {
+        let config = cluster(Some("flannel"), Some("wireguard-native"));
+        let args = replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node");
+        assert!(args.iter().any(|arg| arg == "--cni=none"));
+    }
 }

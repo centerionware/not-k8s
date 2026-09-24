@@ -181,7 +181,7 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
         cluster_dns: config.cluster_dns,
         node_name: config.node_name,
         cni: if config.disable_flannel {
-            None
+            detect_external_cni(layout)
         } else {
             Some("flannel".to_string())
         },
@@ -316,7 +316,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
             cluster_domain: kubelet_cluster_domain(layout),
             cluster_dns: None,
             node_name: None,
-            cni: None,
+            cni: detect_external_cni(layout),
             flannel_backend: None,
             datastore: K3sDatastore::Etcd,
         }),
@@ -354,6 +354,56 @@ fn kubelet_cluster_domain(layout: &HostLayout) -> Option<String> {
     let path = layout.path("/var/lib/kubelet/config.yaml");
     let config: Value = serde_yaml::from_slice(&std::fs::read(path).ok()?).ok()?;
     yaml_string(&config, "clusterDomain")
+}
+
+fn detect_external_cni(layout: &HostLayout) -> Option<String> {
+    let config_dir = layout.path("/etc/cni/net.d");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(config_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+
+    for path in &files {
+        if let Some(provider) = cni_provider_from_name(path.file_name()?.to_string_lossy().as_ref())
+        {
+            return Some(provider.to_string());
+        }
+        if let Ok(contents) = std::fs::read(path) {
+            if let Ok(value) = serde_yaml::from_slice(&contents) {
+                if let Some(provider) = cni_provider_in_value(&value) {
+                    return Some(provider.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn cni_provider_in_value(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::String(value) => cni_provider_from_name(value),
+        Value::Sequence(values) => values.iter().find_map(cni_provider_in_value),
+        Value::Mapping(values) => values.values().find_map(cni_provider_in_value),
+        _ => None,
+    }
+}
+
+fn cni_provider_from_name(value: &str) -> Option<&'static str> {
+    let value = value.to_ascii_lowercase();
+    [
+        ("cilium", "cilium"),
+        ("calico", "calico"),
+        ("flannel", "flannel"),
+        ("weave", "weave"),
+        ("antrea", "antrea"),
+    ]
+    .into_iter()
+    .find_map(|(needle, provider)| value.contains(needle).then_some(provider))
 }
 
 fn detect_datastore(
@@ -612,7 +662,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        inspect_distribution, inspect_host, Distribution, HostLayout, K3sDatastore, ServiceManager,
+        detect_external_cni, inspect_distribution, inspect_host, Distribution, HostLayout,
+        K3sDatastore, ServiceManager,
     };
 
     #[test]
@@ -703,10 +754,27 @@ mod tests {
     }
 
     #[test]
+    fn detects_cilium_from_the_active_cni_conflist() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_external_cni(&HostLayout::under(root.path())).as_deref(),
+            Some("cilium")
+        );
+    }
+
+    #[test]
     fn detects_upstream_control_plane_network_configuration() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
         fs::create_dir_all(root.path().join("etc/kubernetes/manifests")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
         fs::create_dir_all(root.path().join("var/lib/kubelet")).unwrap();
         fs::write(
             root.path().join("etc/systemd/system/kubelet.service"),
@@ -729,6 +797,11 @@ mod tests {
             "clusterDomain: corp.example\n",
         )
         .unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
 
         let installation =
             inspect_distribution(&HostLayout::under(root.path()), Distribution::Kubernetes)
@@ -738,6 +811,34 @@ mod tests {
         assert_eq!(cluster.service_cidr.as_deref(), Some("10.96.0.0/12"));
         assert_eq!(cluster.cluster_cidr.as_deref(), Some("10.244.0.0/16"));
         assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
-        assert_eq!(cluster.cni, None);
+        assert_eq!(cluster.cni.as_deref(), Some("cilium"));
+    }
+
+    #[test]
+    fn detects_cilium_for_k3s_with_flannel_disabled() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/rancher/k3s")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/k3s.service"),
+            "[Service]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/rancher/k3s/config.yaml"),
+            "flannel-backend: none\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::K3s)
+            .unwrap()
+            .unwrap();
+        assert_eq!(installation.cluster.unwrap().cni.as_deref(), Some("cilium"));
     }
 }

@@ -3,7 +3,7 @@
 Last updated: 2026-09-24
 
 This dashboard tracks the full nodemigrate goal in
-[NODEMIGRATE_GOAL.md](NODEMIGRATE_GOAL.md). Detailed status is kept in the
+[NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Detailed status is kept in the
 separate living documents below.
 
 ## Current state

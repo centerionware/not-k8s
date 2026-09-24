@@ -24,7 +24,9 @@ environment configuration. Set `NODEBOOTSTRAP_JOIN_ENDPOINT` and
 `NODEBOOTSTRAP_PEER_URL` (and the nodebootstrap join CA, certificate, key, and
 member settings as needed) to replace a node that belongs to an existing
 cluster. `nodemigrate` starts nodebootstrap in control-plane join mode and
-preserves the cluster's CA and datastore membership through nodebootstrap.
+preserves the cluster's CA and datastore membership through nodebootstrap,
+then runs nodebootstrap worker mode against the joined cluster so the
+replacement host registers as a Kubernetes node and starts its node agent.
 Without join settings, nodebootstrap creates a new local cluster. The utility
 derives service and pod CIDRs, cluster domain, DNS addresses, and node name
 from the source installation where available.
@@ -81,6 +83,6 @@ uninstall is run. This is an API-level cluster migration, not a byte-for-byte
 datastore restore. The export is retained after success so operators can
 inspect it or recover individual objects and local volume data.
 
-See [NODEMIGRATE_GOAL.md](NODEMIGRATE_GOAL.md) for the full scope and the
+See [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md) for the full scope and the
 task-specific validation rules. [NODEMIGRATE_STATUS.md](NODEMIGRATE_STATUS.md)
 is the dashboard for separate living migration, CI, and release status records.

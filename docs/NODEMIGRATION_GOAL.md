@@ -79,9 +79,11 @@ instructions in `AGENTS.md` for nodemigrate work:
 - Do not run the repository's general e2e gate for this objective.
 - Do not run local Cargo builds, Cargo tests, or local e2e on the development
   host.
-- For Rust changes, use a targeted `quick-check.yml` run listing only changed
-  crates (normally `nodemigrate,nodebootstrap`). This is the allowed compile
-  and focused test check; it is not a general build gate.
+- For nodemigrate Rust changes, use the targeted `nodemigrate checks`
+  workflow, which compiles and tests only the `nodemigrate` crate. If
+  `nodebootstrap` changes, use `quick-check.yml` with
+  `components=nodebootstrap`; run both targeted checks only when both crates
+  changed. These focused runs are allowed and are not a general build gate.
 - The dedicated `nodemigrate-integration.yml` workflow is the migration
   runtime test. Its build step only prepares binaries for that test. It is
   manually dispatched and must not be run unless the user authorizes the

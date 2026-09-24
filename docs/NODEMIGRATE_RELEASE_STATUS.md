@@ -3,7 +3,7 @@
 Last updated: 2026-09-24
 
 This is the living release record for
-[the full nodemigrate goal](NODEMIGRATE_GOAL.md).
+[the full nodemigrate goal](NODEMIGRATION_GOAL.md).
 
 ## Release invariants
 

@@ -8,6 +8,7 @@ on:
       - '.github/workflows/nodemigrate-integration.yml'
       - 'crates/nodemigrate/**'
       - 'docs/NODEMIGRATE.md'
+      - 'docs/NODEMIGRATION_GOAL.md'
       - 'docs/NODEMIGRATE_STATUS.md'
 
 permissions:
