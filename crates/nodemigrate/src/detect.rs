@@ -242,14 +242,18 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
     } else {
         None
     };
+    let (conf_dir, bin_dir) = k3s_containerd_cni_dirs(layout, &data_dir);
+    let active_provider =
+        detect_cni_provider(layout, &conf_dir).or_else(|| detect_external_cni(layout));
     let uses_nodebootstrap_flannel = role == NodeRole::ControlPlane
         && !config.disable_flannel
-        && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan";
+        && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan"
+        && active_provider
+            .as_deref()
+            .is_none_or(|provider| provider == "flannel");
     let (cni, cni_conf_dir, cni_bin_dir) = if uses_nodebootstrap_flannel {
         (Some("flannel".to_string()), None, None)
     } else {
-        let (conf_dir, bin_dir) = k3s_containerd_cni_dirs(layout, &data_dir);
-        let active_provider = detect_cni_provider(layout, &conf_dir);
         if let Some(provider) = active_provider {
             (Some(provider), Some(conf_dir), Some(bin_dir))
         } else if let Some(provider) = detect_external_cni(layout) {
@@ -1279,6 +1283,34 @@ mod tests {
         fs::write(
             root.path().join("etc/cni/net.d/05-cilium.conflist"),
             r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::K3s)
+            .unwrap()
+            .unwrap();
+        assert_eq!(installation.cluster.unwrap().cni.as_deref(), Some("cilium"));
+    }
+
+    #[test]
+    fn detects_active_external_cni_before_defaulting_k3s_to_flannel() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/k3s.service"),
+            "[Service]\nExecStart=/usr/local/bin/k3s server\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path()
+                .join("etc/cni/net.d/10-flannel.conflist.cilium_bak"),
+            r#"{"cniVersion":"0.4.0","name":"flannel","plugins":[{"type":"flannel"}]}"#,
         )
         .unwrap();
 

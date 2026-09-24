@@ -148,26 +148,20 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest pushed SHA, `1c42edc6`, passed the nodemigrate release artifact
-check (run `36046895086`) and shell validation (run `36046895281`). The
-focused crate test run `36046895251` failed because its escaped YAML string
-lost indentation; the corrected raw-YAML fixture passed in run
-`36048275119`. The separate targeted check run `36048275236` then showed that
-the test also needed the explicit rustls provider installed by the binary
-entrypoint; that test setup has been corrected and awaits retest. Manual run
-`36046899524` built nodemigrate and verified the `v0.8.0` digest/components.
-Both source clusters passed full workload and storage checks and printed the
-five-emoji unattended warning. K3s then selected the built-in flannel target
-despite its Cilium source, and failed waiting for a flannel subnet. The source
-directory contains an inactive `10-flannel.conflist.cilium_bak`; the detector
-was treating backup files as active configs. Detection now considers CNI
-config extensions only, with a focused regression test. Upstream Kubernetes
-reached target startup, but the nodeapiserver could not bind port
-6443, so readiness failed; its nodestore service also logged client CA and
-port errors. The five-node Docker image built, but systemd exited 255 with
-empty output after the entrypoint printed `/usr/lib/systemd/systemd`. No
-round trip completed. See
-[run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524).
+The latest pushed SHA, `bd088595`, passed nodemigrate crate tests and release
+artifact checks (runs `36048798023` and `36048797913`) and the targeted code
+check (run `36048797939`). Run `36048845512` built nodemigrate and verified
+the `v0.8.0` digest/components. Both source clusters passed full workload and
+storage checks and printed the five-emoji unattended warning. K3s still
+selected the built-in flannel target: its detector defaults to flannel before
+checking for a live external Cilium config when K3s's disable flag is not
+parsed. The detector now prefers a detected active non-Flannel CNI and has a
+regression test for Cilium plus the inactive Flannel backup. Upstream
+Kubernetes reached target startup, but the nodeapiserver could not bind port
+6443; nodestore also logged client CA and port errors. The five-node Docker
+image built, but systemd exited 255 with empty output after the entrypoint
+printed `/usr/lib/systemd/systemd`. No round trip completed. See
+[run 36048845512](https://github.com/centerionware/not-k8s/actions/runs/36048845512).
 No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
@@ -209,9 +203,13 @@ No local Cargo test/build was run.
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Focused nodemigrate tests | 49 passed; the new runtime-context regression did not reach client creation because Rust's escaped string removed YAML indentation. Fixture corrected to raw YAML; retest pending. | [Run 36046895251](https://github.com/centerionware/not-k8s/actions/runs/36046895251) |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | K3s + Cilium migration | Source-stage checks passed and the warning printed. Target bootstrap unexpectedly enabled flanneld, which never wrote its subnet. Need resolve why source detection selected flannel instead of external Cilium. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
 | 2026-09-24 | `65e212ec976fd68cbb5e97645c6e6bccd2158fe6` | Focused nodemigrate tests | Passed, including the runtime-context regression with corrected raw YAML. | [Run 36048275119](https://github.com/centerionware/not-k8s/actions/runs/36048275119) |
+| 2026-09-24 | `bd0885951771fcc917d7b5a4a8ae01f3a0e148b8` | Nodemigrate tests, checks, and release | All three passed; the Tokio-context test initializes the same ring provider as the binary entrypoint. | [Tests 36048798023](https://github.com/centerionware/not-k8s/actions/runs/36048798023), [checks 36048797939](https://github.com/centerionware/not-k8s/actions/runs/36048797939), [release 36048797913](https://github.com/centerionware/not-k8s/actions/runs/36048797913) |
+| 2026-09-24 | `bd0885951771fcc917d7b5a4a8ae01f3a0e148b8` | K3s + Cilium migration | Source checks and warning passed; nodemigrate again enabled flanneld and failed waiting for subnet. The selected-CNI ordering is being corrected to honor active Cilium. | [Run 36048845512](https://github.com/centerionware/not-k8s/actions/runs/36048845512) |
+| 2026-09-24 | `bd0885951771fcc917d7b5a4a8ae01f3a0e148b8` | Upstream Kubernetes + Cilium migration | Source checks and warning passed; nodeapiserver readiness failed because port 6443 remained bound, with nodestore client-certificate errors. | [Run 36048845512](https://github.com/centerionware/not-k8s/actions/runs/36048845512) |
+| 2026-09-24 | `bd0885951771fcc917d7b5a4a8ae01f3a0e148b8` | Five-node Docker preflight | Image build passed; systemd exited 255 before readiness with no further output. | [Run 36048845512](https://github.com/centerionware/not-k8s/actions/runs/36048845512) |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Upstream Kubernetes + Cilium migration | Source-stage checks passed and the warning printed. Target nodeapiserver could not bind 6443; nodestore logged port-in-use and UnknownIssuer errors. No transfer completed. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Five-node Docker preflight | Image build passed; systemd executable was resolved to `/usr/lib/systemd/systemd`, but the container exited 255 with no further output. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
-| 2026-09-24 | Worktree after `1c42edc6` | Follow-up | Corrects the runtime-context regression fixture. CNI detection now ignores non-config backups such as `10-flannel.conflist.cilium_bak`; focused validation pending. Upstream static-pod cleanup/port handoff and Docker systemd startup remain under investigation. | — |
+| 2026-09-24 | Worktree after `bd088595` | Follow-up | Selects an active external CNI before defaulting to K3s Flannel, with a regression case for Cilium and its Flannel backup file. Upstream static-pod cleanup/port handoff and Docker systemd startup remain under investigation. | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
