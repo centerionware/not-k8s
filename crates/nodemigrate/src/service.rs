@@ -24,11 +24,8 @@ pub fn require_supported_uninstall(installation: &Installation) -> Result<()> {
 
 pub fn validate_disable_support(installation: &Installation) -> Result<()> {
     ensure!(
-        matches!(
-            installation.service_manager,
-            Some(ServiceManager::Systemd | ServiceManager::OpenRc)
-        ),
-        "migration requires a detected systemd or OpenRC service for safe stop/restore"
+        installation.service_manager.is_some(),
+        "migration requires a detected service manager so the source can be stopped and restored"
     );
     Ok(())
 }
@@ -57,9 +54,25 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
                 active,
             }
         }
-        other => bail!(
-            "migration can detect {other:?} but cannot safely disable and restore its services yet"
-        ),
+        ServiceManager::SysVInit => PreviousServiceState {
+            enabled: sysv_enabled(name),
+            active: command("service", &[name, "status"])
+                .is_ok_and(|output| output.status.success()),
+        },
+        ServiceManager::Runit => {
+            let service_dir = runit_service_dir(name);
+            PreviousServiceState {
+                enabled: service_dir
+                    .as_ref()
+                    .is_some_and(|dir| !dir.join("down").exists()),
+                active: service_dir.as_ref().is_some_and(|dir| {
+                    command("sv", &["status", &dir.to_string_lossy()]).is_ok_and(|output| {
+                        output.status.success()
+                            && String::from_utf8_lossy(&output.stdout).starts_with("run:")
+                    })
+                }),
+            }
+        }
     };
     ensure!(
         previous.active,
@@ -97,7 +110,25 @@ pub fn restore(installation: &Installation, previous: PreviousServiceState) -> R
                 checked("rc-service", &[name, "start"])?;
             }
         }
-        other => bail!("cannot restore services for {other:?}"),
+        ServiceManager::SysVInit => {
+            if previous.enabled {
+                set_sysv_enabled(name, true)?;
+            }
+            if previous.active {
+                checked("service", &[name, "start"])?;
+            }
+        }
+        ServiceManager::Runit => {
+            if let Some(dir) = runit_service_dir(name) {
+                let down = dir.join("down");
+                if previous.enabled {
+                    let _ = std::fs::remove_file(down);
+                }
+                if previous.active {
+                    checked("sv", &["up", &dir.to_string_lossy()])?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -127,8 +158,52 @@ fn stop_and_disable(manager: ServiceManager, name: &str) -> Result<()> {
                 }
             })
         }
-        other => bail!("cannot disable source service with {other:?}"),
+        ServiceManager::SysVInit => {
+            checked("service", &[name, "stop"])?;
+            set_sysv_enabled(name, false)
+        }
+        ServiceManager::Runit => {
+            let dir = runit_service_dir(name)
+                .with_context(|| format!("could not find runit service directory for {name}"))?;
+            checked("sv", &["down", &dir.to_string_lossy()])?;
+            std::fs::write(dir.join("down"), b"")
+                .with_context(|| format!("disabling runit service {name}"))
+        }
     }
+}
+
+fn runit_service_dir(name: &str) -> Option<std::path::PathBuf> {
+    ["/etc/service", "/var/service"]
+        .into_iter()
+        .map(|root| std::path::Path::new(root).join(name))
+        .find(|path| path.exists())
+}
+
+fn sysv_enabled(name: &str) -> bool {
+    let Ok(runlevels) = std::fs::read_dir("/etc") else {
+        return false;
+    };
+    runlevels.flatten().any(|entry| {
+        let name_matches =
+            entry.file_name().to_string_lossy().starts_with("rc") && entry.path().is_dir();
+        name_matches
+            && std::fs::read_dir(entry.path()).is_ok_and(|entries| {
+                entries.flatten().any(|service| {
+                    service.file_name().to_string_lossy().starts_with('S')
+                        && service.file_name().to_string_lossy().ends_with(name)
+                })
+            })
+    })
+}
+
+fn set_sysv_enabled(name: &str, enabled: bool) -> Result<()> {
+    if command("chkconfig", &[name, if enabled { "on" } else { "off" }])
+        .is_ok_and(|output| output.status.success())
+    {
+        return Ok(());
+    }
+    let action = if enabled { "defaults" } else { "disable" };
+    checked("update-rc.d", &[name, action])
 }
 
 fn checked(program: &str, args: &[&str]) -> Result<()> {

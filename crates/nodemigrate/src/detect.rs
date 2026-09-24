@@ -30,6 +30,7 @@ pub struct ClusterConfig {
     pub cluster_cidr: Option<String>,
     pub cluster_domain: Option<String>,
     pub cluster_dns: Option<String>,
+    pub node_name: Option<String>,
     pub cni: Option<String>,
     pub flannel_backend: Option<String>,
     pub datastore: K3sDatastore,
@@ -159,6 +160,7 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
         cluster_cidr: config.cluster_cidr,
         cluster_domain: config.cluster_domain,
         cluster_dns: config.cluster_dns,
+        node_name: config.node_name,
         cni: if config.disable_flannel {
             None
         } else {
@@ -299,6 +301,7 @@ struct K3sConfig {
     cluster_cidr: Option<String>,
     cluster_domain: Option<String>,
     cluster_dns: Option<String>,
+    node_name: Option<String>,
     datastore_endpoint: Option<String>,
     cluster_init: bool,
     disable_flannel: bool,
@@ -317,6 +320,7 @@ impl K3sConfig {
         self.cluster_cidr = yaml_string(value, "cluster-cidr").or(self.cluster_cidr.take());
         self.cluster_domain = yaml_string(value, "cluster-domain").or(self.cluster_domain.take());
         self.cluster_dns = yaml_string(value, "cluster-dns").or(self.cluster_dns.take());
+        self.node_name = yaml_string(value, "node-name").or(self.node_name.take());
         self.datastore_endpoint =
             yaml_string(value, "datastore-endpoint").or(self.datastore_endpoint.take());
         self.cluster_init |= yaml_bool(value, "cluster-init");
@@ -352,6 +356,8 @@ impl K3sConfig {
                 self.cluster_domain = Some(value.to_string());
             } else if token.starts_with("--cluster-dns") {
                 self.cluster_dns = Some(value.to_string());
+            } else if token.starts_with("--node-name") {
+                self.node_name = Some(value.to_string());
             } else if token.starts_with("--datastore-endpoint") {
                 self.datastore_endpoint = Some(value.to_string());
             } else if token.starts_with("--flannel-backend") {

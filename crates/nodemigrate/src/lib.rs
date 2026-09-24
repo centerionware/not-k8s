@@ -33,10 +33,6 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     let installation =
         installation.context("no supported local Kubernetes installation was detected")?;
     request.validate_source(&installation)?;
-    ensure!(
-        request.from == request::Distribution::K3s && request.to == request::Distribution::Nodestore,
-        "this release implements K3s-to-nodestore migration; the reverse migration path is not available yet"
-    );
     if request.uninstall_after_migrate {
         service::require_supported_uninstall(&installation)?;
     }
@@ -46,22 +42,33 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
         "run nodemigrate as root so it can preserve service state and write the protected export"
     );
     let source_api = transfer::KubeApi::source(&installation)?;
+    let source_nodes = source_api.node_count()?;
+    let joins_existing = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT").is_some();
+    ensure!(
+        source_nodes <= 1 || joins_existing,
+        "the source cluster has {source_nodes} nodes; set NODEBOOTSTRAP_JOIN_ENDPOINT and NODEBOOTSTRAP_PEER_URL to replace this node in a nodestore cluster"
+    );
     let bootstrap = bootstrap_command(&installation)?;
     let target_api = transfer::KubeApi::destination()?;
     if request.plan_only {
         source_api.ready()?;
-        source_api.single_node()?;
-        source_api.validate_no_volumes()?;
-        println!("Migration plan: K3s API objects -> nodestore; source service will be disabled; uninstall-after-migrate={}", request.uninstall_after_migrate);
+        println!("Migration plan: {:?} -> {:?}; source nodes={source_nodes}; destination={}; source service will be disabled; uninstall-after-migrate={}", request.from, request.to, if joins_existing { "existing cluster" } else { "new cluster" }, request.uninstall_after_migrate);
         return Ok(());
     }
 
-    let export = source_api.export(&installation)?;
+    let mut export = source_api.export(&installation)?;
     println!(
         "Protected API object export saved at {}",
         export.dir.display()
     );
     let previous_service = service::disable(&installation)?;
+    if let Err(error) = export.snapshot_host_paths() {
+        if let Err(restore_error) = service::restore(&installation, previous_service) {
+            bail!("snapshotting local persistent volumes failed ({error:#}); restoring the source service also failed ({restore_error:#})");
+        }
+        return Err(error)
+            .context("local persistent volume snapshot failed; original service was restored");
+    }
     if let Err(error) = run_bootstrap(bootstrap) {
         if target_api.ready().is_ok() {
             bail!("nodebootstrap failed ({error:#}) but a destination API is already answering; source K3s remains disabled to avoid a port conflict; recovery export: {}", export.dir.display());
@@ -73,22 +80,31 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
         return Err(error).context("nodestore bootstrap failed; original K3s service was restored");
     }
 
-    wait_for_target(&target_api).context(format!(
+    wait_for_api(&target_api).context(format!(
         "destination did not become ready; source K3s remains disabled and the protected export is at {}",
         export.dir.display()
     ))?;
     if let Err(error) = target_api.import(&export) {
         bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source K3s remains disabled and the protected export is at {}", export.dir.display());
     }
-    wait_for_target(&target_api)?;
+    let node_name = installation
+        .cluster
+        .as_ref()
+        .and_then(|cluster| cluster.node_name.as_deref())
+        .map(str::to_owned)
+        .unwrap_or_else(|| std::env::var("NODELET_NODE_NAME").unwrap_or_else(|_| hostname()));
+    wait_for_node(&target_api, &node_name)?;
     if request.uninstall_after_migrate {
         service::uninstall_k3s()?;
+        export.restore_host_paths()?;
         run_bootstrap(bootstrap_command(&installation)?)
             .context("reconciling nodestore after the K3s uninstall script")?;
-        wait_for_target(&target_api)
-            .context("destination failed readiness after K3s uninstall cleanup")?;
+        wait_for_api(&target_api)
+            .context("destination failed API readiness after K3s uninstall cleanup")?;
+        wait_for_node(&target_api, &node_name)
+            .context("replacement node failed readiness after K3s uninstall cleanup")?;
     }
-    println!("Migration completed and the nodestore API passed readiness and single-node checks. Export retained at {}", export.dir.display());
+    println!("Migration completed and the destination API passed readiness checks. Export retained at {}", export.dir.display());
     Ok(())
 }
 
@@ -114,10 +130,10 @@ fn is_root() -> bool {
     }
 }
 
-fn wait_for_target(target: &transfer::KubeApi) -> Result<()> {
+fn wait_for_api(target: &transfer::KubeApi) -> Result<()> {
     let mut last_error = None;
     for _ in 0..60 {
-        match target.ready().and_then(|()| target.single_node()) {
+        match target.ready() {
             Ok(()) => return Ok(()),
             Err(error) => last_error = Some(error),
         }
@@ -127,39 +143,64 @@ fn wait_for_target(target: &transfer::KubeApi) -> Result<()> {
         .context("waiting for the destination API and node to become ready")
 }
 
+fn wait_for_node(target: &transfer::KubeApi, name: &str) -> Result<()> {
+    let mut last_error = None;
+    for _ in 0..60 {
+        match target.ready().and_then(|()| target.node_ready(name)) {
+            Ok(true) => return Ok(()),
+            Ok(false) => last_error = Some(anyhow::anyhow!("node {name} is not Ready")),
+            Err(error) => last_error = Some(error),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("node {name} did not become Ready")))
+        .context("waiting for the replacement node")
+}
+
+fn hostname() -> String {
+    std::process::Command::new("uname")
+        .arg("-n")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
+}
+
 fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
     let mut args = vec!["--release".to_string()];
+    if let Some(endpoint) = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT") {
+        let endpoint = endpoint.to_string_lossy();
+        ensure!(!endpoint.is_empty(), "NODEBOOTSTRAP_JOIN_ENDPOINT is empty");
+        let peer_url = std::env::var("NODEBOOTSTRAP_PEER_URL")
+            .context("joining an existing nodestore cluster requires NODEBOOTSTRAP_PEER_URL")?;
+        args.push("--control-plane".to_string());
+        args.push(format!("--join={endpoint}"));
+        args.push(format!("--peer-url={peer_url}"));
+    }
     let config = installation
         .cluster
         .as_ref()
         .context("K3s cluster config was not detected")?;
-    ensure!(config.cni.as_deref() == Some("flannel"),
-        "migration currently requires K3s's bundled flannel CNI; external or disabled CNI migration is not supported");
-    if config.cni.is_some() {
-        ensure!(
-            config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan",
-            "K3s flannel backend '{}' cannot be represented by nodebootstrap's current CNI setup",
-            config.flannel_backend.as_deref().unwrap_or_default()
-        );
-    }
-    args.push("--cni=flannel".to_string());
+    // nodebootstrap installs Flannel itself; all other providers remain
+    // externally managed on the host and are restored from the API export.
+    args.push(
+        if config.cni.as_deref() == Some("flannel")
+            && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan"
+        {
+            "--cni=flannel".to_string()
+        } else {
+            "--cni=none".to_string()
+        },
+    );
     if let Some(domain) = &config.cluster_domain {
         args.push(format!("--cluster-domain={domain}"));
     }
+    if let Some(node_name) = &config.node_name {
+        args.push(format!("--node-name={node_name}"));
+    }
     let service_cidrs = split_cidrs(config.service_cidr.as_deref().unwrap_or("10.43.0.0/16"));
-    ensure!(
-        service_cidrs
-            .iter()
-            .filter(|cidr| !cidr.contains(':'))
-            .count()
-            <= 1
-            && service_cidrs
-                .iter()
-                .filter(|cidr| cidr.contains(':'))
-                .count()
-                <= 1,
-        "nodebootstrap supports at most one IPv4 and one IPv6 service CIDR"
-    );
     if let Some(ipv4) = service_cidrs.iter().find(|cidr| !cidr.contains(':')) {
         args.push(format!("--cidr={ipv4}"));
     }
@@ -167,19 +208,6 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
         args.push(format!("--cidr6={ipv6}"));
     }
     let cluster_cidrs = split_cidrs(config.cluster_cidr.as_deref().unwrap_or("10.42.0.0/16"));
-    ensure!(
-        cluster_cidrs
-            .iter()
-            .filter(|cidr| !cidr.contains(':'))
-            .count()
-            <= 1
-            && cluster_cidrs
-                .iter()
-                .filter(|cidr| cidr.contains(':'))
-                .count()
-                <= 1,
-        "nodebootstrap supports at most one IPv4 and one IPv6 pod CIDR"
-    );
     let ipv4_cluster_cidr = cluster_cidrs
         .iter()
         .find(|cidr| !cidr.contains(':'))
@@ -190,17 +218,18 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
         .find(|cidr| cidr.contains(':'))
         .copied()
         .unwrap_or("fd00:42::/56");
-    if let Some(configured_dns) = config.cluster_dns.as_deref() {
-        let expected_dns = service_ip_plus_offset(
-            service_cidrs
-                .iter()
-                .find(|cidr| !cidr.contains(':'))
-                .copied()
-                .unwrap_or("10.43.0.0/16"),
-            10,
-        )?;
-        ensure!(configured_dns == expected_dns,
-            "K3s cluster-dns {configured_dns} differs from nodebootstrap's derived service DNS {expected_dns}");
+    let mut cluster_dns_ipv4 = None;
+    let mut cluster_dns_ipv6 = None;
+    if let Some(dns) = config.cluster_dns.as_deref() {
+        for address in split_cidrs(dns) {
+            match address
+                .parse::<std::net::IpAddr>()
+                .context("K3s cluster-dns must contain IP addresses")?
+            {
+                std::net::IpAddr::V4(address) => cluster_dns_ipv4 = Some(address.to_string()),
+                std::net::IpAddr::V6(address) => cluster_dns_ipv6 = Some(address.to_string()),
+            }
+        }
     }
     let binary = find_executable(&["notk8s", "nodebootstrap"])
         .context("could not find the combined notk8s or standalone nodebootstrap binary on PATH")?;
@@ -212,6 +241,12 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
         .args(args)
         .env("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", ipv4_cluster_cidr)
         .env("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", ipv6_cluster_cidr);
+    if let Some(address) = cluster_dns_ipv4 {
+        command.env("NODEBOOTSTRAP_CLUSTER_DNS_IP", address);
+    }
+    if let Some(address) = cluster_dns_ipv6 {
+        command.env("NODEBOOTSTRAP_CLUSTER_DNS_IP6", address);
+    }
     Ok(command)
 }
 
@@ -221,25 +256,6 @@ fn split_cidrs(value: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|cidr| !cidr.is_empty())
         .collect()
-}
-
-fn service_ip_plus_offset(cidr: &str, offset: u32) -> Result<String> {
-    let (address, prefix) = cidr
-        .split_once('/')
-        .context("service CIDR is missing its prefix")?;
-    let address = address
-        .parse::<std::net::Ipv4Addr>()
-        .context("service CIDR is not IPv4")?;
-    let prefix = prefix
-        .parse::<u8>()
-        .context("service CIDR prefix is invalid")?;
-    ensure!(prefix <= 32, "service CIDR prefix is invalid");
-    let mask = if prefix == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix)
-    };
-    Ok(std::net::Ipv4Addr::from(u32::from(address) | (offset & !mask)).to_string())
 }
 
 fn find_executable(names: &[&str]) -> Option<PathBuf> {
@@ -276,7 +292,6 @@ fn print_help() {
          Usage:\n\
          \x20 nodemigrate inspect\n\
          \x20 nodemigrate to=nodestore from=k3s [uninstall-after-migrate=true]\n\
-         \x20 nodemigrate to=k3s from=nodestore [uninstall-after-migrate=true]\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\

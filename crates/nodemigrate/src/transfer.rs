@@ -3,8 +3,10 @@
 //! storage into nodestore.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -31,7 +33,7 @@ const SKIP_KINDS: &[&str] = &[
     "ReplicaSet",
     "VolumeAttachment",
 ];
-const SYSTEM_NAMESPACES: &[&str] = &["kube-system", "kube-public", "kube-node-lease"];
+const SOURCE_UID_ANNOTATION: &str = "nodemigrate.io/source-uid";
 
 #[derive(Debug, Clone)]
 pub struct KubeApi {
@@ -100,7 +102,7 @@ impl KubeApi {
         })
     }
 
-    pub fn single_node(&self) -> Result<()> {
+    pub fn node_count(&self) -> Result<usize> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
@@ -118,49 +120,46 @@ impl KubeApi {
                 .list(&ListParams::default())
                 .await
                 .context("listing cluster nodes")?;
-            ensure!(
-                nodes.items.len() == 1,
-                "migration requires a single-node source cluster; found {} nodes",
-                nodes.items.len()
-            );
-            Ok(())
+            Ok(nodes.items.len())
         })
     }
 
-    pub fn validate_no_volumes(&self) -> Result<()> {
+    pub fn node_ready(&self, name: &str) -> Result<bool> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
                 .run()
                 .await
-                .context("discovering source Kubernetes APIs")?;
-            for kind in ["PersistentVolume", "PersistentVolumeClaim"] {
-                let Some((resource, capabilities)) = find_resource(&discovery, kind, "v1") else {
-                    continue;
-                };
-                ensure!(
-                    capabilities.supports_operation(verbs::LIST),
-                    "Kubernetes API cannot list {kind}"
-                );
-                let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
-                let objects = api
-                    .list(&ListParams::default())
-                    .await
-                    .with_context(|| format!("checking source {kind} objects"))?;
-                ensure!(
-                    objects.items.is_empty(),
-                    "source cluster has {} {kind} objects; volume data transfer is not implemented",
-                    objects.items.len()
-                );
-            }
-            Ok(())
+                .context("discovering Kubernetes APIs")?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::GET),
+                "Kubernetes API cannot read nodes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            let Some(node) = api
+                .get_opt(name)
+                .await
+                .context("checking migrated node readiness")?
+            else {
+                return Ok(false);
+            };
+            Ok(node
+                .data
+                .pointer("/status/conditions")
+                .and_then(Value::as_array)
+                .is_some_and(|conditions| {
+                    conditions.iter().any(|condition| {
+                        condition.get("type").and_then(Value::as_str) == Some("Ready")
+                            && condition.get("status").and_then(Value::as_str) == Some("True")
+                    })
+                }))
         })
     }
 
     pub fn export(&self, installation: &Installation) -> Result<Export> {
         self.ready()?;
-        self.single_node()?;
-        self.validate_no_volumes()?;
         let (runtime, client) = self.connected()?;
         let objects = runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
@@ -197,18 +196,11 @@ impl KubeApi {
             }
         }
         ensure!(
-            !objects.iter().any(is_persistent_volume_object),
-            "source cluster has PersistentVolume or PersistentVolumeClaim objects; volume data transfer is not implemented, so no service was changed"
-        );
-        ensure!(
             !objects.is_empty(),
             "source API returned no migratable objects"
         );
+        let host_paths = persistent_host_paths(&objects);
         let mut objects: Vec<Value> = objects.into_iter().filter_map(sanitize).collect();
-        ensure!(
-            !objects.iter().any(has_webhook_conversion),
-            "source has a CRD conversion webhook whose service is not transferred; refusing migration"
-        );
         objects.sort_by_key(object_rank);
 
         let dir = export_directory()?;
@@ -228,7 +220,12 @@ impl KubeApi {
             serde_json::to_writer(file, object).context("writing protected Kubernetes object")?;
             paths.push(path);
         }
-        Ok(Export { dir, paths })
+        Ok(Export {
+            dir,
+            paths,
+            host_paths,
+            host_path_backups: Vec::new(),
+        })
     }
 
     pub fn import(&self, export: &Export) -> Result<()> {
@@ -236,6 +233,7 @@ impl KubeApi {
         runtime.block_on(async {
             let mut pending = export.paths.clone();
             let mut last_error = String::new();
+            let mut uid_map = HashMap::new();
             for attempt in 0..5 {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
@@ -243,17 +241,75 @@ impl KubeApi {
                     let value: Value = serde_json::from_slice(
                         &fs::read(&path).with_context(|| format!("reading {}", path.display()))?
                     ).context("decoding protected migration object")?;
-                    let result = apply_object(&client, &discovery, &value).await;
-                    if let Err(error) = result {
-                        last_error = error.to_string();
-                        retry.push(path);
+                    let mut initial = value.clone();
+                    if let Some(metadata) = initial.pointer_mut("/metadata").and_then(Value::as_object_mut) {
+                        metadata.remove("ownerReferences");
+                    }
+                    if let Some(claim_ref) = initial.pointer_mut("/spec/claimRef").and_then(Value::as_object_mut) {
+                        claim_ref.remove("uid");
+                    }
+                    match apply_object(&client, &discovery, &initial).await {
+                        Ok(applied) => {
+                            if let (Some(source_uid), Some(destination_uid)) = (
+                                value.pointer("/metadata/annotations/nodemigrate.io~1source-uid").and_then(Value::as_str),
+                                applied.metadata.uid.as_deref(),
+                            ) {
+                                uid_map.insert(source_uid.to_owned(), destination_uid.to_owned());
+                            }
+                        }
+                        Err(error) => {
+                            last_error = error.to_string();
+                            retry.push(path);
+                        }
                     }
                 }
                 pending = retry;
-                if pending.is_empty() { return Ok(()); }
+                if pending.is_empty() { break; }
                 if attempt < 4 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; }
             }
-            bail!("{} Kubernetes objects could not be restored; export retained at {}. Last error: {}", pending.len(), export.dir.display(), last_error)
+            if !pending.is_empty() {
+                bail!("{} Kubernetes objects could not be restored; export retained at {}. Last error: {}", pending.len(), export.dir.display(), last_error)
+            }
+            let discovery = Discovery::new(client.clone()).run().await.context("discovering destination APIs for reference repair")?;
+            for path in &export.paths {
+                let mut value: Value = serde_json::from_slice(&fs::read(path)
+                    .with_context(|| format!("reading {}", path.display()))?)
+                    .context("decoding protected migration object")?;
+                let mut changed = false;
+                {
+                    let metadata = value.pointer_mut("/metadata").and_then(Value::as_object_mut)
+                        .context("migration object is missing metadata")?;
+                    if let Some(annotations) = metadata.get_mut("annotations").and_then(Value::as_object_mut) {
+                        changed |= annotations.remove(SOURCE_UID_ANNOTATION).is_some();
+                        if annotations.is_empty() { metadata.remove("annotations"); }
+                    }
+                    if let Some(owner_refs) = metadata.get_mut("ownerReferences").and_then(Value::as_array_mut) {
+                        owner_refs.retain_mut(|reference| {
+                            let Some(old_uid) = reference.get("uid").and_then(Value::as_str) else { return false };
+                            let Some(new_uid) = uid_map.get(old_uid) else { return false };
+                            reference["uid"] = Value::String(new_uid.clone());
+                            changed = true;
+                            true
+                        });
+                        if owner_refs.is_empty() { metadata.remove("ownerReferences"); }
+                    }
+                }
+                if let Some(old_uid) = value.pointer("/spec/claimRef/uid").and_then(Value::as_str).map(str::to_owned) {
+                    if let Some(claim_ref) = value.pointer_mut("/spec/claimRef").and_then(Value::as_object_mut) {
+                        if let Some(new_uid) = uid_map.get(&old_uid) {
+                            claim_ref.insert("uid".to_string(), Value::String(new_uid.clone()));
+                        } else {
+                            claim_ref.remove("uid");
+                        }
+                    }
+                    changed = true;
+                }
+                if changed {
+                    apply_object(&client, &discovery, &value).await
+                        .with_context(|| format!("repairing references in {}", path.display()))?;
+                }
+            }
+            Ok(())
         })
     }
 }
@@ -262,6 +318,115 @@ impl KubeApi {
 pub struct Export {
     pub dir: PathBuf,
     paths: Vec<PathBuf>,
+    host_paths: Vec<PathBuf>,
+    host_path_backups: Vec<HostPathBackup>,
+}
+
+#[derive(Debug)]
+struct HostPathBackup {
+    source: PathBuf,
+    backup: PathBuf,
+    directory: bool,
+}
+
+impl Export {
+    pub fn snapshot_host_paths(&mut self) -> Result<()> {
+        self.host_path_backups = backup_host_paths(&self.dir, &self.host_paths)?;
+        Ok(())
+    }
+
+    pub fn restore_host_paths(&self) -> Result<()> {
+        for item in &self.host_path_backups {
+            if item.directory {
+                fs::create_dir_all(&item.source).with_context(|| {
+                    format!(
+                        "recreating persistent volume path {}",
+                        item.source.display()
+                    )
+                })?;
+                run_cp(&item.backup.join("."), &item.source)?;
+            } else {
+                if let Some(parent) = item.source.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!("creating persistent volume parent {}", parent.display())
+                    })?;
+                }
+                run_cp(&item.backup, &item.source)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn persistent_host_paths(objects: &[Value]) -> Vec<PathBuf> {
+    let mut paths = std::collections::BTreeSet::new();
+    for object in objects {
+        if object.get("kind").and_then(Value::as_str) != Some("PersistentVolume") {
+            continue;
+        }
+        for path in [
+            object.pointer("/spec/hostPath/path"),
+            object.pointer("/spec/local/path"),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        {
+            let path = PathBuf::from(path);
+            if path.is_absolute()
+                && !path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
+                && path != Path::new("/")
+            {
+                paths.insert(path);
+            }
+        }
+    }
+    let mut paths: Vec<_> = paths.into_iter().collect();
+    paths.sort_by_key(|path| path.components().count());
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
+fn backup_host_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<HostPathBackup>> {
+    let backup_root = directory.join("host-paths");
+    fs::create_dir(&backup_root).context("creating protected persistent volume backup")?;
+    let mut backups = Vec::new();
+    for (index, source) in paths.iter().enumerate() {
+        if !source.exists() {
+            continue;
+        }
+        let backup = backup_root.join(format!("{index:08}"));
+        run_cp(source, &backup)
+            .with_context(|| format!("backing up persistent volume path {}", source.display()))?;
+        backups.push(HostPathBackup {
+            source: source.clone(),
+            backup,
+            directory: source.is_dir(),
+        });
+    }
+    Ok(backups)
+}
+
+fn run_cp(source: &Path, destination: &Path) -> Result<()> {
+    let output = Command::new("cp")
+        .args(["-a", "--"])
+        .arg(source)
+        .arg(destination)
+        .output()
+        .context("running cp to preserve persistent volume data")?;
+    ensure!(
+        output.status.success(),
+        "cp failed while preserving persistent volume data: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
 }
 
 fn find_resource(
@@ -275,7 +440,11 @@ fn find_resource(
         .find(|(resource, _)| resource.kind == kind && resource.api_version == api_version)
 }
 
-async fn apply_object(client: &Client, discovery: &Discovery, value: &Value) -> Result<()> {
+async fn apply_object(
+    client: &Client,
+    discovery: &Discovery,
+    value: &Value,
+) -> Result<DynamicObject> {
     let type_meta = value
         .get("apiVersion")
         .and_then(Value::as_str)
@@ -302,14 +471,15 @@ async fn apply_object(client: &Client, discovery: &Discovery, value: &Value) -> 
         .name
         .as_deref()
         .context("migration object has no metadata.name")?;
-    api.patch(
-        name,
-        &PatchParams::apply("nodemigrate"),
-        &Patch::Apply(&object),
-    )
-    .await
-    .with_context(|| format!("applying {type_meta}/{kind} {name}"))?;
-    Ok(())
+    let applied = api
+        .patch(
+            name,
+            &PatchParams::apply("nodemigrate"),
+            &Patch::Apply(&object),
+        )
+        .await
+        .with_context(|| format!("applying {type_meta}/{kind} {name}"))?;
+    Ok(applied)
 }
 
 fn skip_kind(kind: &str) -> bool {
@@ -324,39 +494,9 @@ fn skip_object(object: &Value) -> bool {
     if skip_kind(kind) {
         return true;
     }
-    let namespace = object
-        .pointer("/metadata/namespace")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if SYSTEM_NAMESPACES.contains(&namespace) {
-        return true;
-    }
-    if object.get("kind").and_then(Value::as_str) == Some("Namespace")
-        && object
-            .pointer("/metadata/name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| SYSTEM_NAMESPACES.contains(&name))
-    {
-        return true;
-    }
     object.get("kind").and_then(Value::as_str) == Some("Secret")
         && object.pointer("/type").and_then(Value::as_str)
             == Some("kubernetes.io/service-account-token")
-}
-
-fn has_webhook_conversion(object: &Value) -> bool {
-    object.get("kind").and_then(Value::as_str) == Some("CustomResourceDefinition")
-        && object
-            .pointer("/spec/conversion/strategy")
-            .and_then(Value::as_str)
-            == Some("Webhook")
-}
-
-fn is_persistent_volume_object(object: &Value) -> bool {
-    matches!(
-        object.get("kind").and_then(Value::as_str),
-        Some("PersistentVolume" | "PersistentVolumeClaim")
-    )
 }
 
 fn sanitize(mut object: Value) -> Option<Value> {
@@ -365,6 +505,9 @@ fn sanitize(mut object: Value) -> Option<Value> {
     }
     object.as_object_mut()?.remove("status");
     let metadata = object.get_mut("metadata")?.as_object_mut()?;
+    let source_uid = metadata
+        .remove("uid")
+        .and_then(|value| value.as_str().map(str::to_owned));
     for field in [
         "creationTimestamp",
         "deletionTimestamp",
@@ -373,13 +516,18 @@ fn sanitize(mut object: Value) -> Option<Value> {
         "managedFields",
         "resourceVersion",
         "selfLink",
-        "uid",
     ] {
         metadata.remove(field);
     }
-    // Old UIDs do not exist in the new cluster. Retaining owner references
-    // would make the garbage collector delete imported resources.
-    metadata.remove("ownerReferences");
+    if let Some(source_uid) = source_uid {
+        metadata
+            .entry("annotations")
+            .or_insert_with(|| serde_json::json!({}));
+        metadata
+            .get_mut("annotations")?
+            .as_object_mut()?
+            .insert(SOURCE_UID_ANNOTATION.to_string(), Value::String(source_uid));
+    }
     Some(object)
 }
 

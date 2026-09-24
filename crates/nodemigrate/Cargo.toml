@@ -14,6 +14,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 libc = "0.2"
 kube = { workspace = true }
+k8s-openapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
