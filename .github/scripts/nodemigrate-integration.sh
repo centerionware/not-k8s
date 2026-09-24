@@ -105,6 +105,8 @@ install_source() {
             -o /tmp/crictl.tgz
         tar -xzf /tmp/crictl.tgz -C /usr/local/bin crictl
         chmod 0755 /usr/local/bin/crictl
+        echo "cri-tools version=$cri_tools_version architecture=$cri_tools_arch"
+        crictl --version
         apt-mark hold kubelet kubeadm kubectl
         swapoff -a
         sed -i.bak '/\sswap\s/s/^/#/' /etc/fstab
