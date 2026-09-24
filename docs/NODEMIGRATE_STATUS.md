@@ -10,7 +10,7 @@ separate living documents below.
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports now carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete; the export change awaits targeted CI. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused CI is pending; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
@@ -87,6 +87,13 @@ separate living documents below.
   ([run 36025823559](https://github.com/centerionware/not-k8s/actions/runs/36025823559));
   nodebootstrap was unchanged after that SHA. No real K3s uninstall or Cilium
   runtime migration was run.
+- Protected export format v2 records every source Node's scheduling metadata
+  for later offline control-plane and worker joins after source API quorum is
+  lost. Export serialization and load passed at `ac5a05b4` ([run
+  36028447623](https://github.com/centerionware/not-k8s/actions/runs/36028447623));
+  worker join validation passed at `08fb393c` ([run
+  36028759134](https://github.com/centerionware/not-k8s/actions/runs/36028759134)).
+  Runtime quorum-loss and volume recovery remain unverified.
 
 ## Next actions
 

@@ -108,14 +108,11 @@ checks.
 
 ## Verification log
 
-The last focused nodemigrate check is at
-`caed49582952a0743d87a06bbb52fceb737c059e`; its packaging and crate-detection
-jobs passed, but the crate test job failed and the GitHub log endpoint was
-unavailable. The later shell/snapshot validation passed at
-`a8ec8a744de3c442d1dd0d303f696cae7d05457c`. The current local branch adds a
-release-pointer safeguard and broadens the persistent-volume goal; their
-targeted release-policy check passed locally. The manual migration runtime
-workflow remains undispatched; no local Cargo test/build was run.
+The latest completed targeted nodemigrate check is `08fb393c` (run
+`36028759134`): crate tests, packaging, and crate detection passed. Together
+with `ac5a05b4` (run `36028447623`), it verifies protected-export node state
+serialization/load and allows source workers to use the offline join path.
+The manual migration runtime workflow remains undispatched; no local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -207,6 +204,8 @@ workflow remains undispatched; no local Cargo test/build was run.
 | 2026-09-24 | `60711b0052b4c8417d44926757a4bd7a7a1d4386` | Targeted nodemigrate checks | Compiled, but two K3s CNI fixtures failed because detection no longer used `/etc/cni/net.d`; the established fallback was restored. | [Run 36026059417](https://github.com/centerionware/not-k8s/actions/runs/36026059417) |
 | 2026-09-24 | `c2df44bfd41f7e34f5eb92ce52a2196eb36849a3` | Targeted nodemigrate checks | Passed crate tests, crate detection, and packaging checks, including K3s Cilium path detection and CNI directory recovery after data-dir removal. | [Run 36026420825](https://github.com/centerionware/not-k8s/actions/runs/36026420825) |
 | 2026-09-24 | `c2df44bfd41f7e34f5eb92ce52a2196eb36849a3` | PR validation and release policy | Passed shell/PR validation, commit convention, and the no-latest release policy check. General build and migration runtime jobs were skipped as requested. | [Validation run 36026420780](https://github.com/centerionware/not-k8s/actions/runs/36026420780), [commit run 36026417043](https://github.com/centerionware/not-k8s/actions/runs/36026417043), [policy run 36026420914](https://github.com/centerionware/not-k8s/actions/runs/36026420914) |
+| 2026-09-24 | `ac5a05b4` | Targeted nodemigrate checks | Passed crate tests, packaging, and crate detection; verifies v2 export node-state serialization and load. The subsequent worker offline-join validation is pending on `08fb393c`. | [Run 36028447623](https://github.com/centerionware/not-k8s/actions/runs/36028447623) |
+| 2026-09-24 | `08fb393c` | Targeted nodemigrate checks | Passed crate tests, packaging, and crate detection; includes offline worker join validation. Runtime quorum-loss and per-node volume recovery remain unverified. | [Run 36028759134](https://github.com/centerionware/not-k8s/actions/runs/36028759134) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
