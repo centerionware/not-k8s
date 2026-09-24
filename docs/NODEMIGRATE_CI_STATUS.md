@@ -104,12 +104,14 @@ checks.
 
 ## Verification log
 
-The current code revision `2a9b26c3061e86c29d9f601b3bc7a461a8e718dc`
-preserves node scheduling state and requires explicit confirmation for a
-reverse control-plane return whose retained API cannot be checked before
-activation. Targeted crate tests, shell validation, and commit convention
-passed. The manual migration runtime workflow remains undispatched; no local
-Cargo test/build was run.
+The last focused nodemigrate check is at
+`caed49582952a0743d87a06bbb52fceb737c059e`; its packaging and crate-detection
+jobs passed, but the crate test job failed and the GitHub log endpoint was
+unavailable. The later shell/snapshot validation passed at
+`a8ec8a744de3c442d1dd0d303f696cae7d05457c`. The current local branch adds a
+release-pointer safeguard and broadens the persistent-volume goal; their
+targeted release-policy check passed locally. The manual migration runtime
+workflow remains undispatched; no local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |

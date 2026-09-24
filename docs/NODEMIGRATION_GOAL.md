@@ -54,9 +54,14 @@ for a nodemigrate-only release.
   UIDs, controller-owned transient objects, and API compatibility. Live
   NodeMetrics and PodMetrics samples are collected again by their metrics
   provider and are not persistent migration state.
-- Preserve data for supported local/hostPath volumes and leave network or CSI
-  payloads with their storage provider. Clearly report data that cannot be
-  transferred by the utility.
+- Preserve persistent volume claims, bindings, topology, and payload access
+  across migration for the provisioners configured in the source cluster. Copy
+  node-local and hostPath payloads with their owning node and PV affinity;
+  preserve provider configuration, credentials, and attachment behavior for
+  CSI and network storage, using the provider's migration mechanism when one
+  is required. Do not exclude a volume class by assumption. If a concrete
+  provider prerequisite prevents a safe move, report the exact prerequisite
+  and recovery state instead of silently dropping or rebinding the volume.
 - Keep the source installation available but stopped/disabled by default.
   Only uninstall it when the operator explicitly requests that action.
 - Protect exports and secrets, retain the export for recovery, restore the
