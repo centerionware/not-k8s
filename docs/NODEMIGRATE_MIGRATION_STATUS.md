@@ -39,7 +39,7 @@ distribution:
    Traefik, an nginx workload, a static hostPath PV/PVC, and a CSI-backed
    dynamic PVC. A pod writes unique data to both volumes.
 3. Verify the source node, add-ons, certificate, ingress route, bound claims,
-   and volume data.
+   volume data, and Cilium DaemonSet/CRD state.
 4. Migrate source → nodestore and repeat the same checks against the
    nodebootstrap kubeconfig.
 5. Migrate nodestore → the retained source distribution and repeat the checks

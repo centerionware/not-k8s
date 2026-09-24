@@ -318,6 +318,8 @@ verify_stage() {
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
     kubectl wait --for=condition=Ready node --all --timeout=5m
+    kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
+    kubectl get crd ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m

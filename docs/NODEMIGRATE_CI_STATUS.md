@@ -18,7 +18,8 @@ this objective.
 - The script installs the selected upstream distribution first, uses Cilium
   with Flannel disabled in the K3s lane, installs the hostPath CSI test
   driver, cert-manager, Traefik, nginx, static and CSI-backed claims, then
-  checks the source → nodestore → retained-source round trip.
+  checks the source → nodestore → retained-source round trip. Every checkpoint
+  asserts the Cilium DaemonSet rollout and CiliumEndpoint CRD are present.
 - Runtime coverage for joining an existing cluster and replacing a member is
   a separate required scenario; the current script does not establish that
   case as verified.
@@ -58,6 +59,7 @@ this objective.
 | — | — | K3s + Cilium round trip | Not run; manual dispatch pending authorization | — |
 | — | — | Upstream Kubernetes + Cilium round trip | Not run; manual dispatch pending authorization | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
+| — | — | Per-stage Cilium health assertions | Added to the script; static syntax check and runtime lanes pending | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.
