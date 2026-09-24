@@ -5,8 +5,8 @@ STOPSIGNAL SIGRTMIN+3
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bpftool \
         clang \
+        containernetworking-plugins \
         conntrack \
         containerd \
         ethtool \
@@ -14,11 +14,15 @@ RUN apt-get update \
         iptables \
         iputils-ping \
         llvm \
+        linux-tools-common \
         systemd \
         systemd-sysv \
         util-linux \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/cni/bin \
+    && cp -a /usr/lib/cni/. /opt/cni/bin/ \
+    && command -v bpftool \
     && systemctl enable containerd
 
 COPY systemd-entrypoint.sh /usr/local/sbin/nodemigrate-systemd-entrypoint

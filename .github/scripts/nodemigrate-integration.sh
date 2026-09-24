@@ -74,8 +74,14 @@ need_root() {
 install_tools() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq apt-transport-https ca-certificates conntrack curl ebtables ethtool \
-        gpg jq socat
+    apt-get install -y -qq apt-transport-https ca-certificates conntrack curl \
+        containernetworking-plugins ebtables ethtool gpg jq socat
+    local cni_plugin_dir
+    cni_plugin_dir="$(dpkg -L containernetworking-plugins | sed -n 's#\(/usr/lib/cni\)/bridge$#\1#p' | head -n 1)"
+    [[ -n "$cni_plugin_dir" && -x "$cni_plugin_dir/bridge" && -x "$cni_plugin_dir/loopback" ]] \
+        || { echo "containernetworking-plugins did not install bridge and loopback binaries" >&2; return 1; }
+    install -d /opt/cni/bin
+    cp -a "$cni_plugin_dir"/. /opt/cni/bin/
     mkdir -p /etc/apt/keyrings
     local stable minor
     stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
@@ -157,10 +163,11 @@ install_cilium() {
     local version="${CILIUM_VERSION:-1.20.2}"
     local cni_conf_path=/etc/cni/net.d
     local cni_bin_path=/opt/cni/bin
-    if [[ "$SOURCE_DIST" == k3s ]]; then
-        cni_conf_path=/var/lib/rancher/k3s/agent/etc/cni/net.d
-        cni_bin_path=/var/lib/rancher/k3s/data/current/bin
+    local api_host="${NODEMIGRATE_CILIUM_API_HOST:-}"
+    if [[ -z "$api_host" ]]; then
+        api_host="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
     fi
+    [[ -n "$api_host" ]] || { echo "could not determine the source API node IP for Cilium" >&2; return 1; }
     helm repo add cilium https://helm.cilium.io/ --force-update
     helm repo update cilium
     helm upgrade --install cilium cilium/cilium \
@@ -170,7 +177,7 @@ install_cilium() {
         --set cni.binPath="$cni_bin_path" \
         --set kubeProxyReplacement=false \
         --set operator.replicas=1 \
-        --set k8sServiceHost="${NODEMIGRATE_CILIUM_API_HOST:-127.0.0.1}" \
+        --set k8sServiceHost="$api_host" \
         --set k8sServicePort=6443 \
         --wait --timeout 10m
     kubectl rollout status daemonset/cilium -n kube-system --timeout=10m
@@ -181,6 +188,8 @@ install_cilium() {
 install_hostpath_driver() {
     git -C "$ROOT" fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
     git -C "$ROOT" show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodemigrate-hostpath-setup.sh
+    mkdir -p "${KUBELET_DATA_DIR:-/var/lib/nodelet}/plugins" \
+        "${KUBELET_DATA_DIR:-/var/lib/nodelet}/plugins_registry"
     timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh
     kubectl get storageclass csi-hostpath-sc
 }

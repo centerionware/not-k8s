@@ -59,9 +59,10 @@ distribution:
    integration script does not yet implement this lane.
 
 The workflow is manual. The user authorized the dedicated migration runtime
-workflow while excluding the standard e2e and build gates. Its first attempt
-against the `v0.8.0` runtime failed during CNI/Cilium setup, before nodemigrate
-was invoked. See the [CI status](NODEMIGRATE_CI_STATUS.md) for run details.
+workflow while excluding the standard e2e and build gates. The latest attempt
+against the `v0.8.0` runtime failed during source CNI/Cilium/CSI setup, before
+nodemigrate was invoked. See the [CI status](NODEMIGRATE_CI_STATUS.md) for run
+details.
 
 ## Merge-gate status
 
@@ -104,6 +105,8 @@ establish no differences across the full migrated state.
 | 2026-09-24 | `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` | PR shell validation and commit convention | Passed | [Shell run 35962922860](https://github.com/centerionware/not-k8s/actions/runs/35962922860), [commit run 35962919894](https://github.com/centerionware/not-k8s/actions/runs/35962919894) |
 | 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | K3s+Cilium integration round trip | Failed before migration: Cilium rollout passed, then the hostPath CSI pod could not start because `/opt/cni/bin/bridge` was missing. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 | 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Upstream Kubernetes+Cilium integration round trip | Failed before migration: Cilium config init and operator crashed, then rollout timed out. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
+| 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | K3s+Cilium integration round trip | Failed before migration: runtime selected stale Podman bridge CNI config without the bridge and loopback plugins; the CSI hostPath plugin directory was absent. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
+| 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | Upstream Kubernetes+Cilium integration round trip | Failed before migration: Cilium's API endpoint `127.0.0.1` did not match kubeadm's API certificate SANs. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
 
 Update this table after each implementation or verification change. Record the
 exact SHA, workflow run, source distribution, CNI, and whether each stage
