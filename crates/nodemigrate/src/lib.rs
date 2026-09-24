@@ -66,7 +66,8 @@ fn migrate_to_nodestore(
             .ok()
             .map(|id| {
                 ensure!(!id.is_empty(), "NODEBOOTSTRAP_MEMBER_ID is empty");
-                id.parse::<u64>().context("NODEBOOTSTRAP_MEMBER_ID must be the old nodestore member id")
+                id.parse::<u64>()
+                    .context("NODEBOOTSTRAP_MEMBER_ID must be the old nodestore member id")
             })
             .transpose()?
     } else {
@@ -81,7 +82,9 @@ fn migrate_to_nodestore(
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        let replacement = replacement_member_id.map(|id| format!("; replace existing member {id} after the new node is Ready")).unwrap_or_default();
+        let replacement = replacement_member_id
+            .map(|id| format!("; replace existing member {id} after the new node is Ready"))
+            .unwrap_or_default();
         println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if joins_existing { "install node agent on replacement node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
     }
