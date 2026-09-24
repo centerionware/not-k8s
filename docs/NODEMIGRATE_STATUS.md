@@ -10,11 +10,11 @@ separate living documents below.
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | In progress; both control-plane directions now require explicit stale-Node replacement and clear it before readiness checks when the API is ready; staged reverse quorum orchestration and the five-node coordinator remain incomplete | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Reverse cutover retains pre-activation nodestore metadata when the target API was unavailable. Staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Nodemigrate merge gates | Existing single-host lanes now compare private canonical initial/returned state snapshots; the 3-control-plane + 2-worker isolated lane remains unimplemented, and no runtime gate has been run | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Single-host fixture now fingerprints every listable API object handled by the exporter and checks custom Node/ConfigMap metadata; runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
@@ -62,10 +62,18 @@ separate living documents below.
 - No migration integration lane has been dispatched. The user directed that
   general e2e and build gates not run; the dedicated runtime workflow also
   remains undispatched pending explicit authorization.
+- The current worktree adds protected export UID metadata, Node replacement
+  state preservation and UID preconditions, and full migratable-object
+  fingerprints in the integration fixture. Focused snapshot-filter checks,
+  shell syntax, Rust formatting, and whitespace checks pass locally. Targeted
+  nodemigrate CI is pending because GitHub connectivity failed before the
+  branch update; no Cargo build or test was run locally.
 
 ## Next actions
 
 1. Keep both real-cluster lanes and the existing-cluster join/replacement case
    marked unverified until their authorized runtime checks pass.
-2. Track release readiness and publication separately; do not bump the shared
+2. Build the isolated five-node upstream lane and its staged control-plane
+   coordinator; verify the container/QEMU model before claiming the topology.
+3. Track release readiness and publication separately; do not bump the shared
    version for nodemigrate-only publication.

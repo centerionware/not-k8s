@@ -12,11 +12,12 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use kube::{
-    api::{Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams},
+    api::{Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, Preconditions},
     config::Kubeconfig,
     discovery::{verbs, ApiResource, Discovery},
     Client,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::detect::{Installation, K3sDatastore};
@@ -29,12 +30,12 @@ const SKIP_KINDS: &[&str] = &[
     "Event",
     "Lease",
     "Node",
+    "NodeMetrics",
     "Pod",
+    "PodMetrics",
     "ReplicaSet",
     "VolumeAttachment",
 ];
-const SOURCE_UID_ANNOTATION: &str = "nodemigrate.io/source-uid";
-
 #[derive(Debug, Clone)]
 pub struct KubeApi {
     kubeconfig: PathBuf,
@@ -42,16 +43,26 @@ pub struct KubeApi {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct NodeSchedulingState {
+    pub uid: Option<String>,
     pub labels: HashMap<String, String>,
+    pub annotations: HashMap<String, String>,
     pub taints: Vec<Value>,
     pub unschedulable: Option<bool>,
 }
 
 impl NodeSchedulingState {
     fn from_node(node: &DynamicObject) -> Self {
+        let uid = node.metadata.uid.clone();
         let labels = node
             .metadata
             .labels
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let annotations = node
+            .metadata
+            .annotations
             .clone()
             .unwrap_or_default()
             .into_iter()
@@ -67,11 +78,27 @@ impl NodeSchedulingState {
             .pointer("/spec/unschedulable")
             .and_then(Value::as_bool);
         Self {
+            uid,
             labels,
+            annotations,
             taints,
             unschedulable,
         }
     }
+}
+
+fn node_scheduling_patch(state: &NodeSchedulingState) -> Value {
+    let mut patch = serde_json::json!({
+        "metadata": {
+            "labels": &state.labels,
+            "annotations": &state.annotations
+        },
+        "spec": {"taints": &state.taints}
+    });
+    if let Some(unschedulable) = state.unschedulable {
+        patch["spec"]["unschedulable"] = Value::Bool(unschedulable);
+    }
+    patch
 }
 
 impl KubeApi {
@@ -270,13 +297,7 @@ impl KubeApi {
                 "Kubernetes API cannot restore node scheduling state"
             );
             let api: Api<DynamicObject> = Api::all_with(client, &resource);
-            let mut patch = serde_json::json!({
-                "metadata": {"labels": &state.labels},
-                "spec": {"taints": &state.taints}
-            });
-            if let Some(unschedulable) = state.unschedulable {
-                patch["spec"]["unschedulable"] = Value::Bool(unschedulable);
-            }
+            let patch = node_scheduling_patch(state);
             api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
                 .with_context(|| format!("restoring scheduling state for node {name}"))?;
@@ -284,7 +305,7 @@ impl KubeApi {
         })
     }
 
-    pub fn delete_node(&self, name: &str) -> Result<()> {
+    pub fn delete_node(&self, name: &str, expected_uid: &str) -> Result<()> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
@@ -298,9 +319,18 @@ impl KubeApi {
                 "Kubernetes API cannot delete nodes"
             );
             let api: Api<DynamicObject> = Api::all_with(client, &resource);
-            api.delete(name, &DeleteParams::default())
-                .await
-                .with_context(|| format!("removing stale destination node {name}"))?;
+            api.delete(
+                name,
+                &DeleteParams {
+                    preconditions: Some(Preconditions {
+                        uid: Some(expected_uid.to_owned()),
+                        resource_version: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .with_context(|| format!("removing stale destination node {name}"))?;
             Ok(())
         })
     }
@@ -438,14 +468,14 @@ impl KubeApi {
             "source API returned no migratable objects"
         );
         let host_paths = persistent_host_paths(&objects, labels.as_ref());
-        let mut objects: Vec<Value> = objects.into_iter().filter_map(sanitize).collect();
-        objects.sort_by_key(object_rank);
+        let mut objects: Vec<SanitizedObject> = objects.into_iter().filter_map(sanitize).collect();
+        objects.sort_by_key(|object| object_rank(&object.value));
 
         let dir = export_directory()?;
-        let mut paths = Vec::with_capacity(objects.len());
+        let mut exported_objects = Vec::with_capacity(objects.len());
         for (index, object) in objects.iter().enumerate() {
             let path = dir.join(format!("{index:08}.json"));
-            let file = fs::OpenOptions::new()
+            let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
@@ -455,12 +485,20 @@ impl KubeApi {
                 use std::os::unix::fs::PermissionsExt;
                 file.set_permissions(fs::Permissions::from_mode(0o600))?;
             }
-            serde_json::to_writer(file, object).context("writing protected Kubernetes object")?;
-            paths.push(path);
+            serde_json::to_writer(&mut file, &object.value)
+                .context("writing protected Kubernetes object")?;
+            file.sync_all().with_context(|| {
+                format!("syncing protected Kubernetes object {}", path.display())
+            })?;
+            exported_objects.push(ExportedObject {
+                path,
+                source_uid: object.source_uid.clone(),
+            });
         }
+        write_export_manifest(&dir, &exported_objects)?;
         Ok(Export {
             dir,
-            paths,
+            objects: exported_objects,
             host_paths,
             host_path_backups: Vec::new(),
         })
@@ -469,15 +507,16 @@ impl KubeApi {
     pub fn import(&self, export: &Export) -> Result<()> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let mut pending = export.paths.clone();
+            let mut pending = export.objects.clone();
             let mut last_error = String::new();
             let mut uid_map = HashMap::new();
             for attempt in 0..5 {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
-                for path in pending {
+                for object in pending {
                     let value: Value = serde_json::from_slice(
-                        &fs::read(&path).with_context(|| format!("reading {}", path.display()))?
+                        &fs::read(&object.path)
+                            .with_context(|| format!("reading {}", object.path.display()))?
                     ).context("decoding protected migration object")?;
                     let mut initial = value.clone();
                     if let Some(metadata) = initial.pointer_mut("/metadata").and_then(Value::as_object_mut) {
@@ -489,15 +528,15 @@ impl KubeApi {
                     match apply_object(&client, &discovery, &initial).await {
                         Ok(applied) => {
                             if let (Some(source_uid), Some(destination_uid)) = (
-                                value.pointer("/metadata/annotations/nodemigrate.io~1source-uid").and_then(Value::as_str),
-                                applied.metadata.uid.as_deref(),
+                                object.source_uid,
+                                applied.metadata.uid,
                             ) {
-                                uid_map.insert(source_uid.to_owned(), destination_uid.to_owned());
+                                uid_map.insert(source_uid, destination_uid);
                             }
                         }
                         Err(error) => {
                             last_error = error.to_string();
-                            retry.push(path);
+                            retry.push(object);
                         }
                     }
                 }
@@ -509,18 +548,14 @@ impl KubeApi {
                 bail!("{} Kubernetes objects could not be restored; export retained at {}. Last error: {}", pending.len(), export.dir.display(), last_error)
             }
             let discovery = Discovery::new(client.clone()).run().await.context("discovering destination APIs for reference repair")?;
-            for path in &export.paths {
-                let mut value: Value = serde_json::from_slice(&fs::read(path)
-                    .with_context(|| format!("reading {}", path.display()))?)
+            for object in &export.objects {
+                let mut value: Value = serde_json::from_slice(&fs::read(&object.path)
+                    .with_context(|| format!("reading {}", object.path.display()))?)
                     .context("decoding protected migration object")?;
                 let mut changed = false;
                 {
                     let metadata = value.pointer_mut("/metadata").and_then(Value::as_object_mut)
                         .context("migration object is missing metadata")?;
-                    if let Some(annotations) = metadata.get_mut("annotations").and_then(Value::as_object_mut) {
-                        changed |= annotations.remove(SOURCE_UID_ANNOTATION).is_some();
-                        if annotations.is_empty() { metadata.remove("annotations"); }
-                    }
                     if let Some(owner_refs) = metadata.get_mut("ownerReferences").and_then(Value::as_array_mut) {
                         owner_refs.retain_mut(|reference| {
                             let Some(old_uid) = reference.get("uid").and_then(Value::as_str) else { return false };
@@ -544,7 +579,7 @@ impl KubeApi {
                 }
                 if changed {
                     apply_object(&client, &discovery, &value).await
-                        .with_context(|| format!("repairing references in {}", path.display()))?;
+                        .with_context(|| format!("repairing references in {}", object.path.display()))?;
                 }
             }
             Ok(())
@@ -555,9 +590,37 @@ impl KubeApi {
 #[derive(Debug)]
 pub struct Export {
     pub dir: PathBuf,
-    paths: Vec<PathBuf>,
+    objects: Vec<ExportedObject>,
     host_paths: Vec<PathBuf>,
     host_path_backups: Vec<HostPathBackup>,
+}
+
+#[derive(Debug, Clone)]
+struct ExportedObject {
+    path: PathBuf,
+    source_uid: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+struct ExportManifest {
+    format_version: u32,
+    objects: Vec<ExportManifestObject>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+struct ExportManifestObject {
+    file: String,
+    source_uid: Option<String>,
+}
+
+#[derive(Debug)]
+struct SanitizedObject {
+    value: Value,
+    source_uid: Option<String>,
 }
 
 #[derive(Debug)]
@@ -574,6 +637,132 @@ struct HostPathBackup {
 }
 
 impl Export {
+    pub fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+
+    pub fn load(directory: impl Into<PathBuf>) -> Result<Self> {
+        let directory = directory.into();
+        let directory_metadata = fs::symlink_metadata(&directory).with_context(|| {
+            format!("reading migration export directory {}", directory.display())
+        })?;
+        ensure!(
+            directory_metadata.is_dir() && !directory_metadata.file_type().is_symlink(),
+            "migration export path {} must be a real directory",
+            directory.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(
+                directory_metadata.permissions().mode() & 0o077 == 0,
+                "migration export directory {} is accessible to group or other users",
+                directory.display()
+            );
+        }
+
+        let manifest_path = directory.join("manifest.json");
+        let manifest_metadata = fs::symlink_metadata(&manifest_path)
+            .with_context(|| format!("reading migration manifest {}", manifest_path.display()))?;
+        ensure!(
+            manifest_metadata.is_file() && !manifest_metadata.file_type().is_symlink(),
+            "migration manifest {} must be a regular file",
+            manifest_path.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(
+                manifest_metadata.permissions().mode() & 0o077 == 0,
+                "migration manifest {} is accessible to group or other users",
+                manifest_path.display()
+            );
+        }
+        let manifest: ExportManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).with_context(|| {
+                format!("reading migration manifest {}", manifest_path.display())
+            })?)
+            .with_context(|| format!("decoding migration manifest {}", manifest_path.display()))?;
+        ensure!(
+            manifest.format_version == 1,
+            "unsupported migration export format version {}",
+            manifest.format_version
+        );
+        ensure!(
+            !manifest.objects.is_empty(),
+            "migration export manifest {} contains no objects",
+            manifest_path.display()
+        );
+
+        let mut filenames = std::collections::HashSet::new();
+        let mut source_uids = std::collections::HashSet::new();
+        let mut objects = Vec::with_capacity(manifest.objects.len());
+        for entry in manifest.objects {
+            ensure!(
+                is_export_object_filename(&entry.file),
+                "invalid migration object filename '{}' in {}",
+                entry.file,
+                manifest_path.display()
+            );
+            ensure!(
+                filenames.insert(entry.file.clone()),
+                "duplicate migration object filename '{}' in {}",
+                entry.file,
+                manifest_path.display()
+            );
+            if let Some(uid) = &entry.source_uid {
+                ensure!(
+                    source_uids.insert(uid.clone()),
+                    "duplicate source UID in migration manifest {}",
+                    manifest_path.display()
+                );
+            }
+            let path = directory.join(&entry.file);
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("reading migration object {}", path.display()))?;
+            ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "migration object {} must be a regular file",
+                path.display()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                ensure!(
+                    metadata.permissions().mode() & 0o077 == 0,
+                    "migration object {} is accessible to group or other users",
+                    path.display()
+                );
+            }
+            let value: Value = serde_json::from_slice(
+                &fs::read(&path)
+                    .with_context(|| format!("reading migration object {}", path.display()))?,
+            )
+            .with_context(|| format!("decoding migration object {}", path.display()))?;
+            ensure!(
+                value.get("apiVersion").and_then(Value::as_str).is_some()
+                    && value.get("kind").and_then(Value::as_str).is_some()
+                    && value
+                        .pointer("/metadata/name")
+                        .and_then(Value::as_str)
+                        .is_some(),
+                "migration object {} is missing apiVersion, kind, or metadata.name",
+                path.display()
+            );
+            objects.push(ExportedObject {
+                path,
+                source_uid: entry.source_uid,
+            });
+        }
+
+        Ok(Self {
+            dir: directory,
+            objects,
+            host_paths: Vec::new(),
+            host_path_backups: Vec::new(),
+        })
+    }
+
     pub fn snapshot_host_paths(&mut self) -> Result<()> {
         self.host_path_backups = backup_host_paths(&self.dir, &self.host_paths)?;
         Ok(())
@@ -880,7 +1069,7 @@ fn skip_object(object: &Value) -> bool {
             == Some("kubernetes.io/service-account-token")
 }
 
-fn sanitize(mut object: Value) -> Option<Value> {
+fn sanitize(mut object: Value) -> Option<SanitizedObject> {
     if skip_object(&object) {
         return None;
     }
@@ -900,16 +1089,58 @@ fn sanitize(mut object: Value) -> Option<Value> {
     ] {
         metadata.remove(field);
     }
-    if let Some(source_uid) = source_uid {
-        metadata
-            .entry("annotations")
-            .or_insert_with(|| serde_json::json!({}));
-        metadata
-            .get_mut("annotations")?
-            .as_object_mut()?
-            .insert(SOURCE_UID_ANNOTATION.to_string(), Value::String(source_uid));
+    Some(SanitizedObject {
+        value: object,
+        source_uid,
+    })
+}
+
+fn write_export_manifest(directory: &Path, objects: &[ExportedObject]) -> Result<()> {
+    let entries = objects
+        .iter()
+        .map(|object| {
+            let file = object
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("export object path has no UTF-8 filename")?;
+            Ok(ExportManifestObject {
+                file: file.to_owned(),
+                source_uid: object.source_uid.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let manifest = ExportManifest {
+        format_version: 1,
+        objects: entries,
+    };
+    let path = directory.join("manifest.json");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("creating protected migration manifest {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    Some(object)
+    serde_json::to_writer_pretty(&file, &manifest)
+        .with_context(|| format!("writing protected migration manifest {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing protected migration manifest {}", path.display()))?;
+    fs::File::open(directory)
+        .with_context(|| format!("opening migration export directory {}", directory.display()))?
+        .sync_all()
+        .with_context(|| format!("syncing migration export directory {}", directory.display()))?;
+    Ok(())
+}
+
+fn is_export_object_filename(filename: &str) -> bool {
+    let bytes = filename.as_bytes();
+    bytes.len() == 13
+        && bytes[..8].iter().all(|byte| byte.is_ascii_digit())
+        && &filename[8..] == ".json"
 }
 
 fn object_rank(object: &Value) -> u8 {
@@ -963,19 +1194,130 @@ fn export_directory() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{persistent_host_paths, NodeSchedulingState};
+    use super::{
+        node_scheduling_patch, persistent_host_paths, sanitize, skip_object, write_export_manifest,
+        Export, ExportedObject, NodeSchedulingState,
+    };
     use std::collections::HashMap;
 
     #[test]
-    fn replacement_node_state_keeps_labels_taints_and_unschedulable() {
+    fn migration_export_keeps_reserved_user_annotation_unchanged() {
+        let sanitized = sanitize(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "settings",
+                "namespace": "apps",
+                "uid": "source-uid",
+                "resourceVersion": "17",
+                "annotations": {
+                    "nodemigrate.io/source-uid": "user-value"
+                }
+            },
+            "data": {"setting": "preserved"},
+            "status": {"ignored": true}
+        }))
+        .expect("ConfigMap should be exported");
+
+        assert_eq!(sanitized.source_uid.as_deref(), Some("source-uid"));
+        assert_eq!(
+            sanitized.value["metadata"]["annotations"]["nodemigrate.io/source-uid"],
+            "user-value"
+        );
+        assert!(sanitized.value["metadata"].get("uid").is_none());
+        assert!(sanitized.value.get("status").is_none());
+    }
+
+    #[test]
+    fn migration_export_skips_ephemeral_metrics_api_objects() {
+        assert!(skip_object(&serde_json::json!({
+            "apiVersion": "metrics.k8s.io/v1beta1",
+            "kind": "NodeMetrics",
+            "metadata": {"name": "node-a"}
+        })));
+        assert!(skip_object(&serde_json::json!({
+            "apiVersion": "metrics.k8s.io/v1beta1",
+            "kind": "PodMetrics",
+            "metadata": {"name": "pod-a", "namespace": "apps"}
+        })));
+    }
+
+    #[test]
+    fn recovery_manifest_keeps_uid_mapping_outside_api_objects() {
+        let directory = tempfile::tempdir().unwrap();
+        let object_path = directory.path().join("00000000.json");
+        std::fs::write(
+            &object_path,
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "settings", "namespace": "apps"},
+                "data": {"marker": "preserved"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&object_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let objects = [ExportedObject {
+            path: object_path,
+            source_uid: Some("source-uid".to_string()),
+        }];
+
+        write_export_manifest(directory.path(), &objects).unwrap();
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.path().join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["formatVersion"], 1);
+        assert_eq!(manifest["objects"][0]["file"], "00000000.json");
+        assert_eq!(manifest["objects"][0]["sourceUid"], "source-uid");
+        let export = Export::load(directory.path()).unwrap();
+        assert_eq!(export.objects.len(), 1);
+        assert_eq!(export.objects[0].source_uid.as_deref(), Some("source-uid"));
+    }
+
+    #[test]
+    fn recovery_manifest_rejects_paths_outside_export_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest_path = directory.path().join("manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "formatVersion": 1,
+                "objects": [{"file": "../outside.json", "sourceUid": "source-uid"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+
+        assert!(Export::load(directory.path()).is_err());
+    }
+
+    #[test]
+    fn replacement_node_state_keeps_labels_annotations_taints_and_unschedulable() {
         let node: kube::api::DynamicObject = serde_json::from_value(serde_json::json!({
             "apiVersion": "v1",
             "kind": "Node",
             "metadata": {
                 "name": "worker-a",
+                "uid": "source-node-uid",
                 "labels": {
                     "kubernetes.io/hostname": "worker-a",
                     "storage.example/node": "local"
+                },
+                "annotations": {
+                    "storage.example/volume-group": "fast",
+                    "nodemigrate.io/source-uid": "operator-value"
                 }
             },
             "spec": {
@@ -986,9 +1328,21 @@ mod tests {
         .unwrap();
 
         let state = NodeSchedulingState::from_node(&node);
+        assert_eq!(state.uid.as_deref(), Some("source-node-uid"));
         assert_eq!(state.labels["storage.example/node"], "local");
+        assert_eq!(state.annotations["storage.example/volume-group"], "fast");
+        assert_eq!(
+            state.annotations["nodemigrate.io/source-uid"],
+            "operator-value"
+        );
         assert_eq!(state.taints.len(), 1);
         assert_eq!(state.unschedulable, Some(true));
+        let patch = node_scheduling_patch(&state);
+        assert_eq!(
+            patch["metadata"]["annotations"]["nodemigrate.io/source-uid"],
+            "operator-value"
+        );
+        assert_eq!(patch["spec"]["unschedulable"], true);
     }
 
     #[test]

@@ -151,6 +151,9 @@ install_hostpath_driver() {
 }
 
 install_workloads() {
+    kubectl label nodes --all operator.example/pool=blue --overwrite
+    kubectl annotate nodes --all nodemigrate.io/source-uid=operator-node-value --overwrite
+    kubectl taint nodes --all operator.example/dedicated=migration:PreferNoSchedule --overwrite
     helm repo add jetstack https://charts.jetstack.io --force-update
     helm repo add traefik https://traefik.github.io/charts --force-update
     helm repo update
@@ -169,6 +172,16 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: migration-apps
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-user-metadata
+  namespace: migration-apps
+  annotations:
+    nodemigrate.io/source-uid: user-value
+data:
+  migration-marker: user-config-data
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -332,9 +345,31 @@ verify_stage() {
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
     kubectl wait --for=condition=Ready node --all --timeout=5m
+    kubectl get nodes -o json | jq -e '
+      all(.items[];
+        .metadata.labels["operator.example/pool"] == "blue" and
+        .metadata.annotations["nodemigrate.io/source-uid"] == "operator-node-value" and
+        any(.spec.taints[]?; .key == "operator.example/dedicated" and .value == "migration" and .effect == "PreferNoSchedule")
+      )
+    ' >/dev/null || {
+        echo "nodemigrate changed user Node labels, annotations, or taints at stage $stage" >&2
+        return 1
+    }
     kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
     kubectl get crd ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    local preserved_annotation
+    local configmap_json
+    configmap_json="$(kubectl get configmap migration-user-metadata -n migration-apps -o json)"
+    preserved_annotation="$(jq -r '.metadata.annotations["nodemigrate.io/source-uid"]' <<<"$configmap_json")"
+    [[ "$preserved_annotation" == user-value ]] || {
+        echo "nodemigrate changed migration-user-metadata annotation at stage $stage" >&2
+        return 1
+    }
+    [[ "$(jq -r '.data["migration-marker"]' <<<"$configmap_json")" == user-config-data ]] || {
+        echo "nodemigrate changed migration-user-metadata data at stage $stage" >&2
+        return 1
+    }
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m
@@ -397,6 +432,8 @@ capture_semantic_checkpoint() {
     mkdir -p "$stage_dir"
     chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
 
+    capture_migratable_api_objects "$stage_dir/migratable-objects.jsonl"
+
     # Keep only stable, user-visible state. API-assigned UIDs, resource
     # versions, managed fields, and status timestamps naturally change during
     # a round trip; resource specs, bindings, workload identity, and readiness
@@ -408,11 +445,14 @@ capture_semantic_checkpoint() {
         controlPlane: ((.metadata.labels // {}) | (has("node-role.kubernetes.io/control-plane") or has("node-role.kubernetes.io/master"))),
         worker: (((.metadata.labels // {}) | (has("node-role.kubernetes.io/worker"))) or
           ((.metadata.labels // {}) | (has("node-role.kubernetes.io/control-plane") or has("node-role.kubernetes.io/master")) | not)),
+        migrationLabel: ((.metadata.labels // {})["operator.example/pool"] // ""),
+        migrationAnnotation: ((.metadata.annotations // {})["nodemigrate.io/source-uid"] // ""),
+        migrationTaint: ([.spec.taints[]? | select(.key == "operator.example/dedicated")] | sort_by(.effect, .key, .value)),
         ready: ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1)
       }] | sort_by(.name)
     ' > "$stage_dir/nodes.json"
 
-    kubectl get deployment,service,ingress,pvc -n migration-apps -o json \
+    kubectl get configmap,deployment,service,ingress,pvc -n migration-apps -o json \
       | canonicalize_api_list > "$stage_dir/application.json"
     kubectl get pv -o json \
       | jq -S '[.items[] | select(.spec.claimRef.namespace == "migration-apps") | {
@@ -452,6 +492,9 @@ capture_semantic_checkpoint() {
     kubectl get secret migration-test-tls -n migration-apps -o json \
       | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
       > "$stage_dir/certificate-secret.sha256"
+    kubectl get configmap migration-user-metadata -n migration-apps -o json \
+      | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
+      > "$stage_dir/user-configmap-data.sha256"
 
     jq -S -n \
       --slurpfile nodes "$stage_dir/nodes.json" \
@@ -464,12 +507,39 @@ capture_semantic_checkpoint() {
       --slurpfile cilium "$stage_dir/cilium.json" \
       --slurpfile crds "$stage_dir/required-crds.json" \
       --slurpfile storageclass "$stage_dir/storageclass.json" \
+      --slurpfile migratable_objects "$stage_dir/migratable-objects.jsonl" \
       '{nodes:$nodes[0], application:$app[0], persistentVolumes:$pvs[0],
         certificate:$certificate[0], issuer:$issuer[0],
         certManager:$cert_manager[0], traefik:$traefik[0], cilium:$cilium[0],
-        requiredCrds:$crds[0], storageClass:$storageclass[0]}' \
+        requiredCrds:$crds[0], storageClass:$storageclass[0],
+        migratableObjects:$migratable_objects}' \
       > "$stage_dir/semantic-state.json"
-    chmod 0600 "$stage_dir"/*.json "$stage_dir"/*.sha256
+    chmod 0600 "$stage_dir"/*.json "$stage_dir"/*.jsonl "$stage_dir"/*.sha256
+}
+
+capture_migratable_api_objects() {
+    local output="$1"
+    local resources resource list_json object_json normalized identity digest
+    resources="$(kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u)"
+    [[ -n "$resources" ]] || {
+        echo "Kubernetes API discovery returned no listable resources" >&2
+        return 1
+    }
+    : > "$output"
+    while IFS= read -r resource; do
+        [[ -n "$resource" ]] || continue
+        list_json="$(kubectl get "$resource" --all-namespaces --chunk-size=500 -o json)"
+        while IFS= read -r object_json; do
+            normalized="$(jq -cS -f "$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq" \
+                <<< "$object_json")"
+            [[ -n "$normalized" ]] || continue
+            identity="$(jq -cS '{apiVersion, kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$normalized")"
+            digest="$(printf '%s' "$normalized" | sha256sum | awk '{print $1}')"
+            jq -cS -n --argjson identity "$identity" --arg digest "$digest" \
+                '{identity: $identity, sha256: $digest}' >> "$output"
+        done < <(jq -c '.items[]' <<< "$list_json")
+    done <<< "$resources"
+    LC_ALL=C sort -o "$output" "$output"
 }
 
 canonicalize_api_list() {
@@ -503,7 +573,22 @@ assert_round_trip_unchanged() {
         echo "Certificate secret contents changed during the migration round trip" >&2
         return 1
     fi
-    echo "PASS: returned semantic state and certificate secret match the source checkpoint"
+    if ! cmp -s "$initial/user-configmap-data.sha256" "$returned/user-configmap-data.sha256"; then
+        echo "ConfigMap contents changed during the migration round trip" >&2
+        return 1
+    fi
+    echo "PASS: returned semantic state, certificate secret, and ConfigMap contents match the source checkpoint"
+}
+
+assert_migratable_api_state_unchanged() {
+    local before="$CHECKPOINT_DIR/$1/migratable-objects.jsonl"
+    local after="$CHECKPOINT_DIR/$2/migratable-objects.jsonl"
+    if ! cmp -s "$before" "$after"; then
+        echo "Migratable Kubernetes API objects differ between stages $1 and $2" >&2
+        diff -u "$before" "$after" || true
+        return 1
+    fi
+    echo "PASS: all migratable Kubernetes API object fingerprints match between $1 and $2"
 }
 
 main() {
@@ -525,6 +610,7 @@ main() {
     NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
         "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
     verify_stage nodestore "$nodestore_kubeconfig"
+    assert_migratable_api_state_unchanged source nodestore
 
     echo "Migrating nodestore -> $SOURCE_DIST"
     NODEMIGRATE_REPLACE_NODE=true \

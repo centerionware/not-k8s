@@ -23,51 +23,61 @@ this objective.
   driver, cert-manager, Traefik, nginx, static and CSI-backed claims, then
   checks the source → nodestore → retained-source round trip. Every checkpoint
   asserts the Cilium DaemonSet rollout and CiliumEndpoint CRD are present.
-- Every checkpoint now writes a private canonical snapshot of node names and
-  roles, workload and ingress specs, PV/PVC bindings, add-on deployments,
-  Cilium daemonset images and readiness, required CRD schemas, and
-  storage-class configuration. The returned snapshot must match the initial
-  one. The migration Certificate secret is compared by digest, without writing
-  secret data to logs or checkpoint files.
+- Every checkpoint writes a private canonical snapshot of important behavior
+  and a fingerprint inventory for every listable API object nodemigrate is
+  expected to transfer. Fingerprints use the export sanitizer's same treatment
+  of status, API-assigned identity fields, transient kinds, and service-account
+  token Secrets; live NodeMetrics and PodMetrics samples are omitted. Secret
+  content is hashed in memory and never written to checkpoints. The script
+  compares source→nodestore object fingerprints and requires the returned
+  snapshot to match the source.
+- The fixture includes a ConfigMap with `nodemigrate.io/source-uid`, plus a
+  Node with a custom label, annotation, and `PreferNoSchedule` taint. Every
+  checkpoint checks that the Node metadata survives; the round-trip snapshot
+  includes it. ConfigMap data is hashed in the private checkpoint and compared
+  on return.
+  Runtime results are still required to demonstrate state parity.
 - Runtime coverage for joining an existing cluster and replacing a member is
   a separate required scenario; the current script does not establish that
   case as verified.
 
 ## Required merge gates
 
-Nodemigrate needs both isolated round trips green before merge:
+Both isolated round trips are mandatory nodemigrate merge gates. Neither has
+passed, so nodemigrate must not be merged until the evidence is recorded here.
 
-- Single-node K3s with Cilium → not-k8s → K3s, with no differences in the
-  canonical checked cluster state between initial and returned checkpoints,
-  and passing workload, add-on, ingress, certificate, persistent-data, and
-  Cilium-health checks at every stage.
-- Upstream Kubernetes with three control-plane nodes and two worker nodes →
-  not-k8s → upstream Kubernetes. Preserve and verify all five node identities,
-  roles, and readiness; run the same checks at every stage; compare the
-  returned state with the initial checkpoint; and include the existing-cluster
-  join/replacement path.
+| Gate | Required topology and round trip | Pass criteria | State |
+| --- | --- | --- | --- |
+| K3s single node | One-node K3s with Cilium → not-k8s → retained K3s | At initial source, after migration to not-k8s, and after return: verify node identity/readiness, workloads, add-ons/custom resources, ingress, certificates, persistent-volume bindings and data, and Cilium. The returned full migration-state checkpoint has no semantic differences from the initial checkpoint. | Not run |
+| Upstream five nodes | kubeadm Kubernetes with three control-plane nodes and two workers → not-k8s → retained upstream Kubernetes | At every stage, verify all five node identities, roles, membership, and readiness plus the same workload, add-on/custom-resource, ingress, certificate, persistent-volume/data, and Cilium checks. Exercise existing-cluster join/replacement. The returned full migration-state checkpoint has no semantic differences from the initial checkpoint. | Not run |
+
+Checkpoint comparison normalizes API-assigned UIDs and regenerated status;
+controller/transient objects and live NodeMetrics/PodMetrics samples are not
+persistent migration state. Compare all other exported API state and verify
+live behavior independently. A skipped checkpoint, missing probe, or
+unexplained difference is not a pass.
 
 The five-node lane must run with five distinct isolated nodes, which may share
 one CI host using QEMU or another suitable isolation mechanism. Docker is a
-candidate if the environment fully simulates the networking, node identity,
-service management, storage, and node failure/isolation behavior under test.
-Record the simulator and any unmodeled behavior with the results. The
-current integration workflow does not yet implement or pass these full merge
-gates.
+candidate only if it fully simulates networking, node identity, service
+management, storage, and node failure/isolation behavior required by these
+checks. A container-only result does not verify behaviors it does not model.
+Record the isolation method, topology, demonstrated capabilities, and any
+unmodeled behavior with each run. The current integration workflow does not
+yet provision five distinct nodes or pass either full merge gate.
 
 ## Multi-node implementation gap
 
 The present script runs source, not-k8s, and return stages on one host OS. It
 does not provision five independently isolated nodes. The migration utility
 now exposes an operator-ordered reverse control-plane protocol: `stage-target`
-starts a retained CP without waiting for etcd quorum, a later CP exports and
-imports while both source and destination APIs are available, and the final CP
-can use `skip-api-export` after the destination is ready. The utility does not
-automatically sequence nodes or prove that the required quorum and prior state
-import are present beyond checking destination API readiness for the final
-step. No real three-CP run verifies this protocol yet. Repeating the current
-single-host script or running it once per node would not satisfy the five-node
-gate.
+starts a retained CP without waiting for etcd quorum; after retained-cluster
+quorum returns, `import-export=/path` loads the protected export and imports
+cluster API state; later nodes can use `skip-api-export` after that import.
+The utility does not automatically sequence nodes or prove that prior stages
+completed beyond checking destination API readiness where required. No real
+three-CP run verifies this protocol yet. Repeating the current single-host
+script or running it once per node would not satisfy the five-node gate.
 
 Next, add an isolated five-node provisioner and an orchestrated staged
 control-plane cutover/return lane, then validate Docker’s network namespaces,
@@ -177,7 +187,7 @@ Cargo test/build was run.
 | 2026-09-24 | `2a9b26c3061e86c29d9f601b3bc7a461a8e718dc` | Nodemigrate crate checks | Passed, including state extraction and reverse confirmation validation | [Run 35968225182](https://github.com/centerionware/not-k8s/actions/runs/35968225182) |
 | 2026-09-24 | `2a9b26c3061e86c29d9f601b3bc7a461a8e718dc` | Integration shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35968225196](https://github.com/centerionware/not-k8s/actions/runs/35968225196) |
 | 2026-09-24 | `2a9b26c3061e86c29d9f601b3bc7a461a8e718dc` | Commit convention | Passed | [Run 35968221928](https://github.com/centerionware/not-k8s/actions/runs/35968221928) |
-| — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
+| — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. Shell syntax and the focused snapshot-filter check passed locally. GitHub shell validation, nodemigrate crate tests, and runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.

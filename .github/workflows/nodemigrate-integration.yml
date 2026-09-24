@@ -5,10 +5,14 @@ on:
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
+      - '.github/scripts/nodemigrate-snapshot-normalize.jq'
+      - '.github/scripts/check_nodemigrate_snapshot_filter.sh'
       - '.github/workflows/nodemigrate-integration.yml'
       - 'crates/nodemigrate/**'
       - 'docs/NODEMIGRATE.md'
       - 'docs/NODEMIGRATION_GOAL.md'
+      - 'docs/NODEMIGRATE_CI_STATUS.md'
+      - 'docs/NODEMIGRATE_MIGRATION_STATUS.md'
       - 'docs/NODEMIGRATE_STATUS.md'
 
 permissions:
@@ -27,6 +31,9 @@ jobs:
 
       - name: Check shell syntax
         run: bash -n .github/scripts/nodemigrate-integration.sh
+
+      - name: Check snapshot jq
+        run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
 
   migrate:
     if: github.event_name == 'workflow_dispatch'

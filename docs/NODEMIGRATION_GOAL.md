@@ -43,13 +43,17 @@ for a nodemigrate-only release.
 - For control-plane and worker replacement, use the destination API to detect
   and wait for node registration. If a same-name destination Node exists,
   require the operator to explicitly select its replacement; never treat its
-  old Ready condition as proof that the new node joined.
+  old Ready condition as proof that the new node joined. Preserve the source
+  Node's labels, annotations, taints, and unschedulable setting on the new
+  Node, and use an identity-preconditioned delete for any stale same-name Node.
 - Discover and preserve the source CNI arrangement, including Cilium. Do not
   require Flannel, overwrite external CNI host configuration, or assume that
   copying API objects alone recreates host networking state.
 - Transfer Kubernetes API resources, including custom resources, add-ons,
   secrets, and persistent volume metadata, while accounting for destination
-  UIDs, controller-owned transient objects, and API compatibility.
+  UIDs, controller-owned transient objects, and API compatibility. Live
+  NodeMetrics and PodMetrics samples are collected again by their metrics
+  provider and are not persistent migration state.
 - Preserve data for supported local/hostPath volumes and leave network or CSI
   payloads with their storage provider. Clearly report data that cannot be
   transferred by the utility.
@@ -86,11 +90,10 @@ join/replacement case before full-join support can be called verified.
 Do not merge nodemigrate until both isolated runtime scenarios below pass:
 
 1. A single-node K3s cluster with Cilium must migrate to not-k8s and back to
-   K3s. The returned cluster must have no differences from the initial
-   checkpoint for the canonical state being checked: node identity and
-   readiness, workloads, add-ons, ingress, certificates, persistent data, and
-   Cilium state. Repeat the behavioral probes at each stage and require them
-   to pass.
+   K3s. The returned cluster must have no differences from the initial full
+   migration-state checkpoint. Verify node identity and readiness, workloads,
+   add-ons, ingress, certificates, persistent data, and Cilium state, and
+   repeat the behavioral probes at each stage.
 2. An upstream Kubernetes cluster with three control-plane nodes and two
    worker nodes must complete the same not-k8s round trip. Check membership and
    readiness for all five nodes, along with workloads, add-ons, ingress,

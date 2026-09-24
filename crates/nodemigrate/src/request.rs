@@ -1,5 +1,6 @@
 use anyhow::{bail, ensure, Result};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::detect::Installation;
 
@@ -45,6 +46,10 @@ pub struct MigrationRequest {
     /// imported state and the source datastore no longer has quorum.
     #[serde(default)]
     pub skip_api_export: bool,
+    /// Resume the API-object import from a protected export written by an
+    /// earlier staged control-plane cutover.
+    #[serde(default)]
+    pub import_export: Option<PathBuf>,
 }
 
 impl MigrationRequest {
@@ -56,6 +61,7 @@ impl MigrationRequest {
         let mut skip_api_import = false;
         let mut stage_target = false;
         let mut skip_api_export = false;
+        let mut import_export = None;
 
         for raw in args {
             let (key, value) = raw
@@ -70,7 +76,11 @@ impl MigrationRequest {
                 "skip-api-import" => skip_api_import = parse_bool(value, key)?,
                 "stage-target" => stage_target = parse_bool(value, key)?,
                 "skip-api-export" => skip_api_export = parse_bool(value, key)?,
-                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, stage-target=, or skip-api-export=)"),
+                "import-export" => {
+                    ensure!(!value.is_empty(), "import-export requires a directory path");
+                    set_once(&mut import_export, PathBuf::from(value), "import-export")?;
+                }
+                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, stage-target=, skip-api-export=, or import-export=)"),
             }
         }
 
@@ -125,6 +135,22 @@ impl MigrationRequest {
             !stage_target || !uninstall_after_migrate,
             "stage-target cannot uninstall the source before the destination control plane is Ready"
         );
+        ensure!(
+            import_export.is_none()
+                || matches!(
+                    (from, to),
+                    (Distribution::Nodestore, Distribution::K3s | Distribution::Kubernetes)
+                ),
+            "import-export is only valid when resuming a nodestore-to-K3s or nodestore-to-Kubernetes migration"
+        );
+        ensure!(
+            import_export.is_none()
+                || (!uninstall_after_migrate
+                    && !skip_api_import
+                    && !stage_target
+                    && !skip_api_export),
+            "import-export cannot be combined with uninstall or staged migration options"
+        );
 
         Ok(Self {
             to,
@@ -134,6 +160,7 @@ impl MigrationRequest {
             skip_api_import,
             stage_target,
             skip_api_export,
+            import_export,
         })
     }
 
@@ -246,6 +273,39 @@ mod tests {
         ]))
         .unwrap();
         assert!(final_member.skip_api_export);
+    }
+
+    #[test]
+    fn accepts_importing_a_protected_export_after_target_quorum_returns() {
+        let request = MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "import-export=/var/lib/nodemigrate/exports/1234-5-0",
+        ]))
+        .unwrap();
+        assert_eq!(
+            request.import_export.as_deref(),
+            Some(std::path::Path::new(
+                "/var/lib/nodemigrate/exports/1234-5-0"
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_import_export_for_forward_or_staged_migration() {
+        assert!(MigrationRequest::parse(&args(&[
+            "to=nodestore",
+            "from=kubernetes",
+            "import-export=/tmp/export",
+        ]))
+        .is_err());
+        assert!(MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "import-export=/tmp/export",
+            "stage-target=true",
+        ]))
+        .is_err());
     }
 
     #[test]

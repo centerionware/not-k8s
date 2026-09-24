@@ -299,7 +299,11 @@ fn remove_replaced_node(
     if state.is_some() {
         validate_destination_node_replacement(true, replace)
             .with_context(|| format!("destination already has node {node_name}"))?;
-        target_api.delete_node(node_name)?;
+        let uid = state
+            .as_ref()
+            .and_then(|state| state.uid.as_deref())
+            .context("destination Node has no UID; refusing an unconditional replacement delete")?;
+        target_api.delete_node(node_name, uid)?;
     }
     Ok(state)
 }
@@ -313,6 +317,21 @@ fn restore_node_scheduling_state(
         target_api.restore_node_scheduling_state(node_name, state)?;
     }
     Ok(())
+}
+
+fn reverse_node_replacement_state(
+    destination_node_existed_before_activation: bool,
+    state_observed_after_activation: Option<transfer::NodeSchedulingState>,
+    nodestore_node_state: Option<transfer::NodeSchedulingState>,
+) -> Option<transfer::NodeSchedulingState> {
+    if destination_node_existed_before_activation {
+        state_observed_after_activation.or(nodestore_node_state)
+    } else {
+        // A same-name Node observed after activation may be the freshly
+        // registered replacement. Its defaults must not replace the state
+        // captured from nodestore before cutover.
+        nodestore_node_state
+    }
 }
 
 fn validate_skip_api_import(
@@ -347,6 +366,9 @@ fn migrate_to_existing(
         source.distribution == request::Distribution::Nodestore,
         "migration to an existing Kubernetes installation currently starts from nodestore"
     );
+    if request.import_export.is_some() {
+        return resume_export_import(request, source, target);
+    }
     validate_reverse_control_plane_options(request, source, target)?;
     if source.role == detect::NodeRole::Worker {
         return migrate_worker_from_nodestore(request, source, target);
@@ -468,17 +490,21 @@ fn migrate_to_existing(
             bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
         }
     }
-    let replacement_state = if destination_node_exists || replace_existing_node {
+    let observed_replacement_state = if destination_node_exists || replace_existing_node {
         remove_replaced_node(
             &target_api,
             &returning_node_name,
             replace_existing_node,
         )
         .with_context(|| format!("preparing retained control-plane node; nodestore remains stopped and recovery data is at {recovery_location}"))?
-        .or(source_node_state)
     } else {
-        source_node_state
+        None
     };
+    let replacement_state = reverse_node_replacement_state(
+        destination_node_exists,
+        observed_replacement_state,
+        source_node_state,
+    );
     wait_for_node(&target_api, &returning_node_name).context(format!(
         "retained destination node did not become Ready; recovery data is at {recovery_location}"
     ))?;
@@ -517,6 +543,56 @@ fn migrate_to_existing(
     println!(
         "Migration to {:?} completed. Recovery data: {recovery}",
         request.to
+    );
+    Ok(())
+}
+
+fn resume_export_import(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+    target: &detect::Installation,
+) -> Result<()> {
+    ensure!(
+        source.role == detect::NodeRole::ControlPlane
+            && target.role == detect::NodeRole::ControlPlane,
+        "import-export requires nodestore and retained destination control-plane nodes"
+    );
+    let directory = request
+        .import_export
+        .as_ref()
+        .context("import-export directory is required")?;
+    let export = transfer::Export::load(directory)
+        .with_context(|| format!("loading protected migration export {}", directory.display()))?;
+    if request.plan_only {
+        println!(
+            "Migration plan: resume importing {} Kubernetes objects from {} into retained {:?} control plane '{}'",
+            export.object_count(),
+            export.dir.display(),
+            request.to,
+            target.service_name
+        );
+        return Ok(());
+    }
+    ensure!(
+        is_root(),
+        "run nodemigrate as root to import migration state into the retained control plane"
+    );
+    let target_api = transfer::KubeApi::destination(request.to)?;
+    wait_for_api(&target_api).context(format!(
+        "retained destination API is not ready; protected export remains at {}",
+        export.dir.display()
+    ))?;
+    target_api.import(&export).with_context(|| {
+        format!(
+            "resuming migration API import; protected export remains at {}",
+            export.dir.display()
+        )
+    })?;
+    println!(
+        "Imported {} Kubernetes objects into retained {:?} cluster. Recovery export: {}",
+        export.object_count(),
+        request.to,
+        export.dir.display()
     );
     Ok(())
 }
@@ -930,12 +1006,15 @@ fn print_help() {
          \x20 nodemigrate to=nodestore from=kubernetes\n\
          \x20 nodemigrate to=k3s from=nodestore\n\
          \x20 nodemigrate to=kubernetes from=nodestore\n\
+         \x20 nodemigrate to=kubernetes from=nodestore import-export=/protected/export/path\n\
          \n\
          Later control-plane nodes joining an already migrated nodestore cluster\n\
          may use skip-api-import=true; the first control plane must import state.\n\
          For reverse multi-control-plane migration, stage-target=true starts\n\
          an early retained control plane without waiting for API quorum; use\n\
-         skip-api-export=true only for the final node after target state is imported.\n\
+         import-export=/path after retained control-plane quorum returns to\n\
+         import the staged API state. Use skip-api-export=true for later nodes\n\
+         after target state has been imported.\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
@@ -947,13 +1026,16 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        replacement_worker_args, validate_destination_node_replacement,
-        validate_reverse_control_plane_options, validate_skip_api_import,
+        replacement_worker_args, reverse_node_replacement_state,
+        validate_destination_node_replacement, validate_reverse_control_plane_options,
+        validate_skip_api_import,
     };
+    use crate::transfer::NodeSchedulingState;
     use crate::{
         detect::{ClusterConfig, Installation, K3sDatastore, NodeRole},
         request::{Distribution, MigrationRequest},
     };
+    use std::collections::HashMap;
     use std::path::Path;
 
     fn cluster(cni: Option<&str>, backend: Option<&str>) -> ClusterConfig {
@@ -1009,6 +1091,33 @@ mod tests {
         assert!(validate_destination_node_replacement(true, false).is_err());
         assert!(validate_destination_node_replacement(true, true).is_ok());
         assert!(validate_destination_node_replacement(false, false).is_ok());
+    }
+
+    #[test]
+    fn reverse_replacement_ignores_state_from_a_node_registered_after_activation() {
+        let nodestore_state = NodeSchedulingState {
+            uid: Some("nodestore-node-uid".to_string()),
+            labels: HashMap::from([("operator.example/pool".to_string(), "blue".to_string())]),
+            annotations: HashMap::from([(
+                "operator.example/state".to_string(),
+                "kept".to_string(),
+            )]),
+            taints: vec![serde_json::json!({"key": "reserved", "effect": "NoSchedule"})],
+            unschedulable: Some(true),
+        };
+        let newly_registered_state = NodeSchedulingState {
+            labels: HashMap::from([("kubernetes.io/hostname".to_string(), "node-a".to_string())]),
+            ..NodeSchedulingState::default()
+        };
+
+        assert_eq!(
+            reverse_node_replacement_state(
+                false,
+                Some(newly_registered_state),
+                Some(nodestore_state.clone()),
+            ),
+            Some(nodestore_state)
+        );
     }
 
     #[test]
