@@ -78,6 +78,11 @@ jobs:
           sudo -E env "PATH=$PATH" cargo test -p nodeapiserver
           sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
           sudo -E env "PATH=$PATH" cargo test -p notk8s
+          if [[ -d crates/nodemigrate ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p nodemigrate
+          else
+            echo "crates/nodemigrate not present on this ref — skipping its tests."
+          fi
   build-release:
     needs: [build-and-test, release-identity]
     if: ${{ inputs.reuse_release_tag == '' }}
@@ -207,6 +212,15 @@ jobs:
             for bin in "${bins[@]}"; do
               cp "$stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
             done
+            if [[ -d crates/nodemigrate ]]; then
+              if [[ "$profile" == release ]]; then
+                cargo build --release -p nodemigrate --target "${{ matrix.target }}"
+              else
+                cargo build -p nodemigrate --target "${{ matrix.target }}"
+              fi
+              cp "target/${{ matrix.target }}/$profile/nodemigrate" \
+                "dist/nodemigrate-linux-${{ matrix.arch }}-$profile"
+            fi
           done
       - name: Check asset version
         run: |
@@ -226,6 +240,12 @@ jobs:
               [[ -f "$file" ]] || { echo "missing bootstrap-built artifact: $file"; exit 1; }
             done
           done
+          if [[ -d crates/nodemigrate ]]; then
+            for profile in debug release; do
+              file="dist/nodemigrate-linux-${{ matrix.arch }}-$profile"
+              [[ -f "$file" ]] || { echo "missing standalone migration asset: $file"; exit 1; }
+            done
+          fi
           failed=0
           for file in dist/*; do
             interp="$(readelf -l "$file" 2>/dev/null | grep -c INTERP || true)"
@@ -353,7 +373,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
+          bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s nodemigrate)
           for bin in "${bins[@]}"; do
             for file in dist/"$bin"-linux-*; do
               [[ -f "$file" ]] || continue
