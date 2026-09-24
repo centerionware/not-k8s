@@ -118,6 +118,10 @@ impl MigrationRequest {
             "skip-api-import cannot be combined with reverse-migration options"
         );
         ensure!(
+            !(stage_target && skip_api_export),
+            "stage-target cannot be combined with skip-api-export"
+        );
+        ensure!(
             !stage_target || !uninstall_after_migrate,
             "stage-target cannot uninstall the source before the destination control plane is Ready"
         );
