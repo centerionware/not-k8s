@@ -67,6 +67,7 @@ fn migrate_to_nodestore(
     let source_api = transfer::KubeApi::source(source)?;
     let source_nodes = source_api.node_count()?;
     let migrating_node_name = node_name(source);
+    let source_node_state = source_api.node_scheduling_state(&migrating_node_name)?;
     let replacement_member_id = if joins_existing {
         std::env::var("NODEBOOTSTRAP_MEMBER_ID")
             .ok()
@@ -81,7 +82,6 @@ fn migrate_to_nodestore(
     };
     let bootstrap = bootstrap_command(source)?;
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
-    let source_node_exists = source_api.node_exists(&migrating_node_name)?;
     let destination_node_exists = if joins_existing {
         target_api.ready().context(
             "joining an existing nodestore cluster requires its Kubernetes API to be ready before cutover",
@@ -91,17 +91,13 @@ fn migrate_to_nodestore(
         false
     };
     let replace_existing_node = replace_existing_node_requested()?;
-    validate_node_replacement(
-        source_node_exists,
-        destination_node_exists,
-        replace_existing_node,
-    )
-    .with_context(|| {
-        format!(
-            "control-plane node {} requires explicit replacement",
-            migrating_node_name
-        )
-    })?;
+    validate_destination_node_replacement(destination_node_exists, replace_existing_node)
+        .with_context(|| {
+            format!(
+                "control-plane node {} requires explicit replacement",
+                migrating_node_name
+            )
+        })?;
     if request.plan_only {
         source_api.ready()?;
         let cni = source
@@ -155,11 +151,18 @@ fn migrate_to_nodestore(
             bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
         }
     }
-    if let Err(error) =
+    let replacement_state = if destination_node_exists {
         remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node)
-    {
-        bail!("preparing the destination control-plane node failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
-    }
+            .with_context(|| {
+                format!(
+                    "preparing destination control-plane node; export retained at {}",
+                    export.dir.display()
+                )
+            })?
+            .or(source_node_state)
+    } else {
+        source_node_state
+    };
     if joins_existing {
         let worker = replacement_worker_command(source, &migrating_node_name)?;
         run_bootstrap(worker).with_context(|| format!(
@@ -168,6 +171,12 @@ fn migrate_to_nodestore(
         ))?;
     }
     wait_for_node(&target_api, &migrating_node_name)?;
+    restore_node_scheduling_state(
+        &target_api,
+        &migrating_node_name,
+        replacement_state.as_ref(),
+    )
+    .context("restoring destination control-plane node labels and scheduling state")?;
     if joins_existing {
         if let Some(old_member_id) = replacement_member_id {
             run_bootstrap(replace_member_command(&old_member_id.to_string())?).with_context(|| format!(
@@ -206,8 +215,9 @@ fn migrate_worker_to_nodestore(
     let name = node_name(source);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     target_api.ready()?;
-    let local_node_labels =
-        local_node_labels(transfer::KubeApi::source(source), &target_api, &name);
+    let local_node_state =
+        local_node_scheduling_state(transfer::KubeApi::source(source), &target_api, &name);
+    let local_node_labels = local_node_state.as_ref().map(|state| &state.labels);
     let existing_node = target_api.node_exists(&name)?;
     let replace_existing = replace_existing_node_requested()?;
     validate_destination_node_replacement(existing_node, replace_existing)
@@ -229,14 +239,20 @@ fn migrate_worker_to_nodestore(
         host_path_snapshot.recovery_directory().display()
     );
     let previous_service = service::disable(source)?;
-    if existing_node {
-        if let Err(error) = target_api.delete_node(&name) {
+    let replacement_state = if existing_node {
+        match remove_replaced_node(&target_api, &name, replace_existing) {
+            Ok(state) => state,
+            Err(error) => {
             if let Err(restore_error) = service::restore(source, previous_service) {
                 bail!("removing stale destination node {name} failed ({error:#}) and restoring source service failed ({restore_error:#})");
             }
-            return Err(error).context("removing the explicitly selected stale destination worker");
+                return Err(error).context("removing the explicitly selected stale destination worker");
+            }
         }
+    } else {
+        None
     }
+    .or(local_node_state);
     if let Err(error) = run_bootstrap(worker) {
         if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("worker bootstrap failed ({error:#}) and restoring source service failed ({restore_error:#})");
@@ -246,6 +262,8 @@ fn migrate_worker_to_nodestore(
     wait_for_node(&target_api, &name).context(format!(
         "replacement worker {name} did not become Ready; source remains disabled"
     ))?;
+    restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
+        .context("restoring replacement worker labels and scheduling state")?;
     if request.uninstall_after_migrate {
         service::uninstall_source(source).with_context(|| {
             format!(
@@ -272,23 +290,27 @@ fn validate_destination_node_replacement(existing_node: bool, replace: bool) -> 
     Ok(())
 }
 
-fn validate_node_replacement(
-    source_node_exists: bool,
-    destination_node_exists: bool,
-    replace: bool,
-) -> Result<()> {
-    validate_destination_node_replacement(source_node_exists || destination_node_exists, replace)
-}
-
 fn remove_replaced_node(
     target_api: &transfer::KubeApi,
     node_name: &str,
     replace: bool,
-) -> Result<()> {
-    if target_api.node_exists(node_name)? {
+) -> Result<Option<transfer::NodeSchedulingState>> {
+    let state = target_api.node_scheduling_state(node_name)?;
+    if state.is_some() {
         validate_destination_node_replacement(true, replace)
-            .with_context(|| format!("destination already has control-plane node {node_name}"))?;
+            .with_context(|| format!("destination already has node {node_name}"))?;
         target_api.delete_node(node_name)?;
+    }
+    Ok(state)
+}
+
+fn restore_node_scheduling_state(
+    target_api: &transfer::KubeApi,
+    node_name: &str,
+    state: Option<&transfer::NodeSchedulingState>,
+) -> Result<()> {
+    if let Some(state) = state {
+        target_api.restore_node_scheduling_state(node_name, state)?;
     }
     Ok(())
 }
@@ -349,25 +371,23 @@ fn migrate_to_existing(
         )?;
     }
     let returning_node_name = node_name(target);
-    let source_node_exists = source_api
+    let source_node_state = source_api
         .as_ref()
-        .map(|api| api.node_exists(&returning_node_name))
+        .map(|api| api.node_scheduling_state(&returning_node_name))
         .transpose()?
-        .unwrap_or(false);
+        .flatten();
     let destination_node_exists = if request.skip_api_export {
         target_api.node_exists(&returning_node_name)?
     } else {
         false
     };
     let replace_existing_node = replace_existing_node_requested()?;
-    validate_node_replacement(
-        source_node_exists,
-        destination_node_exists,
-        replace_existing_node,
-    )
-    .with_context(|| {
-        format!("returning control-plane node {returning_node_name} requires explicit replacement")
-    })?;
+    validate_destination_node_replacement(destination_node_exists, replace_existing_node)
+        .with_context(|| {
+            format!(
+                "returning control-plane node {returning_node_name} requires explicit replacement"
+            )
+        })?;
     if request.plan_only {
         let cni = target
             .cluster
@@ -446,14 +466,26 @@ fn migrate_to_existing(
             bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
         }
     }
-    if let Err(error) =
-        remove_replaced_node(&target_api, &returning_node_name, replace_existing_node)
-    {
-        bail!("preparing the retained control-plane node failed: {error:#}; nodestore remains stopped and recovery data is at {recovery_location}");
-    }
+    let replacement_state = if destination_node_exists || replace_existing_node {
+        remove_replaced_node(
+            &target_api,
+            &returning_node_name,
+            replace_existing_node,
+        )
+        .with_context(|| format!("preparing retained control-plane node; nodestore remains stopped and recovery data is at {recovery_location}"))?
+        .or(source_node_state)
+    } else {
+        source_node_state
+    };
     wait_for_node(&target_api, &returning_node_name).context(format!(
         "retained destination node did not become Ready; recovery data is at {recovery_location}"
     ))?;
+    restore_node_scheduling_state(
+        &target_api,
+        &returning_node_name,
+        replacement_state.as_ref(),
+    )
+    .context("restoring retained control-plane node labels and scheduling state")?;
     if request.uninstall_after_migrate {
         service::uninstall_source(source).with_context(|| {
             format!("source uninstall failed; recovery data is at {recovery_location}")
@@ -506,21 +538,29 @@ fn validate_reverse_control_plane_options(
     Ok(())
 }
 
-fn local_node_labels(
+fn local_node_scheduling_state(
     source_api: Result<transfer::KubeApi>,
     fallback_api: &transfer::KubeApi,
     node_name: &str,
-) -> Option<std::collections::HashMap<String, String>> {
-    match source_api.and_then(|api| api.node_labels(node_name)) {
-        Ok(labels) => Some(labels),
-        Err(source_error) => match fallback_api.node_labels(node_name) {
-            Ok(labels) => Some(labels),
+) -> Option<transfer::NodeSchedulingState> {
+    match source_api.and_then(|api| api.node_scheduling_state(node_name)) {
+        Ok(Some(state)) => Some(state),
+        source_result => match fallback_api.node_scheduling_state(node_name) {
+            Ok(Some(state)) => Some(state),
             Err(fallback_error) => {
                 tracing::warn!(
                     node = node_name,
-                    source_error = %source_error,
+                    source_result = ?source_result,
                     fallback_error = %fallback_error,
-                    "could not read local Node labels from source or destination API"
+                    "could not read local Node scheduling state from source or destination API"
+                );
+                None
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    node = node_name,
+                    source_result = ?source_result,
+                    "local Node scheduling state is absent from source and destination APIs"
                 );
                 None
             }
@@ -546,10 +586,12 @@ fn migrate_worker_from_nodestore(
     let name = node_name(target);
     let target_api = transfer::KubeApi::destination(request.to)?;
     target_api.ready()?;
-    let local_node_labels =
-        local_node_labels(transfer::KubeApi::source(source), &target_api, &name);
+    let local_node_state =
+        local_node_scheduling_state(transfer::KubeApi::source(source), &target_api, &name);
+    let local_node_labels = local_node_state.as_ref().map(|state| &state.labels);
     let existing_node = target_api.node_exists(&name)?;
-    validate_destination_node_replacement(existing_node, replace_existing_node_requested()?)
+    let replace_existing_node = replace_existing_node_requested()?;
+    validate_destination_node_replacement(existing_node, replace_existing_node)
         .with_context(|| format!("destination already has node {name}"))?;
     if request.plan_only {
         println!("Migration plan: nodestore worker -> {:?} worker; node={name}; retained target service '{}' will be enabled and started; cluster API objects are managed by the control-plane migration", request.to, target.service_name);
@@ -562,14 +604,24 @@ fn migrate_worker_from_nodestore(
         host_path_snapshot.recovery_directory().display()
     );
     let previous_service = service::disable(source)?;
-    if existing_node {
-        if let Err(error) = target_api.delete_node(&name) {
+    let replacement_state = if existing_node {
+        match remove_replaced_node(
+            &target_api,
+            &name,
+            replace_existing_node,
+        ) {
+            Ok(state) => state,
+            Err(error) => {
             if let Err(restore_error) = service::restore(source, previous_service) {
                 bail!("removing stale destination node {name} failed ({error:#}) and restoring nodestore worker services failed ({restore_error:#})");
             }
-            return Err(error).context("removing the explicitly selected stale destination worker");
+                return Err(error).context("removing the explicitly selected stale destination worker");
+            }
         }
+    } else {
+        None
     }
+    .or(local_node_state);
     if let Err(error) = service::activate(target) {
         if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("starting the retained worker service failed ({error:#}) and restoring nodestore services failed ({restore_error:#})");
@@ -579,6 +631,8 @@ fn migrate_worker_from_nodestore(
     wait_for_node(&target_api, &name).context(format!(
         "retained worker {name} did not become Ready; nodestore worker remains disabled"
     ))?;
+    restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
+        .context("restoring retained worker labels and scheduling state")?;
     if request.uninstall_after_migrate {
         service::uninstall_source(source).with_context(|| {
             format!(
@@ -891,7 +945,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        replacement_worker_args, validate_destination_node_replacement, validate_node_replacement,
+        replacement_worker_args, validate_destination_node_replacement,
         validate_reverse_control_plane_options, validate_skip_api_import,
     };
     use crate::{
@@ -953,15 +1007,6 @@ mod tests {
         assert!(validate_destination_node_replacement(true, false).is_err());
         assert!(validate_destination_node_replacement(true, true).is_ok());
         assert!(validate_destination_node_replacement(false, false).is_ok());
-    }
-
-    #[test]
-    fn source_or_destination_control_plane_node_requires_explicit_replacement() {
-        assert!(validate_node_replacement(true, false, false).is_err());
-        assert!(validate_node_replacement(false, true, false).is_err());
-        assert!(validate_node_replacement(true, false, true).is_ok());
-        assert!(validate_node_replacement(false, true, true).is_ok());
-        assert!(validate_node_replacement(false, false, false).is_ok());
     }
 
     #[test]

@@ -521,7 +521,6 @@ main() {
     export NODEBOOTSTRAP_REPO_ROOT="$ROOT"
     local nodestore_kubeconfig=/etc/nodebootstrap/admin.kubeconfig
     echo "Migrating $SOURCE_DIST -> nodestore"
-    NODEMIGRATE_REPLACE_NODE=true \
     NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
     NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
         "$MIGRATE" to=nodestore "from=$SOURCE_DIST"

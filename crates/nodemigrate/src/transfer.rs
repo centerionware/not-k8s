@@ -40,6 +40,40 @@ pub struct KubeApi {
     kubeconfig: PathBuf,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct NodeSchedulingState {
+    pub labels: HashMap<String, String>,
+    pub taints: Vec<Value>,
+    pub unschedulable: Option<bool>,
+}
+
+impl NodeSchedulingState {
+    fn from_node(node: &DynamicObject) -> Self {
+        let labels = node
+            .metadata
+            .labels
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let taints = node
+            .data
+            .pointer("/spec/taints")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let unschedulable = node
+            .data
+            .pointer("/spec/unschedulable")
+            .and_then(Value::as_bool);
+        Self {
+            labels,
+            taints,
+            unschedulable,
+        }
+    }
+}
+
 impl KubeApi {
     pub fn source(installation: &Installation) -> Result<Self> {
         let kubeconfig = std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
@@ -192,6 +226,61 @@ impl KubeApi {
                 .await
                 .context("checking for an existing destination node")?
                 .is_some())
+        })
+    }
+
+    pub fn node_scheduling_state(&self, name: &str) -> Result<Option<NodeSchedulingState>> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering Kubernetes APIs")?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::GET),
+                "Kubernetes API cannot read nodes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            Ok(api
+                .get_opt(name)
+                .await
+                .with_context(|| format!("reading scheduling state for node {name}"))?
+                .as_ref()
+                .map(NodeSchedulingState::from_node))
+        })
+    }
+
+    pub fn restore_node_scheduling_state(
+        &self,
+        name: &str,
+        state: &NodeSchedulingState,
+    ) -> Result<()> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering Kubernetes APIs")?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::PATCH),
+                "Kubernetes API cannot restore node scheduling state"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            let mut patch = serde_json::json!({
+                "metadata": {"labels": &state.labels},
+                "spec": {"taints": &state.taints}
+            });
+            if let Some(unschedulable) = state.unschedulable {
+                patch["spec"]["unschedulable"] = Value::Bool(unschedulable);
+            }
+            api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+                .await
+                .with_context(|| format!("restoring scheduling state for node {name}"))?;
+            Ok(())
         })
     }
 
@@ -874,8 +963,33 @@ fn export_directory() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::persistent_host_paths;
+    use super::{persistent_host_paths, NodeSchedulingState};
     use std::collections::HashMap;
+
+    #[test]
+    fn replacement_node_state_keeps_labels_taints_and_unschedulable() {
+        let node: kube::api::DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "name": "worker-a",
+                "labels": {
+                    "kubernetes.io/hostname": "worker-a",
+                    "storage.example/node": "local"
+                }
+            },
+            "spec": {
+                "taints": [{"key": "dedicated", "value": "gpu", "effect": "NoSchedule"}],
+                "unschedulable": true
+            }
+        }))
+        .unwrap();
+
+        let state = NodeSchedulingState::from_node(&node);
+        assert_eq!(state.labels["storage.example/node"], "local");
+        assert_eq!(state.taints.len(), 1);
+        assert_eq!(state.unschedulable, Some(true));
+    }
 
     #[test]
     fn host_path_backup_includes_safe_hostpath_and_local_volumes_once() {
