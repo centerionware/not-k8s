@@ -62,13 +62,22 @@ live behavior independently. A skipped checkpoint, missing probe, or
 unexplained difference is not a pass.
 
 The five-node lane must run with five distinct isolated nodes, which may share
-one CI host using QEMU or another suitable isolation mechanism. Docker is a
-candidate only if it fully simulates networking, node identity, service
-management, storage, and node failure/isolation behavior required by these
-checks. A container-only result does not verify behaviors it does not model.
-Record the isolation method, topology, demonstrated capabilities, and any
-unmodeled behavior with each run. The current integration workflow does not
-yet provision five distinct nodes or pass either full merge gate.
+one CI host using QEMU or another suitable isolation mechanism. GitHub documents
+nested virtualization on hosted runners as technically possible but
+experimental and unsupported, so the workflow must not assume QEMU/KVM is
+available on a standard hosted runner ([GitHub-hosted runner guidance](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners)).
+The existing integration workflow uses `ubuntu-latest`, and the GitHub API
+reported no self-hosted runners registered for this repository when the
+five-node lane was reviewed. Docker is therefore the initial candidate only
+if a capability preflight demonstrates
+five distinct node identities and filesystems, systemd/service control, CRI,
+network namespaces, Cilium/eBPF behavior, per-node storage, and node
+failure/isolation behavior required by these checks. A container-only result
+does not verify behaviors it does not model. If the preflight fails, the lane
+needs a runner with a guaranteed suitable virtualization environment. Record
+the isolation method, topology, demonstrated capabilities, and any unmodeled
+behavior with each run. The current integration workflow does not yet
+provision five distinct nodes or pass either full merge gate.
 
 ## Multi-node implementation gap
 
@@ -83,11 +92,12 @@ completed beyond checking destination API readiness where required. No real
 three-CP run verifies this protocol yet. Repeating the current single-host
 script or running it once per node would not satisfy the five-node gate.
 
-Next, add an isolated five-node provisioner and an orchestrated staged
-control-plane cutover/return lane, then validate Docker’s network namespaces,
-systemd, CRI, per-node storage, Cilium behavior, and node failure isolation in
-that same topology. Keep QEMU as the alternative if Docker fails any of those
-checks.
+Next, add a Docker capability preflight and isolated five-node provisioner,
+then an orchestrated staged control-plane cutover/return lane. The preflight
+must validate Docker's network namespaces, systemd, CRI, per-node storage,
+Cilium/eBPF behavior, and node failure isolation in that same topology. Use
+QEMU only on a runner whose virtualization capability is demonstrated; hosted
+runner support is not guaranteed.
 
 ## Run policy
 
