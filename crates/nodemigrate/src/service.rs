@@ -1,4 +1,5 @@
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
 
@@ -189,13 +190,37 @@ pub fn stop_upstream_static_pods(installation: &Installation) -> Result<()> {
     let pods: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("parsing CRI pod sandbox list")?;
     let ids = static_pod_sandbox_ids(&pods);
+    ensure!(
+        !ids.is_empty(),
+        "no kubeadm control-plane static pod sandboxes were found after stopping kubelet"
+    );
+    tracing::info!(count = ids.len(), "stopping kubeadm static pod sandboxes");
     for id in &ids {
         checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
             .with_context(|| format!("stopping source static pod sandbox {id}"))?;
         checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
             .with_context(|| format!("removing source static pod sandbox {id}"))?;
     }
-    Ok(())
+    wait_for_api_port_release()
+}
+
+fn wait_for_api_port_release() -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match std::net::TcpListener::bind(("0.0.0.0", 6443)) {
+            Ok(listener) => {
+                drop(listener);
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => return Err(error).context("checking whether API port 6443 is free"),
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "source Kubernetes API still occupies port 6443 after stopping its static pods"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 fn static_pod_sandbox_ids(pods: &serde_json::Value) -> Vec<String> {
@@ -204,13 +229,27 @@ fn static_pod_sandbox_ids(pods: &serde_json::Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter(|pod| {
-            pod.pointer("/metadata/namespace")
+            let namespace = pod
+                .pointer("/metadata/namespace")
+                .and_then(serde_json::Value::as_str);
+            let static_source = pod
+                .pointer("/labels/kubernetes.io~1config.source")
                 .and_then(serde_json::Value::as_str)
-                == Some("kube-system")
-                && pod
-                    .pointer("/labels/kubernetes.io~1config.source")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("file")
+                == Some("file");
+            let control_plane_name = pod
+                .pointer("/metadata/name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| {
+                    [
+                        "kube-apiserver-",
+                        "etcd-",
+                        "kube-scheduler-",
+                        "kube-controller-manager-",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+                });
+            namespace == Some("kube-system") && (static_source || control_plane_name)
         })
         .filter_map(|pod| {
             pod.pointer("/id")
@@ -552,8 +591,13 @@ mod tests {
             "items": [
                 {
                     "id": "static-sandbox",
-                    "metadata": {"namespace": "kube-system"},
+                    "metadata": {"name": "custom-static-pod", "namespace": "kube-system"},
                     "labels": {"kubernetes.io/config.source": "file"}
+                },
+                {
+                    "id": "apiserver-sandbox",
+                    "metadata": {"name": "kube-apiserver-node-a", "namespace": "kube-system"},
+                    "labels": {}
                 },
                 {
                     "id": "controller-sandbox",
@@ -567,6 +611,9 @@ mod tests {
                 }
             ]
         });
-        assert_eq!(static_pod_sandbox_ids(&pods), ["static-sandbox"]);
+        assert_eq!(
+            static_pod_sandbox_ids(&pods),
+            ["static-sandbox", "apiserver-sandbox"]
+        );
     }
 }
