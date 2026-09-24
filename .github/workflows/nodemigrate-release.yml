@@ -1,0 +1,196 @@
+name: nodemigrate release
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/check_nodemigrate_release.py'
+      - '.github/workflows/nodemigrate-release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  publish-policy:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check publish policy
+        run: python3 .github/scripts/check_nodemigrate_release.py
+
+  release-identity:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Read release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          regular_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          [[ "$regular_tag" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]] || {
+            echo "latest regular release has an invalid tag: $regular_tag" >&2
+            exit 1
+          }
+          version="${regular_tag#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=nodemigrate-v$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: release-identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            cross: false
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            cross: true
+          - arch: armv7l
+            target: armv7-unknown-linux-musleabihf
+            runner: ubuntu-latest
+            cross: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+      - name: Prepare musl
+        run: |
+          set -euo pipefail
+          rustup target add "${{ matrix.target }}"
+          triple="${{ matrix.target }}"
+          cargo_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          cc_var="CC_$(echo "$triple" | tr '-' '_')"
+          if [[ "${{ matrix.cross }}" == true ]]; then
+            case "${{ matrix.arch }}" in
+              aarch64)
+                tc=aarch64-linux-musl-cross
+                cc_name=aarch64-linux-musl-gcc
+                zig_target=aarch64-linux-musl
+                ;;
+              armv7l)
+                tc=armv7l-linux-musleabihf-cross
+                cc_name=armv7l-linux-musleabihf-gcc
+                zig_target=arm-linux-musleabihf
+                ;;
+              *) exit 2 ;;
+            esac
+            if timeout 240 curl -fsSL --max-time 240 --retry 2 -o "/tmp/$tc.tgz" "https://musl.cc/$tc.tgz" 2>/dev/null; then
+              sudo tar -xzf "/tmp/$tc.tgz" -C /opt
+              cc_bin=/opt/$tc/bin/$cc_name
+              echo "/opt/$tc/bin" >> "$GITHUB_PATH"
+            else
+              echo "musl.cc unavailable; using pinned Zig fallback"
+              zig_version=0.16.0
+              zig_dir="/tmp/zig-x86_64-linux-$zig_version"
+              zig_archive="/tmp/zig-x86_64-linux-$zig_version.tar.xz"
+              zig_sha256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+              curl -fsSL --max-time 120 --retry 2 -o "$zig_archive" \
+                "https://ziglang.org/download/$zig_version/zig-x86_64-linux-$zig_version.tar.xz"
+              echo "$zig_sha256  $zig_archive" | sha256sum --check --status
+              tar -xJf "$zig_archive" -C /tmp
+              zig_bin="$zig_dir/zig"
+              test -x "$zig_bin"
+              cat > /tmp/zigcc-musl.sh <<SH
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "\${1:-}" == "-dumpmachine" && "\$#" == 1 ]]; then
+              echo "$zig_target"
+              exit 0
+          fi
+          args=()
+          for arg in "\$@"; do
+              case "\$arg" in
+                  --target=*) ;;
+                  -Wl,--fix-cortex-*) ;;
+                  *) args+=("\$arg") ;;
+              esac
+          done
+          exec "$zig_bin" cc -target "$zig_target" "\${args[@]}"
+          SH
+              chmod 0755 /tmp/zigcc-musl.sh
+              cc_bin=/tmp/zigcc-musl.sh
+              rustflags_var="CARGO_TARGET_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+              echo "$rustflags_var=-C link-self-contained=no" >> "$GITHUB_ENV"
+            fi
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq musl-tools musl-dev
+            cc_bin=musl-gcc
+          fi
+          echo "$cargo_var=$cc_bin" >> "$GITHUB_ENV"
+          echo "$cc_var=$cc_bin" >> "$GITHUB_ENV"
+          echo "MUSL_C_COMPILER=$cc_bin" >> "$GITHUB_ENV"
+      - name: Build nodemigrate
+        run: |
+          set -euo pipefail
+          cargo build --release -p nodemigrate --target "${{ matrix.target }}"
+          mkdir -p dist
+          version="${{ needs.release-identity.outputs.version }}"
+          asset="nodemigrate-$version-linux-${{ matrix.arch }}-release"
+          cp "target/${{ matrix.target }}/release/nodemigrate" "dist/$asset"
+          if readelf -l "dist/$asset" | grep -q INTERP; then
+            echo "migration binary is not static: $asset" >&2
+            exit 1
+          fi
+          if readelf -d "dist/$asset" | grep -q NEEDED; then
+            echo "migration binary has shared-library dependencies: $asset" >&2
+            exit 1
+          fi
+      - name: Upload binaries
+        uses: actions/upload-artifact@v5
+        with:
+          name: nodemigrate-${{ matrix.arch }}-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [release-identity, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download binaries
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          pattern: nodemigrate-*-${{ github.run_id }}
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
+          RELEASE_TAG: ${{ needs.release-identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ -n "$(find dist -maxdepth 1 -type f -name 'nodemigrate-*' -print -quit)" ]]
+          (cd dist && find . -maxdepth 1 -type f -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS)
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+            --title "nodemigrate $RELEASE_VERSION" \
+            --notes "Standalone nodemigrate binaries built from $GITHUB_SHA for regular release $RELEASE_VERSION." \
+            dist/*

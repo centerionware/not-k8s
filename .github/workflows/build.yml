@@ -132,6 +132,11 @@ jobs:
           else
             echo "crates/notk8s not present on this ref — skipping its tests."
           fi
+          if [[ -d crates/nodemigrate ]]; then
+            sudo -E env "PATH=$PATH" cargo test -p nodemigrate
+          else
+            echo "crates/nodemigrate not present on this ref — skipping its tests."
+          fi
 
       # Cargo resolves a changed workspace manifest before compiling. Preserve
       # that exact lockfile as a tiny artifact so contributors on constrained
@@ -376,6 +381,11 @@ jobs:
               # shellcheck disable=SC2086
               cargo build $1 -p nodebootstrap $TARGET_FLAG
             fi
+            if [[ -d crates/nodemigrate ]]; then
+              # Standalone migration utility; deliberately not linked into notk8s.
+              # shellcheck disable=SC2086
+              cargo build $1 -p nodemigrate $TARGET_FLAG
+            fi
             # The combined layout: one binary containing every component
             # (crates/notk8s), for a device that would rather not pay for a
             # second copy of the shared dependency tree.
@@ -402,10 +412,9 @@ jobs:
           # cargo always puts the output under target/<triple>/, never
           # target/<profile>/ directly.
           SRC_DIR="target/${{ matrix.target }}"
-          # Keep this list in sync with the Rust component registry and the
-          # combined applet table. The old deploy/components.sh source of
-          # truth was removed with the shell installer tree.
-          BINS=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
+          # These standalone artifact names track release assets. nodemigrate
+          # intentionally remains outside the combined applet table.
+          BINS=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s nodemigrate)
           for profile in debug release; do
             [[ -d "$SRC_DIR/$profile" ]] || continue
             for bin in "${BINS[@]}"; do
