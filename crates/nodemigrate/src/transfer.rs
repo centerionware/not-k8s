@@ -12,7 +12,9 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use kube::{
-    api::{Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, Preconditions},
+    api::{
+        Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, PostParams, Preconditions,
+    },
     config::Kubeconfig,
     discovery::{verbs, ApiResource, Discovery},
     Client,
@@ -1370,6 +1372,17 @@ async fn apply_object(
         .name
         .as_deref()
         .context("migration object has no metadata.name")?;
+    if kind == "CustomResourceDefinition" {
+        match api.create(&PostParams::default(), &object).await {
+            Ok(created) => return Ok(created),
+            Err(kube::Error::Api(response)) if response.code == 409 => {
+                // Existing destination definitions are updated by apply below.
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {type_meta}/{kind} {name}"));
+            }
+        }
+    }
     let applied = api
         .patch(
             name,
