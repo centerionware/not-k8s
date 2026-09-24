@@ -416,8 +416,11 @@ fn validate_skip_api_import(
 ) -> Result<()> {
     ensure!(
         !request.skip_api_import
-            || (source.role == detect::NodeRole::ControlPlane && joins_existing),
-        "skip-api-import=true requires a control-plane source joining an existing nodestore cluster; the first control plane must import cluster state"
+            || (matches!(
+                source.role,
+                detect::NodeRole::ControlPlane | detect::NodeRole::Worker
+            ) && joins_existing),
+        "skip-api-import=true requires a source node joining an existing nodestore cluster; the first control plane must import cluster state"
     );
     Ok(())
 }
@@ -1263,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_api_import_requires_control_plane_join() {
+    fn skip_api_import_requires_existing_cluster_join() {
         let request = MigrationRequest::parse(&[
             "to=nodestore".to_string(),
             "from=kubernetes".to_string(),
@@ -1287,7 +1290,8 @@ mod tests {
 
         let mut worker = source;
         worker.role = NodeRole::Worker;
-        assert!(validate_skip_api_import(&request, &worker, true).is_err());
+        assert!(validate_skip_api_import(&request, &worker, true).is_ok());
+        assert!(validate_skip_api_import(&request, &worker, false).is_err());
     }
 
     #[test]

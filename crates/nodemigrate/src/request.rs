@@ -124,7 +124,7 @@ impl MigrationRequest {
                         Distribution::Nodestore
                     )
                 ),
-            "skip-api-import is only valid when migrating a source control plane to nodestore"
+            "skip-api-import is only valid when migrating a source node to nodestore"
         );
         ensure!(
             !stage_target && !skip_api_export
