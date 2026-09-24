@@ -21,7 +21,7 @@ coordinated `v0.8.1` release.
 
 | Issue | Owner | State |
 | --- | --- | --- |
-| Five privileged Docker node containers exit with code 255 before systemd readiness, so the required three-control-plane/two-worker isolation and migration lane cannot run. This is a test-harness/isolation issue, not a confirmed nodemigrate component defect. | `.github/nodemigrate` image and Docker preflight | Preflight failed again in run [36071174265](https://github.com/centerionware/not-k8s/actions/runs/36071174265), attempt 2. The runner now uses each container's private cgroup namespace without shadowing it with the host cgroup bind mount, and gives systemd `/run` tmpfs mounts mode 0755. Validation is pending; no five-node parity claim is allowed. |
+| Five privileged Docker node containers exit with code 255 before systemd readiness, so the required three-control-plane/two-worker isolation and migration lane cannot run. This is a test-harness/isolation issue, not a confirmed nodemigrate component defect. | `.github/nodemigrate` image and Docker preflight | The first preflight after the change passed systemd readiness but failed a later combined CRI/network/BPF/storage probe in [run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846). The runner now uses each container's private cgroup namespace without shadowing it with the host cgroup bind mount and gives systemd `/run` tmpfs mounts mode 0755. The checks now print the exact failed capability; this diagnostic change is pending validation. Five-node isolation is not yet verified. |
 
 ## Release target
 

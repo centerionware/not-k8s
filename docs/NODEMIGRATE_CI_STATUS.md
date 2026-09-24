@@ -371,6 +371,11 @@ No local Cargo test/build was run.
 | 2026-09-24 | `f9e4b31139a30fb7a453161e4dc2295983fcef8f` | Upstream Kubernetes+Cilium against `v0.8.0` | Attempt 1 failed while fetching the runtime and did not enter migration. Attempt 2 reached the known CSR `ExtraValue` HTTP 500; the new rollback assertion passed: kubelet and source API recovered, and the protected export remained. | [Run 36071174265](https://github.com/centerionware/not-k8s/actions/runs/36071174265), attempt 2 |
 | 2026-09-24 | `f9e4b31139a30fb7a453161e4dc2295983fcef8f` | Five-node Docker preflight | Image built, but the first privileged systemd container again exited 255 before readiness; no isolation assertions ran. | [Run 36071174265](https://github.com/centerionware/not-k8s/actions/runs/36071174265), attempt 2 |
 
+
+| 2026-09-24 | `365247f64faf5e360a0eb4b3e758ac060d6bf307` | K3s+Cilium against `v0.8.0` | Source checks and forward migration passed; post-migration CSI/workload checks again received 403 from the old `system:kube-controller-manager` identity. | [Run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846) |
+| 2026-09-24 | `365247f64faf5e360a0eb4b3e758ac060d6bf307` | Upstream Kubernetes+Cilium against `v0.8.0` | The known CSR `ExtraValue` import error was returned; rollback passed, restoring kubelet and source API and retaining the protected export. | [Run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846) |
+| 2026-09-24 | `365247f64faf5e360a0eb4b3e758ac060d6bf307` | Five-node Docker preflight | Systemd reached readiness after using the private cgroup namespace and explicit `/run` modes. The next combined CRI/network/BTF/bpffs/storage check failed; diagnostics are being made specific. | [Run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846) |
+
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.
 Keep failures and skipped checks visible rather than replacing them with a

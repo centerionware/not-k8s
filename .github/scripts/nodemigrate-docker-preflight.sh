@@ -90,13 +90,32 @@ for index in "${!NODES[@]}"; do
     docker exec "$container" systemctl start containerd
     docker exec "$container" systemctl is-active --quiet containerd || fail "$node containerd is inactive"
     docker exec "$container" sh -ec '
-        ctr plugins ls | grep -Eq "io.containerd.grpc.v1[[:space:]]+cri[[:space:]].*[[:space:]]ok$"
-        unshare --net true
-        test -r /sys/kernel/btf/vmlinux
-        mount -t bpf bpffs /sys/fs/bpf
-        printf "%s\n" "$HOSTNAME" > /var/lib/nodemigrate-volume/node-identity
-        printf "%s\n" "$HOSTNAME" > "/etc/nodemigrate-probe-${HOSTNAME}"
-    ' || fail "$node failed CRI, namespace, BTF, bpffs, or storage checks"
+        ctr plugins ls | grep -Eq "io.containerd.grpc.v1[[:space:]]+cri[[:space:]].*[[:space:]]ok$" || {
+            echo "FAIL: containerd CRI plugin is not loaded and healthy" >&2
+            ctr plugins ls >&2 || true
+            exit 1
+        }
+        unshare --net true || {
+            echo "FAIL: network namespace creation is unavailable" >&2
+            exit 1
+        }
+        test -r /sys/kernel/btf/vmlinux || {
+            echo "FAIL: host kernel BTF is unavailable in the node container" >&2
+            exit 1
+        }
+        mount -t bpf bpffs /sys/fs/bpf || {
+            echo "FAIL: mounting a private bpffs is unavailable in the node container" >&2
+            exit 1
+        }
+        printf "%s\n" "$HOSTNAME" > /var/lib/nodemigrate-volume/node-identity || {
+            echo "FAIL: node persistent volume is not writable" >&2
+            exit 1
+        }
+        printf "%s\n" "$HOSTNAME" > "/etc/nodemigrate-probe-${HOSTNAME}" || {
+            echo "FAIL: node root filesystem marker is not writable" >&2
+            exit 1
+        }
+    ' || fail "$node failed a CRI, namespace, BTF, bpffs, or storage check; see the specific diagnostic above"
     docker cp "$ROOT/.github/nodemigrate/bpf-probe.c" "$container:/tmp/bpf-probe.c" >/dev/null
     docker exec "$container" sh -ec '
         clang -O2 -target bpf -c /tmp/bpf-probe.c -o /tmp/bpf-probe.o
