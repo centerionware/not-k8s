@@ -15,6 +15,9 @@ this objective.
   lanes. Each lane builds the combined runtime binary and standalone
   `nodemigrate` binary as test setup, then runs
   `.github/scripts/nodemigrate-integration.sh` as root and uploads its log.
+  The kubeadm source setup installs `crictl` from the matching cri-tools minor
+  release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
+  version for static-pod cleanup diagnostics.
 - The script installs the selected upstream distribution first, uses Cilium
   with Flannel disabled in the K3s lane, installs the hostPath CSI test
   driver, cert-manager, Traefik, nginx, static and CSI-backed claims, then
@@ -48,6 +51,22 @@ networking, node identity, service management, storage, and failure behavior
 under test. Record the simulator and its limitations with the results. The
 current integration workflow does not yet implement or pass these full merge
 gates.
+
+## Multi-node implementation gap
+
+The present script runs source, not-k8s, and return stages on one host OS. It
+does not provision five independently isolated nodes. The migration code also
+does not yet coordinate reverse control-plane cutover: the original stacked
+etcd quorum must be brought up across at least two retained control planes,
+while the not-k8s Raft membership must remain available for API export and be
+retired safely as each control plane leaves. Repeating the current single-host
+script or running it once per node would not satisfy the five-node gate.
+
+Next, add an isolated five-node provisioner and a staged control-plane
+cutover/return protocol, then validate Docker’s network namespaces, systemd,
+CRI, per-node storage, Cilium behavior, and node failure isolation in that
+same topology. Keep QEMU as the alternative if Docker fails any of those
+checks.
 
 ## Run policy
 
@@ -120,6 +139,12 @@ gates.
 | 2026-09-24 | `84b4493818b61fdeb3efcf2a6935a30ebd7eaf31` | Nodemigrate crate tests and packaging checks | Passed; includes all inventory, worker forward/return, and static-pod fixture coverage present at this SHA | [Run 35961085117](https://github.com/centerionware/not-k8s/actions/runs/35961085117) |
 | 2026-09-24 | `84b4493818b61fdeb3efcf2a6935a30ebd7eaf31` | PR shell validation | Passed | [Run 35961085137](https://github.com/centerionware/not-k8s/actions/runs/35961085137) |
 | 2026-09-24 | `84b4493818b61fdeb3efcf2a6935a30ebd7eaf31` | Commit convention | Passed | [Run 35961083449](https://github.com/centerionware/not-k8s/actions/runs/35961083449) |
+| 2026-09-24 | `a608ce684a2cc5147852f1de8929fb6efadaa440` | PR shell validation | Passed; manual migration job was skipped because this was a pull request | [Run 35961786448](https://github.com/centerionware/not-k8s/actions/runs/35961786448) |
+| 2026-09-24 | `a608ce684a2cc5147852f1de8929fb6efadaa440` | Nodemigrate packaging checks | Passed | [Run 35961786460](https://github.com/centerionware/not-k8s/actions/runs/35961786460) |
+| 2026-09-24 | `a608ce684a2cc5147852f1de8929fb6efadaa440` | Commit convention | Passed | [Run 35961784865](https://github.com/centerionware/not-k8s/actions/runs/35961784865) |
+| 2026-09-24 | `41472ae16cef3b6986b3f43d5bf0410ddd3c9062` | PR shell validation | Passed; migration job remained skipped on pull request | [Run 35961904181](https://github.com/centerionware/not-k8s/actions/runs/35961904181) |
+| 2026-09-24 | `41472ae16cef3b6986b3f43d5bf0410ddd3c9062` | Nodemigrate packaging checks | Passed | [Run 35961904142](https://github.com/centerionware/not-k8s/actions/runs/35961904142) |
+| 2026-09-24 | `41472ae16cef3b6986b3f43d5bf0410ddd3c9062` | Commit convention | Passed | [Run 35961901937](https://github.com/centerionware/not-k8s/actions/runs/35961901937) |
 | — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
