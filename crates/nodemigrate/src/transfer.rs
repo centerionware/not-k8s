@@ -293,7 +293,17 @@ impl KubeApi {
                 .run()
                 .await
                 .context("discovering source Kubernetes APIs")?;
-            let labels = node_labels(&client, &discovery, &node_name).await?;
+            let labels = match node_labels(&client, &discovery, &node_name).await {
+                Ok(labels) => Some(labels),
+                Err(error) => {
+                    tracing::warn!(
+                        node = %node_name,
+                        error = %error,
+                        "could not read local Node labels; will retain every safe hostPath/local PV path"
+                    );
+                    None
+                }
+            };
             let mut objects = Vec::new();
             for group in discovery.groups() {
                 for (resource, capabilities) in group.recommended_resources() {
@@ -338,7 +348,7 @@ impl KubeApi {
             !objects.is_empty(),
             "source API returned no migratable objects"
         );
-        let host_paths = persistent_host_paths(&objects, Some(&labels));
+        let host_paths = persistent_host_paths(&objects, labels.as_ref());
         let mut objects: Vec<Value> = objects.into_iter().filter_map(sanitize).collect();
         objects.sort_by_key(object_rank);
 
