@@ -42,8 +42,11 @@ latest-release pointer guard, at SHA
 No publication was performed.
 
 The repository's latest regular release test baseline was [`v0.8.0`](https://github.com/centerionware/not-k8s/releases/tag/v0.8.0)
-on 2026-09-24. The initial utility is intended to ship with the corresponding
-regular `v0.8.1` release after the fixes and migration gates are complete. A
+on 2026-09-24. Component and nodemigrate focused tests passed at SHA
+`f9e4b31139a30fb7a453161e4dc2295983fcef8f`; release-backed lanes confirm the
+old runtime defects and exercise rollback. The initial utility is intended to
+ship with the corresponding regular `v0.8.1` release after the fixes and
+migration gates are complete. A
 standalone-only publication must not bump shared `VERSION`; the workflow reads
 the latest regular tag at publication time rather than relying on this status
 snapshot.

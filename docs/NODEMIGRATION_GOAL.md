@@ -19,7 +19,10 @@ Flannel.
 `nodemigrate` is a standalone release artifact. It must remain outside the
 combined `notk8s` binary. Its release uses the exact version of the latest
 regular not-k8s release, without changing or advancing the shared `VERSION`
-for a nodemigrate-only release.
+for a nodemigrate-only release. The intended initial utility release is
+coordinated with regular `v0.8.1`, carrying the component fixes tracked in
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md); nodemigrate must not independently
+bump the regular release version. This is a target, not publication authority.
 
 ## Required migration behavior
 
