@@ -285,7 +285,7 @@ fn migrate_worker_to_nodestore(
 fn validate_destination_node_replacement(existing_node: bool, replace: bool) -> Result<()> {
     ensure!(
         !existing_node || replace,
-        "set NODEMIGRATE_REPLACE_NODE=true to replace an existing destination node"
+        "set NODEMIGRATE_REPLACE_NODE=true to replace the same-name destination node and require fresh registration"
     );
     Ok(())
 }
@@ -382,10 +382,12 @@ fn migrate_to_existing(
         false
     };
     let replace_existing_node = replace_existing_node_requested()?;
-    validate_destination_node_replacement(destination_node_exists, replace_existing_node)
+    let destination_may_retain_node =
+        destination_node_exists || (!request.skip_api_export && source_node_state.is_some());
+    validate_destination_node_replacement(destination_may_retain_node, replace_existing_node)
         .with_context(|| {
             format!(
-                "returning control-plane node {returning_node_name} requires explicit replacement"
+                "returning control-plane node {returning_node_name} requires explicit fresh-registration confirmation"
             )
         })?;
     if request.plan_only {

@@ -33,13 +33,15 @@ unschedulable setting from the source Node to the new registration. When a
 destination Node is replaced, those scheduling fields from that destination
 Node are restored after the new registration becomes Ready.
 For control-plane migration in either direction, the same flag is required
-when the destination cluster already contains the local node name. Nodemigrate
-removes that stale Node before checking fresh readiness and restores its labels,
-taints, and unschedulable setting after registration. When migrating into a new
-cluster, it carries those scheduling fields from the source Node. A staged
-reverse control-plane operation can return before the destination API is
-ready; the multi-node coordinator must verify fresh Node registration after
-quorum returns.
+when the destination cluster already contains the local node name. If a
+reverse control-plane migration cannot query the retained API before starting
+it, set the flag to force a fresh registration check. Nodemigrate removes a
+stale Node before checking readiness and restores its labels, taints, and
+unschedulable setting after registration. When migrating into a new cluster,
+it carries those scheduling fields from the source Node. A staged reverse
+control-plane operation can return before the destination API is ready; the
+multi-node coordinator must verify fresh Node registration after quorum
+returns.
 `NODEMIGRATE_NODE_NAME` overrides the detected node name. Cluster-wide API
 objects are transferred at the control-plane stage, not re-imported from each
 worker. For an ordered multi-control-plane migration, migrate the first

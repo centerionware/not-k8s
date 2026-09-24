@@ -94,12 +94,11 @@ checks.
 
 ## Verification log
 
-The last fully passing code revision is `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966`.
-The follow-up `b522fbf1` preserves node labels, taints, and unschedulable state,
-but its first targeted crate run failed to compile because two snapshot calls
-passed an extra reference; that call-site issue is fixed in the current
-worktree and the focused retry is pending. The manual migration runtime
-workflow remains undispatched; no local Cargo test/build was run.
+The current code revision `1615131d4141fb6701588e58833b203d8850aa42`
+preserves node labels, taints, and unschedulable state while replacing stale
+Nodes. Its targeted crate tests, shell validation, and commit convention
+passed. The manual migration runtime workflow remains undispatched; no local
+Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -171,6 +170,9 @@ workflow remains undispatched; no local Cargo test/build was run.
 | 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Integration shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35966522595](https://github.com/centerionware/not-k8s/actions/runs/35966522595) |
 | 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Commit convention | Passed | [Run 35966519686](https://github.com/centerionware/not-k8s/actions/runs/35966519686) |
 | 2026-09-24 | `b522fbf1dbd66c08ad76675f6f693dad2fce0b8c` | Nodemigrate crate checks | Failed to compile: two host-path snapshot calls passed `Option<&&HashMap>` where `Option<&HashMap>` is required; corrected by removing `.as_ref()` | [Run 35967706704](https://github.com/centerionware/not-k8s/actions/runs/35967706704) |
+| 2026-09-24 | `1615131d4141fb6701588e58833b203d8850aa42` | Nodemigrate crate checks | Passed; covers scheduling-state extraction and migration validation | [Run 35967908377](https://github.com/centerionware/not-k8s/actions/runs/35967908377) |
+| 2026-09-24 | `1615131d4141fb6701588e58833b203d8850aa42` | Integration shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35967908448](https://github.com/centerionware/not-k8s/actions/runs/35967908448) |
+| 2026-09-24 | `1615131d4141fb6701588e58833b203d8850aa42` | Commit convention | Passed | [Run 35967906382](https://github.com/centerionware/not-k8s/actions/runs/35967906382) |
 | — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
