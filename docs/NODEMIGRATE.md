@@ -4,23 +4,39 @@
 is not linked into the combined `notk8s` binary. Its release uses the latest
 regular project release's version and does not update `VERSION`.
 
-The migration replaces a K3s installation on this host with the not-k8s stack
-while carrying the cluster's Kubernetes API state to the destination. It
-supports single-node and multi-node source clusters, bundled Flannel or an
-externally managed CNI such as Cilium, and a new local destination or joining
-an existing nodestore cluster.
+The migration moves a Kubernetes installation between K3s, upstream
+Kubernetes, and the not-k8s stack while carrying Kubernetes API state to the
+destination. The utility detects local installations and service managers;
+the source stays installed but stopped and disabled after migration unless
+`uninstall-after-migrate=true` is requested.
 
 ```sh
 sudo nodemigrate inspect
 sudo nodemigrate to=nodestore from=k3s plan-only=true
 sudo nodemigrate to=nodestore from=k3s
+sudo nodemigrate to=k3s from=nodestore
+sudo nodemigrate to=kubernetes from=nodestore
+sudo nodemigrate to=nodestore from=kubernetes
 ```
 
-Set `NODEBOOTSTRAP_JOIN_ENDPOINT` and `NODEBOOTSTRAP_PEER_URL` (and the
-nodebootstrap join CA/certificate/key settings) when the replacement should
-join an existing nodestore cluster. `nodemigrate` then starts nodebootstrap in
-control-plane join mode. The source K3s `node-name`, cluster domain, service
-and pod CIDRs are carried into the replacement configuration.
+For a nodestore target, join settings come directly from nodebootstrap's
+environment configuration. Set `NODEBOOTSTRAP_JOIN_ENDPOINT` and
+`NODEBOOTSTRAP_PEER_URL` (and the nodebootstrap join CA, certificate, key, and
+member settings as needed) to replace a node that belongs to an existing
+cluster. `nodemigrate` starts nodebootstrap in control-plane join mode and
+preserves the cluster's CA and datastore membership through nodebootstrap.
+Without join settings, nodebootstrap creates a new local cluster. The utility
+derives service and pod CIDRs, cluster domain, DNS addresses, and node name
+from the source installation where available.
+
+The supported directions are K3s or upstream Kubernetes to nodestore, and
+nodestore to a retained local K3s or upstream Kubernetes installation. The
+return path starts the retained target service and imports the nodestore API
+state. The target distribution must already be installed on the host; the
+source installation is retained for rollback by default. `KUBECONFIG` may
+select an alternate source config, `NODEMIGRATE_SOURCE_KUBECONFIG` explicitly
+overrides it, and `NODEMIGRATE_DESTINATION_KUBECONFIG` overrides the target
+config.
 
 The utility exports API resources, including custom resources and system
 add-ons such as Cilium, through the source API, then applies them through the
@@ -29,10 +45,12 @@ destination controllers. Owner references and persistent-volume claim UIDs
 are remapped to the destination UIDs. Kine and etcd database files are not
 copied between distributions.
 
-If the source uses an external CNI, nodebootstrap is started with CNI setup
-disabled so it leaves the provider's host configuration in place. Add-on API
-objects are restored after the destination is ready. A CNI provider remains
-responsible for its own host binaries, interfaces, routes, and kernel state.
+If the source uses an external CNI such as Cilium, nodebootstrap is started
+with CNI setup disabled so it preserves the provider's host configuration.
+This also applies when joining a cluster whose CNI is managed outside
+nodebootstrap. Add-on API objects, including Cilium resources, are restored
+after the destination is ready. A CNI provider remains responsible for its
+host binaries, interfaces, routes, and kernel state.
 
 PersistentVolume and PersistentVolumeClaim objects are migrated. For local
 and hostPath PersistentVolumes, nodemigrate snapshots the referenced host path
@@ -41,9 +59,9 @@ into the protected export before changing services. If
 is restored afterward. Network and CSI backed volume payloads stay with their
 storage provider.
 
-The source service is stopped and disabled after the protected export is
-written. The K3s installation remains available for recovery by default. The
-export, including Secrets and local volume snapshots, is stored under
+The source services are stopped and disabled after the protected export is
+written. The source installation remains available for recovery by default.
+The export, including Secrets and local volume snapshots, is stored under
 `/var/lib/nodemigrate/exports` with restrictive permissions. If bootstrap
 fails before the destination API becomes ready, nodemigrate restores the
 source service's previous state. If destination bootstrap or import fails
@@ -52,8 +70,13 @@ export path is reported for recovery.
 
 ```sh
 sudo nodemigrate to=nodestore from=k3s uninstall-after-migrate=true
+sudo nodemigrate to=k3s from=nodestore uninstall-after-migrate=true
 ```
 
-This is an API-level cluster migration, not a byte-for-byte K3s datastore
-restore. The export is retained after success so operators can inspect it or
-recover individual objects and local volume data.
+`uninstall-after-migrate=true` invokes the source distribution's uninstall
+path after the target node is ready and its API objects have been imported.
+K3s uses its uninstall script, kubeadm uses `kubeadm reset --force`, and
+nodestore uses nodebootstrap's uninstall mode. Without this flag, no source
+uninstall is run. This is an API-level cluster migration, not a byte-for-byte
+datastore restore. The export is retained after success so operators can
+inspect it or recover individual objects and local volume data.

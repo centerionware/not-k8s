@@ -49,12 +49,12 @@ pub struct Installation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryReport {
-    pub installation: Option<Installation>,
+    pub installations: Vec<Installation>,
 }
 
 impl InventoryReport {
-    pub fn from_installation(installation: Option<Installation>) -> Self {
-        Self { installation }
+    pub fn from_installations(installations: Vec<Installation>) -> Self {
+        Self { installations }
     }
 }
 
@@ -81,13 +81,32 @@ impl HostLayout {
 }
 
 pub fn inspect_host(layout: &HostLayout) -> Result<Option<Installation>> {
-    if let Some(installation) = inspect_k3s(layout)? {
-        return Ok(Some(installation));
+    Ok(inspect_all(layout)?.into_iter().next())
+}
+
+pub fn inspect_all(layout: &HostLayout) -> Result<Vec<Installation>> {
+    let mut installations = Vec::new();
+    for distribution in [
+        Distribution::K3s,
+        Distribution::Nodestore,
+        Distribution::Kubernetes,
+    ] {
+        if let Some(installation) = inspect_distribution(layout, distribution)? {
+            installations.push(installation);
+        }
     }
-    if let Some(installation) = inspect_nodestore(layout)? {
-        return Ok(Some(installation));
+    Ok(installations)
+}
+
+pub fn inspect_distribution(
+    layout: &HostLayout,
+    distribution: Distribution,
+) -> Result<Option<Installation>> {
+    match distribution {
+        Distribution::K3s => inspect_k3s(layout),
+        Distribution::Nodestore => inspect_nodestore(layout),
+        Distribution::Kubernetes => inspect_kubernetes(layout),
     }
-    inspect_kubernetes(layout)
 }
 
 fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
@@ -197,7 +216,21 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
     );
     let data_dir = layout.path("/var/lib/nodestore");
     let binary = first_file(layout, &["/usr/local/bin/nodestore", "/usr/bin/nodestore"]);
-    let service_file = systemd_unit.clone();
+    let init_script = first_file(layout, &["/etc/init.d/nodestore"]);
+    let openrc_script = init_script.as_ref().filter(|path| {
+        std::fs::read_to_string(append(&layout.root, path))
+            .is_ok_and(|text| text.starts_with("#!/sbin/openrc-run"))
+    });
+    let sysv_script = init_script.filter(|_| openrc_script.is_none());
+    let runit_service = first_dir(
+        layout,
+        &["/etc/service/nodestore", "/var/service/nodestore"],
+    );
+    let service_file = systemd_unit
+        .clone()
+        .or_else(|| openrc_script.cloned())
+        .or_else(|| sysv_script.clone())
+        .or_else(|| runit_service.clone());
     if service_file.is_none() && binary.is_none() && !data_dir.is_dir() {
         return Ok(None);
     }
@@ -206,9 +239,9 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
         service_manager: detect_service_manager(
             layout,
             systemd_unit.is_some(),
-            false,
-            false,
-            false,
+            openrc_script.is_some(),
+            sysv_script.is_some(),
+            runit_service.is_some(),
         ),
         service_name: "nodestore".to_string(),
         service_file,
@@ -222,7 +255,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
     // kubeadm and other upstream distributions expose kubelet and the
     // kube-apiserver static-pod manifest. We require both signals so a worker
     // node is not mistaken for a local control plane.
-    let kubelet = first_file(
+    let kubelet_systemd = first_file(
         layout,
         &[
             "/etc/systemd/system/kubelet.service",
@@ -231,26 +264,93 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
         ],
     );
     let apiserver_manifest = layout.path("/etc/kubernetes/manifests/kube-apiserver.yaml");
+    let kubelet_init = first_file(layout, &["/etc/init.d/kubelet"]);
+    let kubelet_runit = first_dir(layout, &["/etc/service/kubelet", "/var/service/kubelet"]);
+    let kubelet = kubelet_systemd
+        .clone()
+        .or_else(|| kubelet_init.clone())
+        .or_else(|| kubelet_runit.clone());
     if kubelet.is_none() || !apiserver_manifest.is_file() {
         return Ok(None);
     }
+    let openrc = kubelet_init.as_ref().is_some_and(|path| {
+        std::fs::read_to_string(append(&layout.root, path))
+            .is_ok_and(|contents| contents.starts_with("#!/sbin/openrc-run"))
+    });
+    let sysv = kubelet_init.is_some() && !openrc;
     let service_file = kubelet;
     let binary = first_file(layout, &["/usr/bin/kubeadm", "/usr/local/bin/kubeadm"]);
+    let service_manifest = append(&layout.root, &apiserver_manifest);
+    let controller_manifest = layout.path("/etc/kubernetes/manifests/kube-controller-manager.yaml");
+    let service_cidr = manifest_argument(&service_manifest, "--service-cluster-ip-range");
+    let cluster_cidr = if controller_manifest.is_file() {
+        manifest_argument(&controller_manifest, "--cluster-cidr")
+    } else {
+        None
+    };
+    let mut config_files = vec![strip_root(&layout.root, apiserver_manifest)];
+    if controller_manifest.is_file() {
+        config_files.push(strip_root(&layout.root, controller_manifest));
+    }
     Ok(Some(Installation {
         distribution: Distribution::Kubernetes,
         service_manager: detect_service_manager(
             layout,
-            service_file.is_some(),
-            false,
-            false,
-            false,
+            kubelet_systemd.is_some(),
+            openrc,
+            sysv,
+            kubelet_runit.is_some(),
         ),
         service_name: "kubelet".to_string(),
         service_file,
         binary,
-        config_files: vec![strip_root(&layout.root, apiserver_manifest)],
-        cluster: None,
+        config_files,
+        cluster: Some(ClusterConfig {
+            data_dir: PathBuf::from("/var/lib/kubelet"),
+            kubeconfig: Some(PathBuf::from("/etc/kubernetes/admin.conf")),
+            service_cidr,
+            cluster_cidr,
+            cluster_domain: kubelet_cluster_domain(layout),
+            cluster_dns: None,
+            node_name: None,
+            cni: None,
+            flannel_backend: None,
+            datastore: K3sDatastore::Etcd,
+        }),
     }))
+}
+
+fn manifest_argument(path: &Path, flag: &str) -> Option<String> {
+    let manifest: Value = serde_yaml::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let containers = manifest.pointer("/spec/containers")?.as_sequence()?;
+    containers
+        .iter()
+        .flat_map(|container| {
+            container
+                .get("command")
+                .and_then(Value::as_sequence)
+                .into_iter()
+                .flatten()
+                .chain(
+                    container
+                        .get("args")
+                        .and_then(Value::as_sequence)
+                        .into_iter()
+                        .flatten(),
+                )
+        })
+        .filter_map(Value::as_str)
+        .find_map(|argument| {
+            argument
+                .strip_prefix(&format!("{flag}="))
+                .map(str::to_owned)
+        })
+}
+
+fn kubelet_cluster_domain(layout: &HostLayout) -> Option<String> {
+    let path = layout.path("/var/lib/kubelet/config.yaml");
+    let config: Value = serde_yaml::from_slice(&std::fs::read(path).ok()?).ok()?;
+    yaml_string(&config, "clusterDomain")
 }
 
 fn detect_datastore(
@@ -508,7 +608,9 @@ fn strip_root(root: &Path, path: PathBuf) -> PathBuf {
 mod tests {
     use std::fs;
 
-    use super::{inspect_host, HostLayout, K3sDatastore, ServiceManager};
+    use super::{
+        inspect_distribution, inspect_host, Distribution, HostLayout, K3sDatastore, ServiceManager,
+    };
 
     #[test]
     fn detects_systemd_k3s_and_kine_config() {
@@ -595,5 +697,44 @@ mod tests {
         assert!(inspect_host(&HostLayout::under(root.path()))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn detects_upstream_control_plane_network_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/kubernetes/manifests")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/kubelet")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/kubelet.service"),
+            "[Service]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/kubernetes/manifests/kube-apiserver.yaml"),
+            "spec:\n  containers:\n  - command:\n    - kube-apiserver\n    - --service-cluster-ip-range=10.96.0.0/12\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path()
+                .join("etc/kubernetes/manifests/kube-controller-manager.yaml"),
+            "spec:\n  containers:\n  - command:\n    - kube-controller-manager\n    - --cluster-cidr=10.244.0.0/16\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("var/lib/kubelet/config.yaml"),
+            "clusterDomain: corp.example\n",
+        )
+        .unwrap();
+
+        let installation =
+            inspect_distribution(&HostLayout::under(root.path()), Distribution::Kubernetes)
+                .unwrap()
+                .unwrap();
+        let cluster = installation.cluster.unwrap();
+        assert_eq!(cluster.service_cidr.as_deref(), Some("10.96.0.0/12"));
+        assert_eq!(cluster.cluster_cidr.as_deref(), Some("10.244.0.0/16"));
+        assert_eq!(cluster.cluster_domain.as_deref(), Some("corp.example"));
+        assert_eq!(cluster.cni, None);
     }
 }

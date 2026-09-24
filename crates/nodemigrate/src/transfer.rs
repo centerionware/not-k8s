@@ -42,7 +42,7 @@ pub struct KubeApi {
 
 impl KubeApi {
     pub fn source(installation: &Installation) -> Result<Self> {
-        let kubeconfig = std::env::var_os("KUBECONFIG")
+        let kubeconfig = std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
             .map(PathBuf::from)
             .or_else(|| {
                 installation
@@ -50,9 +50,15 @@ impl KubeApi {
                     .as_ref()
                     .and_then(|cluster| cluster.kubeconfig.clone())
             })
+            .or_else(|| std::env::var_os("KUBECONFIG").map(PathBuf::from))
             .unwrap_or_else(|| match installation.distribution {
                 crate::request::Distribution::K3s => PathBuf::from("/etc/rancher/k3s/k3s.yaml"),
-                _ => PathBuf::from("/etc/kubernetes/admin.conf"),
+                crate::request::Distribution::Nodestore => {
+                    PathBuf::from("/etc/nodebootstrap/admin.kubeconfig")
+                }
+                crate::request::Distribution::Kubernetes => {
+                    PathBuf::from("/etc/kubernetes/admin.conf")
+                }
             });
         ensure!(
             kubeconfig.is_file(),
@@ -62,11 +68,20 @@ impl KubeApi {
         Ok(Self { kubeconfig })
     }
 
-    pub fn destination() -> Result<Self> {
+    pub fn destination(distribution: crate::request::Distribution) -> Result<Self> {
+        if let Some(path) = std::env::var_os("NODEMIGRATE_DESTINATION_KUBECONFIG") {
+            return Ok(Self {
+                kubeconfig: PathBuf::from(path),
+            });
+        }
         let directory = std::env::var_os("NODEBOOTSTRAP_KUBECONFIG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/etc/nodebootstrap"));
-        let kubeconfig = directory.join("admin.kubeconfig");
+        let kubeconfig = match distribution {
+            crate::request::Distribution::K3s => PathBuf::from("/etc/rancher/k3s/k3s.yaml"),
+            crate::request::Distribution::Kubernetes => PathBuf::from("/etc/kubernetes/admin.conf"),
+            crate::request::Distribution::Nodestore => directory.join("admin.kubeconfig"),
+        };
         Ok(Self { kubeconfig })
     }
 
@@ -173,14 +188,25 @@ impl KubeApi {
                         continue;
                     }
                     let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
-                    let list = api.list(&ListParams::default()).await.with_context(|| {
-                        format!("listing {} objects from the source API", resource.kind)
-                    })?;
-                    for object in list.items {
-                        let value = serde_json::to_value(object)
-                            .context("serializing Kubernetes object")?;
-                        if !skip_object(&value) {
-                            objects.push(value);
+                    let mut continue_token = None;
+                    loop {
+                        let mut params = ListParams::default().limit(500);
+                        if let Some(token) = continue_token.as_deref() {
+                            params = params.continue_token(token);
+                        }
+                        let page = api.list(&params).await.with_context(|| {
+                            format!("listing {} objects from the source API", resource.kind)
+                        })?;
+                        for object in page.items {
+                            let value = serde_json::to_value(object)
+                                .context("serializing Kubernetes object")?;
+                            if !skip_object(&value) {
+                                objects.push(value);
+                            }
+                        }
+                        continue_token = page.metadata.continue_.filter(|token| !token.is_empty());
+                        if continue_token.is_none() {
+                            break;
                         }
                     }
                 }
@@ -474,7 +500,7 @@ async fn apply_object(
     let applied = api
         .patch(
             name,
-            &PatchParams::apply("nodemigrate"),
+            &PatchParams::apply("nodemigrate").force(),
             &Patch::Apply(&object),
         )
         .await

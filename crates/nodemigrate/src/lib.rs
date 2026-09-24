@@ -19,8 +19,8 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     }
 
     if args.as_slice() == ["inspect"] {
-        let installation = detect::inspect_host(&detect::HostLayout::system())?;
-        let report = detect::InventoryReport::from_installation(installation);
+        let installations = detect::inspect_all(&detect::HostLayout::system())?;
+        let report = detect::InventoryReport::from_installations(installations);
         println!(
             "{}",
             serde_json::to_string_pretty(&report).context("encoding inventory report")?
@@ -29,41 +29,58 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     }
 
     let request = request::MigrationRequest::parse(&args)?;
-    let installation = detect::inspect_host(&detect::HostLayout::system())?;
-    let installation =
-        installation.context("no supported local Kubernetes installation was detected")?;
-    request.validate_source(&installation)?;
+    let layout = detect::HostLayout::system();
+    let source = detect::inspect_distribution(&layout, request.from)?
+        .with_context(|| format!("no local {:?} installation was detected", request.from))?;
+    request.validate_source(&source)?;
     if request.uninstall_after_migrate {
-        service::require_supported_uninstall(&installation)?;
+        service::require_supported_uninstall(&source)?;
     }
-    service::validate_disable_support(&installation)?;
+    if request.to == request::Distribution::Nodestore {
+        migrate_to_nodestore(&request, &source)
+    } else {
+        let target = detect::inspect_distribution(&layout, request.to)?.with_context(|| {
+            format!(
+                "no retained local {:?} target installation was detected",
+                request.to
+            )
+        })?;
+        migrate_to_existing(&request, &source, &target)
+    }
+}
+
+fn migrate_to_nodestore(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+) -> Result<()> {
+    service::validate_disable_support(source)?;
     ensure!(
         is_root(),
         "run nodemigrate as root so it can preserve service state and write the protected export"
     );
-    let source_api = transfer::KubeApi::source(&installation)?;
+    let source_api = transfer::KubeApi::source(source)?;
     let source_nodes = source_api.node_count()?;
     let joins_existing = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT").is_some();
     ensure!(
         source_nodes <= 1 || joins_existing,
         "the source cluster has {source_nodes} nodes; set NODEBOOTSTRAP_JOIN_ENDPOINT and NODEBOOTSTRAP_PEER_URL to replace this node in a nodestore cluster"
     );
-    let bootstrap = bootstrap_command(&installation)?;
-    let target_api = transfer::KubeApi::destination()?;
+    let bootstrap = bootstrap_command(source)?;
+    let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     if request.plan_only {
         source_api.ready()?;
-        println!("Migration plan: {:?} -> {:?}; source nodes={source_nodes}; destination={}; source service will be disabled; uninstall-after-migrate={}", request.from, request.to, if joins_existing { "existing cluster" } else { "new cluster" }, request.uninstall_after_migrate);
+        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, request.uninstall_after_migrate);
         return Ok(());
     }
 
-    let mut export = source_api.export(&installation)?;
+    let mut export = source_api.export(source)?;
     println!(
         "Protected API object export saved at {}",
         export.dir.display()
     );
-    let previous_service = service::disable(&installation)?;
+    let previous_service = service::disable(source)?;
     if let Err(error) = export.snapshot_host_paths() {
-        if let Err(restore_error) = service::restore(&installation, previous_service) {
+        if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("snapshotting local persistent volumes failed ({error:#}); restoring the source service also failed ({restore_error:#})");
         }
         return Err(error)
@@ -71,40 +88,91 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     }
     if let Err(error) = run_bootstrap(bootstrap) {
         if target_api.ready().is_ok() {
-            bail!("nodebootstrap failed ({error:#}) but a destination API is already answering; source K3s remains disabled to avoid a port conflict; recovery export: {}", export.dir.display());
+            bail!("nodebootstrap failed ({error:#}) but a destination API is already answering; source remains disabled to avoid a port conflict; recovery export: {}", export.dir.display());
         }
-        let restore_result = service::restore(&installation, previous_service);
-        if let Err(restore_error) = restore_result {
+        if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("nodebootstrap failed ({error:#}); restoring the source service also failed ({restore_error:#}); source remains disabled");
         }
-        return Err(error).context("nodestore bootstrap failed; original K3s service was restored");
+        return Err(error).context("nodestore bootstrap failed; original service was restored");
     }
 
     wait_for_api(&target_api).context(format!(
-        "destination did not become ready; source K3s remains disabled and the protected export is at {}",
+        "destination did not become ready; source remains disabled and the protected export is at {}",
         export.dir.display()
     ))?;
     if let Err(error) = target_api.import(&export) {
-        bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source K3s remains disabled and the protected export is at {}", export.dir.display());
+        bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
     }
-    let node_name = installation
-        .cluster
-        .as_ref()
-        .and_then(|cluster| cluster.node_name.as_deref())
-        .map(str::to_owned)
-        .unwrap_or_else(|| std::env::var("NODELET_NODE_NAME").unwrap_or_else(|_| hostname()));
+    let node_name = node_name(source);
     wait_for_node(&target_api, &node_name)?;
     if request.uninstall_after_migrate {
-        service::uninstall_k3s()?;
+        service::uninstall_source(source)?;
         export.restore_host_paths()?;
-        run_bootstrap(bootstrap_command(&installation)?)
-            .context("reconciling nodestore after the K3s uninstall script")?;
+        run_bootstrap(bootstrap_command(source)?)
+            .context("reconciling nodestore after source uninstall")?;
         wait_for_api(&target_api)
             .context("destination failed API readiness after K3s uninstall cleanup")?;
         wait_for_node(&target_api, &node_name)
             .context("replacement node failed readiness after K3s uninstall cleanup")?;
     }
     println!("Migration completed and the destination API passed readiness checks. Export retained at {}", export.dir.display());
+    Ok(())
+}
+
+fn migrate_to_existing(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+    target: &detect::Installation,
+) -> Result<()> {
+    ensure!(
+        source.distribution == request::Distribution::Nodestore,
+        "migration to an existing Kubernetes installation currently starts from nodestore"
+    );
+    service::validate_disable_support(source)?;
+    ensure!(
+        is_root(),
+        "run nodemigrate as root to control both service stacks"
+    );
+    let source_api = transfer::KubeApi::source(source)?;
+    let target_api = transfer::KubeApi::destination(request.to)?;
+    source_api.ready()?;
+    if request.plan_only {
+        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; uninstall-after-migrate={}", request.to, target.service_name, request.uninstall_after_migrate);
+        return Ok(());
+    }
+    let mut export = source_api.export(source)?;
+    println!(
+        "Protected API object export saved at {}",
+        export.dir.display()
+    );
+    let previous_service = service::disable(source)?;
+    if let Err(error) = export.snapshot_host_paths() {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#})");
+        }
+        return Err(error)
+            .context("local persistent volume snapshot failed; nodestore was restored");
+    }
+    if let Err(error) = service::activate(target) {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("starting the retained target failed ({error:#}); restoring nodestore also failed ({restore_error:#})");
+        }
+        return Err(error).context("starting the retained target; nodestore was restored");
+    }
+    wait_for_api(&target_api).context("retained destination API did not become ready")?;
+    if let Err(error) = target_api.import(&export) {
+        bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
+    }
+    wait_for_node(&target_api, &node_name(target))?;
+    if request.uninstall_after_migrate {
+        service::uninstall_source(source)?;
+        export.restore_host_paths()?;
+    }
+    println!(
+        "Migration to {:?} completed. Export retained at {}",
+        request.to,
+        export.dir.display()
+    );
     Ok(())
 }
 
@@ -166,6 +234,16 @@ fn hostname() -> String {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "localhost".to_string())
+}
+
+fn node_name(installation: &detect::Installation) -> String {
+    installation
+        .cluster
+        .as_ref()
+        .and_then(|cluster| cluster.node_name.as_deref())
+        .map(str::to_owned)
+        .or_else(|| std::env::var("NODELET_NODE_NAME").ok())
+        .unwrap_or_else(hostname)
 }
 
 fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
@@ -292,6 +370,9 @@ fn print_help() {
          Usage:\n\
          \x20 nodemigrate inspect\n\
          \x20 nodemigrate to=nodestore from=k3s [uninstall-after-migrate=true]\n\
+         \x20 nodemigrate to=nodestore from=kubernetes\n\
+         \x20 nodemigrate to=k3s from=nodestore\n\
+         \x20 nodemigrate to=kubernetes from=nodestore\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
