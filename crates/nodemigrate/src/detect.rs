@@ -561,7 +561,13 @@ fn detect_cni_provider(layout: &HostLayout, config_dir: &Path) -> Option<String>
         .flatten()
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.is_file()
+                && matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("conf" | "conflist" | "json")
+                )
+        })
         .collect();
     files.sort();
 
@@ -1035,6 +1041,12 @@ mod tests {
             r#"{"cniVersion":"0.4.0","name":"cilium","plugins":[{"type":"cilium-cni"}]}"#,
         )
         .unwrap();
+        fs::write(
+            root.path()
+                .join("etc/cni/net.d/10-flannel.conflist.cilium_bak"),
+            r#"{"cniVersion":"0.4.0","name":"flannel","plugins":[{"type":"flannel"}]}"#,
+        )
+        .unwrap();
 
         assert_eq!(
             detect_external_cni(&HostLayout::under(root.path())).as_deref(),
@@ -1048,10 +1060,8 @@ mod tests {
         fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
         fs::create_dir_all(root.path().join("etc/rancher/k3s")).unwrap();
         fs::create_dir_all(root.path().join("var/lib/rancher/k3s/server/db")).unwrap();
-        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/containerd"))
-            .unwrap();
-        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/cni/net.d"))
-            .unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/containerd")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/cni/net.d")).unwrap();
         fs::create_dir_all(root.path().join("var/lib/rancher/k3s/data/current/bin")).unwrap();
         fs::write(
             root.path().join("etc/systemd/system/k3s.service"),
@@ -1083,11 +1093,15 @@ mod tests {
         assert_eq!(cluster.cni.as_deref(), Some("cilium"));
         assert_eq!(
             cluster.cni_conf_dir.as_deref(),
-            Some(std::path::Path::new("/var/lib/rancher/k3s/agent/etc/cni/net.d"))
+            Some(std::path::Path::new(
+                "/var/lib/rancher/k3s/agent/etc/cni/net.d"
+            ))
         );
         assert_eq!(
             cluster.cni_bin_dir.as_deref(),
-            Some(std::path::Path::new("/var/lib/rancher/k3s/data/current/bin"))
+            Some(std::path::Path::new(
+                "/var/lib/rancher/k3s/data/current/bin"
+            ))
         );
     }
 

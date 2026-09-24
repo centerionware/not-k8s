@@ -151,13 +151,16 @@ support is not guaranteed.
 The latest pushed SHA, `1c42edc6`, passed the nodemigrate release artifact
 check (run `36046895086`) and shell validation (run `36046895281`). The
 focused crate test run `36046895251` failed only the new kube-client runtime
-regression because its escaped YAML string lost indentation; the fixture has
-been corrected to a raw string and awaits retest. Manual run
+regression because its escaped YAML string lost indentation; the corrected
+raw-YAML fixture passed in run `36048275119`. Manual run
 `36046899524` built nodemigrate and verified the `v0.8.0` digest/components.
 Both source clusters passed full workload and storage checks and printed the
 five-emoji unattended warning. K3s then selected the built-in flannel target
-despite its Cilium source, and failed waiting for a flannel subnet. Upstream
-Kubernetes reached target startup, but the nodeapiserver could not bind port
+despite its Cilium source, and failed waiting for a flannel subnet. The source
+directory contains an inactive `10-flannel.conflist.cilium_bak`; the detector
+was treating backup files as active configs. Detection now considers CNI
+config extensions only, with a focused regression test. Upstream Kubernetes
+reached target startup, but the nodeapiserver could not bind port
 6443, so readiness failed; its nodestore service also logged client CA and
 port errors. The five-node Docker image built, but systemd exited 255 with
 empty output after the entrypoint printed `/usr/lib/systemd/systemd`. No
@@ -203,9 +206,10 @@ No local Cargo test/build was run.
 | 2026-09-24 | Worktree after `cefadddd` | Runtime follow-up | Enters the Tokio runtime while building the Kubernetes API client and adds a focused regression test. The Docker entrypoint now prints the resolved systemd path and enables debug console logs. Shell/runtime validation pending. | — |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Focused nodemigrate tests | 49 passed; the new runtime-context regression did not reach client creation because Rust's escaped string removed YAML indentation. Fixture corrected to raw YAML; retest pending. | [Run 36046895251](https://github.com/centerionware/not-k8s/actions/runs/36046895251) |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | K3s + Cilium migration | Source-stage checks passed and the warning printed. Target bootstrap unexpectedly enabled flanneld, which never wrote its subnet. Need resolve why source detection selected flannel instead of external Cilium. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
+| 2026-09-24 | `65e212ec976fd68cbb5e97645c6e6bccd2158fe6` | Focused nodemigrate tests | Passed, including the runtime-context regression with corrected raw YAML. | [Run 36048275119](https://github.com/centerionware/not-k8s/actions/runs/36048275119) |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Upstream Kubernetes + Cilium migration | Source-stage checks passed and the warning printed. Target nodeapiserver could not bind 6443; nodestore logged port-in-use and UnknownIssuer errors. No transfer completed. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
 | 2026-09-24 | `1c42edc60fe45a5af654dd3a3f6d055047eacaff` | Five-node Docker preflight | Image build passed; systemd executable was resolved to `/usr/lib/systemd/systemd`, but the container exited 255 with no further output. | [Run 36046899524](https://github.com/centerionware/not-k8s/actions/runs/36046899524) |
-| 2026-09-24 | Worktree after `1c42edc6` | Follow-up | Corrects the runtime-context regression fixture; source CNI detection, upstream static-pod cleanup/port handoff, and Docker systemd startup remain under investigation. | — |
+| 2026-09-24 | Worktree after `1c42edc6` | Follow-up | Corrects the runtime-context regression fixture. CNI detection now ignores non-config backups such as `10-flannel.conflist.cilium_bak`; focused validation pending. Upstream static-pod cleanup/port handoff and Docker systemd startup remain under investigation. | — |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
