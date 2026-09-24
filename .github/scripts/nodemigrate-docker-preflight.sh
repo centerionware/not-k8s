@@ -53,7 +53,7 @@ for node in "${NODES[@]}"; do
         --tmpfs /run \
         --tmpfs /run/lock \
         --tmpfs /sys/fs/bpf \
-        --mount type=bind,src=/sys/fs/cgroup,dst=/sys/fs/cgroup,rw \
+        --mount type=bind,src=/sys/fs/cgroup,dst=/sys/fs/cgroup,rw=true \
         --volume "$volume:/var/lib/nodemigrate-volume" \
         "$IMAGE" >/dev/null
 done

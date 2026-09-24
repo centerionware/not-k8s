@@ -76,12 +76,17 @@ install_tools() {
     apt-get update -qq
     apt-get install -y -qq apt-transport-https ca-certificates conntrack curl \
         containernetworking-plugins ebtables ethtool gpg jq socat
-    local cni_plugin_dir
-    cni_plugin_dir="$(dpkg -L containernetworking-plugins | sed -n 's#\(/usr/lib/cni\)/bridge$#\1#p' | head -n 1)"
-    [[ -n "$cni_plugin_dir" && -x "$cni_plugin_dir/bridge" && -x "$cni_plugin_dir/loopback" ]] \
-        || { echo "containernetworking-plugins did not install bridge and loopback binaries" >&2; return 1; }
+    local cni_bridge cni_plugin_dir
+    cni_bridge="$(dpkg -L containernetworking-plugins | awk '/\/bridge$/ { print; exit }')"
+    [[ -n "$cni_bridge" && -x "$cni_bridge" ]] \
+        || { echo "containernetworking-plugins did not install its bridge binary" >&2; return 1; }
+    cni_plugin_dir="${cni_bridge%/*}"
+    [[ -x "$cni_plugin_dir/loopback" ]] \
+        || { echo "containernetworking-plugins did not install loopback binary" >&2; return 1; }
     install -d /opt/cni/bin
-    cp -a "$cni_plugin_dir"/. /opt/cni/bin/
+    for plugin in "$cni_plugin_dir"/*; do
+        ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
+    done
     mkdir -p /etc/apt/keyrings
     local stable minor
     stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"

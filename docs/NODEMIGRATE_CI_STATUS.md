@@ -148,19 +148,17 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest completed targeted nodemigrate check is `c6517316` (run
-`36037058359`): crate tests, packaging, and crate detection passed, including
-interactive confirmation and noninteractive warning behavior. At `c6517316`,
-the authorized manual run built the PR utility and verified the `v0.8.0`
-runtime digest but failed before nodemigrate was invoked. K3s selected the
-stale Podman bridge config at `/etc/cni/net.d/87-podman-bridge.conflist` with
-missing bridge and loopback plugins in `/opt/cni/bin`, and the CSI hostPath
-plugin directory `/var/lib/nodelet/plugins` was absent. Kubeadm's Cilium
-operator tried `https://127.0.0.1:6443`, which does not match the API
-certificate SANs. The Docker preflight failed because Ubuntu 24.04 exposes
-`bpftool` through its kernel tools package rather than an installable
-`bpftool` package. The source-setup fixes are unverified. See
-[run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232).
+The latest completed targeted nodemigrate check is `0655d0aa` (run
+`36039622199`): crate tests, packaging, and crate detection passed, including
+interactive confirmation and noninteractive warning behavior. At
+`0655d0aa`, the authorized manual run built the PR utility and verified the
+`v0.8.0` runtime digest but failed before reaching Kubernetes setup. The CNI
+package installed its binaries outside the `/usr/lib/cni` path assumed by the
+fixture; the follow-up locates the package's installed bridge and loopback
+plugins. The Docker image built, then the five-node probe rejected its bind
+mount because Docker requires `rw=true`, fixed in the follow-up. The previous
+run's CNI/Cilium/CSI fixture corrections remain unverified. See
+[run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520).
 No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
@@ -181,6 +179,8 @@ No local Cargo test/build was run.
 | 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Upstream Kubernetes + Cilium round trip | Failed before the first checkpoint: Cilium init `config` and `cilium-operator` crashed, and DaemonSet rollout timed out. The uploaded artifact lacks pod container logs; diagnostics now capture them on the next run. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 | 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | K3s + Cilium round trip | Failed before migration: runtime selected stale Podman bridge CNI config with absent `bridge`/`loopback` binaries, and CSI could not mount `/var/lib/nodelet/plugins`. Follow-up aligns Cilium CNI paths and creates plugin directories. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
 | 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | Upstream Kubernetes + Cilium round trip | Failed before migration: Cilium's API client used `127.0.0.1`, which is not in kubeadm's API certificate SANs. Follow-up uses the node's advertised InternalIP. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
+| 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | K3s + Cilium round trip | Failed in fixture dependency setup before installing K3s: the script searched `/usr/lib/cni`, but the runner's `containernetworking-plugins` package installed the binaries elsewhere. | [Run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520) |
+| 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | Upstream Kubernetes + Cilium round trip | Failed in fixture dependency setup before kubeadm init for the same CNI plugin directory assumption. | [Run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520) |
 | — | — | Existing-cluster join/replacement | Not run; scenario not yet exercised by current script | — |
 | — | — | Per-stage Cilium health assertions | Added to the script; static syntax passed, runtime lanes pending | [Run 35956267629](https://github.com/centerionware/not-k8s/actions/runs/35956267629) |
 | 2026-09-24 | `21d532991835ff587a918e3bf665ed4f601e6fdf` | Nodemigrate crate tests | Passed | [Run 35956267726](https://github.com/centerionware/not-k8s/actions/runs/35956267726) |
@@ -262,6 +262,8 @@ No local Cargo test/build was run.
 | 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Release-backed migration workflow | Building `nodemigrate`, fetching the latest regular combined runtime `v0.8.0`, verifying its digest, and checking components passed. K3s and kubeadm lanes failed during CNI/Cilium setup before nodemigrate was invoked. Docker preflight failed because the Dockerfile path was relative to the wrong directory; fixed in the follow-up. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 | 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | Targeted nodemigrate checks | Crate tests, packaging, and crate detection passed, including interactive risk confirmation and noninteractive warning behavior. | [Run 36037058359](https://github.com/centerionware/not-k8s/actions/runs/36037058359) |
 | 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | Release-backed migration workflow | PR utility build and v0.8.0 runtime digest/component checks passed. Both migration lanes failed during CNI/Cilium/CSI setup before nodemigrate ran; the Docker preflight failed because Ubuntu's `bpftool` name has no package candidate. Follow-up fixes remain unverified. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
+| 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | Targeted nodemigrate checks | Crate tests, packaging, and crate detection passed, including interactive risk confirmation and noninteractive warning behavior. | [Run 36039622199](https://github.com/centerionware/not-k8s/actions/runs/36039622199) |
+| 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | Release-backed migration workflow | PR utility build and v0.8.0 runtime digest/component checks passed. Both lanes stopped in CNI plugin prerequisite setup; the Docker node image built, but its probe failed on invalid bind-mount syntax. Follow-up fixes are not yet verified. | [Run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved

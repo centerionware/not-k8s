@@ -14,9 +14,9 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed attempt failed before migration: K3s selected stale Podman CNI config, and kubeadm Cilium used an API address absent from its certificate SANs. Fixture corrections are pending verification. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed attempt stopped in fixture dependency setup because its CNI plugin path assumption was wrong. Earlier source setup exposed stale Podman CNI selection and a kubeadm Cilium API certificate mismatch; fixes are pending verification. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation preflight | Manual run reached Docker image build but failed because `bpftool` is not an installable package name on Ubuntu 24.04. Five-node Docker, CRI, BPF, network isolation, and failure/restart capabilities remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation preflight | Manual run built the image but its probe failed on invalid `--mount` syntax for the cgroup bind. Five-node Docker, CRI, BPF, network isolation, and failure/restart capabilities remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
@@ -68,7 +68,8 @@ separate living documents below.
   the dedicated migration runtime workflow; its first release-backed attempt
   failed during source cluster setup before the migration utility ran. A
   second attempt at `c6517316` exposed CNI-path, CSI plugin-directory, and
-  kubeadm API endpoint fixture issues; see [run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232).
+  kubeadm API endpoint fixture issues. A third attempt stopped in CNI package
+  path setup and Docker preflight mount syntax; see [run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520).
 - The current worktree adds protected export UID metadata, Node replacement
   state preservation and UID preconditions, and full migratable-object
   fingerprints in the integration fixture. Focused snapshot-filter checks,

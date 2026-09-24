@@ -60,9 +60,9 @@ distribution:
 
 The workflow is manual. The user authorized the dedicated migration runtime
 workflow while excluding the standard e2e and build gates. The latest attempt
-against the `v0.8.0` runtime failed during source CNI/Cilium/CSI setup, before
-nodemigrate was invoked. See the [CI status](NODEMIGRATE_CI_STATUS.md) for run
-details.
+against the `v0.8.0` runtime failed during fixture prerequisite setup, before
+Kubernetes was installed or nodemigrate was invoked. See the
+[CI status](NODEMIGRATE_CI_STATUS.md) for run details.
 
 ## Merge-gate status
 
@@ -107,6 +107,8 @@ establish no differences across the full migrated state.
 | 2026-09-24 | `fc161b8c4262cdeb251abf6bbf2090e180d56c55` | Upstream Kubernetes+Cilium integration round trip | Failed before migration: Cilium config init and operator crashed, then rollout timed out. | [Run 36034461348](https://github.com/centerionware/not-k8s/actions/runs/36034461348) |
 | 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | K3s+Cilium integration round trip | Failed before migration: runtime selected stale Podman bridge CNI config without the bridge and loopback plugins; the CSI hostPath plugin directory was absent. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
 | 2026-09-24 | `c651731652298f73540ba71a83b3c4cf6972bf64` | Upstream Kubernetes+Cilium integration round trip | Failed before migration: Cilium's API endpoint `127.0.0.1` did not match kubeadm's API certificate SANs. | [Run 36037082232](https://github.com/centerionware/not-k8s/actions/runs/36037082232) |
+| 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | K3s+Cilium integration round trip | Failed before K3s installation: the installed CNI plugin package did not use the `/usr/lib/cni` path assumed by the fixture. | [Run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520) |
+| 2026-09-24 | `0655d0aacb6e7d90ee221061e7172842d63fcc99` | Upstream Kubernetes+Cilium integration round trip | Failed before kubeadm init because the fixture could not resolve the installed CNI plugin directory. | [Run 36039647520](https://github.com/centerionware/not-k8s/actions/runs/36039647520) |
 
 Update this table after each implementation or verification change. Record the
 exact SHA, workflow run, source distribution, CNI, and whether each stage
