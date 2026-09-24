@@ -66,8 +66,11 @@ separate living documents below.
   state preservation and UID preconditions, and full migratable-object
   fingerprints in the integration fixture. Focused snapshot-filter checks,
   shell syntax, Rust formatting, and whitespace checks pass locally. Targeted
-  nodemigrate CI is pending because GitHub connectivity failed before the
-  branch update; no Cargo build or test was run locally.
+  nodemigrate checks ran at `caed49582952a0743d87a06bbb52fceb737c059e`
+  ([run 35972976396](https://github.com/centerionware/not-k8s/actions/runs/35972976396));
+  packaging and detection passed, but crate tests failed. GitHub log retrieval
+  failed, so the diagnostic remains unknown. No Cargo build or test was run
+  locally.
 
 ## Next actions
 
