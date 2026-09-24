@@ -32,8 +32,8 @@ from the source installation where available.
 The supported directions are K3s or upstream Kubernetes to nodestore, and
 nodestore to a retained local K3s or upstream Kubernetes installation. The
 return path starts the retained target service and imports the nodestore API
-state. The target distribution must already be installed on the host; the
-source installation is retained for rollback by default. `KUBECONFIG` may
+state. The original source stays installed for rollback by default, which
+provides the retained local target for a return migration. `KUBECONFIG` may
 select an alternate source config, `NODEMIGRATE_SOURCE_KUBECONFIG` explicitly
 overrides it, and `NODEMIGRATE_DESTINATION_KUBECONFIG` overrides the target
 config.
@@ -80,3 +80,7 @@ nodestore uses nodebootstrap's uninstall mode. Without this flag, no source
 uninstall is run. This is an API-level cluster migration, not a byte-for-byte
 datastore restore. The export is retained after success so operators can
 inspect it or recover individual objects and local volume data.
+
+See [NODEMIGRATE_GOAL.md](NODEMIGRATE_GOAL.md) for the full scope and the
+task-specific validation rules. [NODEMIGRATE_STATUS.md](NODEMIGRATE_STATUS.md)
+is the dashboard for separate living migration, CI, and release status records.

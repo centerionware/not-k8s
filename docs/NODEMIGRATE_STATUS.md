@@ -1,0 +1,36 @@
+# nodemigrate status dashboard
+
+Last updated: 2026-09-24
+
+This dashboard tracks the full nodemigrate goal in
+[NODEMIGRATE_GOAL.md](NODEMIGRATE_GOAL.md). Detailed status is kept in the
+separate living documents below.
+
+## Current state
+
+| Area | State | Detail |
+| --- | --- | --- |
+| Full bidirectional migration implementation | In progress; code present, reverse paths not runtime-verified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
+
+## Current verification
+
+- Targeted quick-check passed at `daac9ad05285e6ff749d4c51a18f9b71c8fb7dee`
+  before bidirectional migration changes.
+- Targeted quick-check and nodemigrate crate checks at
+  `55704b1c202c248ab633aac8c74877c46499e59f` failed to compile. Corrections
+  are present in the current worktree and await a targeted CI rerun.
+- No migration integration lane has been dispatched. The user directed that
+  general e2e and build gates not run; the dedicated runtime workflow also
+  remains undispatched pending explicit authorization.
+
+## Next actions
+
+1. Run allowed static checks and targeted quick-check for changed Rust crates.
+2. Update the migration and CI status pages with the new exact SHA and run
+   results.
+3. Keep both real-cluster lanes and the existing-cluster join/replacement case
+   marked unverified until their authorized runtime checks pass.
+4. Track release readiness and publication separately; do not bump the shared
+   version for nodemigrate-only publication.

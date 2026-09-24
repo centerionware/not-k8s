@@ -36,6 +36,7 @@ pub fn require_supported_uninstall(installation: &Installation) -> Result<()> {
             "uninstall-after-migrate=true requires nodebootstrap or notk8s on PATH or beside nodemigrate"
         ),
     }
+    Ok(())
 }
 
 pub fn validate_disable_support(installation: &Installation) -> Result<()> {

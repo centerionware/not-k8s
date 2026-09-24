@@ -1,0 +1,66 @@
+name: Nodemigrate tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/nodemigrate-integration.sh'
+      - '.github/workflows/nodemigrate-integration.yml'
+      - 'crates/nodemigrate/**'
+      - 'docs/NODEMIGRATE.md'
+      - 'docs/NODEMIGRATE_STATUS.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check shell syntax
+        run: bash -n .github/scripts/nodemigrate-integration.sh
+
+  migrate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [k3s, kubernetes]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build tools
+        run: cargo build --release -p notk8s --features cri -p nodemigrate
+
+      - name: Run migration
+        env:
+          NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG \
+            bash .github/scripts/nodemigrate-integration.sh
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-${{ matrix.source }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
+          if-no-files-found: warn
+          retention-days: 7

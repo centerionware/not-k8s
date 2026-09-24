@@ -217,10 +217,13 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
     let data_dir = layout.path("/var/lib/nodestore");
     let binary = first_file(layout, &["/usr/local/bin/nodestore", "/usr/bin/nodestore"]);
     let init_script = first_file(layout, &["/etc/init.d/nodestore"]);
-    let openrc_script = init_script.as_ref().filter(|path| {
-        std::fs::read_to_string(append(&layout.root, path))
-            .is_ok_and(|text| text.starts_with("#!/sbin/openrc-run"))
-    });
+    let openrc_script = init_script
+        .as_ref()
+        .filter(|path| {
+            std::fs::read_to_string(append(&layout.root, path))
+                .is_ok_and(|text| text.starts_with("#!/sbin/openrc-run"))
+        })
+        .cloned();
     let sysv_script = init_script.filter(|_| openrc_script.is_none());
     let runit_service = first_dir(
         layout,
@@ -228,7 +231,7 @@ fn inspect_nodestore(layout: &HostLayout) -> Result<Option<Installation>> {
     );
     let service_file = systemd_unit
         .clone()
-        .or_else(|| openrc_script.cloned())
+        .or_else(|| openrc_script.clone())
         .or_else(|| sysv_script.clone())
         .or_else(|| runit_service.clone());
     if service_file.is_none() && binary.is_none() && !data_dir.is_dir() {
@@ -322,7 +325,7 @@ fn inspect_kubernetes(layout: &HostLayout) -> Result<Option<Installation>> {
 
 fn manifest_argument(path: &Path, flag: &str) -> Option<String> {
     let manifest: Value = serde_yaml::from_slice(&std::fs::read(path).ok()?).ok()?;
-    let containers = manifest.pointer("/spec/containers")?.as_sequence()?;
+    let containers = manifest.get("spec")?.get("containers")?.as_sequence()?;
     containers
         .iter()
         .flat_map(|container| {
