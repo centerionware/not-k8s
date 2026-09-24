@@ -568,6 +568,8 @@ impl KubeApi {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
                 let mut failures = Vec::new();
+                let mut crd_applied = 0;
+                let mut crd_failed = 0;
                 for object in pending {
                     let value: Value = serde_json::from_slice(
                         &fs::read(&object.path)
@@ -583,8 +585,13 @@ impl KubeApi {
                     if attempt == 0 {
                         source_crd_apis.extend(custom_resource_gvks(&initial));
                     }
+                    let is_crd = initial.get("kind").and_then(Value::as_str)
+                        == Some("CustomResourceDefinition");
                     match apply_object(&client, &discovery, &initial).await {
                         Ok(applied) => {
+                            if is_crd {
+                                crd_applied += 1;
+                            }
                             if let (Some(source_uid), Some(destination_uid)) = (
                                 object.source_uid,
                                 applied.metadata.uid,
@@ -593,6 +600,9 @@ impl KubeApi {
                             }
                         }
                         Err(error) => {
+                            if is_crd {
+                                crd_failed += 1;
+                            }
                             failures.push((object_type_label(&initial), error.to_string()));
                             retry.push(object);
                         }
@@ -605,6 +615,11 @@ impl KubeApi {
                 let crd_apply_failed = failures
                     .iter()
                     .any(|(object_type, _)| object_type.ends_with("/CustomResourceDefinition"));
+                if attempt == 0 && !source_crd_apis.is_empty() {
+                    eprintln!(
+                        "nodemigrate: destination accepted {crd_applied} CustomResourceDefinition apply requests; {crd_failed} failed"
+                    );
+                }
                 if attempt == 0 && !source_crd_apis.is_empty() && !crd_apply_failed {
                     let missing = wait_for_custom_resource_apis(
                         &client,
@@ -613,13 +628,17 @@ impl KubeApi {
                     )
                     .await?;
                     if !missing.is_empty() {
+                        let crd_readback = destination_crd_readback(&client, &discovery)
+                            .await
+                            .unwrap_or_else(|error| format!("readback failed: {error:#}"));
+                        eprintln!("nodemigrate: destination CRD readback: {crd_readback}");
                         let missing = missing
                             .iter()
                             .map(|(group, version, kind)| format!("{group}/{version}/{kind}"))
                             .collect::<Vec<_>>()
                             .join(", ");
                         bail!(
-                            "{} Kubernetes objects could not be restored; export retained at {}. Destination did not expose these source CRD APIs after 60 seconds: {missing}. Last-attempt failures: {}",
+                            "{} Kubernetes objects could not be restored; export retained at {}. Destination did not expose these source CRD APIs after 60 seconds: {missing}. Destination CRD readback: {crd_readback}. Last-attempt failures: {}",
                             pending.len(), export.dir.display(), last_error
                         );
                     }
@@ -1408,6 +1427,53 @@ async fn wait_for_custom_resource_apis(
         missing = missing_custom_resource_apis(&discovery, expected);
     }
     Ok(missing)
+}
+
+async fn destination_crd_readback(client: &Client, discovery: &Discovery) -> Result<String> {
+    let (resource, _) = find_resource(
+        discovery,
+        "CustomResourceDefinition",
+        "apiextensions.k8s.io/v1",
+    )
+    .context("destination discovery has no apiextensions.k8s.io/v1 CustomResourceDefinition")?;
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .context("listing destination CustomResourceDefinitions")?;
+    let descriptions = list
+        .items
+        .iter()
+        .map(|crd| -> Result<String> {
+            let value = serde_json::to_value(crd).context("serializing destination CRD")?;
+            let name = crd.metadata.name.as_deref().unwrap_or("<unnamed>");
+            let conditions = value
+                .pointer("/status/conditions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|condition| {
+                    let kind = condition.get("type").and_then(Value::as_str)?;
+                    let status = condition.get("status").and_then(Value::as_str)?;
+                    let reason = condition
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown reason");
+                    Some(format!("{kind}={status} ({reason})"))
+                })
+                .collect::<Vec<_>>();
+            if conditions.is_empty() {
+                Ok(format!("{name}[no status conditions]"))
+            } else {
+                Ok(format!("{name}[{}]", conditions.join(", ")))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!(
+        "{} CRDs: {}",
+        descriptions.len(),
+        descriptions.join("; ")
+    ))
 }
 
 fn missing_custom_resource_apis(
