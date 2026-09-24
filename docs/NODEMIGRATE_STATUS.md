@@ -10,7 +10,7 @@ separate living documents below.
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | In progress; code present, reverse paths not runtime-verified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | In progress; later forward control-plane joins can skip repeated API imports, while staged reverse quorum handling and runtime paths remain unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s/Cilium and upstream Kubernetes/Cilium test lanes | Workflow and script drafted; manual runtime lanes not run | [CI status](NODEMIGRATE_CI_STATUS.md) |

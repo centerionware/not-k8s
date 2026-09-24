@@ -32,6 +32,11 @@ pub struct MigrationRequest {
     pub uninstall_after_migrate: bool,
     #[serde(default)]
     pub plan_only: bool,
+    /// Skip applying cluster-wide API objects when this control-plane node
+    /// joins an already migrated nodestore cluster. The per-node export is
+    /// still created and local host paths are still snapshotted.
+    #[serde(default)]
+    pub skip_api_import: bool,
 }
 
 impl MigrationRequest {
@@ -40,6 +45,7 @@ impl MigrationRequest {
         let mut from = None;
         let mut uninstall_after_migrate = false;
         let mut plan_only = false;
+        let mut skip_api_import = false;
 
         for raw in args {
             let (key, value) = raw
@@ -51,7 +57,8 @@ impl MigrationRequest {
                 "from" => set_once(&mut from, Distribution::parse(value)?, "from")?,
                 "uninstall-after-migrate" => uninstall_after_migrate = parse_bool(value, key)?,
                 "plan-only" | "dry-run" => plan_only = parse_bool(value, key)?,
-                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, or plan-only=)"),
+                "skip-api-import" => skip_api_import = parse_bool(value, key)?,
+                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, or skip-api-import=)"),
             }
         }
 
@@ -75,12 +82,24 @@ impl MigrationRequest {
             ),
             "migration between the two Kubernetes distributions is not supported directly"
         );
+        ensure!(
+            !skip_api_import
+                || matches!(
+                    (from, to),
+                    (
+                        Distribution::K3s | Distribution::Kubernetes,
+                        Distribution::Nodestore
+                    )
+                ),
+            "skip-api-import is only valid when migrating a source control plane to nodestore"
+        );
 
         Ok(Self {
             to,
             from,
             uninstall_after_migrate,
             plan_only,
+            skip_api_import,
         })
     }
 
@@ -153,6 +172,27 @@ mod tests {
                 .unwrap();
         assert!(request.plan_only);
         assert!(!request.uninstall_after_migrate);
+    }
+
+    #[test]
+    fn accepts_skipping_cluster_import_for_later_control_plane_join() {
+        let request = MigrationRequest::parse(&args(&[
+            "to=nodestore",
+            "from=kubernetes",
+            "skip-api-import=true",
+        ]))
+        .unwrap();
+        assert!(request.skip_api_import);
+    }
+
+    #[test]
+    fn rejects_skipping_cluster_import_on_reverse_migration() {
+        assert!(MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "skip-api-import=true",
+        ]))
+        .is_err());
     }
 
     #[test]

@@ -30,7 +30,14 @@ Node should be replaced; nodemigrate removes that stale Node after stopping
 the source service and waits for the new worker registration to become Ready.
 `NODEMIGRATE_NODE_NAME` overrides the detected node name. Cluster-wide API
 objects are transferred at the control-plane stage, not re-imported from each
-worker. On the return path, a detected not-k8s worker can start its retained
+worker. For an ordered multi-control-plane migration, migrate the first
+control-plane without `skip-api-import`; after its API state is imported and
+the destination is ready, migrate each later control-plane with
+`skip-api-import=true` while setting the normal nodestore join environment.
+Each later control plane still writes a protected per-node export and snapshots
+local host paths, but does not re-apply cluster-wide objects. This option is
+rejected unless the source is a control plane joining an existing nodestore
+cluster. On the return path, a detected not-k8s worker can start its retained
 K3s-agent or kubelet service against the existing target cluster and wait for
 a fresh Ready registration without importing cluster-wide objects again. Use
 `NODEMIGRATE_DESTINATION_KUBECONFIG` for a cluster-admin kubeconfig that can

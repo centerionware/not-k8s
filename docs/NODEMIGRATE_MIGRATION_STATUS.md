@@ -24,6 +24,7 @@ compile or unit test does not mark a real migration path as verified.
 | K3s → nodestore with external CNI such as Cilium | Implemented as external-CNI bootstrap and API-resource transfer | No real migration run recorded |
 | Upstream Kubernetes → nodestore | Implemented for detected local control planes | No real migration run recorded |
 | Join an existing nodestore control plane using nodebootstrap environment settings | Implemented through nodebootstrap join configuration, then a worker bootstrap registers the replacement node | Focused command tests passed in [run 35955823452](https://github.com/centerionware/not-k8s/actions/runs/35955823452); no real replacement-node run recorded |
+| Migrate later source control planes without re-importing cluster-wide objects | `skip-api-import=true` still creates a per-node protected export and local-volume snapshot, then joins the existing nodestore cluster without applying the cluster export; request validation rejects reverse/worker use and runtime validation requires an existing-cluster join | Focused CI pending for current change; first-control-plane import and multi-node runtime ordering remain unverified |
 | Replace an existing nodestore member | Implemented: wait for the replacement Kubernetes node to become Ready, require the learner to be active and caught up through the leader log tail, promote it, verify voter status, then remove the explicitly identified old member. A failed promotion leaves the old member in place; the membership operation is retryable. | Targeted nodestore/nodebootstrap/nodemigrate checks passed in [run 35957212012](https://github.com/centerionware/not-k8s/actions/runs/35957212012), [run 35957207376](https://github.com/centerionware/not-k8s/actions/runs/35957207376), and [run 35957207356](https://github.com/centerionware/not-k8s/actions/runs/35957207356); no real joined replacement run recorded |
 | Nodestore → retained K3s | Implemented; target must already be installed locally | No real migration run recorded |
 | Nodestore → retained upstream Kubernetes | Implemented; target must already be installed locally | No real migration run recorded |
@@ -68,7 +69,9 @@ workload/add-on/ingress specs, PV/PVC bindings, Cilium and required CRD state,
 and certificate-secret content by digest. They still do not provision or
 verify the five-node topology. QEMU or another isolated environment is
 acceptable; Docker requires evidence that it models the behaviors under test.
-No runtime gate has been dispatched.
+No runtime gate has been dispatched. The new skip-import path addresses
+repeated cluster-wide API application on later forward control-plane joins;
+the staged reverse path and quorum coordination remain unresolved.
 
 ## Verification history
 

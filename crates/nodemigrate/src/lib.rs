@@ -53,6 +53,9 @@ fn migrate_to_nodestore(
     request: &request::MigrationRequest,
     source: &detect::Installation,
 ) -> Result<()> {
+    let joins_existing =
+        std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT").is_ok_and(|endpoint| !endpoint.is_empty());
+    validate_skip_api_import(request, source, joins_existing)?;
     if source.role == detect::NodeRole::Worker {
         return migrate_worker_to_nodestore(request, source);
     }
@@ -63,7 +66,6 @@ fn migrate_to_nodestore(
     );
     let source_api = transfer::KubeApi::source(source)?;
     let source_nodes = source_api.node_count()?;
-    let joins_existing = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT").is_some();
     let replacement_member_id = if joins_existing {
         std::env::var("NODEBOOTSTRAP_MEMBER_ID")
             .ok()
@@ -88,7 +90,7 @@ fn migrate_to_nodestore(
         let replacement = replacement_member_id
             .map(|id| format!("; replace existing member {id} after the new node is Ready"))
             .unwrap_or_default();
-        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if joins_existing { "install node agent on replacement node; " } else { "" }, request.uninstall_after_migrate);
+        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
     }
 
@@ -126,8 +128,10 @@ fn migrate_to_nodestore(
         "destination did not become ready; source remains disabled and the protected export is at {}",
         export.dir.display()
     ))?;
-    if let Err(error) = target_api.import(&export) {
-        bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
+    if !request.skip_api_import {
+        if let Err(error) = target_api.import(&export) {
+            bail!("destination bootstrap succeeded but Kubernetes object import failed: {error:#}; source remains disabled and the protected export is at {}", export.dir.display());
+        }
     }
     if joins_existing {
         let worker = replacement_worker_command(source, &node_name(source))?;
@@ -236,6 +240,19 @@ fn validate_destination_node_replacement(existing_node: bool, replace: bool) -> 
     ensure!(
         !existing_node || replace,
         "set NODEMIGRATE_REPLACE_NODE=true to replace an existing destination node"
+    );
+    Ok(())
+}
+
+fn validate_skip_api_import(
+    request: &request::MigrationRequest,
+    source: &detect::Installation,
+    joins_existing: bool,
+) -> Result<()> {
+    ensure!(
+        !request.skip_api_import
+            || (source.role == detect::NodeRole::ControlPlane && joins_existing),
+        "skip-api-import=true requires a control-plane source joining an existing nodestore cluster; the first control plane must import cluster state"
     );
     Ok(())
 }
@@ -660,6 +677,9 @@ fn print_help() {
          \x20 nodemigrate to=k3s from=nodestore\n\
          \x20 nodemigrate to=kubernetes from=nodestore\n\
          \n\
+         Later control-plane nodes joining an already migrated nodestore cluster\n\
+         may use skip-api-import=true; the first control plane must import state.\n\
+         \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
          disables the source service, and keeps the export. Source uninstall\n\
@@ -669,8 +689,13 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::{replacement_worker_args, validate_destination_node_replacement};
-    use crate::detect::{ClusterConfig, K3sDatastore};
+    use super::{
+        replacement_worker_args, validate_destination_node_replacement, validate_skip_api_import,
+    };
+    use crate::{
+        detect::{ClusterConfig, Installation, K3sDatastore, NodeRole},
+        request::{Distribution, MigrationRequest},
+    };
     use std::path::Path;
 
     fn cluster(cni: Option<&str>, backend: Option<&str>) -> ClusterConfig {
@@ -726,5 +751,33 @@ mod tests {
         assert!(validate_destination_node_replacement(true, false).is_err());
         assert!(validate_destination_node_replacement(true, true).is_ok());
         assert!(validate_destination_node_replacement(false, false).is_ok());
+    }
+
+    #[test]
+    fn skip_api_import_requires_control_plane_join() {
+        let request = MigrationRequest::parse(&[
+            "to=nodestore".to_string(),
+            "from=kubernetes".to_string(),
+            "skip-api-import=true".to_string(),
+        ])
+        .unwrap();
+        let source = Installation {
+            distribution: Distribution::Kubernetes,
+            role: NodeRole::ControlPlane,
+            runtime_endpoint: None,
+            service_manager: None,
+            service_name: "kubelet".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: None,
+        };
+
+        assert!(validate_skip_api_import(&request, &source, true).is_ok());
+        assert!(validate_skip_api_import(&request, &source, false).is_err());
+
+        let mut worker = source;
+        worker.role = NodeRole::Worker;
+        assert!(validate_skip_api_import(&request, &worker, true).is_err());
     }
 }
