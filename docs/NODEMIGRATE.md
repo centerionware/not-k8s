@@ -86,10 +86,13 @@ host binaries, interfaces, routes, and kernel state.
 
 PersistentVolume and PersistentVolumeClaim objects are migrated during the
 control-plane stage. For local and hostPath PersistentVolumes, nodemigrate
-snapshots referenced host paths into the protected export before changing
-control-plane services. A worker replacement also reads the target PV list and
-retains a local hostPath/local-volume snapshot without re-importing API
-objects; source uninstall restores that snapshot afterward. The runtime
+reads the local Kubernetes Node labels and snapshots only host paths whose
+required PV node affinity matches that node. If neither API exposes the local
+Node, it logs a warning and backs up all safe PV paths found on the host so
+unknown affinity cannot omit local data. A worker replacement also reads the
+target PV list and retains its local hostPath/local-volume snapshot without
+re-importing API objects; source uninstall restores that snapshot afterward.
+The runtime
 preservation and rollback behavior still needs a live multi-node check. If
 `uninstall-after-migrate=true` invokes the K3s uninstall script, the host path
 is restored afterward. Network and CSI backed volume payloads stay with their

@@ -180,6 +180,8 @@ fn migrate_worker_to_nodestore(
     let name = node_name(source);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     target_api.ready()?;
+    let local_node_labels =
+        local_node_labels(transfer::KubeApi::source(source), &target_api, &name);
     let existing_node = target_api.node_exists(&name)?;
     let replace_existing = replace_existing_node_requested()?;
     validate_destination_node_replacement(existing_node, replace_existing)
@@ -195,7 +197,7 @@ fn migrate_worker_to_nodestore(
         return Ok(());
     }
 
-    let host_path_snapshot = target_api.snapshot_host_paths()?;
+    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels.as_ref())?;
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
@@ -313,7 +315,9 @@ fn migrate_to_existing(
         .map(|source_api| source_api.export(source))
         .transpose()?;
     let host_path_snapshot = if request.skip_api_export {
-        Some(target_api.snapshot_host_paths()?)
+        let name = node_name(target);
+        let local_node_labels = target_api.node_labels(&name).ok();
+        Some(target_api.snapshot_host_paths(local_node_labels.as_ref())?)
     } else {
         None
     };
@@ -430,6 +434,28 @@ fn validate_reverse_control_plane_options(
     Ok(())
 }
 
+fn local_node_labels(
+    source_api: Result<transfer::KubeApi>,
+    fallback_api: &transfer::KubeApi,
+    node_name: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    match source_api.and_then(|api| api.node_labels(node_name)) {
+        Ok(labels) => Some(labels),
+        Err(source_error) => match fallback_api.node_labels(node_name) {
+            Ok(labels) => Some(labels),
+            Err(fallback_error) => {
+                tracing::warn!(
+                    node = node_name,
+                    source_error = %source_error,
+                    fallback_error = %fallback_error,
+                    "could not read local Node labels from source or destination API"
+                );
+                None
+            }
+        },
+    }
+}
+
 fn migrate_worker_from_nodestore(
     request: &request::MigrationRequest,
     source: &detect::Installation,
@@ -448,6 +474,8 @@ fn migrate_worker_from_nodestore(
     let name = node_name(target);
     let target_api = transfer::KubeApi::destination(request.to)?;
     target_api.ready()?;
+    let local_node_labels =
+        local_node_labels(transfer::KubeApi::source(source), &target_api, &name);
     let existing_node = target_api.node_exists(&name)?;
     validate_destination_node_replacement(existing_node, replace_existing_node_requested()?)
         .with_context(|| format!("destination already has node {name}"))?;
@@ -456,7 +484,7 @@ fn migrate_worker_from_nodestore(
         return Ok(());
     }
 
-    let host_path_snapshot = target_api.snapshot_host_paths()?;
+    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels.as_ref())?;
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()

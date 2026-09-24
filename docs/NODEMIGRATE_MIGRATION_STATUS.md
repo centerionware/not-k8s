@@ -19,7 +19,7 @@ compile or unit test does not mark a real migration path as verified.
 | Detect an upstream control plane and read CIDRs and cluster domain | Implemented | Focused fixture passes after the rooted manifest path correction |
 | Identify Cilium and other known CNIs from the active host CNI configuration | Implemented for recognized CNI config names and plugin types | Focused fixture tests passed in [run 35955823452](https://github.com/centerionware/not-k8s/actions/runs/35955823452) |
 | Export all discovered API resource pages, including CRDs and add-ons | Implemented | Not yet exercised against a real cluster |
-| Carry static hostPath/local PV data and preserve CSI-backed data on the same host | Implemented for host paths; CSI data remains with its local driver | Not yet exercised through a round trip |
+| Carry static hostPath/local PV data and preserve CSI-backed data on the same host | Uses local Node labels to filter hostPath/local PV backups by required node affinity when available; if labels cannot be read, logs a warning and backs up every safe path found locally rather than omitting unknown candidates. CSI data remains with its storage provider. | Focused affinity fixtures added; CI pending, no round trip evidence |
 | K3s → nodestore with Flannel | Implemented | No real migration run recorded |
 | K3s → nodestore with external CNI such as Cilium | Implemented as external-CNI bootstrap and API-resource transfer | No real migration run recorded |
 | Upstream Kubernetes → nodestore | Implemented for detected local control planes | No real migration run recorded |

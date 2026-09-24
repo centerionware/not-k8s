@@ -218,7 +218,23 @@ impl KubeApi {
 
     /// Back up hostPath/local PV payloads present on this node without
     /// exporting or re-applying cluster-wide API objects from a worker.
-    pub fn snapshot_host_paths(&self) -> Result<HostPathSnapshot> {
+    pub fn node_labels(&self, node_name: &str) -> Result<HashMap<String, String>> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering Kubernetes APIs")?;
+            node_labels(&client, &discovery, node_name).await
+        })
+    }
+
+    /// Back up the hostPath/local PV payloads on this host, using node labels
+    /// from the source cluster even when the destination has no Node object yet.
+    pub fn snapshot_host_paths(
+        &self,
+        node_labels: Option<&HashMap<String, String>>,
+    ) -> Result<HostPathSnapshot> {
         let (runtime, client) = self.connected()?;
         let objects = runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
@@ -242,7 +258,7 @@ impl KubeApi {
                 let page = api
                     .list(&params)
                     .await
-                    .context("listing destination PersistentVolumes for worker data backup")?;
+                    .context("listing destination PersistentVolumes for local data backup")?;
                 for object in page.items {
                     objects.push(
                         serde_json::to_value(object)
@@ -258,19 +274,26 @@ impl KubeApi {
         })?;
 
         let directory = export_directory()?;
-        let host_paths = persistent_host_paths(&objects);
+        if node_labels.is_none() {
+            tracing::warn!(
+                "could not read local Node labels; backing up every safe hostPath/local PV path present on this host"
+            );
+        }
+        let host_paths = persistent_host_paths(&objects, node_labels);
         let backups = backup_host_paths(&directory, &host_paths)?;
         Ok(HostPathSnapshot { directory, backups })
     }
 
     pub fn export(&self, installation: &Installation) -> Result<Export> {
         self.ready()?;
+        let node_name = installation_node_name(installation);
         let (runtime, client) = self.connected()?;
-        let objects = runtime.block_on(async {
+        let (objects, labels) = runtime.block_on(async {
             let discovery = Discovery::new(client.clone())
                 .run()
                 .await
                 .context("discovering source Kubernetes APIs")?;
+            let labels = node_labels(&client, &discovery, &node_name).await?;
             let mut objects = Vec::new();
             for group in discovery.groups() {
                 for (resource, capabilities) in group.recommended_resources() {
@@ -301,7 +324,7 @@ impl KubeApi {
                     }
                 }
             }
-            Ok::<_, anyhow::Error>(objects)
+            Ok::<_, anyhow::Error>((objects, labels))
         })?;
 
         if let Some(cluster) = &installation.cluster {
@@ -315,7 +338,7 @@ impl KubeApi {
             !objects.is_empty(),
             "source API returned no migratable objects"
         );
-        let host_paths = persistent_host_paths(&objects);
+        let host_paths = persistent_host_paths(&objects, Some(&labels));
         let mut objects: Vec<Value> = objects.into_iter().filter_map(sanitize).collect();
         objects.sort_by_key(object_rank);
 
@@ -494,10 +517,68 @@ fn restore_host_path_backups(backups: &[HostPathBackup]) -> Result<()> {
     Ok(())
 }
 
-fn persistent_host_paths(objects: &[Value]) -> Vec<PathBuf> {
+async fn node_labels(
+    client: &Client,
+    discovery: &Discovery,
+    name: &str,
+) -> Result<HashMap<String, String>> {
+    let (resource, capabilities) = find_resource(discovery, "Node", "v1")
+        .context("Kubernetes API does not expose Node while selecting local PV data")?;
+    ensure!(
+        capabilities.supports_operation(verbs::GET),
+        "Kubernetes API cannot read Node labels while selecting local PV data"
+    );
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+    let node = api
+        .get_opt(name)
+        .await
+        .with_context(|| format!("reading local Node {name} labels for PV selection"))?
+        .with_context(|| format!("local Node {name} is absent from the API during PV selection"))?;
+    let mut labels: HashMap<String, String> = node
+        .data
+        .pointer("/metadata/labels")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
+        .collect();
+    labels.insert("metadata.name".to_string(), name.to_string());
+    Ok(labels)
+}
+
+fn installation_node_name(installation: &Installation) -> String {
+    std::env::var("NODEMIGRATE_NODE_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            installation
+                .cluster
+                .as_ref()
+                .and_then(|cluster| cluster.node_name.clone())
+        })
+        .or_else(|| std::env::var("NODELET_NODE_NAME").ok())
+        .or_else(|| {
+            std::process::Command::new("uname")
+                .arg("-n")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
+        .unwrap_or_else(|| "localhost".to_string())
+}
+
+fn persistent_host_paths(
+    objects: &[Value],
+    node_labels: Option<&HashMap<String, String>>,
+) -> Vec<PathBuf> {
     let mut paths = std::collections::BTreeSet::new();
     for object in objects {
         if object.get("kind").and_then(Value::as_str) != Some("PersistentVolume") {
+            continue;
+        }
+        if node_labels.is_some_and(|labels| !pv_matches_node(object, labels)) {
             continue;
         }
         for path in [
@@ -528,6 +609,71 @@ fn persistent_host_paths(objects: &[Value]) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+fn pv_matches_node(object: &Value, node_labels: &HashMap<String, String>) -> bool {
+    let Some(terms) = object
+        .pointer("/spec/nodeAffinity/required/nodeSelectorTerms")
+        .and_then(Value::as_array)
+    else {
+        return true;
+    };
+    terms.iter().any(|term| {
+        let expressions = term
+            .get("matchExpressions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        let fields = term
+            .get("matchFields")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        let requirements: Vec<_> = expressions.chain(fields).collect();
+        !requirements.is_empty()
+            && requirements
+                .into_iter()
+                .all(|requirement| node_selector_requirement_matches(requirement, node_labels))
+    })
+}
+
+fn node_selector_requirement_matches(
+    requirement: &Value,
+    node_labels: &HashMap<String, String>,
+) -> bool {
+    let Some(key) = requirement.get("key").and_then(Value::as_str) else {
+        return false;
+    };
+    let value = node_labels.get(key);
+    let values: Vec<&str> = requirement
+        .get("values")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let operator = requirement
+        .get("operator")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match operator {
+        "In" => value.is_some_and(|value| values.contains(&value.as_str())),
+        "NotIn" => value.is_none_or(|value| !values.contains(&value.as_str())),
+        "Exists" => value.is_some(),
+        "DoesNotExist" => value.is_none(),
+        "Gt" | "Lt" => {
+            let Some(threshold) = values.first().and_then(|value| value.parse::<i64>().ok()) else {
+                return false;
+            };
+            value
+                .and_then(|value| value.parse::<i64>().ok())
+                .is_some_and(|value| match operator {
+                    "Gt" => value > threshold,
+                    _ => value < threshold,
+                })
+        }
+        _ => false,
+    }
 }
 
 fn backup_host_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<HostPathBackup>> {
@@ -719,6 +865,7 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::persistent_host_paths;
+    use std::collections::HashMap;
 
     #[test]
     fn host_path_backup_includes_safe_hostpath_and_local_volumes_once() {
@@ -743,8 +890,68 @@ mod tests {
         ];
 
         assert_eq!(
-            persistent_host_paths(&objects),
+            persistent_host_paths(&objects, Some(&HashMap::new())),
             [std::path::PathBuf::from("/srv/data")]
+        );
+    }
+
+    #[test]
+    fn host_path_backup_respects_required_pv_node_affinity() {
+        let objects = vec![
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {
+                    "local": {"path": "/srv/control-plane-data"},
+                    "nodeAffinity": {"required": {"nodeSelectorTerms": [{
+                        "matchExpressions": [{
+                            "key": "kubernetes.io/hostname",
+                            "operator": "In",
+                            "values": ["cp-1"]
+                        }]
+                    }]}}
+                }
+            }),
+            serde_json::json!({
+                "kind": "PersistentVolume",
+                "spec": {
+                    "local": {"path": "/srv/worker-data"},
+                    "nodeAffinity": {"required": {"nodeSelectorTerms": [{
+                        "matchFields": [{
+                            "key": "metadata.name",
+                            "operator": "In",
+                            "values": ["worker-1"]
+                        }]
+                    }]}}
+                }
+            }),
+        ];
+        let labels = HashMap::from([("kubernetes.io/hostname".to_string(), "cp-1".to_string())]);
+
+        assert_eq!(
+            persistent_host_paths(&objects, Some(&labels)),
+            [std::path::PathBuf::from("/srv/control-plane-data")]
+        );
+    }
+
+    #[test]
+    fn host_path_backup_keeps_unknown_affinity_candidates() {
+        let objects = vec![serde_json::json!({
+            "kind": "PersistentVolume",
+            "spec": {
+                "local": {"path": "/srv/node-data"},
+                "nodeAffinity": {"required": {"nodeSelectorTerms": [{
+                    "matchExpressions": [{
+                        "key": "storage.example/zone",
+                        "operator": "In",
+                        "values": ["zone-a"]
+                    }]
+                }]}}
+            }
+        })];
+
+        assert_eq!(
+            persistent_host_paths(&objects, None),
+            [std::path::PathBuf::from("/srv/node-data")]
         );
     }
 }
