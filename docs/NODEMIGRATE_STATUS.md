@@ -31,6 +31,12 @@ separate living documents below.
 - The Cilium health assertions passed shell syntax validation at
   `21d532991835ff587a918e3bf665ed4f601e6fdf`; the manual migration lanes have
   not run.
+- Control-plane join import control passed the focused nodemigrate crate
+  checks at `0fe454dad5b3fb194b72a48bc657ed0512a7f29a` (run
+  [35962922792](https://github.com/centerionware/not-k8s/actions/runs/35962922792));
+  PR shell validation ([35962922860](https://github.com/centerionware/not-k8s/actions/runs/35962922860))
+  and commit convention ([35962919894](https://github.com/centerionware/not-k8s/actions/runs/35962919894))
+  passed. The multi-node runtime behavior remains unverified.
 - At `8518a99537cc4b98f2cbf8184f49c9927a8d78cf`, nodemigrate checks, shell
   syntax validation, and commit convention passed (runs `35956413580`,
   `35956413566`, and `35956412012`). The replacement-membership changes now
