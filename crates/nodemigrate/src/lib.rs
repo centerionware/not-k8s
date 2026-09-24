@@ -233,7 +233,7 @@ fn migrate_worker_to_nodestore(
         return Ok(());
     }
 
-    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels.as_ref())?;
+    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
@@ -598,7 +598,7 @@ fn migrate_worker_from_nodestore(
         return Ok(());
     }
 
-    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels.as_ref())?;
+    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()

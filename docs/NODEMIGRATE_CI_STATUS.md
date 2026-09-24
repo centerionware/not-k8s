@@ -94,11 +94,12 @@ checks.
 
 ## Verification log
 
-The current PR head `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` adds explicit
-stale-Node replacement before forward and reverse control-plane readiness.
-Targeted crate tests, shell validation, and commit convention passed. The
-manual migration runtime workflow remains undispatched; no local Cargo
-test/build was run.
+The last fully passing code revision is `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966`.
+The follow-up `b522fbf1` preserves node labels, taints, and unschedulable state,
+but its first targeted crate run failed to compile because two snapshot calls
+passed an extra reference; that call-site issue is fixed in the current
+worktree and the focused retry is pending. The manual migration runtime
+workflow remains undispatched; no local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
@@ -169,6 +170,7 @@ test/build was run.
 | 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Nodemigrate crate checks | Passed, including source/destination stale-Node replacement validation | [Run 35966523279](https://github.com/centerionware/not-k8s/actions/runs/35966523279) |
 | 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Integration shell validation | Passed; manual migration runtime job skipped on pull request | [Run 35966522595](https://github.com/centerionware/not-k8s/actions/runs/35966522595) |
 | 2026-09-24 | `a4f4264ae3dbf3334c6c58d620d9dc4f35f1e966` | Commit convention | Passed | [Run 35966519686](https://github.com/centerionware/not-k8s/actions/runs/35966519686) |
+| 2026-09-24 | `b522fbf1dbd66c08ad76675f6f693dad2fce0b8c` | Nodemigrate crate checks | Failed to compile: two host-path snapshot calls passed `Option<&&HashMap>` where `Option<&HashMap>` is required; corrected by removing `.as_ref()` | [Run 35967706704](https://github.com/centerionware/not-k8s/actions/runs/35967706704) |
 | — | — | Canonical initial/returned state comparison | Implemented in the integration script; `bash -n` and jq filter checks passed locally. GitHub shell validation and runtime evidence pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
