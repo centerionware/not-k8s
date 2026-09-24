@@ -149,20 +149,22 @@ support is not guaranteed.
 ## Verification log
 
 The latest completed migration run used SHA
-`99f232814f8a3ce2de2c71943eb4bf54a80a6930`, whose focused nodemigrate
-crate tests, packaging, shell validation, and commit convention passed (runs
-`36055133206`, `36055133272`, `36055128764`). Manual release-backed run
-`36055409069` built nodemigrate and verified the `v0.8.0` digest/components.
-Both source clusters passed workload/storage checks, emitted the five-emoji
-unattended warning, and bootstrapped not-k8s. Import again failed with 37 K3s
-and 26 upstream objects pending because destination discovery did not expose
-cert-manager, Cilium, and snapshot APIs. K3s also failed on its Addon API;
-upstream reported CertificateSigningRequest and ClusterTrustBundle failures.
-The CRD-count diagnostic used tracing without a configured subscriber and did
-not appear in the log; the current change writes that count directly to stderr
-and needs another focused runtime check. The five-node Docker image built, but
-its first systemd container exited 255 before readiness. See
-[run 36055409069](https://github.com/centerionware/not-k8s/actions/runs/36055409069).
+`cc020c97bebef3ea9c4618723710df607ccd5bda`, whose focused nodemigrate crate
+tests, packaging, shell validation, and commit convention passed (runs
+`36056427012`, `36056427033`, `36056423711`). Manual release-backed run
+`36056682815` built nodemigrate and verified the `v0.8.0` digest/components.
+Both sources passed workload/storage setup and emitted the five-emoji
+unattended warning. Export captured 506 objects including 48 CRDs from K3s,
+and 488 objects including 44 CRDs upstream. Both targets bootstrapped, but
+import failed with 37 and 26 objects pending because destination discovery did
+not expose cert-manager, Cilium, and snapshot APIs after the CRDs had been
+captured. K3s also reported its Addon API; upstream reported
+CertificateSigningRequest and ClusterTrustBundle failures. The next
+investigation needs to establish whether the CRDs were written and why
+destination discovery still omits their APIs; this run does not verify a round
+trip. The five-node Docker image built, but its first systemd container exited
+255 before readiness. See
+[run 36056682815](https://github.com/centerionware/not-k8s/actions/runs/36056682815).
 No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
@@ -316,6 +318,10 @@ No local Cargo test/build was run.
 | 2026-09-24 | `99f232814f8a3ce2de2c71943eb4bf54a80a6930` | K3s + Cilium migration | Source checks and target bootstrap passed; API import failed for 37 objects across cert-manager, Cilium, K3s Addon, and snapshot APIs that destination discovery did not expose. The CRD count trace was not visible. | [Run 36055409069](https://github.com/centerionware/not-k8s/actions/runs/36055409069) |
 | 2026-09-24 | `99f232814f8a3ce2de2c71943eb4bf54a80a6930` | Upstream Kubernetes + Cilium migration | Source checks and target bootstrap passed; API import failed for 26 objects across cert-manager, Cilium, and snapshot APIs, plus CertificateSigningRequest and ClusterTrustBundle application. The CRD count trace was not visible. | [Run 36055409069](https://github.com/centerionware/not-k8s/actions/runs/36055409069) |
 | 2026-09-24 | `99f232814f8a3ce2de2c71943eb4bf54a80a6930` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36055409069](https://github.com/centerionware/not-k8s/actions/runs/36055409069) |
+| 2026-09-24 | `cc020c97bebef3ea9c4618723710df607ccd5bda` | Focused nodemigrate checks | Crate tests, packaging, shell validation, and commit convention passed. | [Tests 36056427012](https://github.com/centerionware/not-k8s/actions/runs/36056427012), [shell 36056427033](https://github.com/centerionware/not-k8s/actions/runs/36056427033), [commit 36056423711](https://github.com/centerionware/not-k8s/actions/runs/36056423711) |
+| 2026-09-24 | `cc020c97bebef3ea9c4618723710df607ccd5bda` | K3s + Cilium migration | Source emitted the unattended warning and exported 506 objects including 48 CRDs. Target bootstrap passed; API import failed with 37 objects pending because destination discovery lacked cert-manager, Cilium, snapshot, and K3s Addon APIs. | [Run 36056682815](https://github.com/centerionware/not-k8s/actions/runs/36056682815) |
+| 2026-09-24 | `cc020c97bebef3ea9c4618723710df607ccd5bda` | Upstream Kubernetes + Cilium migration | Source emitted the unattended warning and exported 488 objects including 44 CRDs. Target bootstrap passed; API import failed with 26 objects pending because destination discovery lacked cert-manager, Cilium, and snapshot APIs; CertificateSigningRequest and ClusterTrustBundle operations also failed. | [Run 36056682815](https://github.com/centerionware/not-k8s/actions/runs/36056682815) |
+| 2026-09-24 | `cc020c97bebef3ea9c4618723710df607ccd5bda` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36056682815](https://github.com/centerionware/not-k8s/actions/runs/36056682815) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
