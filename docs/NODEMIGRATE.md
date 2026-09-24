@@ -49,9 +49,16 @@ control-plane without `skip-api-import`; after its API state is imported and
 the destination is ready, migrate each later control-plane with
 `skip-api-import=true` while setting the normal nodestore join environment.
 Each later control plane still writes a protected per-node export and snapshots
-local host paths, but does not re-apply cluster-wide objects. This option is
-rejected unless the source is a control plane joining an existing nodestore
-cluster.
+local host paths, but does not re-apply cluster-wide objects. If the source
+API has lost quorum, copy the first control plane's protected export to each
+later node using a private directory, then pass
+`source-export=/path/to/private/export` with `skip-api-import=true`. Export
+format v2 preserves all source Nodes' scheduling metadata, and each node keeps
+its local storage and CNI recovery files in node-specific subdirectories. The
+source export is required to be from a forward migration, and its presence
+requires skipping a repeated cluster-wide import. Workers also accept these
+options when joining the existing cluster; they never import cluster-wide
+objects.
 
 For an upstream three-control-plane return, stage the first retained
 control-plane with `stage-target=true`. It exports nodestore API state, stops

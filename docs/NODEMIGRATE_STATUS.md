@@ -91,8 +91,9 @@ separate living documents below.
   for later offline control-plane and worker joins after source API quorum is
   lost. Export serialization and load passed at `ac5a05b4` ([run
   36028447623](https://github.com/centerionware/not-k8s/actions/runs/36028447623));
-  worker join validation passed at `08fb393c` ([run
-  36028759134](https://github.com/centerionware/not-k8s/actions/runs/36028759134)).
+  worker join validation and node-affined hostPath backup/restore passed at
+  `a360ea6c` ([run
+  36029431383](https://github.com/centerionware/not-k8s/actions/runs/36029431383)).
   Runtime quorum-loss and volume recovery remain unverified.
 
 ## Next actions
