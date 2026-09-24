@@ -1607,6 +1607,109 @@ mod tests {
     }
 
     #[test]
+    fn offline_node_exports_keep_host_path_backups_separate() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let east_path = directory.path().join("east-volume");
+        let west_path = directory.path().join("west-volume");
+        fs::write(&east_path, "east-before").unwrap();
+        fs::write(&west_path, "west-before").unwrap();
+        let east_object = directory.path().join("east-pv.json");
+        let west_object = directory.path().join("west-pv.json");
+        for (object_path, volume_path, zone) in [
+            (&east_object, &east_path, "east"),
+            (&west_object, &west_path, "west"),
+        ] {
+            fs::write(
+                object_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolume",
+                    "metadata": {"name": format!("{zone}-pv")},
+                    "spec": {
+                        "hostPath": {"path": volume_path},
+                        "nodeAffinity": {"required": {"nodeSelectorTerms": [{
+                            "matchExpressions": [{"key": "topology.kubernetes.io/zone", "operator": "In", "values": [zone]}]
+                        }]}}
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let objects = vec![
+            ExportedObject {
+                path: east_object,
+                source_uid: None,
+            },
+            ExportedObject {
+                path: west_object,
+                source_uid: None,
+            },
+        ];
+        let node_states = BTreeMap::from([
+            (
+                "node-east".to_string(),
+                NodeSchedulingState {
+                    labels: HashMap::from([(
+                        "topology.kubernetes.io/zone".to_string(),
+                        "east".to_string(),
+                    )]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "node-west".to_string(),
+                NodeSchedulingState {
+                    labels: HashMap::from([(
+                        "topology.kubernetes.io/zone".to_string(),
+                        "west".to_string(),
+                    )]),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let mut east_export = Export {
+            dir: directory.path().to_path_buf(),
+            objects: objects.clone(),
+            node_states: node_states.clone(),
+            host_paths: Vec::new(),
+            host_path_backups: Vec::new(),
+            cni_path_backups: Vec::new(),
+        };
+        let mut west_export = Export {
+            dir: directory.path().to_path_buf(),
+            objects,
+            node_states,
+            host_paths: Vec::new(),
+            host_path_backups: Vec::new(),
+            cni_path_backups: Vec::new(),
+        };
+
+        east_export
+            .snapshot_host_paths_for_node("node-east")
+            .unwrap();
+        west_export
+            .snapshot_host_paths_for_node("node-west")
+            .unwrap();
+
+        assert_eq!(east_export.host_paths, vec![east_path.clone()]);
+        assert_eq!(west_export.host_paths, vec![west_path.clone()]);
+        assert!(directory.path().join("host-paths-node-east").is_dir());
+        assert!(directory.path().join("host-paths-node-west").is_dir());
+        fs::write(&east_path, "east-after").unwrap();
+        fs::write(&west_path, "west-after").unwrap();
+        east_export.restore_host_paths().unwrap();
+        west_export.restore_host_paths().unwrap();
+        assert_eq!(fs::read_to_string(east_path).unwrap(), "east-before");
+        assert_eq!(fs::read_to_string(west_path).unwrap(), "west-before");
+    }
+
+    #[test]
     fn recovery_manifest_rejects_paths_outside_export_directory() {
         let directory = tempfile::tempdir().unwrap();
         #[cfg(unix)]
