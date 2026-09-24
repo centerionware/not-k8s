@@ -22,9 +22,9 @@ this objective.
   `.github/scripts/nodemigrate-integration.sh` as root and uploads its log.
   The latest regular release was verified as `v0.8.0` on 2026-09-24, so the
   PR utility runs against that release. The latest attempt completed the
-  utility build and runtime download, but both lanes failed during source
-  CNI/Cilium/CSI setup before invoking nodemigrate; see the verification log
-  below.
+  utility build, runtime download, full source CNI/Cilium/CSI/workload checks,
+  and target bootstrap in both lanes. Import then failed because destination
+  discovery lacked source custom resources; see the verification log below.
   The kubeadm source setup installs `crictl` from the matching cri-tools minor
   release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
   version for static-pod cleanup diagnostics.
@@ -148,18 +148,18 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest pushed SHA, `29797f3f`, passed nodemigrate tests, release
-verification, targeted checks, and commit convention (runs `36050046938`,
-`36050046915`, `36050046887`, `36050041044`). Manual run `36050278348`
+The latest pushed SHA, `c96505bd`, passed nodemigrate tests, release
+verification, targeted checks, and commit convention (runs `36051427391`,
+`36051427475`, `36051427408`, `36051420719`). Manual run `36051665474`
 built nodemigrate and verified the `v0.8.0` digest/components. Both source
-clusters passed full workload/storage checks and printed the five-emoji
-unattended warning. K3s bootstrapped without flannel, and upstream passed
-nodeapiserver startup without the earlier port/TLS errors. API object import
-failed in both lanes: 506 K3s and 488 upstream objects lacked top-level
-`apiVersion`. The exporter now restores `apiVersion` and `kind` from
-Kubernetes discovery, with a focused test. The five-node Docker image built,
-but systemd exited 255 before readiness. See
-[run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348).
+clusters passed workload/storage checks and printed the five-emoji unattended
+warning. K3s bootstrapped without flanneld; import then failed for 37 objects,
+with `VolumeSnapshotClass` unavailable in destination discovery. Upstream
+nodeapiserver bootstrapped; import failed for 26 objects, with
+`CiliumEndpoint` unavailable in destination discovery. The export metadata fix
+got both lanes past the earlier missing-`apiVersion` failure. The Docker image
+built, but its first systemd container exited 255 before readiness. See
+[run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474).
 No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
@@ -300,6 +300,9 @@ No local Cargo test/build was run.
 | 2026-09-24 | `29797f3f04489425e06b0f1b57bb0e4e619c0e3e` | Upstream Kubernetes + Cilium migration | Nodeapiserver target bootstrap passed and the warning printed. API import then rejected 488 objects missing `apiVersion`. | [Run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348) |
 | 2026-09-24 | `29797f3f04489425e06b0f1b57bb0e4e619c0e3e` | Five-node Docker preflight | Image build passed; systemd exited 255 before readiness with no further output. | [Run 36050278348](https://github.com/centerionware/not-k8s/actions/runs/36050278348) |
 | 2026-09-24 | Worktree after `29797f3f` | Follow-up | Restores API version and kind from discovery when exporting dynamic Kubernetes objects, with a focused regression test. Retest pending. | — |
+| 2026-09-24 | `c96505bdaae6387bb825c98faf77d2f2506c087c` | K3s + Cilium migration | Source Cilium, CSI/PVC data, cert-manager, Traefik, and nginx checks passed; warning printed and target bootstrapped without flanneld. Import stopped with 37 objects pending because destination discovery lacked `snapshot.storage.k8s.io/v1/VolumeSnapshotClass`. | [Run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474) |
+| 2026-09-24 | `c96505bdaae6387bb825c98faf77d2f2506c087c` | Upstream Kubernetes + Cilium migration | Source checks and warning passed; nodeapiserver bootstrapped. Import stopped with 26 objects pending because destination discovery lacked `cilium.io/v2/CiliumEndpoint`. TLS errors appeared in post-failure diagnostics, not as the reported import error. | [Run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474) |
+| 2026-09-24 | `c96505bdaae6387bb825c98faf77d2f2506c087c` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness with no further output. | [Run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved

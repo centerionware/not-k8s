@@ -555,6 +555,7 @@ impl KubeApi {
             for attempt in 0..5 {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
+                let mut failures = Vec::new();
                 for object in pending {
                     let value: Value = serde_json::from_slice(
                         &fs::read(&object.path)
@@ -577,17 +578,20 @@ impl KubeApi {
                             }
                         }
                         Err(error) => {
-                            last_error = error.to_string();
+                            failures.push((object_type_label(&initial), error.to_string()));
                             retry.push(object);
                         }
                     }
                 }
                 pending = retry;
+                if !failures.is_empty() {
+                    last_error = summarize_import_failures(&failures);
+                }
                 if pending.is_empty() { break; }
                 if attempt < 4 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; }
             }
             if !pending.is_empty() {
-                bail!("{} Kubernetes objects could not be restored; export retained at {}. Last error: {}", pending.len(), export.dir.display(), last_error)
+                bail!("{} Kubernetes objects could not be restored; export retained at {}. Last-attempt failures: {}", pending.len(), export.dir.display(), last_error)
             }
             let discovery = Discovery::new(client.clone()).run().await.context("discovering destination APIs for reference repair")?;
             for object in &export.objects {
@@ -1321,6 +1325,37 @@ async fn apply_object(
     Ok(applied)
 }
 
+fn object_type_label(value: &Value) -> String {
+    let api_version = value
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown apiVersion");
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown kind");
+    format!("{api_version}/{kind}")
+}
+
+fn summarize_import_failures(failures: &[(String, String)]) -> String {
+    let mut grouped: BTreeMap<&str, (usize, Vec<&str>)> = BTreeMap::new();
+    for (object_type, error) in failures {
+        let (count, object_types) = grouped.entry(error).or_default();
+        *count += 1;
+        object_types.push(object_type);
+    }
+    grouped
+        .into_iter()
+        .map(|(error, (count, object_types))| {
+            let mut types = object_types;
+            types.sort_unstable();
+            types.dedup();
+            format!("{} object type(s) [{}]: {error}", count, types.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn skip_kind(kind: &str) -> bool {
     SKIP_KINDS.contains(&kind)
 }
@@ -1469,14 +1504,50 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        node_scheduling_patch, persistent_host_paths, preserve_discovered_type_meta,
-        restore_cni_path_backups, sanitize, skip_object, snapshot_k3s_cni_paths,
-        write_export_manifest, ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        node_scheduling_patch, object_type_label, persistent_host_paths,
+        preserve_discovered_type_meta, restore_cni_path_backups, sanitize, skip_object,
+        snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest, ApiResource,
+        Export, ExportedObject, KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn import_failure_summary_groups_missing_destination_apis() {
+        let failures = vec![
+            (
+                "cilium.io/v2/CiliumEndpoint".to_string(),
+                "destination does not expose cilium.io/v2/CiliumEndpoint".to_string(),
+            ),
+            (
+                "cilium.io/v2/CiliumEndpoint".to_string(),
+                "destination does not expose cilium.io/v2/CiliumEndpoint".to_string(),
+            ),
+            (
+                "snapshot.storage.k8s.io/v1/VolumeSnapshotClass".to_string(),
+                "destination does not expose snapshot.storage.k8s.io/v1/VolumeSnapshotClass"
+                    .to_string(),
+            ),
+        ];
+
+        let summary = summarize_import_failures(&failures);
+
+        assert!(summary.contains(
+            "2 object type(s) [cilium.io/v2/CiliumEndpoint]: destination does not expose cilium.io/v2/CiliumEndpoint"
+        ));
+        assert!(summary.contains(
+            "1 object type(s) [snapshot.storage.k8s.io/v1/VolumeSnapshotClass]: destination does not expose snapshot.storage.k8s.io/v1/VolumeSnapshotClass"
+        ));
+        assert_eq!(
+            object_type_label(&serde_json::json!({
+                "apiVersion": "cilium.io/v2",
+                "kind": "CiliumEndpoint"
+            })),
+            "cilium.io/v2/CiliumEndpoint"
+        );
+    }
 
     #[test]
     fn constructs_kubernetes_client_inside_its_runtime_context() {
