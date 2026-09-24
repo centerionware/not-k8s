@@ -148,18 +148,20 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest pushed SHA, `c96505bd`, passed nodemigrate tests, release
-verification, targeted checks, and commit convention (runs `36051427391`,
-`36051427475`, `36051427408`, `36051420719`). Manual run `36051665474`
-built nodemigrate and verified the `v0.8.0` digest/components. Both source
-clusters passed workload/storage checks and printed the five-emoji unattended
-warning. K3s bootstrapped without flanneld; import then failed for 37 objects,
-with `VolumeSnapshotClass` unavailable in destination discovery. Upstream
-nodeapiserver bootstrapped; import failed for 26 objects, with
-`CiliumEndpoint` unavailable in destination discovery. The export metadata fix
-got both lanes past the earlier missing-`apiVersion` failure. The Docker image
-built, but its first systemd container exited 255 before readiness. See
-[run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474).
+The latest completed migration run used SHA
+`3fb149bc59b56cddc3b5f962215c738ad26e3b7d`, which passed focused nodemigrate
+crate tests and packaging; shell validation and commit convention passed too
+(runs `36053395357`, `36053395366`, `36053389738`).
+Manual release-backed run `36053700863` built nodemigrate and verified the
+`v0.8.0` digest/components. Both source clusters passed workload/storage
+checks, emitted the five-emoji unattended warning, and bootstrapped not-k8s.
+API import failed in both lanes because destination discovery did not expose
+multiple source APIs, including cert-manager and Cilium CRDs, plus the
+VolumeSnapshotClass API. K3s also has a K3s-specific Addon API; upstream
+reported CertificateSigningRequest and ClusterTrustBundle failures. The
+five-node Docker image built, but its first systemd container exited 255 before
+readiness. See
+[run 36053700863](https://github.com/centerionware/not-k8s/actions/runs/36053700863).
 No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
@@ -303,6 +305,11 @@ No local Cargo test/build was run.
 | 2026-09-24 | `c96505bdaae6387bb825c98faf77d2f2506c087c` | K3s + Cilium migration | Source Cilium, CSI/PVC data, cert-manager, Traefik, and nginx checks passed; warning printed and target bootstrapped without flanneld. Import stopped with 37 objects pending because destination discovery lacked `snapshot.storage.k8s.io/v1/VolumeSnapshotClass`. | [Run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474) |
 | 2026-09-24 | `c96505bdaae6387bb825c98faf77d2f2506c087c` | Upstream Kubernetes + Cilium migration | Source checks and warning passed; nodeapiserver bootstrapped. Import stopped with 26 objects pending because destination discovery lacked `cilium.io/v2/CiliumEndpoint`. TLS errors appeared in post-failure diagnostics, not as the reported import error. | [Run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474) |
 | 2026-09-24 | `c96505bdaae6387bb825c98faf77d2f2506c087c` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness with no further output. | [Run 36051665474](https://github.com/centerionware/not-k8s/actions/runs/36051665474) |
+| 2026-09-24 | `3fb149bc59b56cddc3b5f962215c738ad26e3b7d` | Focused nodemigrate checks | Crate tests, including grouped API-restore failure reporting, passed. Packaging passed. | [Run 36053395357](https://github.com/centerionware/not-k8s/actions/runs/36053395357) |
+| 2026-09-24 | `3fb149bc59b56cddc3b5f962215c738ad26e3b7d` | PR shell validation and commit convention | Both passed. | [Shell run 36053395366](https://github.com/centerionware/not-k8s/actions/runs/36053395366), [commit run 36053389738](https://github.com/centerionware/not-k8s/actions/runs/36053389738) |
+| 2026-09-24 | `3fb149bc59b56cddc3b5f962215c738ad26e3b7d` | K3s + Cilium migration | Source checks and target bootstrap passed; API import failed for 37 objects across cert-manager, Cilium, K3s Addon, and snapshot APIs that destination discovery did not expose. | [Run 36053700863](https://github.com/centerionware/not-k8s/actions/runs/36053700863) |
+| 2026-09-24 | `3fb149bc59b56cddc3b5f962215c738ad26e3b7d` | Upstream Kubernetes + Cilium migration | Source checks and target bootstrap passed; API import failed for 26 objects across cert-manager, Cilium, snapshot, CertificateSigningRequest, and ClusterTrustBundle APIs unavailable in destination discovery or apply. | [Run 36053700863](https://github.com/centerionware/not-k8s/actions/runs/36053700863) |
+| 2026-09-24 | `3fb149bc59b56cddc3b5f962215c738ad26e3b7d` | Five-node Docker preflight | Image build passed; first systemd container exited 255 before readiness. | [Run 36053700863](https://github.com/centerionware/not-k8s/actions/runs/36053700863) |
 | — | — | Migration state and metadata fixtures | Integration script fingerprints all exported API objects, checks Node label/annotation/taint and ConfigMap annotation at every stage, and compares ConfigMap data hashes on return. The focused crate tests now pass. Migration round-trip and five-node runtime evidence remain pending. | — |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved

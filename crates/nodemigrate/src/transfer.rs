@@ -510,6 +510,17 @@ impl KubeApi {
         let host_paths = persistent_host_paths(&objects, labels.as_ref());
         let mut objects: Vec<SanitizedObject> = objects.into_iter().filter_map(sanitize).collect();
         objects.sort_by_key(|object| object_rank(&object.value));
+        let custom_resource_definitions = objects
+            .iter()
+            .filter(|object| {
+                object.value.get("kind").and_then(Value::as_str) == Some("CustomResourceDefinition")
+            })
+            .count();
+        tracing::info!(
+            api_objects = objects.len(),
+            custom_resource_definitions,
+            "captured Kubernetes objects for migration"
+        );
 
         let dir = export_directory()?;
         let mut exported_objects = Vec::with_capacity(objects.len());
