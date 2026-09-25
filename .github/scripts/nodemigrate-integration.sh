@@ -89,6 +89,38 @@ capture_cilium_init_container_diagnostics() {
     done <<< "$pod_records"
 }
 
+watch_cilium_mount_cgroup_logs() {
+    local container_json containers container_id container_name state output
+    declare -A last_logs=()
+    while true; do
+        container_json="$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json 2>/dev/null)" || container_json='{"containers":[]}'
+        containers="$(jq -r '
+            .containers[]?
+            | select(.labels["nodelet.dev/container-name"] == "mount-cgroup")
+            | select(.labels["nodelet.dev/pod-namespace"] == "kube-system")
+            | select((.labels["nodelet.dev/pod-name"] // "") | startswith("cilium-"))
+            | [.id, .labels["nodelet.dev/container-name"], .state] | @tsv
+        ' <<< "$container_json")"
+        while IFS=$'\t' read -r container_id container_name state; do
+            [[ -n "$container_id" ]] || continue
+            if [[ -z "${last_logs[$container_id]+present}" ]]; then
+                echo "Watching Cilium init container pod identity by CRI labels name=$container_name id=$container_id state=$state" >&2
+                crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
+                    inspect "$container_id" >&2 || true
+                last_logs[$container_id]=""
+            fi
+            output="$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
+                logs --tail=100 "$container_id" 2>&1 || true)"
+            if [[ -n "$output" && "${last_logs[$container_id]}" != "$output" ]]; then
+                echo "Cilium mount-cgroup logs id=$container_id state=$state" >&2
+                printf '%s\n' "$output" >&2
+                last_logs[$container_id]="$output"
+            fi
+        done <<< "$containers"
+        sleep 0.5
+    done
+}
+
 diagnostics() {
     status=$?
     if [[ $status -ne 0 ]]; then
@@ -303,7 +335,11 @@ install_hostpath_driver() {
             /tmp/nodemigrate-hostpath-setup.sh
     fi
     mkdir -p "$kubelet_data_dir/plugins" "$kubelet_data_dir/plugins_registry"
+    watch_cilium_mount_cgroup_logs >&2 &
+    local cilium_log_watcher_pid=$!
     if ! NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh; then
+        kill "$cilium_log_watcher_pid" 2>/dev/null || true
+        wait "$cilium_log_watcher_pid" 2>/dev/null || true
         echo "Hostpath CSI setup failed; collecting nodelet and pod teardown diagnostics" >&2
         systemctl status nodelet --no-pager >&2 || true
         journalctl -u nodelet -b --no-pager -n 1000 >&2 || true
@@ -330,6 +366,8 @@ install_hostpath_driver() {
         kubectl get events -A --sort-by=.metadata.creationTimestamp >&2 || true
         return 1
     fi
+    kill "$cilium_log_watcher_pid" 2>/dev/null || true
+    wait "$cilium_log_watcher_pid" 2>/dev/null || true
     kubectl get storageclass csi-hostpath-sc
 }
 

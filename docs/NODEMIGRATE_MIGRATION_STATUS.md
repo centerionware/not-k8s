@@ -68,6 +68,22 @@ the target cert-manager webhook was unreachable. Rollback restored the source
 and retained its protected export. Neither lane passed destination workload
 parity or a round trip.
 
+The diagnostic fix at SHA `8a08536ffb9809378b9ff806d2596f88445b0ac5` passed
+focused `nodelet` quick-check in [run 36159523228](https://github.com/centerionware/not-k8s/actions/runs/36159523228).
+Branch-runtime migration [run 36159532331](https://github.com/centerionware/not-k8s/actions/runs/36159532331)
+passed both utility/runtime builds and the Docker five-node preflight. K3s
+source fixture and Cilium cleanup passed; source Envoy process cleanup no
+longer collides with destination Envoy. The target Cilium `mount-cgroup` init
+container started, exited with code 1, and nodelet removed it before the final
+CRI inspect/log collection. Nodelet's new correlated logs establish the exact
+Pod/container/CRI ID and exit code. The worktree now watches this Cilium init
+container every 500ms during target CSI setup to capture its output before
+nodelet cleanup; that watcher awaits runtime verification. K3s CNI/CSI stayed
+unavailable. Upstream again accepted all 54 CRD import requests and failed
+CertificateRequest admission with HTTP 500 while its webhook was unreachable;
+rollback restored source and retained the export. No target workload
+checkpoint, reverse migration, or full parity comparison passed.
+
 At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
 [run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
 built nodemigrate and the combined runtime and passed the five-node Docker

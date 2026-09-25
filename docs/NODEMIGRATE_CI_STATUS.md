@@ -15,29 +15,24 @@ new fixes.
 
 ## Latest branch-runtime result
 
-At code SHA `840e7ed8629edcd849729d5d7c0b1afb4f043f5d`, focused
-`nodemigrate` quick-check passed in [run 36156187333](https://github.com/centerionware/not-k8s/actions/runs/36156187333).
-Branch-runtime migration [run 36156187055](https://github.com/centerionware/not-k8s/actions/runs/36156187055)
-passed both utility/runtime builds and the five-node Docker preflight. K3s and
-upstream source fixtures and Cilium CRI cleanup passed. Cleanup matched and
-stopped two leftover Envoy processes by source container or pod identity and
-removed three stale sockets; the K3s target did not reproduce the earlier
-Envoy `errno=98` bind failure. It still did not reach Cilium/CNI readiness:
-the Cilium agent remained `Init:1/6`, with repeated `mount-cgroup`
-`CreateContainer succeeded` records but no corresponding init-container status
-or captured start/exit error. CoreDNS and hostPath CSI therefore stayed
-unavailable, so K3s did not reach a target workload checkpoint or reverse
-migration. This evidence does not establish the cause of the `mount-cgroup`
-stall. The harness now captures CRI inspect data and logs for each Cilium init
-container, matched by Pod UID; runtime cause remains under investigation.
-
-The upstream lane accepted all 54 CRD apply requests, then failed importing
-`cert-manager.io/v1/CertificateRequest migration-test-1` with HTTP 500 while
-the target cert-manager webhook was unreachable. Rollback restored the source
-and retained the protected export. No target workload checkpoint, reverse
-migration, or parity comparison passed in either lane. The required K3s+Cilium
-single-node round trip and upstream 3-control-plane/2-worker round trip remain
-open.
+Focused `nodelet` quick-check passed at code SHA
+`8a08536ffb9809378b9ff806d2596f88445b0ac5` in [run 36159523228](https://github.com/centerionware/not-k8s/actions/runs/36159523228).
+Branch-runtime migration [run 36159532331](https://github.com/centerionware/not-k8s/actions/runs/36159532331)
+also used SHA `8a08536ffb9809378b9ff806d2596f88445b0ac5`; utility/runtime builds
+and the five-node Docker preflight passed. K3s and upstream source fixtures and
+Cilium CRI cleanup passed. Exact source-identity cleanup stopped two leftover
+Envoy processes and removed three stale sockets; K3s no longer reproduced the
+previous Envoy `errno=98` bind failure. The K3s Cilium agent still did not reach
+CNI readiness: `mount-cgroup` started, exited with code 1, and was removed
+before the final CRI inspection, leaving CSI and CoreDNS unavailable. Nodelet
+logs now correlate create/start/retry records by Pod and container ID, and the
+post-failure harness captured that the failed ID was already gone. The current
+worktree adds a half-second Cilium `mount-cgroup` log watcher during target CSI
+setup; it has not yet been exercised by a migration run. Upstream accepted all
+54 CRD apply requests, then CertificateRequest import returned HTTP 500 while
+the target cert-manager webhook was unreachable. Rollback restored source and
+retained the protected export. Neither lane reached target parity, reverse
+migration, or a round-trip comparison. Both required merge gates remain open.
 
 ## Workflow
 
