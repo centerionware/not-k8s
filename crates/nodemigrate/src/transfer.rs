@@ -610,7 +610,7 @@ impl KubeApi {
                             if is_crd {
                                 crd_failed += 1;
                             }
-                            failures.push((object_type_label(&initial), error.to_string()));
+                            failures.push((object_type_label(&initial), format!("{error:#}")));
                             retry.push(object);
                         }
                     }

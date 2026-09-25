@@ -85,6 +85,18 @@ new fixes.
   are running before tolerating stale sandbox metadata, and cleans only Unix
   sockets in the detected Cilium Envoy directory. Focused crate verification
   and migration rerun are pending.
+- On SHA `4e41430e2f1b7805b36ad9562f8423ec7f4e1a54`, `nodemigrate`
+  quick-check passed in [run 36098539568](https://github.com/centerionware/not-k8s/actions/runs/36098539568),
+  and utility/runtime builds plus the Docker preflight passed in migration
+  [run 36098546161](https://github.com/centerionware/not-k8s/actions/runs/36098546161).
+  K3s completed forward migration but Cilium Envoy still failed with
+  `errno=98`; cleaning filesystem Unix sockets did not resolve the collision.
+  The upstream lane completed bootstrap but import failed on
+  `cert-manager.io/v1/CertificateRequest migration-test-1`, then restored the
+  source API and retained the export. Its log omitted the underlying API error.
+  The worktree now preserves complete import error chains and adds host socket,
+  directory, and process diagnostics for the next Cilium failure. No round
+  trip, reverse migration, or parity gate passed.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

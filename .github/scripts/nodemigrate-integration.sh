@@ -229,6 +229,12 @@ install_hostpath_driver() {
         echo "Hostpath CSI setup failed; collecting nodelet and pod teardown diagnostics" >&2
         systemctl status nodelet --no-pager >&2 || true
         journalctl -u nodelet -b --no-pager -n 1000 >&2 || true
+        echo "Cilium Envoy socket directory contents:" >&2
+        find /var/run/cilium/envoy/sockets -maxdepth 2 -ls >&2 || true
+        echo "Unix socket listeners:" >&2
+        ss -xlpn >&2 || true
+        echo "Cilium Envoy processes:" >&2
+        ps -eo pid,ppid,stat,comm,args | awk '/[c]ilium-envoy|[e]nvoy/ {print}' >&2 || true
         crictl --runtime-endpoint unix:///run/containerd/containerd.sock pods -o json >&2 || true
         crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json >&2 || true
         for container_id in $(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a --name cilium-envoy -q 2>/dev/null); do

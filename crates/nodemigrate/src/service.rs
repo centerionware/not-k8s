@@ -214,10 +214,7 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<()> {
             tracing::warn!(sandbox_id = id, error = %error, "stopped source sandbox could not be removed; continuing with no running containers");
         }
     }
-    let removed = cleanup_stale_cilium_envoy_sockets(installation)?;
-    if removed > 0 {
-        tracing::info!(removed, "removed stale Cilium Envoy Unix sockets");
-    }
+    cleanup_stale_cilium_envoy_sockets(installation)?;
     Ok(())
 }
 
@@ -290,8 +287,10 @@ fn cleanup_stale_cilium_envoy_sockets(installation: &Installation) -> Result<usi
     }
     #[cfg(unix)]
     {
-        remove_unix_sockets(Path::new("/var/run/cilium/envoy/sockets"))
-            .context("removing stale Cilium Envoy sockets after source containers stopped")
+        let removed = remove_unix_sockets(Path::new("/var/run/cilium/envoy/sockets"))
+            .context("removing stale Cilium Envoy sockets after source containers stopped")?;
+        eprintln!("nodemigrate: removed {removed} stale Cilium Envoy Unix socket(s)");
+        Ok(removed)
     }
     #[cfg(not(unix))]
     {

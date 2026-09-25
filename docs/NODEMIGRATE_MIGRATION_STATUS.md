@@ -9,19 +9,19 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime migration [36096822314](https://github.com/centerionware/not-k8s/actions/runs/36096822314)
-used SHA `8d4f4a690f906a7fe4de2cbb88778b27599029cb`. The focused
-`nodemigrate` quick-check passed in [36096815873](https://github.com/centerionware/not-k8s/actions/runs/36096815873),
-as did the utility/runtime builds and five-node Docker preflight. Upstream
-migration safely rolled back when containerd returned `DeadlineExceeded`
-removing a stopped sandbox. K3s completed forward migration, but Envoy still
-failed to bind `/var/run/cilium/envoy/sockets` with `errno=98` after source
-sandboxes had been stopped, so CNI and CSI readiness remained blocked. The
-worktree now stops ordinary sandboxes before Cilium, checks for remaining
-running containers before tolerating stale sandbox metadata, and removes only
-Unix sockets in the detected Cilium Envoy directory. Those changes need a
-targeted quick-check and migration rerun; reverse migration and semantic parity
-remain unverified.
+Branch-runtime migration [36098546161](https://github.com/centerionware/not-k8s/actions/runs/36098546161)
+used SHA `4e41430e2f1b7805b36ad9562f8423ec7f4e1a54`. The focused
+`nodemigrate` quick-check passed in [36098539568](https://github.com/centerionware/not-k8s/actions/runs/36098539568),
+as did the utility/runtime builds and five-node Docker preflight. K3s completed
+forward migration, but Cilium Envoy still failed to bind
+`/var/run/cilium/envoy/sockets` with `errno=98`, even after sandbox shutdown
+and filesystem socket cleanup. The source of the bound socket is not yet
+known. Upstream completed bootstrap but import failed for
+`cert-manager.io/v1/CertificateRequest migration-test-1`; rollback restored
+the source API and kept the protected export. The captured error omitted the
+API response. The worktree adds socket/process diagnostics and preserves full
+import error chains. Quick-check and migration reruns are pending. No reverse
+migration or semantic parity gate has passed.
 
 ## Required migration test inventory
 
