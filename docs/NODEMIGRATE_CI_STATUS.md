@@ -31,10 +31,20 @@ diagnostic was not exercised in this run. Logs are at
 
 Focused `nodeapiserver` quick-check [36195027134](https://github.com/centerionware/not-k8s/actions/runs/36195027134)
 passed on the same SHA. Branch-runtime rerun [36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992)
-is now exercising Cilium reconcile/CRI inventory diagnostics; its K3s,
-upstream, and Docker preflight outcomes are pending. Focused `nodelet`
-quick-check [36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777)
+completed at SHA `9974e76329349d33205aa53c824e3b2fb864f6e7`: both scoped builds
+and Docker preflight passed, but both `Run migration` steps failed (K3s after
+21m18s, upstream after 16m03s). Lane artifacts exist; their logs have not yet
+been captured, so the failure stages and whether the Cilium diagnostics were
+reached remain unclassified. Focused `nodelet` quick-check
+[36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777)
 passed on SHA `9974e763`.
+
+The endpoint/Lease preservation fix was tested at SHA
+`d4f3c4a0479abd3f3e1d6e416bec2b2b2d12cf61`: focused nodemigrate checks
+[36199446770](https://github.com/centerionware/not-k8s/actions/runs/36199446770)
+and migration-workflow static validation
+[36199446771](https://github.com/centerionware/not-k8s/actions/runs/36199446771)
+passed. No runtime migration has yet exercised those added fixture resources.
 
 Branch-runtime migration [run 36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
 used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Nodemigrate and

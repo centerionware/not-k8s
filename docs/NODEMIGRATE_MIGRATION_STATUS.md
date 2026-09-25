@@ -24,7 +24,12 @@ Direct CoreDNS-gate reconcile and CRI init-state diagnostics were added in
 [36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777).
 Diagnostic branch-runtime rerun
 [36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992)
-is pending. Logs: `/tmp/nodemigrate-36195385046/{k3s,kubernetes}/`.
+completed with both migration steps failed after their scoped builds passed;
+Docker preflight passed. K3s ran 21m18s and upstream 16m03s. The failure stage
+and captured diagnostic evidence remain unclassified pending artifact-log
+review. This run does not verify any target, return, or parity checkpoint.
+Logs from the preceding completed run remain at
+`/tmp/nodemigrate-36195385046/{k3s,kubernetes}/`.
 
 Branch-runtime migration [36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
 used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Both scoped runtime and
