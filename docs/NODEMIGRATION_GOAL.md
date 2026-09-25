@@ -112,8 +112,21 @@ on both the K3s and upstream Kubernetes paths, in both migration directions.
 Keep current coverage and add these resource checks to it; passing existing
 tests without the added inventory does not satisfy this goal.
 
+Treat this as an additive expansion of the existing tests: every resource and
+behavior already asserted by the migration suite must continue to be asserted,
+and the named inventory below must be added to those same end-to-end fixtures.
+Run the full fixture once from K3s and once from upstream Kubernetes. For each
+source, exercise source-to-not-k8s and not-k8s-to-retained-source transitions;
+at each source, target, and returned-source checkpoint, check that durable
+resources and their dependent behavior survive. A resource that is not
+applicable to a lane must be marked with its concrete prerequisite, while
+source-discovered API kinds must still receive a migration, regeneration, or
+lifecycle classification.
+
 - **Configuration and access:** Namespaces, ConfigMaps (including binary
-  data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings,
+  data and immutable ConfigMaps), values consumed through environment
+  variables and projected/mounted volumes, Secrets, ServiceAccounts, Roles,
+  ClusterRoles, RoleBindings,
   ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses.
   Exercise allowed and denied API actions with real service-account
   credentials. Preserve secret data securely and verify consumers can still
@@ -122,7 +135,10 @@ tests without the added inventory does not satisfy this goal.
   `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and
   standalone Pods. Check selectors, pod templates, rollout/revision history,
   replica/readiness state, successful job execution, cron scheduling, and
-  unique application data. Include ReplicaSet and ControllerRevision history
+  unique application data. Scale and update representative Deployments and
+  StatefulSets so the tests exercise controller reconciliation after each
+  cutover; verify StatefulSet ordinal identity, stable storage, and
+  `volumeClaimTemplates`. Include ReplicaSet and ControllerRevision history
   needed by owners; verify regenerated controller-owned Pods become healthy.
 - **Charts and add-ons:** Helm chart releases and release records (name,
   namespace, chart/version, values, revision, and manifest), plus every
@@ -147,8 +163,10 @@ tests without the added inventory does not satisfy this goal.
   including Cilium configuration/policy, cert-manager Issuers,
   ClusterIssuers, Certificates and CertificateRequests, Gateway API resources,
   and operator-managed durable state. Verify discovery, conversion,
-  reconciliation, status, and resulting Secrets or routes. Install the CRDs
-  and controllers at the source before creating custom resources.
+  reconciliation, status, and resulting Secrets or routes. Check that CRDs
+  are established and discoverable before and after migration, and exercise
+  any served conversion versions. Install the CRDs and controllers at the
+  source before creating custom resources.
 - **Storage and data:** PVs, PVCs, StorageClasses, static hostPath/local
   volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where
   applicable, VolumeSnapshotClasses, VolumeSnapshots, and snapshot contents.
