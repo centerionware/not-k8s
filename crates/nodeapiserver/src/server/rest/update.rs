@@ -353,6 +353,15 @@ pub async fn update_finalize(
         return Ok(UpdateOutcome::MissingResourceVersion);
     };
     if submitted_rv != existing_kv.mod_revision {
+        if group == "cilium.io" && resource == "ciliumnodes" {
+            tracing::warn!(
+                name,
+                subresource = "finalize",
+                submitted_resource_version = submitted_rv,
+                current_resource_version = existing_kv.mod_revision,
+                "CiliumNode finalize update rejected a stale resourceVersion"
+            );
+        }
         return Ok(UpdateOutcome::Conflict);
     }
 
@@ -469,6 +478,15 @@ pub async fn update_status_with_manager(
         return Ok(UpdateOutcome::MissingResourceVersion);
     };
     if submitted_rv != existing_kv.mod_revision {
+        if group == "cilium.io" && resource == "ciliumnodes" {
+            tracing::warn!(
+                name,
+                subresource = "status",
+                submitted_resource_version = submitted_rv,
+                current_resource_version = existing_kv.mod_revision,
+                "CiliumNode status update rejected a stale resourceVersion"
+            );
+        }
         return Ok(UpdateOutcome::Conflict);
     }
 
@@ -805,6 +823,7 @@ async fn persist_update(
                 .unwrap_or("<missing>");
             tracing::warn!(
                 name = object_name,
+                subresource = managed_subresource,
                 compared_resource_version = existing_kv.mod_revision,
                 "CiliumNode update lost a storage compare-and-swap race"
             );

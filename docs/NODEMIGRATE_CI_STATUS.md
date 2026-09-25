@@ -15,6 +15,21 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Branch-runtime migration [run 36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
+used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Nodemigrate and
+combined-runtime builds passed in both lanes, and the five-node Docker
+isolation preflight passed. K3s source checks passed; the utility captured 582
+objects/59 CRDs, imported all CRDs, and reached destination API readiness.
+Destination Cilium then exhausted ten `CiliumNode` update retries with HTTP
+409, preventing the target workload/CSI checkpoint, reverse migration, and
+parity comparison. The new API-server conflict diagnostics did not appear in
+this run; a status-subresource stale-version diagnostic has now been added for
+the next iteration. Upstream source checks passed and the utility captured
+562 objects/55 CRDs, but CertificateRequest admission returned HTTP 500 after
+the Cilium CNI plugin/agent disappeared; rollback restored the source and
+retained the protected export. Neither lane passed target, reverse, or parity
+checks. Logs are at `/tmp/nodemigrate-36192756836/{k3s,kubernetes}/`.
+
 The newest migration [run 36189354168](https://github.com/centerionware/not-k8s/actions/runs/36189354168)
 used SHA `7da932bf9f15c943a8aa025739b5e6706bc95386`. Focused `nodelet`
 quick-check [36189351742](https://github.com/centerionware/not-k8s/actions/runs/36189351742),

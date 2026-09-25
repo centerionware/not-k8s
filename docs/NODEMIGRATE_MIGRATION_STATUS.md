@@ -9,6 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
+used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Both scoped runtime and
+nodemigrate builds passed, as did five-node Docker isolation. K3s source
+checks passed and all 59 captured CRDs imported; the target API became ready,
+but Cilium exhausted ten `CiliumNode` update retries with HTTP 409 before the
+target workload/CSI checkpoint. No reverse migration or parity comparison
+passed. The server diagnostics did not identify the conflict path in this run;
+the status-subresource stale-resourceVersion path now has separate logging and
+needs a focused check and migration rerun. Upstream source checks passed and
+all 55 CRDs imported, but CertificateRequest admission returned HTTP 500 after
+the Cilium CNI plugin/agent disappeared. Rollback restored the source and
+retained the protected export. Neither lane passed the target, reverse, or
+round-trip checkpoints. Logs:
+`/tmp/nodemigrate-36192756836/{k3s,kubernetes}/`.
+
 Branch-runtime migration [36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918)
 used code SHA `64baa5ab795bfd71fed1ffe193eb08e974e5345d`. Nodemigrate and
 combined-runtime builds passed, as did the five-node Docker isolation
