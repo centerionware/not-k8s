@@ -147,8 +147,11 @@ new fixes.
   48 discovered CRDs and passed destination API readiness, then failed the
   post-cutover CSI fixture because Cilium/CNI remained unready
   (`cni plugin not initialized`); CoreDNS and hostPath CSI Pods stayed
-  unready, so no return migration ran. The upstream target reached import but
-  failed applying `cert-manager.io/v1/CertificateRequest migration-test-1`
+  unready, so no return migration ran. Captured Envoy output shows the target
+  Envoy container exiting with `errno=98` while a separate Envoy process still
+  owns the host sockets; the containerd-shim command line/cgroup was not
+  captured, so its source owner is not yet proven. The upstream target reached
+  import but failed applying `cert-manager.io/v1/CertificateRequest migration-test-1`
   with HTTP 500 because the cert-manager webhook URL was unreachable. The
   source API recovered and the export remained available. Cilium/CNI readiness
   remains unresolved.

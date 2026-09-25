@@ -22,6 +22,27 @@ if [[ "$LIBRARY_MODE" != true ]]; then
     exec > >(tee -a "$LOG") 2>&1
 fi
 
+capture_cilium_envoy_process_owners() {
+    local envoy_pid current_pid parent_pid depth
+    while IFS= read -r envoy_pid; do
+        [[ "$envoy_pid" =~ ^[0-9]+$ ]] || continue
+        echo "Cilium Envoy process ownership chain for PID $envoy_pid:"
+        current_pid="$envoy_pid"
+        depth=0
+        while [[ "$current_pid" =~ ^[0-9]+$ && "$current_pid" -gt 1 && "$depth" -lt 8 ]]; do
+            [[ -r "/proc/$current_pid/status" ]] || break
+            printf 'PID %s cmdline: ' "$current_pid"
+            tr '\0' ' ' < "/proc/$current_pid/cmdline" || true
+            printf '\nPID %s cgroup:\n' "$current_pid"
+            cat "/proc/$current_pid/cgroup" || true
+            parent_pid="$(awk '$1 == "PPid:" { print $2 }' "/proc/$current_pid/status")"
+            [[ "$parent_pid" =~ ^[0-9]+$ && "$parent_pid" != "$current_pid" ]] || break
+            current_pid="$parent_pid"
+            depth=$((depth + 1))
+        done
+    done < <(ps -eo pid=,comm= | awk '$2 == "cilium-envoy" || $2 == "cilium-envoy-st" { print $1 }')
+}
+
 diagnostics() {
     status=$?
     if [[ $status -ne 0 ]]; then
@@ -50,6 +71,8 @@ diagnostics() {
                 ls -la "$cni_path" || true
             fi
         done
+        echo "Cilium Envoy host-process ownership:"
+        capture_cilium_envoy_process_owners || true
         journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
             -u kube-apiserver --no-pager -n 250 || true
         echo "Target API server diagnostics:"
@@ -240,6 +263,7 @@ install_hostpath_driver() {
         ss -xlpn >&2 || true
         echo "Cilium Envoy processes:" >&2
         ps -eo pid,ppid,stat,comm,args | awk '/[c]ilium-envoy|[e]nvoy/ {print}' >&2 || true
+        capture_cilium_envoy_process_owners >&2 || true
         crictl --runtime-endpoint unix:///run/containerd/containerd.sock pods -o json >&2 || true
         crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json >&2 || true
         for container_id in $(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a --name cilium-envoy -q 2>/dev/null); do
