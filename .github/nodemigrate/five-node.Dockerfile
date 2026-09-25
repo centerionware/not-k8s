@@ -15,6 +15,7 @@ RUN apt-get update \
         iputils-ping \
         llvm \
         linux-tools-common \
+        linux-tools-generic \
         systemd \
         systemd-sysv \
         util-linux \
@@ -22,6 +23,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/cni/bin \
     && cp -a /usr/lib/cni/. /opt/cni/bin/ \
+    && bpftool_path="$(find /usr/lib/linux-tools -mindepth 2 -maxdepth 2 -type f -name bpftool -print -quit)" \
+    && test -n "$bpftool_path" \
+    && ln -sf "$bpftool_path" /usr/local/bin/bpftool \
     && command -v bpftool \
     && systemctl enable containerd
 
