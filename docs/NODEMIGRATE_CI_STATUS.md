@@ -53,13 +53,15 @@ new fixes.
   worktree. Quick-check run `36080298252` first found a missing mutable borrow;
   after the one-line compile fix, `nodeapiserver,nodemigrate` passed in run
   `36080595243` on SHA `d4847449a84a5014515f31b3d9d522e455910cf7`. Branch-runtime
-  retest `36080871524` completed both lanes through destination API readiness;
-  both then failed post-cutover hostpath CSI setup with two Pods stuck
-  `Terminating`. The API audit contained no ReplicaSet/Pod create or delete
-  requests before timeout, so controller recovery is still unverified. The
-  fixture now saves nodelet/CRI/Pod diagnostics for the next run. The five-node Docker preflight passed in run
-  `36080300450` before that workflow was canceled to avoid spending more CI on
-  the known compile failure.
+  rerun `36082829012` built nodemigrate and the combined branch runtime in both
+  lanes, and the five-node Docker preflight passed. Both migrations reached
+  destination API readiness but failed post-cutover: nodelet remained behind
+  its CoreDNS gate, Cilium host-network Pods stayed `Unknown`, containerd
+  reported `cni plugin not initialized`, and CSI Pods stayed `Terminating`.
+  This identifies a nodelet startup deadlock. The fix now reconciles local
+  host-network Pods during the gate; focused nodelet quick-check and migration
+  rerun are pending. The diagnostic fixture also records nodelet journal, CRI
+  state, Pod YAML, and events.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

@@ -646,10 +646,39 @@ impl PodController {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
         let params = ListParams::default().labels(COREDNS_SELECTOR);
         let seed_api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
+        let node_pods_api: Api<Pod> = Api::all(self.client.clone());
+        let node_pods_params =
+            ListParams::default().fields(&format!("spec.nodeName={}", self.node_name));
         let mut logged_wait = false;
 
         info!("waiting for CoreDNS to become ready before reconciling workloads");
         loop {
+            // External CNI agents such as Cilium need to start before CoreDNS
+            // can use the CNI datapath. Their DaemonSet Pods use hostNetwork,
+            // so reconcile those bootstrap Pods while ordinary workloads are
+            // still gated. This also lets host-network teardown events finish
+            // before the full Pod watch starts.
+            match tokio::time::timeout(
+                COREDNS_API_TIMEOUT,
+                node_pods_api.list(&node_pods_params),
+            )
+            .await
+            {
+                Ok(Ok(pods)) => {
+                    for pod in pods
+                        .iter()
+                        .filter(|pod| is_local_host_network_pod(pod, &self.node_name))
+                    {
+                        self.reconcile_with_timeout(pod.clone()).await;
+                    }
+                }
+                Ok(Err(error)) => warn!(?error, "failed to list host-network bootstrap Pods; retrying"),
+                Err(_) => warn!(
+                    timeout_secs = COREDNS_API_TIMEOUT.as_secs(),
+                    "timed out listing host-network bootstrap Pods; retrying"
+                ),
+            }
+
             // The bootstrapper creates this one disposable Pod specifically
             // to make the first CNI network namespace appear. Reconcile it
             // before checking CoreDNS: a slow or stuck readiness LIST must
@@ -2053,6 +2082,12 @@ fn key_parts(pod: &Pod) -> Option<(String, String)> {
     Some((ns, name))
 }
 
+fn is_local_host_network_pod(pod: &Pod, node_name: &str) -> bool {
+    pod.spec.as_ref().is_some_and(|spec| {
+        spec.node_name.as_deref() == Some(node_name) && spec.host_network.unwrap_or(false)
+    })
+}
+
 fn api_pod_is_ready(pod: &Pod) -> bool {
     let Some(status) = pod.status.as_ref() else { return false };
     status.phase.as_deref() == Some("Running")
@@ -2179,3 +2214,6 @@ mod tests_referenced_object_changed;
 #[cfg(test)]
 #[path = "pods_tests/pod_watch_order.rs"]
 mod tests_pod_watch_order;
+#[cfg(test)]
+#[path = "pods_tests/startup_gate.rs"]
+mod tests_startup_gate;
