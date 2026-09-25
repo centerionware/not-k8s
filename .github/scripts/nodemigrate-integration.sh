@@ -439,6 +439,62 @@ install_workloads() {
     # reconcile them; otherwise fixture setup can time out on stale status.
     kubectl rollout status -n traefik deployment/traefik --timeout=5m
 
+    # Exercise a user CRD with two served API versions and a durable custom
+    # resource. Keep its schema stable across versions so conversion strategy
+    # None can be checked through both discovery endpoints.
+    kubectl apply -f - <<'YAML'
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: migrationrecords.migration.nodemigrate.io
+spec:
+  group: migration.nodemigrate.io
+  scope: Cluster
+  names:
+    plural: migrationrecords
+    singular: migrationrecord
+    kind: MigrationRecord
+    listKind: MigrationRecordList
+  conversion:
+    strategy: None
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: false
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required: [marker]
+            properties:
+              marker:
+                type: string
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required: [marker]
+            properties:
+              marker:
+                type: string
+YAML
+    kubectl wait --for=condition=Established crd/migrationrecords.migration.nodemigrate.io --timeout=2m
+    kubectl apply -f - <<'YAML'
+apiVersion: migration.nodemigrate.io/v1
+kind: MigrationRecord
+metadata:
+  name: migration-record-0
+spec:
+  marker: durable-custom-resource-data
+YAML
+
     mkdir -p "$STATIC_PATH"
     if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
         [[ "$NODEMIGRATE_STATIC_NODE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || {
@@ -507,6 +563,15 @@ metadata:
   namespace: migration-apps
 binaryData:
   payload.bin: AAECAw==
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-user-immutable
+  namespace: migration-apps
+immutable: true
+data:
+  immutable-marker: mounted-immutable-config
 ---
 apiVersion: v1
 kind: Secret
@@ -696,6 +761,14 @@ spec:
         secretKeyRef:
           name: migration-user-secret
           key: migration-secret
+    volumeMounts:
+    - name: immutable-config
+      mountPath: /etc/migration/immutable
+      readOnly: true
+  volumes:
+  - name: immutable-config
+    configMap:
+      name: migration-user-immutable
 ---
 apiVersion: v1
 kind: Service
@@ -943,7 +1016,7 @@ YAML
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     # Verify that the migrated ConfigMap and Secret still feed a real container.
     kubectl exec -n migration-apps migration-standalone -- sh -ec \
-        'test "$MIGRATION_CONFIG" = user-config-data && test "$MIGRATION_SECRET" = migration-secret-value' || {
+        'test "$MIGRATION_CONFIG" = user-config-data && test "$MIGRATION_SECRET" = migration-secret-value && test "$(cat /etc/migration/immutable/immutable-marker)" = mounted-immutable-config' || {
         echo "ConfigMap or Secret workload consumption failed at stage $stage" >&2
         return 1
     }
@@ -1089,6 +1162,23 @@ verify_stage() {
     kubectl get configmap migration-user-binary -n migration-apps -o json | jq -e \
         '.binaryData["payload.bin"] == "AAECAw=="' >/dev/null || {
         echo "nodemigrate changed migration-user-binary data at stage $stage" >&2
+        return 1
+    }
+    kubectl get configmap migration-user-immutable -n migration-apps -o json | jq -e \
+        '.immutable == true and .data["immutable-marker"] == "mounted-immutable-config"' >/dev/null || {
+        echo "nodemigrate changed immutable ConfigMap state at stage $stage" >&2
+        return 1
+    }
+    kubectl get crd migrationrecords.migration.nodemigrate.io -o json | jq -e '
+        ([.spec.versions[] | select(.served == true) | .name] | sort) == ["v1", "v1alpha1"] and
+        ([.status.conditions[]? | select(.type == "Established" and .status == "True")] | length) == 1
+    ' >/dev/null || {
+        echo "user CRD versions are not established at stage $stage" >&2
+        return 1
+    }
+    kubectl get --raw '/apis/migration.nodemigrate.io/v1alpha1/migrationrecords/migration-record-0' \
+        | jq -e '.apiVersion == "migration.nodemigrate.io/v1alpha1" and .spec.marker == "durable-custom-resource-data"' >/dev/null || {
+        echo "custom resource conversion/read through v1alpha1 failed at stage $stage" >&2
         return 1
     }
     kubectl get secret migration-user-secret -n migration-apps -o json | jq -e \
@@ -1378,6 +1468,9 @@ capture_semantic_checkpoint() {
     kubectl get configmap migration-user-binary -n migration-apps -o json \
         | jq -S -c '.binaryData // {}' | sha256sum | awk '{print $1}' \
         > "$stage_dir/user-binary-configmap-data.sha256"
+    kubectl get configmap migration-user-immutable -n migration-apps -o json \
+        | jq -S -c '{immutable, data: (.data // {})}' | sha256sum | awk '{print $1}' \
+        > "$stage_dir/user-immutable-configmap.sha256"
     kubectl get secret migration-user-secret -n migration-apps -o json \
         | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
         > "$stage_dir/user-secret-data.sha256"
@@ -1463,7 +1556,7 @@ assert_round_trip_unchanged() {
         echo "ConfigMap contents changed during the migration round trip" >&2
         return 1
     fi
-    for digest in user-binary-configmap-data user-secret-data; do
+    for digest in user-binary-configmap-data user-immutable-configmap user-secret-data; do
         if ! cmp -s "$initial/$digest.sha256" "$returned/$digest.sha256"; then
             echo "$digest changed during the migration round trip" >&2
             return 1
