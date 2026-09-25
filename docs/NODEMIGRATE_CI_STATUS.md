@@ -221,6 +221,15 @@ new fixes.
 
 Both isolated round trips are mandatory nodemigrate merge gates. Neither has
 passed, so nodemigrate must not be merged until the evidence is recorded here.
+Both gates must exercise the complete [required migration test inventory](NODEMIGRATE_MIGRATION_STATUS.md#required-migration-test-inventory),
+including ConfigMaps, CRDs and custom resources, Deployments, StatefulSets,
+Helm chart releases, Jobs and CronJobs, DaemonSets, Ingress and Gateway API,
+RBAC, storage, networking, admission, and every other listable API kind
+reported by source discovery. Each applicable resource must migrate and pass
+identity, durable-state, and behavior checks at the source, not-k8s, and
+returned-source checkpoints. Classify any regenerated or lifecycle-excluded
+kind with its reason; no resource group is waived because it is not in the
+current fixture.
 
 | Gate | Required topology and round trip | Pass criteria | State |
 | --- | --- | --- | --- |
