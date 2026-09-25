@@ -206,7 +206,13 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<Vec<Stri
     let containers: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("parsing CRI container list")?;
     let running = running_sandbox_ids(&containers);
-    let cilium_envoy_containers = cilium_envoy_container_ids(&containers);
+    let cilium_envoy_containers = cilium_agent_container_ids(&containers);
+    if !cilium_envoy_containers.is_empty() {
+        eprintln!(
+            "nodemigrate: source Cilium agent/Envoy container IDs: {}",
+            cilium_envoy_containers.join(",")
+        );
+    }
     for id in &all {
         if let Err(error) = checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id]) {
             ensure!(
@@ -221,8 +227,8 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<Vec<Stri
 
 /// Cilium Envoy uses the host PID namespace. A stopped source container can
 /// leave its Envoy child holding the host-wide base-id socket, so retain the
-/// exact source CRI container IDs and clean up only processes in those
-/// containers after the source service has stopped.
+/// exact source Cilium agent/Envoy CRI container IDs and clean up only Envoy
+/// processes associated with those containers after the source is stopped.
 #[cfg(unix)]
 pub fn stop_orphaned_cilium_envoy_processes(
     installation: &Installation,
@@ -235,6 +241,10 @@ pub fn stop_orphaned_cilium_envoy_processes(
     let proc_root = Path::new("/proc");
     let pids = processes_in_cri_containers(proc_root, container_ids)?;
     if pids.is_empty() {
+        eprintln!(
+            "nodemigrate: found no remaining Cilium Envoy process for {} source CRI container ID(s)",
+            container_ids.len()
+        );
         cleanup_stale_cilium_envoy_sockets(installation)?;
         return Ok(0);
     }
@@ -247,17 +257,17 @@ pub fn stop_orphaned_cilium_envoy_processes(
     }
 
     let remaining = processes_in_cri_containers(proc_root, container_ids)?;
-    signal_processes(&remaining, libc::SIGKILL)?;
+    let killed = signal_processes(&remaining, libc::SIGKILL)?;
     ensure!(
         wait_for_cri_process_exit(proc_root, container_ids, Duration::from_secs(2))?,
         "Cilium Envoy process remained in a stopped source CRI container after SIGKILL; refusing destination cutover"
     );
     eprintln!(
         "nodemigrate: stopped {stopped} leftover Cilium Envoy process(es) with SIGTERM and forced {} remaining source-container process(es) to exit",
-        remaining.len()
+        killed
     );
     cleanup_stale_cilium_envoy_sockets(installation)?;
-    Ok(stopped + remaining.len())
+    Ok(stopped + killed)
 }
 
 #[cfg(not(unix))]
@@ -269,7 +279,7 @@ pub fn stop_orphaned_cilium_envoy_processes(
     Ok(0)
 }
 
-fn cilium_envoy_container_ids(containers: &serde_json::Value) -> Vec<String> {
+fn cilium_agent_container_ids(containers: &serde_json::Value) -> Vec<String> {
     let mut ids = containers
         .get("containers")
         .and_then(serde_json::Value::as_array)
@@ -289,7 +299,8 @@ fn cilium_envoy_container_ids(containers: &serde_json::Value) -> Vec<String> {
                         .and_then(|labels| labels.get("nodelet.dev/container-name"))
                 })
                 .and_then(serde_json::Value::as_str);
-            name == Some("cilium-envoy") || label_name == Some("cilium-envoy")
+            matches!(name, Some("cilium-agent" | "cilium-envoy"))
+                || matches!(label_name, Some("cilium-agent" | "cilium-envoy"))
         })
         .filter_map(|container| {
             container
@@ -340,12 +351,77 @@ fn processes_in_cri_containers(proc_root: &Path, container_ids: &[String]) -> Re
                 return Err(error).with_context(|| format!("reading cgroup for process {pid}"))
             }
         };
-        if cgroup_container_id(&cgroup).is_some_and(|id| container_ids.contains(id)) {
+        if cgroup_container_id(&cgroup).is_some_and(|id| container_ids.contains(id))
+            || process_has_source_shim_ancestor(proc_root, pid, &container_ids)?
+        {
             pids.push(pid);
         }
     }
     pids.sort_unstable();
     Ok(pids)
+}
+
+#[cfg(unix)]
+fn process_has_source_shim_ancestor(
+    proc_root: &Path,
+    pid: i32,
+    container_ids: &std::collections::HashSet<&str>,
+) -> Result<bool> {
+    let mut current = pid;
+    for _ in 0..16 {
+        let stat = match std::fs::read_to_string(proc_root.join(current.to_string()).join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading process stat for {current}"))
+            }
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            return Ok(false);
+        };
+        let mut fields = fields.split_whitespace();
+        let _state = fields.next();
+        let Some(parent_pid) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
+            return Ok(false);
+        };
+        if parent_pid <= 1 || parent_pid == current {
+            return Ok(false);
+        }
+        let parent = proc_root.join(parent_pid.to_string());
+        let command_line = match std::fs::read(parent.join("cmdline")) {
+            Ok(command_line) => command_line,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading command line for process {parent_pid}"))
+            }
+        };
+        if is_containerd_shim_for_source(&command_line, container_ids) {
+            return Ok(true);
+        }
+        current = parent_pid;
+    }
+    Ok(false)
+}
+
+#[cfg(unix)]
+fn is_containerd_shim_for_source(
+    command_line: &[u8],
+    container_ids: &std::collections::HashSet<&str>,
+) -> bool {
+    let args = command_line
+        .split(|byte| *byte == 0)
+        .filter_map(|arg| std::str::from_utf8(arg).ok())
+        .collect::<Vec<_>>();
+    let is_shim = args
+        .first()
+        .and_then(|executable| Path::new(executable).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("containerd-shim"));
+    is_shim
+        && args
+            .windows(2)
+            .any(|pair| pair[0] == "-id" && container_ids.contains(pair[1]))
 }
 
 #[cfg(unix)]
@@ -974,7 +1050,7 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cilium_envoy_container_ids, running_sandbox_ids, source_pod_sandbox_ids,
+        cilium_agent_container_ids, running_sandbox_ids, source_pod_sandbox_ids,
         static_pod_sandbox_ids,
     };
 
@@ -1067,6 +1143,7 @@ mod tests {
         let containers = serde_json::json!({
             "containers": [
                 {"id": SOURCE_CONTAINER_ID, "metadata": {"name": "cilium-envoy"}},
+                {"id": "container-1", "metadata": {"name": "cilium-agent"}},
                 {"id": "container-2", "labels": {"io.kubernetes.container.name": "cilium-envoy"}},
                 {"id": "container-3", "labels": {"nodelet.dev/container-name": "cilium-envoy"}},
                 {"id": "ordinary", "metadata": {"name": "cilium-agent"}},
@@ -1076,8 +1153,9 @@ mod tests {
         });
 
         assert_eq!(
-            cilium_envoy_container_ids(&containers),
+            cilium_agent_container_ids(&containers),
             vec![
+                "container-1".to_string(),
                 "container-2".to_string(),
                 "container-3".to_string(),
                 SOURCE_CONTAINER_ID.to_string()
@@ -1145,10 +1223,44 @@ mod tests {
         )
         .unwrap();
 
+        let envoy_with_shim_identity = proc_root.path().join("104");
+        std::fs::create_dir(&envoy_with_shim_identity).unwrap();
+        std::fs::write(
+            envoy_with_shim_identity.join("cmdline"),
+            b"/usr/bin/cilium-envoy-starter\0",
+        )
+        .unwrap();
+        std::fs::write(
+            envoy_with_shim_identity.join("cgroup"),
+            "0::/system.slice/k3s.service\n",
+        )
+        .unwrap();
+        std::fs::write(
+            envoy_with_shim_identity.join("stat"),
+            "104 (cilium-envoy-starter) S 105 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        )
+        .unwrap();
+
+        let source_shim = proc_root.path().join("105");
+        std::fs::create_dir(&source_shim).unwrap();
+        std::fs::write(
+            source_shim.join("cmdline"),
+            format!(
+                "/usr/bin/containerd-shim-runc-v2\0-namespace\0k8s.io\0-id\0{SOURCE_CONTAINER_ID}\0-address\0/run/k3s/containerd/containerd.sock\0"
+            ),
+        )
+        .unwrap();
+        std::fs::write(source_shim.join("cgroup"), "0::/system.slice/k3s.service\n").unwrap();
+        std::fs::write(
+            source_shim.join("stat"),
+            "105 (containerd-shim) S 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        )
+        .unwrap();
+
         assert_eq!(
             processes_in_cri_containers(proc_root.path(), &[SOURCE_CONTAINER_ID.to_string()])
                 .unwrap(),
-            vec![101]
+            vec![101, 104]
         );
     }
 

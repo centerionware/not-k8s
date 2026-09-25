@@ -44,10 +44,19 @@ source sandboxes, then targets only Envoy processes whose cgroup matches those
 exact IDs after disabling the source service. Cleanup failures restore the
 source service. Unit regressions cover CRI metadata selection, systemd/cgroupfs
 ID parsing, and process identity matching. Focused quick-check and runtime
-retest are pending; the first focused attempt at SHA
-`5736a03302b203e49cea66365f54b55d53e293a5` found a Rust `HashSet` borrowed-key
-type mismatch before runtime. The matcher now stores `&str` keys, and a rerun
-is pending. Both lanes still lack a successful round trip or parity checkpoint.
+retest initially hit a Rust `HashSet` borrowed-key type mismatch at SHA
+`5736a03302b203e49cea66365f54b55d53e293a5`; the correction passed quick-check
+in [run 36110023200](https://github.com/centerionware/not-k8s/actions/runs/36110023200).
+The cgroup-only implementation stopped two Envoy processes in branch-runtime
+K3s, but the target Envoy then could not connect to the Cilium agent's missing
+`xds.sock`. Latest-release run [36110023663](https://github.com/centerionware/not-k8s/actions/runs/36110023663)
+showed a surviving source Envoy whose cgroup container ID differed from the
+source shim's `-id`. The worktree now includes both source Cilium agent and
+Envoy CRI IDs and matches exact cgroup or ancestor-shim identities; dedicated
+quick-check and branch/release runtime reruns are pending. The upstream lanes
+still fail the known cert-manager webhook admission path, with v0.8.0 also
+reproducing the CSR protobuf defect. No run has passed reverse migration or
+full parity.
 
 ## Required migration test inventory
 
