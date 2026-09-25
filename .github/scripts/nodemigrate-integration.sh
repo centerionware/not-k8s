@@ -44,7 +44,7 @@ capture_cilium_envoy_process_owners() {
 }
 
 capture_cilium_agent_logs() {
-    local pod kubeconfig="${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}"
+    local pod kubeconfig="${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}"
     while IFS= read -r pod; do
         [[ -n "$pod" ]] || continue
         echo "Cilium agent logs for $pod (current):"

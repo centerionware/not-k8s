@@ -52,11 +52,31 @@ K3s, but the target Envoy then could not connect to the Cilium agent's missing
 `xds.sock`. Latest-release run [36110023663](https://github.com/centerionware/not-k8s/actions/runs/36110023663)
 showed a surviving source Envoy whose cgroup container ID differed from the
 source shim's `-id`. The worktree now includes both source Cilium agent and
-Envoy CRI IDs and matches exact cgroup or ancestor-shim identities; dedicated
-quick-check and branch/release runtime reruns are pending. The upstream lanes
-still fail the known cert-manager webhook admission path, with v0.8.0 also
-reproducing the CSR protobuf defect. No run has passed reverse migration or
-full parity.
+Envoy CRI IDs and matches exact cgroup or ancestor-shim identities. Branch and
+v0.8.0 migration runs at SHA
+`aa4580f0938fb8c23b816c41b61d5e96c8314e4a` both stopped 2 stale source Envoy
+processes and removed 3 stale sockets; the original source socket collision
+did not recur. However, target Envoy initially could not connect to the
+Cilium-agent `xds.sock`, CNI/CoreDNS stayed unready, and hostPath CSI did not
+schedule. The upstream lanes still fail cert-manager webhook admission, with
+v0.8.0 also reproducing the released CSR protobuf defect. One unit fixture
+assertion failed at `aa4580f0` due to a negative CRI row named `cilium-agent`;
+after correcting it to `cilium-operator`, the focused nodemigrate quick-check
+passed at SHA `1faaf0634d89a6a116ce28d5a93374e6d082d54f` in [run
+36112668805](https://github.com/centerionware/not-k8s/actions/runs/36112668805).
+No run has passed reverse migration or full parity.
+
+To diagnose the remaining target Cilium failure, the integration harness was
+extended to capture current and previous `cilium-agent` and `config` container
+logs when post-cutover storage setup fails. The first run revealed it selected
+the stale source kubeconfig after cutover, so it emitted no Cilium agent logs.
+The worktree now prefers the active `KUBECONFIG`; shell/snapshot validation
+passed in
+[run 36114345183](https://github.com/centerionware/not-k8s/actions/runs/36114345183).
+The branch-runtime run [36114368998](https://github.com/centerionware/not-k8s/actions/runs/36114368998)
+reproduced the Cilium readiness failure but produced no agent logs; rerun with
+the active-kubeconfig correction is pending. No cause or fix for the target
+agent readiness failure is claimed until those logs are reviewed.
 
 ## Required migration test inventory
 
