@@ -234,6 +234,8 @@ install_hostpath_driver() {
         for container_id in $(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a --name cilium-envoy -q 2>/dev/null); do
             echo "Inspecting failed Cilium Envoy container $container_id" >&2
             crictl --runtime-endpoint unix:///run/containerd/containerd.sock inspect "$container_id" >&2 || true
+            echo "Cilium Envoy container logs $container_id" >&2
+            crictl --runtime-endpoint unix:///run/containerd/containerd.sock logs --tail=500 "$container_id" >&2 || true
         done
         kubectl get pods -A -o wide >&2 || true
         kubectl get pods -n kube-system -l k8s-app=cilium -o yaml >&2 || true

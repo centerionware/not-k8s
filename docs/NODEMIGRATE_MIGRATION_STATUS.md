@@ -9,21 +9,16 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime migration [36091505933](https://github.com/centerionware/not-k8s/actions/runs/36091505933)
-used SHA `2debf9caf19def33d1253e046f85be8e1063d2d9`. Both utility and
-combined-runtime builds and the five-node Docker isolation preflight passed;
-both migration lanes completed forward migration and then failed during
-post-cutover Cilium startup. Captured `crictl inspect` data shows Envoy's own
-OCI mount list first binds its read-only `envoy-config` volume at
-`/var/run/cilium/envoy/`, then binds writable `sockets` and read-only
-`artifacts` below that path. runc attempts to create those child mountpoints
-inside the read-only parent and fails. The OCI root itself is not marked
-read-only. The previous parent-first CRI sort therefore did not address the
-actual overlap. Nodelet now prepares nested mountpoint directories within
-nodelet-managed parent volume sources only, preserving mount flags and leaving
-external hostPath/CSI sources untouched. Focused unit checks and a migration
-rerun are pending. CNI/CoreDNS readiness, post-cutover storage/workloads,
-reverse migration, and semantic comparison remain unverified.
+Branch-runtime migration [36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629)
+used SHA `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c`. Both utility and
+combined-runtime builds, nodelet quick-check [36093508613](https://github.com/centerionware/not-k8s/actions/runs/36093508613),
+and the five-node Docker isolation preflight passed. The managed-volume
+mountpoint fix stopped the prior runc `read-only file system` error in both
+migration lanes. However, Envoy then failed its startup probe and entered
+CrashLoopBackOff, leaving CNI/CoreDNS and workloads unready; CSI setup,
+reverse migration, and semantic comparison did not run. The next failure
+bundle adds Envoy container stdout/stderr to its OCI inspection so the new
+startup failure can be diagnosed.
 
 ## Required migration test inventory
 

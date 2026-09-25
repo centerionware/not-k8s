@@ -201,17 +201,17 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest branch-runtime run used SHA `2debf9caf19def33d1253e046f85be8e1063d2d9`
-in [run 36091505933](https://github.com/centerionware/not-k8s/actions/runs/36091505933).
-Both nodemigrate and combined-runtime release builds and the five-node Docker
-isolation preflight passed. Both source lanes completed forward migration,
-then failed Cilium startup on Envoy's nested mounts. The captured OCI spec
-shows a read-only managed parent volume at `/var/run/cilium/envoy/` followed
-by child mounts for `sockets` and `artifacts`; the rootfs itself is writable.
-The previous parent-first sort did not fix this. The new nodelet change
-prepares nested target directories only inside nodelet-managed parent sources;
-targeted quick-check and migration rerun are pending. Full logs are saved at
-`/tmp/nodemigrate-36091505933/`. No local Cargo test/build was run.
+The latest branch-runtime run used SHA `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c`
+in [run 36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629).
+Nodemigrate and combined-runtime builds passed, nodelet quick-check passed in
+[run 36093508613](https://github.com/centerionware/not-k8s/actions/runs/36093508613),
+and the five-node Docker isolation preflight passed. Both migration lanes
+completed forward migration. Neither reproduced the old runc mountpoint error,
+but Cilium Envoy failed its startup probe and CNI/CoreDNS stayed unready, so
+post-cutover workload/storage checks, reverse migration, and parity comparison
+did not run. `crictl inspect` captured the final OCI spec; the next diagnostic
+run also captures Envoy container logs. Full logs are saved at
+`/tmp/nodemigrate-36093516629/`. No local Cargo test/build was run.
 
 The prior run `36089689047` reproduced the mount failure without OCI inspection;
 its logs are at `/tmp/nodemigrate-36089689047/artifacts/`.
@@ -236,6 +236,10 @@ No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Targeted quick-check: `nodelet` | Passed unit tests for nested read-only managed-volume mountpoint preparation and external-volume non-mutation. | [Run 36093508613](https://github.com/centerionware/not-k8s/actions/runs/36093508613) |
+| 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Branch-runtime K3s + Cilium | Forward migration passed; prior runc mountpoint failure did not recur. Cilium Envoy still failed its startup probe and blocked CNI/workload/storage checks. | [Run 36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629) |
+| 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Branch-runtime Kubernetes + Cilium | Forward migration passed; old mountpoint failure did not recur, but Envoy startup probe failed and blocked CNI/workload/storage checks and reverse migration. | [Run 36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629) |
+| 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Five-node Docker preflight | Passed; validates isolation/capabilities only, not Kubernetes/Cilium/migration parity. | [Run 36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629) |
 | 2026-09-25 | `2debf9caf19def33d1253e046f85be8e1063d2d9` | Branch-runtime K3s + Cilium | Utility/runtime builds and forward migration passed; Envoy failed because writable nested targets were absent from a nodelet-managed read-only parent volume. OCI spec captured. | [Run 36091505933](https://github.com/centerionware/not-k8s/actions/runs/36091505933) |
 | 2026-09-25 | `2debf9caf19def33d1253e046f85be8e1063d2d9` | Branch-runtime Kubernetes + Cilium | Forward migration passed; the same nested read-only-parent mount failure blocked CNI, storage/workload verification, and reverse migration. OCI spec captured. | [Run 36091505933](https://github.com/centerionware/not-k8s/actions/runs/36091505933) |
 | 2026-09-25 | `2debf9caf19def33d1253e046f85be8e1063d2d9` | Five-node Docker preflight | Passed; validates isolation/capabilities only, not Kubernetes/Cilium/migration parity. | [Run 36091505933](https://github.com/centerionware/not-k8s/actions/runs/36091505933) |
