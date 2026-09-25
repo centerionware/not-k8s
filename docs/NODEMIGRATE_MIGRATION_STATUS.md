@@ -31,6 +31,22 @@ Focused nodeapiserver quick-checks passed at map fix SHA `8555845f`
 and substring fix SHA `f97432cc`
 ([36150653684](https://github.com/centerionware/not-k8s/actions/runs/36150653684)).
 
+The latest regular-release comparison, [run 36153673997](https://github.com/centerionware/not-k8s/actions/runs/36153673997)
+at harness SHA `a35ab9ba8cba149613381a5a3738879205ce31fe`, used K3s
+`v1.35.0+k3s1` and upstream Kubernetes `v1.37.1` as sources with the released
+`v0.8.0` destination. The expanded source fixtures passed, the unattended
+high-risk warning appeared, and nodemigrate captured 571/58 K3s objects/CRDs
+and 551/54 upstream objects/CRDs. The released target accepted 55 and 51 CRD
+apply requests respectively, but both lanes rejected the three Gateway API
+CRDs because v0.8.0 lacks global CEL `matches`; the affected Gateway API v1
+kind then remained unavailable. Upstream also failed restoring CertificateRequest
+and CSR objects with HTTP 500. Both failures exercised rollback, which restored
+the source API and retained the protected export. This release comparison does
+not test the branch's CEL fixes as a destination; branch-runtime run
+36150670405 confirms those CEL/map/substring fixes accept all source CRDs.
+Neither release-backed lane passed a destination workload, reverse migration,
+or round-trip parity checkpoint.
+
 At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
 [run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
 built nodemigrate and the combined runtime and passed the five-node Docker

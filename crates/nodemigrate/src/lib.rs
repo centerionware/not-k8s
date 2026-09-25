@@ -205,11 +205,11 @@ fn migrate_to_nodestore(
     // K3s pod sandboxes while that CRI endpoint is still available; otherwise
     // cleanup would run after `/run/k3s/containerd/containerd.sock` disappears
     // and source containers could remain bound to host sockets and mounts.
-    let mut source_cilium_envoy_containers = if source.distribution == request::Distribution::K3s {
+    let mut source_cilium_identity = if source.distribution == request::Distribution::K3s {
         service::stop_source_pod_sandboxes(source)
             .context("stopping K3s pod sandboxes before disabling the source service")?
     } else {
-        Vec::new()
+        service::SourceCiliumIdentity::default()
     };
     let previous_service = service::disable(source)?;
     if source.distribution == request::Distribution::Kubernetes {
@@ -222,7 +222,7 @@ fn migrate_to_nodestore(
         }
         let sandbox_cleanup = service::stop_source_pod_sandboxes(source);
         match sandbox_cleanup {
-            Ok(container_ids) => source_cilium_envoy_containers = container_ids,
+            Ok(identity) => source_cilium_identity = identity,
             Err(error) => {
                 if let Err(restore_error) = service::restore(source, previous_service) {
                     bail!("stopping source pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
@@ -234,7 +234,7 @@ fn migrate_to_nodestore(
         }
     }
     if let Err(error) =
-        service::stop_orphaned_cilium_envoy_processes(source, &source_cilium_envoy_containers)
+        service::stop_orphaned_cilium_envoy_processes(source, &source_cilium_identity)
     {
         if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("stopping orphaned source Cilium Envoy processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
@@ -424,17 +424,16 @@ fn migrate_worker_to_nodestore(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
     );
-    let source_cilium_envoy_containers = if source.distribution == request::Distribution::K3s {
+    let source_cilium_identity = if source.distribution == request::Distribution::K3s {
         service::stop_source_pod_sandboxes(source)
             .context("stopping K3s worker pod sandboxes before disabling the source service")?
     } else {
-        Vec::new()
+        service::SourceCiliumIdentity::default()
     };
     let previous_service = service::disable(source)?;
-    let source_cilium_envoy_containers = if source.distribution == request::Distribution::Kubernetes
-    {
+    let source_cilium_identity = if source.distribution == request::Distribution::Kubernetes {
         match service::stop_source_pod_sandboxes(source) {
-            Ok(container_ids) => container_ids,
+            Ok(identity) => identity,
             Err(error) => {
                 if let Err(restore_error) = service::restore(source, previous_service) {
                     bail!("stopping source worker pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
@@ -445,10 +444,10 @@ fn migrate_worker_to_nodestore(
             }
         }
     } else {
-        source_cilium_envoy_containers
+        source_cilium_identity
     };
     if let Err(error) =
-        service::stop_orphaned_cilium_envoy_processes(source, &source_cilium_envoy_containers)
+        service::stop_orphaned_cilium_envoy_processes(source, &source_cilium_identity)
     {
         if let Err(restore_error) = service::restore(source, previous_service) {
             bail!("stopping orphaned source worker Cilium Envoy processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
