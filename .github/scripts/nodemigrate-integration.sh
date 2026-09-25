@@ -411,6 +411,28 @@ rules:
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: migration-node-reader
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: migration-node-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: migration-node-reader
+subjects:
+- kind: ServiceAccount
+  name: migration-reader
+  namespace: migration-apps
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: migration-config-reader
@@ -423,6 +445,39 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: migration-config-reader
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: migration-quota
+  namespace: migration-apps
+spec:
+  hard:
+    pods: "50"
+    requests.storage: 20Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: migration-limits
+  namespace: migration-apps
+spec:
+  limits:
+  - type: Container
+    min:
+      cpu: 1m
+      memory: 1Mi
+    max:
+      cpu: "4"
+      memory: 4Gi
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: migration-priority
+value: 100000
+globalDefault: false
+description: "Priority fixture for node migration verification"
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -485,10 +540,22 @@ metadata:
   namespace: migration-apps
 spec:
   restartPolicy: Never
+  priorityClassName: migration-priority
   containers:
   - name: app
     image: busybox:1.36.1
     command: [sh, -c, 'echo standalone-workload-running; sleep 36000']
+    env:
+    - name: MIGRATION_CONFIG
+      valueFrom:
+        configMapKeyRef:
+          name: migration-user-metadata
+          key: migration-marker
+    - name: MIGRATION_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: migration-user-secret
+          key: migration-secret
 ---
 apiVersion: v1
 kind: Service
@@ -718,6 +785,27 @@ YAML
     kubectl wait -n migration-apps --for=condition=Accepted httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
     kubectl wait -n migration-apps --for=condition=ResolvedRefs httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
+    # Verify that the migrated ConfigMap and Secret still feed a real container.
+    kubectl exec -n migration-apps migration-standalone -- sh -ec \
+        'test "$MIGRATION_CONFIG" = user-config-data && test "$MIGRATION_SECRET" = migration-secret-value' || {
+        echo "ConfigMap or Secret workload consumption failed at stage $stage" >&2
+        return 1
+    }
+    kubectl get resourcequota migration-quota -n migration-apps -o json | jq -e \
+        '.spec.hard.pods == "50" and .spec.hard["requests.storage"] == "20Gi"' >/dev/null || {
+        echo "ResourceQuota state changed at stage $stage" >&2
+        return 1
+    }
+    kubectl get limitrange migration-limits -n migration-apps -o json | jq -e \
+        '.spec.limits | any(.type == "Container" and .min.cpu == "1m" and .max.cpu == "4")' >/dev/null || {
+        echo "LimitRange state changed at stage $stage" >&2
+        return 1
+    }
+    kubectl get priorityclass migration-priority -o json | jq -e \
+        '.value == 100000 and .globalDefault == false' >/dev/null || {
+        echo "PriorityClass state changed at stage $stage" >&2
+        return 1
+    }
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
     kubectl exec -n migration-apps migration-stateful-0 -- sh -c \
         'echo stateful-persistent-data > /state/marker'
@@ -850,6 +938,7 @@ verify_stage() {
     }
     kubectl delete job -n migration-apps "$cron_job" --wait=true
     local rbac_allow_job="migration-rbac-allow-$stage"
+    local rbac_node_job="migration-rbac-node-$stage"
     local rbac_deny_job="migration-rbac-deny-$stage"
     kubectl apply -f - <<YAML
 apiVersion: batch/v1
@@ -872,6 +961,28 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
+  name: $rbac_node_job
+  namespace: migration-apps
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: migration-reader
+      containers:
+      - name: check
+        image: $NODEMIGRATE_KUBECTL_IMAGE
+        command: ["kubectl"]
+        args: ["get", "node", "$(NODE_NAME)", "-o", "name"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
   name: $rbac_deny_job
   namespace: migration-apps
 spec:
@@ -887,12 +998,17 @@ spec:
         args: ["get", "secret", "migration-user-secret", "-n", "migration-apps", "-o", "name"]
 YAML
     kubectl wait -n migration-apps --for=condition=Complete "job/$rbac_allow_job" --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Complete "job/$rbac_node_job" --timeout=5m
     kubectl wait -n migration-apps --for=condition=Failed "job/$rbac_deny_job" --timeout=5m
     kubectl logs -n migration-apps "job/$rbac_deny_job" | grep Forbidden >/dev/null || {
         echo "service-account RBAC did not deny Secret access at stage $stage" >&2
         return 1
     }
-    kubectl delete job -n migration-apps "$rbac_allow_job" "$rbac_deny_job" --wait=true
+    kubectl logs -n migration-apps "job/$rbac_node_job" | grep '^node/' >/dev/null || {
+        echo "service-account ClusterRole node read did not succeed at stage $stage" >&2
+        return 1
+    }
+    kubectl delete job -n migration-apps "$rbac_allow_job" "$rbac_node_job" "$rbac_deny_job" --wait=true
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m
@@ -941,6 +1057,19 @@ YAML
     helm get manifest cert-manager -n cert-manager | grep '^kind: Deployment$' >/dev/null
     helm get values cert-manager -n cert-manager -o json | jq -e '.crds.enabled == true' >/dev/null
     helm history cert-manager -n cert-manager -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
+    local cilium_chart_version
+    cilium_chart_version="$(helm list -n kube-system --output json \
+        | jq -r '.[] | select(.name == "cilium" and .status == "deployed") | .chart | sub("^cilium-"; "")')"
+    [[ -n "$cilium_chart_version" ]] || {
+        echo "Cilium Helm release is missing or not deployed at stage $stage" >&2
+        return 1
+    }
+    helm get manifest cilium -n kube-system | grep '^kind: DaemonSet$' >/dev/null
+    helm get values cilium -n kube-system -o json | jq -e \
+        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == false and .cni.confPath == "/etc/cni/net.d"' >/dev/null
+    helm history cilium -n kube-system -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
+    helm upgrade cilium cilium/cilium -n kube-system --version "$cilium_chart_version" \
+        --reuse-values --dry-run=server --hide-secret >/dev/null
     helm upgrade traefik traefik/traefik -n traefik --version "$traefik_chart_version" \
         --reuse-values --dry-run=server --hide-secret >/dev/null
     kubectl delete pod -n traefik migration-route-check --ignore-not-found --wait=true
