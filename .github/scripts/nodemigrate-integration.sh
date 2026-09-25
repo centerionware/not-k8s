@@ -64,7 +64,7 @@ capture_cilium_agent_logs() {
 
 capture_cilium_init_container_diagnostics() {
     local kubeconfig="${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}"
-    local container_json pod_records pod_uid pod_name init_containers container_id container_name
+    local container_json pod_records pod_uid pod_name init_containers container_id container_name task_row task_pid proc_file
     container_json="$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json 2>/dev/null)" || {
         echo "Unable to list CRI containers for Cilium init diagnostics" >&2
         return 0
@@ -85,6 +85,18 @@ capture_cilium_init_container_diagnostics() {
             echo "Cilium init container logs pod=$pod_name name=$container_name id=$container_id" >&2
             crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
                 logs --tail=500 "$container_id" >&2 || true
+            task_row="$(ctr -n k8s.io tasks ls 2>/dev/null | awk -v id="$container_id" '$1 == id { print; found = 1 } END { if (!found) print "no live containerd task" }')"
+            echo "Cilium init task pod=$pod_name name=$container_name id=$container_id: $task_row" >&2
+            task_pid="$(awk '$2 ~ /^[0-9]+$/ { print $2; exit }' <<< "$task_row")"
+            if [[ "$task_pid" =~ ^[0-9]+$ && "$task_pid" -gt 1 ]]; then
+                for proc_file in status cgroup wchan; do
+                    echo "Cilium init process /proc/$task_pid/$proc_file:" >&2
+                    cat "/proc/$task_pid/$proc_file" >&2 || true
+                done
+                printf 'Cilium init process cmdline: ' >&2
+                tr '\0' ' ' < "/proc/$task_pid/cmdline" >&2 || true
+                printf '\n' >&2
+            fi
         done <<< "$init_containers"
     done <<< "$pod_records"
 }

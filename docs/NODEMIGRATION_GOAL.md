@@ -191,10 +191,18 @@ lifecycle classification.
   StorageVersions, discovery.k8s.io EndpointSlices, events.k8s.io Events,
   coordination.k8s.io Leases, admissionregistration.k8s.io policies/bindings,
   certificates.k8s.io CSRs, authentication/authorization review resources,
-  and every other listable resource reported by source API discovery. This
-  applies across core, apps, batch, networking, storage, autoscaling, policy,
+  flowcontrol.k8s.io FlowSchemas and PriorityLevelConfigurations,
+  resource.k8s.io DeviceClasses, ResourceClasses, ResourceClaims,
+  ResourceClaimTemplates and ResourceSlices where served, and
+  certificates.k8s.io ClusterTrustBundles where served. Include relevant API
+  subresources such as `/scale`, `/status`, `pods/exec`, `pods/attach`,
+  `pods/portforward`, `pods/ephemeralcontainers`, `pods/binding`, and
+  `pods/eviction`: verify they remain usable or document why they are
+  regenerated, transient, or outside the migration contract. Finally include
+  every other listable resource reported by source API discovery. This applies
+  across core, apps, batch, networking, storage, autoscaling, policy,
   admission, node, scheduling, certificates, authentication, authorization,
-  and installed custom API groups.
+  flow control, resource allocation, and installed custom API groups.
   For each kind, verify migration or classify it as regenerated transient state
   or exclude it only with a specific Kubernetes lifecycle reason. Do not
   silently omit a kind just because it is not named in this document.
