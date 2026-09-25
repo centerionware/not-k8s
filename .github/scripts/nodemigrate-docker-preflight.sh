@@ -90,7 +90,7 @@ for index in "${!NODES[@]}"; do
     docker exec "$container" systemctl start containerd
     docker exec "$container" systemctl is-active --quiet containerd || fail "$node containerd is inactive"
     docker exec "$container" sh -ec '
-        ctr plugins ls | grep -Eq "io.containerd.grpc.v1[[:space:]]+cri[[:space:]].*[[:space:]]ok$" || {
+        ctr plugins ls | awk '\''$1 == "io.containerd.grpc.v1" && $2 == "cri" && $NF == "ok" { found=1 } END { exit !found }'\'' || {
             echo "FAIL: containerd CRI plugin is not loaded and healthy" >&2
             ctr plugins ls >&2 || true
             exit 1

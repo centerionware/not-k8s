@@ -1,6 +1,6 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-24
+Last updated: 2026-09-25
 
 This is the living CI record for the scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
@@ -375,6 +375,10 @@ No local Cargo test/build was run.
 | 2026-09-24 | `365247f64faf5e360a0eb4b3e758ac060d6bf307` | K3s+Cilium against `v0.8.0` | Source checks and forward migration passed; post-migration CSI/workload checks again received 403 from the old `system:kube-controller-manager` identity. | [Run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846) |
 | 2026-09-24 | `365247f64faf5e360a0eb4b3e758ac060d6bf307` | Upstream Kubernetes+Cilium against `v0.8.0` | The known CSR `ExtraValue` import error was returned; rollback passed, restoring kubelet and source API and retaining the protected export. | [Run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846) |
 | 2026-09-24 | `365247f64faf5e360a0eb4b3e758ac060d6bf307` | Five-node Docker preflight | Systemd reached readiness after using the private cgroup namespace and explicit `/run` modes. The next combined CRI/network/BTF/bpffs/storage check failed; diagnostics are being made specific. | [Run 36073431846](https://github.com/centerionware/not-k8s/actions/runs/36073431846) |
+
+| 2026-09-25 | `b9c46f4ca11e80c03fe65be7c9626aabbd2d31cc` | K3s+Cilium against `v0.8.0` | Forward migration passed; the released runtime's `system:kube-controller-manager` then received 403s creating pods/ReplicaSets and reconciling EndpointSlices, so workload verification and reverse migration did not run. | [Run 36074502550](https://github.com/centerionware/not-k8s/actions/runs/36074502550) |
+| 2026-09-25 | `b9c46f4ca11e80c03fe65be7c9626aabbd2d31cc` | Upstream Kubernetes+Cilium against `v0.8.0` | The expected released-runtime CSR `ExtraValue` import failure exercised rollback; source recovery and protected-export checks passed. | [Run 36074502550](https://github.com/centerionware/not-k8s/actions/runs/36074502550) |
+| 2026-09-25 | `b9c46f4ca11e80c03fe65be7c9626aabbd2d31cc` | Five-node Docker preflight | The node image built and systemd reached readiness. CRI was healthy (`io.containerd.grpc.v1 cri - ok`), but the preflight falsely rejected its padded `ctr plugins ls` row. A field-based parser fix is pending CI validation. | [Run 36074502550](https://github.com/centerionware/not-k8s/actions/runs/36074502550) |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.
