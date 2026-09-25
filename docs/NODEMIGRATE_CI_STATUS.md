@@ -44,6 +44,14 @@ new fixes.
   The kubeadm source setup installs `crictl` from the matching cri-tools minor
   release (override with `CRI_TOOLS_VERSION`) and records the resolved tool
   version for static-pod cleanup diagnostics.
+- Branch-runtime migration run `36078155500` built the combined runtime from
+  the PR source and proved the remaining 403 was in server-side authentication:
+  K3s and kubeadm requests to create workload ReplicaSets were audited as
+  `system:kube-controller-manager`, despite nodecontroller sending per-controller
+  impersonation headers. The API server did not process those headers. An RBAC-
+  checked impersonation implementation and focused parser tests are now in the
+  worktree; quick-check and the branch-runtime lane must be rerun on the pushed
+  fix before considering controller creation verified.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

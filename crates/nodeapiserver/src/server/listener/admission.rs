@@ -49,7 +49,7 @@ async fn handle_with_audit(
         .map(str::to_string);
     let request_info = path::parse(&method, &path_str, &query);
     let audit_id = uuid::Uuid::new_v4().to_string();
-    let identity = match authenticate_request(
+    let mut identity = match authenticate_request(
         &req,
         identity,
         bootstrap_token_authenticator.as_deref(),
@@ -81,6 +81,75 @@ async fn handle_with_audit(
             return Ok(response);
         }
     };
+    if req.headers().contains_key("impersonate-user")
+        || req.headers().contains_key("impersonate-group")
+        || req.headers().contains_key("impersonate-uid")
+        || req
+            .headers()
+            .keys()
+            .any(|name| name.as_str().starts_with("impersonate-extra-"))
+    {
+        let Some(client) = storage.as_mut() else {
+            let response = json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &service_unavailable_status(
+                    &path_str,
+                    "impersonation authorization is unavailable",
+                ),
+            );
+            log_audit_rejected_request(
+                &audit_id,
+                &request_info,
+                &method,
+                &path_str,
+                &query,
+                user_agent.as_deref(),
+                identity.as_ref(),
+                &peer,
+                response.status().as_u16(),
+                audit_sink.as_deref(),
+                audit_policy.as_deref(),
+            );
+            return Ok(response);
+        };
+        match crate::authz::impersonation::apply(
+            req.headers(),
+            identity.as_ref(),
+            client,
+            &cache_registry,
+        )
+        .await
+        {
+            Ok(effective) => identity = effective,
+            Err(reason) => {
+                let response = json_response(
+                    StatusCode::FORBIDDEN,
+                    &forbidden_status_with_reason(
+                        &path_str,
+                        identity
+                            .as_ref()
+                            .map(|id| id.name.as_str())
+                            .unwrap_or(ANONYMOUS_USERNAME),
+                        &reason,
+                    ),
+                );
+                log_audit_rejected_request(
+                    &audit_id,
+                    &request_info,
+                    &method,
+                    &path_str,
+                    &query,
+                    user_agent.as_deref(),
+                    identity.as_ref(),
+                    &peer,
+                    response.status().as_u16(),
+                    audit_sink.as_deref(),
+                    audit_policy.as_deref(),
+                );
+                return Ok(response);
+            }
+        }
+    }
     let audit_identity = identity.clone();
     let audit_user = audit_identity
         .as_ref()
