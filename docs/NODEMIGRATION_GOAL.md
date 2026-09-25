@@ -107,6 +107,11 @@ CRDs and custom resources, StatefulSets, Deployments, Helm charts/releases,
 CronJobs, DaemonSets, Ingress, Gateway API, and RBAC, along with the following
 minimum coverage:
 
+Extend the existing migration fixtures and assertions to cover this inventory
+on both the K3s and upstream Kubernetes paths, in both migration directions.
+Keep current coverage and add these resource checks to it; passing existing
+tests without the added inventory does not satisfy this goal.
+
 - **Configuration and access:** Namespaces, ConfigMaps (including binary
   data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings,
   ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses.
