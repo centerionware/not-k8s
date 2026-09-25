@@ -8,19 +8,20 @@ components, branch fixes, and focused evidence. Release-backed failures caused
 by old component binaries remain visible until the fixes are included in the
 coordinated `v0.8.1` release.
 
-Latest branch-runtime integration [36176504323](https://github.com/centerionware/not-k8s/actions/runs/36176504323)
-used code SHA `77e023f1349a6345f5a2bccd1e3a838887b3bbc5`. Nodemigrate and
+Latest branch-runtime integration [36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918)
+used code SHA `64baa5ab795bfd71fed1ffe193eb08e974e5345d`. Nodemigrate and
 combined-runtime builds and the five-node Docker isolation preflight passed.
-K3s imported 58 CRDs and reached destination API readiness, but Cilium's
-`mount-bpf-fs` init container reported bpffs mounted and remained CRI-Running
-more than a minute later; subsequent init containers never started. This
-confirmed symptom blocks CNI, workload and CSI checks; the underlying cause is
-still under investigation. Upstream imported all 54 CRDs, then
-`CertificateRequest migration-test-1` admission failed with HTTP 500 while the
-cert-manager webhook was unreachable during destination Cilium startup.
-Rollbacks restored both sources and retained protected exports. Neither lane
-reached reverse migration or parity comparison. Full logs are saved at
-`/tmp/nodemigrate-36176504323/{k3s,kubernetes}.log`.
+K3s passed source checks, exported 582 objects/59 CRDs, imported all 59 CRDs,
+and reached destination API readiness. The next Cilium init container,
+`apply-sysctl-overwrites`, exited successfully in CRI, but the Pod status stayed
+Running and Cilium never started its agent. Upstream imported 55 CRDs before
+CertificateRequest admission failed because the destination cert-manager
+webhook was unreachable while target CNI was unavailable. Source rollback and
+protected-export retention passed. Neither lane reached reverse migration or
+parity comparison. The exact CRI event payload was not captured; the nodelet
+event handler currently discards events without embedded sandbox status, so a
+container-ID lookup fallback is being tested. Logs are saved at
+`/tmp/nodemigrate-36183868918/`.
 
 Latest-release integration [36174946764](https://github.com/centerionware/not-k8s/actions/runs/36174946764)
 used code SHA `85ed67ed2d4b5540b9cbe3268b061955d946a98b` with regular
@@ -80,7 +81,7 @@ neither lane reached a target checkpoint or round trip. Logs:
 | RBAC Node-read Job manifest was emitted from an expanding shell heredoc, which executed `$(NODE_NAME)` on the runner instead of preserving it for expansion by Kubernetes in the Job container. | `.github/scripts/nodemigrate-integration.sh` fixture | Escape the command substitution in the heredoc so Kubernetes expands the container's downward API environment variable. | Confirmed in both lanes of [run 36134496060](https://github.com/centerionware/not-k8s/actions/runs/36134496060): the fixture printed `NODE_NAME: command not found` and the authorized ConfigMap Job timed out. The next run passed that point; RBAC Pods then remained Pending for CPU capacity, tracked separately below. |
 | RBAC Jobs and the later PV data-check Pod did not declare small resource requests; their source Pods remained Pending with `Insufficient cpu` on the single-node fixture. | `.github/scripts/nodemigrate-integration.sh` fixture | Set 1m CPU/1Mi memory requests on all helper probe/data-check containers. | Confirmed in [run 36136419993](https://github.com/centerionware/not-k8s/actions/runs/36136419993) on both K3s and upstream Kubernetes. The three RBAC Pods were all Pending with scheduler events reporting `Insufficient cpu`; the workload fixtures and earlier Jobs had succeeded. At [run 36138657733](https://github.com/centerionware/not-k8s/actions/runs/36138657733), allowed ConfigMap/Node reads and expected denied Secret reads completed on both source clusters. Migration-stage RBAC remains unverified. |
 | The Gateway API source probe sent `migration-gateway.test` to Traefik Service port 80, which forwards to EntryPoint 8000; the Gateway listener was configured on EntryPoint 8080, so it returned 404 even though the route was accepted and programmed. | `.github/scripts/nodemigrate-integration.sh` fixture | Keep the Ingress probe on Service port 80 and port-forward the Gateway probe directly to Traefik Pod port 8080. Retain response and endpoint diagnostics on failure. | Confirmed in both lanes of [run 36140783446](https://github.com/centerionware/not-k8s/actions/runs/36140783446): the Ingress returned HTTP 200 with nginx and Gateway returned HTTP 404; Service EndpointSlices targeted 8000/8443. The test harness now probes the configured Gateway listener at 8080. Runtime recheck pending. |
-| On the branch-built destination, Cilium's `mount-bpf-fs` init container logged that `/sys/fs/bpf` was already mounted but CRI still reported the container Running more than a minute after start; later Cilium init containers did not run and the node remained CNI-unready. | `nodelet` CRI container lifecycle is a candidate owner; exact component cause is unverified | No fix yet. Inspect process/task state and CRI/containerd exit-event handling, then add a regression at the confirmed lifecycle boundary before changing runtime behavior. Do not treat a log line or API-server readiness as proof the init container completed. | Observed in both Pod status and CRI diagnostics during K3s lane [run 36176504323](https://github.com/centerionware/not-k8s/actions/runs/36176504323). Logs show successful CreateContainer/StartContainer and output `bpf on /sys/fs/bpf type bpf (rw,relatime,mode=700)`, followed by the same container still Running; later init containers never started. Logs: `/tmp/nodemigrate-36176504323/k3s.log`. This is an open investigation, not a confirmed nodelet defect. |
+| A branch-built destination can leave a successful Cilium init container reported Running, so later init containers and the Cilium agent never start and the node remains CNI-unready. | `nodelet` CRI event-to-Pod reconciliation; exact event payload is unverified | Resolve CRI events by container ID and runtime labels when `PodSandboxStatus` is absent; add regressions for event payloads with and without sandbox metadata. | Run [36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918) at SHA `64baa5ab795bfd71fed1ffe193eb08e974e5345d` showed `apply-sysctl-overwrites` exited with code 0 in CRI at 20:26:53Z while Pod status still reported it Running at 20:28:17Z; `mount-bpf-fs` was never created. No nodelet Pod-status patch appears after the init start in the captured interval. This supports a lost/missed reconciliation event, but the actual CRI event payload was not captured. A container-ID fallback and focused nodelet regression are in the worktree; validation pending. The upstream CertificateRequest webhook failure is downstream of the unavailable destination CNI. Logs: `/tmp/nodemigrate-36183868918/nodemigrate-k3s-36183868918/nodemigrate-k3s.log` and `/tmp/nodemigrate-36183868918/nodemigrate-kubernetes-36183868918/nodemigrate-kubernetes.log`. |
 
 ## Release target
 

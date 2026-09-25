@@ -9,22 +9,23 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Branch-runtime migration [36171620422](https://github.com/centerionware/not-k8s/actions/runs/36171620422)
-used code SHA `4fca1647799413929bdd319675db4cf3cba03bd5`. Nodemigrate and
+Branch-runtime migration [36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918)
+used code SHA `64baa5ab795bfd71fed1ffe193eb08e974e5345d`. Nodemigrate and
 combined-runtime builds passed, as did the five-node Docker isolation
-preflight. Both migrations failed before the target workload checkpoint. K3s
-diagnostics showed that target containerd was configured to read
-`/var/lib/rancher/k3s/agent/etc/cni/net.d`, which was empty after K3s
-uninstall, while Cilium wrote `/etc/cni/net.d/05-cilium.conflist`. CoreDNS and
-hostPath CSI could not recover. A detector fix and regression for this
-external-CNI layout are now in the worktree; CI evidence is pending. Upstream
-imported 54 CRDs but failed on CertificateRequest admission because the
-cert-manager webhook could not be reached. Its Cilium agent container was
-terminated and Pod remained `PodInitializing`, with startup cause still
-unknown. Rollback restored the source API and retained the export. Neither
-lane reached reverse migration or parity comparison. Both required merge gates
-remain open. Full logs are at
-`/tmp/nodemigrate-36171620422/{k3s,kubernetes}.log`.
+preflight. K3s source checks passed; nodemigrate captured 582 API objects and
+59 CRDs, imported every CRD, and reached destination API readiness. Destination
+Cilium then stalled: CRI reported `apply-sysctl-overwrites` exited with code 0
+at 20:26:53Z, while Pod status still reported it Running at 20:28:17Z. The
+following `mount-bpf-fs` init container never started; target workload/CSI
+checks, reverse migration, and parity comparison did not run. Upstream source
+checks passed and all 55 CRDs were imported before CertificateRequest admission
+failed with HTTP 500 because the destination cert-manager webhook was
+unreachable while CNI was unavailable. Source rollback and protected-export
+retention passed. The new CRI process snapshot confirms the init task had
+exited, but did not capture the CRI event payload; nodelet's event handler has
+a missing-metadata drop path that is now being fixed and tested. Both required
+merge gates remain open. Full logs are at
+`/tmp/nodemigrate-36183868918/nodemigrate-{k3s,kubernetes}-36183868918/`.
 
 The previous focused nodemigrate quick-check passed at SHA
 `29b6b7de9575e7cf0d43ca60becba868373d86f3` in
@@ -403,6 +404,7 @@ establish no differences across the full migrated state.
 | 2026-09-25 | `77e023f1349a6345f5a2bccd1e3a838887b3bbc5` | Branch-runtime upstream Kubernetes+Cilium migration | Source fixture passed; all 54 CRDs imported. CertificateRequest admission returned HTTP 500 because the cert-manager webhook was unreachable while destination Cilium/workload networking failed to initialize. Rollback restored the source and retained the protected export. No target fixture checkpoint, reverse migration, or parity comparison ran. | [Run 36176504323](https://github.com/centerionware/not-k8s/actions/runs/36176504323); `/tmp/nodemigrate-36176504323/kubernetes.log` |
 | 2026-09-25 | `7292bb8880cb1096c6fce195a4bbc9c9368d2ac1` | Focused nodemigrate validation | Nodemigrate unit/integration checks, packaging, release policy, and commit convention checks passed. The newest immutable ConfigMap, multi-version user CRD, and NetworkPolicy allow/deny runtime fixtures were not included in the preceding migration run and remain unverified. | [Checks 36177264886](https://github.com/centerionware/not-k8s/actions/runs/36177264886), [tests 36177264782](https://github.com/centerionware/not-k8s/actions/runs/36177264782), [release policy 36177265014](https://github.com/centerionware/not-k8s/actions/runs/36177265014), [commit convention 36177260453](https://github.com/centerionware/not-k8s/actions/runs/36177260453) |
 | 2026-09-25 | `7292bb8880cb1096c6fce195a4bbc9c9368d2ac1` | Expanded branch-runtime fixture and five-node Docker preflight | Nodemigrate and combined-runtime builds passed in both lanes, Docker isolation preflight passed, and both source fixtures reached the allowed NetworkPolicy Job. That Job completed successfully, but a contradictory log assertion failed because its `grep -q` suppresses matching output. Both lanes stopped before the deny probe and before invoking nodemigrate; no migration stage or parity was tested. Harness fix is in the current worktree; rerun pending. | [Run 36179275793](https://github.com/centerionware/not-k8s/actions/runs/36179275793); logs `/tmp/nodemigrate-36179275793/` |
+| 2026-09-25 | `64baa5ab795bfd71fed1ffe193eb08e974e5345d` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both scoped utility/runtime builds and the Docker five-node isolation preflight passed. K3s source fixture passed, captured 582 objects/59 CRDs, imported all CRDs, and reached destination API readiness; `apply-sysctl-overwrites` exited 0 in CRI but Pod status stayed Running, so later Cilium init/agent, target workloads, reverse migration, and parity were not reached. Upstream source fixture passed and imported 55 CRDs, then CertificateRequest admission failed because destination cert-manager webhook was unreachable while CNI was unavailable; rollback and protected export passed. The new CRI task snapshot showed no live task for exited init containers but did not capture the event payload. | [Run 36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918); logs `/tmp/nodemigrate-36183868918/`; Docker preflight passed |
 
 Update this table after each implementation or verification change. Record the
 exact SHA, workflow run, source distribution, CNI, and whether each stage
