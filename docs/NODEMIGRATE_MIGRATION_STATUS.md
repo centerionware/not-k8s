@@ -9,6 +9,23 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
+used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. K3s source checks and
+all 59 CRD imports passed, followed by destination API readiness. Cilium's
+`mount-bpf-fs` stop event included Pod metadata, and later CRI inspection
+showed a successful exit, but the Pod status remained Running and no next init
+container was created; target CNI and CSI checks stopped there. Upstream
+accepted all 55 CRDs, then lost destination Cilium networking and failed
+CertificateRequest webhook admission. Both lanes restored the source and
+retained protected exports. Neither lane reached target workloads, reverse
+migration, or parity. The CiliumNode conflict diagnostic was not exercised.
+Direct CoreDNS-gate reconcile and CRI init-state diagnostics were added in
+`9974e763`; focused nodelet quick-check passed in
+[36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777).
+Diagnostic branch-runtime rerun
+[36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992)
+is pending. Logs: `/tmp/nodemigrate-36195385046/{k3s,kubernetes}/`.
+
 Branch-runtime migration [36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
 used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Both scoped runtime and
 nodemigrate builds passed, as did five-node Docker isolation. K3s source
