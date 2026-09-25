@@ -124,6 +124,14 @@ pub async fn update_with_options_and_manager(
         return Ok(UpdateOutcome::Conflict);
     }
     if submitted_rv != existing_kv.mod_revision {
+        if group == "cilium.io" && resource == "ciliumnodes" {
+            tracing::warn!(
+                name,
+                submitted_resource_version = submitted_rv,
+                current_resource_version = existing_kv.mod_revision,
+                "CiliumNode update rejected a stale resourceVersion"
+            );
+        }
         return Ok(UpdateOutcome::Conflict);
     }
 
@@ -790,6 +798,16 @@ async fn persist_update(
     if !resp.succeeded {
         // Lost the race: something else wrote to this key between our
         // read above and this write.
+        if group == "cilium.io" && resource == "ciliumnodes" {
+            tracing::warn!(
+                name = object
+                    .pointer("/metadata/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<missing>"),
+                compared_resource_version = existing_kv.mod_revision,
+                "CiliumNode update lost a storage compare-and-swap race"
+            );
+        }
         return Ok(UpdateOutcome::Conflict);
     }
 

@@ -15,6 +15,22 @@ new fixes.
 
 ## Latest branch-runtime result
 
+The newest migration [run 36189354168](https://github.com/centerionware/not-k8s/actions/runs/36189354168)
+used SHA `7da932bf9f15c943a8aa025739b5e6706bc95386`. Focused `nodelet`
+quick-check [36189351742](https://github.com/centerionware/not-k8s/actions/runs/36189351742),
+the five-node Docker isolation preflight, and both nodemigrate/combined-runtime
+builds passed. K3s Cilium init containers progressed to starting the agent,
+which then exhausted ten retries updating `CiliumNode/runnervmtr4k5` with
+HTTP 409 conflicts. Upstream imported 55 CRDs, then CertificateRequest
+admission failed because the cert-manager webhook was unreachable while CNI
+was down. Rollback and protected-export retention passed in both lanes. Neither
+lane reached target workload checks, reverse migration, or parity. The logged
+Cilium CRI events had Pod metadata; the missing-metadata fallback remains
+unproven. Full logs: `/tmp/nodemigrate-36189354168/`. The branch now adds
+nodeapiserver diagnostics to distinguish stale resourceVersion conflicts from
+storage compare-and-swap races; focused nodeapiserver and migration reruns are
+pending.
+
 The newest branch-runtime migration [run 36186694756](https://github.com/centerionware/not-k8s/actions/runs/36186694756)
 used SHA `d4be86e33d9140faa9258eaff112bebed3216fa4`. The nodemigrate and
 combined-runtime builds and five-node Docker isolation preflight passed. The
