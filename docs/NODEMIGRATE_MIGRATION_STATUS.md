@@ -1,6 +1,6 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-24
+Last updated: 2026-09-25
 
 This is the living implementation status record for the full scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
@@ -84,8 +84,12 @@ and compares full initial/returned semantic snapshots. It also checks node
 names/roles/readiness, workload/add-on/ingress specs, PV/PVC bindings, Cilium,
 required CRD state, and certificate-secret content by digest. The latest
 single-host run is diagnostic only and failed during API import; it does not
-pass the K3s merge gate. It does not provision or verify five distinct
-isolated nodes. QEMU
+pass the K3s merge gate. The Docker-only preflight now verifies five distinct
+systemd containers, network/mount namespaces, CRI and BPF support, persistent
+volumes, peer reachability, and node stop/restart isolation in [run
+36077448685](https://github.com/centerionware/not-k8s/actions/runs/36077448685).
+It does not establish Kubernetes control-plane behavior, Cilium datapath, or
+five-node migration parity. QEMU
 or another suitable isolation method can host those nodes on one CI node;
 Docker is acceptable only if the environment fully simulates the behaviors
 under test. No runtime merge gate has passed. The new skip-import path

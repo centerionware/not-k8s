@@ -1,6 +1,6 @@
 # nodemigrate status dashboard
 
-Last updated: 2026-09-24
+Last updated: 2026-09-25
 
 This dashboard tracks the full nodemigrate goal in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Detailed status is kept in the
@@ -15,9 +15,9 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | At SHA `f9e4b311`, focused component checks passed. Against v0.8.0, K3s forward migration passed before the old controller identity hit 403s. Upstream reproduced the old CSR codec error; the new rollback check passed with source API and export recovered. Neither lane completed a round trip. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Five-node isolation and runtime evidence are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation preflight | The image built, but the first container exited with code 255 before systemd readiness without container output. The entrypoint now prints the resolved systemd binary and enables debug console logs while retaining private cgroup namespaces. Runs 36051665474, 36053700863, 36055409069, and 36056682815 reproduced the failure. Isolation, CRI, BPF, network, and failure/restart remain unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | At SHA `f9e4b311`, focused checks passed for `nodeapiserver,nodecontroller,nodebootstrap,nodemigrate`. Against v0.8.0 in run `36075750885`, K3s forward migration passed but the old controller identity received 403s during ReplicaSet creation. Upstream reproduced the old CSR codec error and the new rollback check passed. Neither lane completed a round trip. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation preflight | Passed in run `36077448685`: five systemd containers have independent namespaces, machine IDs, CRI/BPF capability, writable persistent volumes, peer connectivity, and stop/restart isolation. This is infrastructure evidence, not proof of Kubernetes control-plane, Cilium datapath, or migration parity. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
@@ -30,8 +30,15 @@ separate living documents below.
   reproduced v0.8.0's CSR codec failure, and confirmed source service/API
   recovery plus protected-export retention. K3s forward migration passed, but
   CSI workload checks still hit the v0.8.0 controller-manager 403. The Docker
-  systemd preflight again exited 255. Full round trips and five-node tests remain
-  unverified.
+  container isolation preflight now passes, but Kubernetes/Cilium five-node
+  migration and all full round trips remain unverified.
+
+- At SHA `dd31443360d6d3412783ebe27d7b44661f496eef`, the Docker-only
+  preflight passed all five containers' systemd, CRI, BPF, namespace,
+  persistent-volume, peer-connectivity, and stop/restart isolation checks in
+  [run 36077448685](https://github.com/centerionware/not-k8s/actions/runs/36077448685).
+  The K3s and upstream lanes were intentionally skipped for this focused
+  harness check. Their latest `v0.8.0` outcomes remain in the CI record.
 
 - Compatible API-version import selection was added at SHA
   `954f1be3d12fb7f0334db8dff6efae28ca0e4250`. Focused nodemigrate tests passed
