@@ -716,7 +716,13 @@ impl CriRuntime {
         // later reports as containerStatuses[].containerID, that's
         // definitive proof a different, stale container is what's
         // actually running (a duplicate/orphaned creation), not this one.
-        info!(container = %container.name, container_id = %created.container_id, "CreateContainer succeeded");
+        info!(
+            namespace = %id.namespace,
+            pod = %id.name,
+            container = %container.name,
+            container_id = %created.container_id,
+            "CreateContainer succeeded"
+        );
         let had_allocated_devices = !allocated_devices.is_empty();
         self.record_device_allocations(sandbox_id, &container.name, &crate::runtime::pod_key(&id.namespace, &id.name), allocated_devices);
 
@@ -724,6 +730,13 @@ impl CriRuntime {
             self.release_container_devices(sandbox_id, &container.name).await;
             return Err(e).context("starting container");
         }
+        info!(
+            namespace = %id.namespace,
+            pod = %id.name,
+            container = %container.name,
+            container_id = %created.container_id,
+            "StartContainer succeeded"
+        );
         // Device allocation changes the Pod status surface, but a successful
         // Create/StartContainer sequence is not guaranteed to emit a CRI
         // event. Notify only after the allocation checkpoint and the running
@@ -876,6 +889,15 @@ impl CriRuntime {
                     // (triggered by this very removal, via the CRI event
                     // stream) sees no existing container and creates a fresh one.
                     let c = existing_ctr.expect("Retry only reached when a container exists");
+                    warn!(
+                        namespace = %id.namespace,
+                        pod = %id.name,
+                        container = %container.name,
+                        container_id = %c.id,
+                        exit_code,
+                        restart_policy,
+                        "init container exited unsuccessfully; removing it before retry"
+                    );
                     self.bump_restart_count(sandbox_id, &container.name);
                     self.release_container_devices(sandbox_id, &container.name).await;
                     let mut rt = self.rt.clone();

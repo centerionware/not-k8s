@@ -133,9 +133,11 @@ minimum coverage:
   service reachability, HTTP/TLS routing, and certificate use.
 - **RBAC and admission:** Role and cluster-role grants and bindings, service
   accounts, admission policies, validating/mutating webhook configurations,
-  and APIService registrations where present. Check allowed and denied
-  requests and that admission/webhook-backed workloads function after each
-  transition.
+  ValidatingAdmissionPolicyBindings, MutatingAdmissionPolicies and their
+  bindings where served, APIService registrations, and TokenReviews and
+  SubjectAccessReviews where applicable. Check allowed and denied requests,
+  token authentication, and that admission/webhook-backed workloads function
+  after each transition.
 - **CRDs and operator state:** CRDs and representative custom resources,
   including Cilium configuration/policy, cert-manager Issuers,
   ClusterIssuers, Certificates and CertificateRequests, Gateway API resources,
@@ -150,15 +152,26 @@ minimum coverage:
 - **Scheduling, policy, and node state:** Nodes and their labels, annotations,
   taints, and unschedulable setting; PodDisruptionBudgets,
   HorizontalPodAutoscalers and other installed autoscalers, NetworkPolicies,
-  RuntimeClasses, affinity, tolerations, topology spread, and supported
+  RuntimeClasses, PriorityClasses, LimitRanges, ResourceQuotas, affinity,
+  tolerations, topology spread, Pod Security admission labels, and supported
   scheduling/security constraints.
   Check both stored policy and resulting scheduling or allow/deny behavior.
+- **Additional controllers and node APIs:** ReplicationControllers,
+  PodTemplates, PDBs, HorizontalPodAutoscalers, Lease objects, RuntimeClasses,
+  CSINodes, CSIDrivers, CSIStorageCapacity, VolumeAttachments,
+  VolumeAttributesClasses where served, and version-specific storage migration
+  resources. Exercise each installed controller or driver through observable
+  behavior, and classify infrastructure-generated state by lifecycle.
 - **Other discovered API resources:** Include Events, Leases, coordination and
   discovery objects, token/request resources, PodTemplates,
   ReplicationControllers, ControllerRevisions, APIService registrations,
-  StorageVersions, and every other listable resource reported by source API
-  discovery in the inventory. This applies across core, apps, batch, networking,
-  storage, autoscaling, policy, admission, node, and installed custom API groups.
+  StorageVersions, discovery.k8s.io EndpointSlices, events.k8s.io Events,
+  coordination.k8s.io Leases, admissionregistration.k8s.io policies/bindings,
+  certificates.k8s.io CSRs, authentication/authorization review resources,
+  and every other listable resource reported by source API discovery. This
+  applies across core, apps, batch, networking, storage, autoscaling, policy,
+  admission, node, scheduling, certificates, authentication, authorization,
+  and installed custom API groups.
   For each kind, verify migration or classify it as regenerated transient state
   or exclude it only with a specific Kubernetes lifecycle reason. Do not
   silently omit a kind just because it is not named in this document.

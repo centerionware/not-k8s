@@ -47,6 +47,27 @@ not test the branch's CEL fixes as a destination; branch-runtime run
 Neither release-backed lane passed a destination workload, reverse migration,
 or round-trip parity checkpoint.
 
+The next branch-runtime run at SHA `840e7ed8629edcd849729d5d7c0b1afb4f043f5d`
+passed focused `nodemigrate` quick-check in [run 36156187333](https://github.com/centerionware/not-k8s/actions/runs/36156187333).
+Migration [run 36156187055](https://github.com/centerionware/not-k8s/actions/runs/36156187055)
+passed utility/runtime builds, the five-node Docker preflight, source fixtures,
+and source Cilium cleanup. Cleanup stopped two leftover Envoy processes using
+exact source container or pod identity and removed three stale sockets. K3s
+target Envoy no longer reported the previous `errno=98` socket collision, but
+the agent stayed `Init:1/6` at `mount-cgroup`; nodelet logs showed repeated
+successful container creation without a captured start/exit result or
+init-container status. CNI remained uninitialized, CoreDNS and CSI stayed
+unavailable, and no target checkpoint, reverse migration, or parity assertion
+ran. The harness now captures CRI inspect data and logs for every Cilium init
+container by exact Pod UID, to expose the next failed lifecycle transition;
+the underlying runtime cause is not yet established.
+
+The upstream lane accepted all 54 CRD apply requests, then failed restoring
+`cert-manager.io/v1/CertificateRequest migration-test-1` with HTTP 500 while
+the target cert-manager webhook was unreachable. Rollback restored the source
+and retained its protected export. Neither lane passed destination workload
+parity or a round trip.
+
 At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
 [run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
 built nodemigrate and the combined runtime and passed the five-node Docker

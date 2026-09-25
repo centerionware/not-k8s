@@ -62,6 +62,33 @@ capture_cilium_agent_logs() {
         -l k8s-app=cilium -o name 2>/dev/null || true)
 }
 
+capture_cilium_init_container_diagnostics() {
+    local kubeconfig="${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}"
+    local container_json pod_records pod_uid pod_name init_containers container_id container_name
+    container_json="$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json 2>/dev/null)" || {
+        echo "Unable to list CRI containers for Cilium init diagnostics" >&2
+        return 0
+    }
+    pod_records="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o json 2>/dev/null \
+        | jq -r '.items[]? | [.metadata.uid, .metadata.name] | @tsv')" || return 0
+    while IFS=$'\t' read -r pod_uid pod_name; do
+        [[ -n "$pod_uid" && -n "$pod_name" ]] || continue
+        init_containers="$(jq -r --arg uid "$pod_uid" \
+            '.containers[]? | select(.labels["nodelet.dev/pod-uid"] == $uid and .labels["nodelet.dev/init"] == "true") | [.id, .labels["nodelet.dev/container-name"] // "unknown"] | @tsv' \
+            <<< "$container_json")"
+        while IFS=$'\t' read -r container_id container_name; do
+            [[ -n "$container_id" ]] || continue
+            echo "Cilium init container diagnostics pod=$pod_name name=$container_name id=$container_id" >&2
+            crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
+                inspect "$container_id" >&2 || true
+            echo "Cilium init container logs pod=$pod_name name=$container_name id=$container_id" >&2
+            crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
+                logs --tail=500 "$container_id" >&2 || true
+        done <<< "$init_containers"
+    done <<< "$pod_records"
+}
+
 diagnostics() {
     status=$?
     if [[ $status -ne 0 ]]; then
@@ -83,6 +110,7 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system deployment/cilium-operator \
                 --all-containers --tail=100 || true
             capture_cilium_agent_logs
+            capture_cilium_init_container_diagnostics
         fi
         for cni_path in /etc/cni/net.d /opt/cni/bin \
             /var/lib/rancher/k3s/agent/etc/cni/net.d /var/lib/rancher/k3s/data/current/bin; do
@@ -297,6 +325,7 @@ install_hostpath_driver() {
         kubectl get pods -A -o wide >&2 || true
         kubectl get pods -n kube-system -l k8s-app=cilium -o yaml >&2 || true
         capture_cilium_agent_logs >&2 || true
+        capture_cilium_init_container_diagnostics >&2 || true
         kubectl get pods -A -l app.kubernetes.io/instance=hostpath.csi.k8s.io -o yaml >&2 || true
         kubectl get events -A --sort-by=.metadata.creationTimestamp >&2 || true
         return 1
