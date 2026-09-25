@@ -69,7 +69,13 @@ diagnostics() {
         echo "source=$SOURCE_DIST kubeconfig=${CURRENT_KUBECONFIG:-unset}"
         if [[ -n "$CURRENT_KUBECONFIG" && -f "$CURRENT_KUBECONFIG" ]]; then
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe nodes || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods,pvc,pv -A -o wide || true
+            for pod in migration-seed migration-standalone; do
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n migration-apps "$pod" || true
+            done
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pods -n migration-apps \
+                -l app=migration-nginx || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get gatewayclass,gateway,httproute -A -o yaml || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n traefik deployment/traefik \
@@ -502,6 +508,10 @@ spec:
           - name: check
             image: busybox:1.36.1
             command: ["sh", "-c", "echo migration-cron-ran"]
+            resources:
+              requests:
+                cpu: 1m
+                memory: 1Mi
 ---
 apiVersion: batch/v1
 kind: Job
@@ -517,6 +527,10 @@ spec:
       - name: check
         image: busybox:1.36.1
         command: ["sh", "-c", "echo migration-job-ran"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -538,6 +552,10 @@ spec:
       - name: check
         image: busybox:1.36.1
         command: ["sh", "-c", "sleep 36000"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
 ---
 apiVersion: v1
 kind: Pod
@@ -551,6 +569,10 @@ spec:
   - name: app
     image: busybox:1.36.1
     command: [sh, -c, 'echo standalone-workload-running; sleep 36000']
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
     env:
     - name: MIGRATION_CONFIG
       valueFrom:
@@ -596,6 +618,10 @@ spec:
       containers:
       - name: app
         image: nginx:1.27.5
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
         ports:
         - name: http
           containerPort: 80
@@ -647,6 +673,10 @@ spec:
   - name: seed-volumes
     image: busybox:1.36.1
     command: [sh, -c, 'echo static-persistent-data > /static/marker; echo csi-persistent-data > /csi/marker']
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
     volumeMounts:
     - name: static
       mountPath: /static
@@ -656,6 +686,10 @@ spec:
   - name: hold
     image: busybox:1.36.1
     command: [sh, -c, 'sleep 36000']
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
     volumeMounts:
     - name: static
       mountPath: /static
@@ -687,6 +721,10 @@ spec:
       containers:
       - name: nginx
         image: nginx:1.27.5
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
         ports:
         - containerPort: 80
 ---
@@ -738,7 +776,7 @@ spec:
   listeners:
   - name: http
     protocol: HTTP
-    port: 80
+    port: 8080
     allowedRoutes:
       namespaces:
         from: Same
