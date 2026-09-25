@@ -23,7 +23,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/cni/bin \
     && cp -a /usr/lib/cni/. /opt/cni/bin/ \
-    && bpftool_path="$(find /usr/lib/linux-tools -mindepth 2 -maxdepth 2 -type f -name bpftool -print -quit)" \
+    && bpftool_path="$(find /usr/lib -type f -path '/usr/lib/linux-tools-*/bpftool' -print -quit)" \
     && test -n "$bpftool_path" \
     && ln -sf "$bpftool_path" /usr/local/bin/bpftool \
     && command -v bpftool \
