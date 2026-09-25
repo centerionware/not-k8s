@@ -29,16 +29,13 @@ use crate::{
 
 const SKIP_KINDS: &[&str] = &[
     "ComponentStatus",
-    "ControllerRevision",
     "Endpoints",
     "EndpointSlice",
     "Event",
     "Lease",
     "Node",
     "NodeMetrics",
-    "Pod",
     "PodMetrics",
-    "ReplicaSet",
     "VolumeAttachment",
 ];
 #[derive(Debug, Clone)]
@@ -1602,6 +1599,27 @@ fn skip_object(object: &Value) -> bool {
     if skip_kind(kind) {
         return true;
     }
+    if kind == "Pod" {
+        let annotations = object
+            .pointer("/metadata/annotations")
+            .and_then(Value::as_object);
+        let is_static_pod_mirror = annotations
+            .is_some_and(|annotations| annotations.contains_key("kubernetes.io/config.mirror"));
+        let is_controller_owned = object
+            .pointer("/metadata/ownerReferences")
+            .and_then(Value::as_array)
+            .is_some_and(|references| {
+                references.iter().any(|reference| {
+                    reference
+                        .get("controller")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+            });
+        if is_static_pod_mirror || is_controller_owned {
+            return true;
+        }
+    }
     object.get("kind").and_then(Value::as_str) == Some("Secret")
         && object.pointer("/type").and_then(Value::as_str)
             == Some("kubernetes.io/service-account-token")
@@ -1978,6 +1996,67 @@ current-context: test
             "kind": "PodMetrics",
             "metadata": {"name": "pod-a", "namespace": "apps"}
         })));
+    }
+
+    #[test]
+    fn migration_export_preserves_standalone_pods_and_rollout_history() {
+        for object in [
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "standalone", "namespace": "apps"},
+                "spec": {"containers": [{"name": "app", "image": "busybox"}]}
+            }),
+            serde_json::json!({
+                "apiVersion": "apps/v1",
+                "kind": "ReplicaSet",
+                "metadata": {"name": "web-old", "namespace": "apps"},
+                "spec": {"replicas": 0}
+            }),
+            serde_json::json!({
+                "apiVersion": "apps/v1",
+                "kind": "ControllerRevision",
+                "metadata": {"name": "db-old", "namespace": "apps"},
+                "revision": 1,
+                "data": {"spec": {"replicas": 1}}
+            }),
+        ] {
+            assert!(
+                sanitize(object).is_some(),
+                "durable workload object was omitted from migration export"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_export_skips_controller_regenerated_and_static_mirror_pods() {
+        assert!(sanitize(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "deployment-pod",
+                "namespace": "apps",
+                "ownerReferences": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSet",
+                    "name": "web",
+                    "uid": "source-uid",
+                    "controller": true
+                }]
+            }
+        }))
+        .is_none());
+
+        assert!(sanitize(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "kube-apiserver-node-a",
+                "namespace": "kube-system",
+                "annotations": {"kubernetes.io/config.mirror": "mirror-uid"}
+            }
+        }))
+        .is_none());
     }
 
     #[test]

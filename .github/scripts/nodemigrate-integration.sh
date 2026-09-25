@@ -298,6 +298,54 @@ data:
   migration-marker: user-config-data
 ---
 apiVersion: v1
+kind: Pod
+metadata:
+  name: migration-standalone
+  namespace: migration-apps
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: busybox:1.36.1
+    command: [sh, -c, 'echo standalone-workload-running; sleep 36000']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-stateful
+  namespace: migration-apps
+spec:
+  clusterIP: None
+  selector:
+    app: migration-stateful
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: migration-stateful
+  namespace: migration-apps
+spec:
+  serviceName: migration-stateful
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-stateful
+  template:
+    metadata:
+      labels:
+        app: migration-stateful
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27.5
+        ports:
+        - name: http
+          containerPort: 80
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -431,6 +479,8 @@ YAML
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=10m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed --timeout=10m
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
+    kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager --timeout=5m
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager-webhook --timeout=5m
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager-cainjector --timeout=5m
@@ -481,6 +531,8 @@ verify_stage() {
     kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
     kubectl get crd ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
+    kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
     local preserved_annotation
     local configmap_json
     configmap_json="$(kubectl get configmap migration-user-metadata -n migration-apps -o json)"

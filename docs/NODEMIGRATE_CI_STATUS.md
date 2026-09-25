@@ -83,8 +83,9 @@ new fixes.
 - Every checkpoint writes a private canonical snapshot of important behavior
   and a fingerprint inventory for every listable API object nodemigrate is
   expected to transfer. Fingerprints use the export sanitizer's same treatment
-  of status, API-assigned identity fields, transient kinds, and service-account
-  token Secrets; live NodeMetrics and PodMetrics samples are omitted. Secret
+  of status, API-assigned identity fields, controller-regenerated objects, and
+  service-account token Secrets. Standalone Pods and ReplicaSet/ControllerRevision
+  rollout history are included; live NodeMetrics and PodMetrics samples are omitted. Secret
   content is hashed in memory and never written to checkpoints. The script
   compares source→nodestore object fingerprints and requires the returned
   snapshot to match the source.

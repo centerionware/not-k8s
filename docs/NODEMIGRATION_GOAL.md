@@ -57,7 +57,10 @@ bump the regular release version. This is a target, not publication authority.
   copying API objects alone recreates host networking state.
 - Transfer Kubernetes API resources, including custom resources, add-ons,
   secrets, and persistent volume metadata, while accounting for destination
-  UIDs, controller-owned transient objects, and API compatibility. Live
+  UIDs, controller-owned transient objects, and API compatibility. Preserve
+  standalone Pod workloads and Deployment/StatefulSet rollout history, including
+  ReplicaSets and ControllerRevisions; regenerate controller-owned Pods and
+  static-pod mirrors from their durable owners. Live
   NodeMetrics and PodMetrics samples are collected again by their metrics
   provider and are not persistent migration state.
 - Preserve persistent volume claims, bindings, topology, and payload access

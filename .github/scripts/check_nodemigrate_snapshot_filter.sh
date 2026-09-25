@@ -38,11 +38,22 @@ pv_after="$(jq -cn '{apiVersion:"v1",kind:"PersistentVolume",metadata:{name:"dat
 for transient in \
     '{"apiVersion":"v1","kind":"Node","metadata":{"name":"node-a"}}' \
     '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetrics","metadata":{"name":"node-a"}}' \
-    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"apps"}}' \
+    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"apps","ownerReferences":[{"kind":"ReplicaSet","name":"web","uid":"source-uid","controller":true}]}}' \
+    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"mirror-pod","namespace":"kube-system","annotations":{"kubernetes.io/config.mirror":"mirror-uid"}}}' \
     '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"PodMetrics","metadata":{"name":"pod-a","namespace":"apps"}}' \
     '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
     [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
         echo "transient object was included in the migratable snapshot" >&2
+        exit 1
+    }
+done
+
+for durable in \
+    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"standalone","namespace":"apps"}}' \
+    '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps"}}' \
+    '{"apiVersion":"apps/v1","kind":"ControllerRevision","metadata":{"name":"db-old","namespace":"apps"}}'; do
+    [[ -n "$(jq -cS -f "$FILTER" <<< "$durable")" ]] || {
+        echo "durable workload history was omitted from the migratable snapshot" >&2
         exit 1
     }
 done
