@@ -64,6 +64,16 @@ new fixes.
   `Terminating`. The next fix targets nodelet CRI volume mounts under a
   read-only image. Diagnostics now save nodelet journal, CRI sandboxes and
   containers, Cilium Pod YAML, and events.
+- The next branch-runtime run, [36095002578](https://github.com/centerionware/not-k8s/actions/runs/36095002578),
+  used SHA `3e9c0940bb4331eca01a83b5bb89f12f0f615585`. Utility/runtime builds
+  and five-node Docker preflight passed; both migration lanes completed
+  forward migration, then failed Cilium/CSI readiness. Captured Envoy logs
+  showed `errno=98` binding `/var/run/cilium/envoy/sockets`. CRI inspection
+  found the source Envoy sandbox still running beside the migrated Envoy Pod.
+  The worktree now stops/removes source CRI sandboxes before destination
+  activation, with source-service rollback on cleanup failure. Focused
+  nodemigrate quick-check and migration rerun are pending; no round trip or
+  parity gate has passed.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

@@ -209,6 +209,14 @@ fn migrate_to_nodestore(
         return Err(error)
             .context("stopping source Kubernetes static pods; source service was restored");
     }
+    if let Err(error) = service::stop_source_pod_sandboxes(source) {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("stopping source pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+        }
+        return Err(error).context(
+            "stopping source pod sandboxes before migration; source service was restored",
+        );
+    }
     let snapshot_result = if request.source_export.is_some() {
         export.snapshot_host_paths_for_node(&migrating_node_name)
     } else {

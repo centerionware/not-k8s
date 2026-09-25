@@ -159,6 +159,66 @@ pub fn stop_upstream_static_pods(installation: &Installation) -> Result<()> {
     wait_for_api_port_release()
 }
 
+/// Remove CRI pod sandboxes left behind after stopping the source Kubernetes
+/// service. Stopping kubelet/K3s does not stop existing containers. Leaving
+/// them running lets the new node agent start a second copy of the migrated
+/// Pods, which can collide on host ports, sockets, and mounted data.
+pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<()> {
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    let output = command(
+        "crictl",
+        &["--runtime-endpoint", &endpoint, "pods", "-o", "json"],
+    )
+    .context("listing source pod sandboxes; install crictl or set NODEMIGRATE_CRI_ENDPOINT")?;
+    ensure!(
+        output.status.success(),
+        "crictl could not list source pod sandboxes: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let pods: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parsing CRI pod sandbox list")?;
+    let (ready, all) = source_pod_sandbox_ids(&pods);
+    tracing::info!(
+        count = all.len(),
+        "stopping source pod sandboxes before cutover"
+    );
+    for id in &ready {
+        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+            .with_context(|| format!("stopping source pod sandbox {id}"))?;
+    }
+    for id in &all {
+        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+            .with_context(|| format!("removing source pod sandbox {id}"))?;
+    }
+    Ok(())
+}
+
+fn source_pod_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let Some(items) = pods.get("items").and_then(serde_json::Value::as_array) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut ready = Vec::new();
+    let mut all = Vec::new();
+    for pod in items {
+        let Some(id) = pod
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        all.push(id.to_string());
+        if pod.get("state").and_then(serde_json::Value::as_str) == Some("SANDBOX_READY") {
+            ready.push(id.to_string());
+        }
+    }
+    (ready, all)
+}
+
 fn wait_for_api_port_release() -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -603,7 +663,7 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
-    use super::static_pod_sandbox_ids;
+    use super::{source_pod_sandbox_ids, static_pod_sandbox_ids};
 
     #[test]
     fn selects_only_kube_system_file_static_pod_sandboxes() {
@@ -634,6 +694,34 @@ mod tests {
         assert_eq!(
             static_pod_sandbox_ids(&pods),
             ["static-sandbox", "apiserver-sandbox"]
+        );
+    }
+
+    #[test]
+    fn selects_every_source_sandbox_and_only_stops_ready_ones() {
+        let pods = serde_json::json!({
+            "items": [
+                {"id": "ready", "state": "SANDBOX_READY"},
+                {"id": "not-ready", "state": "SANDBOX_NOTREADY"},
+                {"metadata": {"name": "missing-id"}, "state": "SANDBOX_READY"},
+                {"id": "", "state": "SANDBOX_READY"}
+            ]
+        });
+
+        assert_eq!(
+            source_pod_sandbox_ids(&pods),
+            (
+                vec!["ready".to_string()],
+                vec!["ready".to_string(), "not-ready".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn source_sandbox_listing_without_items_is_empty() {
+        assert_eq!(
+            source_pod_sandbox_ids(&serde_json::json!({})),
+            (vec![], vec![])
         );
     }
 }

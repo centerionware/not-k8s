@@ -9,16 +9,17 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime migration [36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629)
-used SHA `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c`. Both utility and
-combined-runtime builds, nodelet quick-check [36093508613](https://github.com/centerionware/not-k8s/actions/runs/36093508613),
-and the five-node Docker isolation preflight passed. The managed-volume
-mountpoint fix stopped the prior runc `read-only file system` error in both
-migration lanes. However, Envoy then failed its startup probe and entered
-CrashLoopBackOff, leaving CNI/CoreDNS and workloads unready; CSI setup,
-reverse migration, and semantic comparison did not run. The next failure
-bundle adds Envoy container stdout/stderr to its OCI inspection so the new
-startup failure can be diagnosed.
+Branch-runtime migration [36095002578](https://github.com/centerionware/not-k8s/actions/runs/36095002578)
+used SHA `3e9c0940bb4331eca01a83b5bb89f12f0f615585`. The standalone utility,
+combined runtime, and five-node Docker preflight passed. Both lanes completed
+forward migration, then failed Cilium/hostpath CSI readiness. Envoy logs show
+`errno=98` binding `/var/run/cilium/envoy/sockets`: the old source Envoy CRI
+sandbox was still running while the migrated DaemonSet started a second one.
+This is a nodemigrate cutover defect, separate from the fixed nodelet nested
+mountpoint failure. The worktree now stops/removes source pod sandboxes before
+destination activation and restores the source service if cleanup fails.
+Focused nodemigrate quick-check and a migration rerun are pending; reverse
+migration and semantic parity remain unverified.
 
 ## Required migration test inventory
 
