@@ -1156,7 +1156,9 @@ YAML
     kubectl delete pod -n traefik migration-route-check --ignore-not-found --wait=true
     kubectl port-forward -n traefik svc/traefik 18080:80 >/tmp/traefik-port-forward.log 2>&1 &
     local port_forward_pid=$!
-    trap 'kill "$port_forward_pid" 2>/dev/null || true' RETURN
+    kubectl port-forward -n traefik deploy/traefik 18081:8080 >/tmp/gateway-port-forward.log 2>&1 &
+    local gateway_port_forward_pid=$!
+    trap 'kill "$port_forward_pid" "$gateway_port_forward_pid" 2>/dev/null || true' RETURN
     local response=""
     local gateway_response=""
     local response_body=""
@@ -1165,7 +1167,7 @@ YAML
     local gateway_response_status=""
     for _ in $(seq 1 30); do
         response="$(curl -sS -H 'Host: migration.test' -w $'\n%{http_code}' http://127.0.0.1:18080/ 2>/dev/null || true)"
-        gateway_response="$(curl -sS -H 'Host: migration-gateway.test' -w $'\n%{http_code}' http://127.0.0.1:18080/ 2>/dev/null || true)"
+        gateway_response="$(curl -sS -H 'Host: migration-gateway.test' -w $'\n%{http_code}' http://127.0.0.1:18081/ 2>/dev/null || true)"
         response_body="${response%$'\n'*}"
         gateway_response_body="${gateway_response%$'\n'*}"
         response_status="${response##*$'\n'}"
@@ -1175,6 +1177,7 @@ YAML
     done
     [[ "$response_body" == *"Welcome to nginx!"* && "$gateway_response_body" == *"Welcome to nginx!"* ]] || {
         cat /tmp/traefik-port-forward.log >&2 || true
+        cat /tmp/gateway-port-forward.log >&2 || true
         printf 'Ingress probe HTTP status: %s; response body: %.500s\n' "$response_status" "$response_body" >&2
         printf 'Gateway probe HTTP status: %s; response body: %.500s\n' "$gateway_response_status" "$gateway_response_body" >&2
         kubectl get svc,endpoints,endpointslices -n traefik -o wide >&2 || true
@@ -1185,7 +1188,7 @@ YAML
         echo "Traefik Ingress or Gateway API did not route to nginx at stage $stage" >&2
         return 1
     }
-    kill "$port_forward_pid" 2>/dev/null || true
+    kill "$port_forward_pid" "$gateway_port_forward_pid" 2>/dev/null || true
     trap - RETURN
     kubectl get deploy,svc,ingress,certificate,pv,pvc -A -o wide
     capture_semantic_checkpoint "$stage"
