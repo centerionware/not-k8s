@@ -15,19 +15,31 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Branch-runtime migration [run 36171620422](https://github.com/centerionware/not-k8s/actions/runs/36171620422)
-used code SHA `4fca1647799413929bdd319675db4cf3cba03bd5`. Both nodemigrate and
+Branch-runtime migration [run 36176504323](https://github.com/centerionware/not-k8s/actions/runs/36176504323)
+used code SHA `77e023f1349a6345f5a2bccd1e3a838887b3bbc5`. Both nodemigrate and
 combined-runtime builds passed, as did the five-node Docker isolation
-preflight, but both migration steps failed. K3s confirmed a host CNI path
-mismatch: containerd looked in the empty K3s private config directory, while
-Cilium wrote its config under `/etc/cni/net.d`. The new detector regression
-and fix are in the current worktree and have not yet run in CI. Upstream
-imported 54 CRDs, then failed to apply a CertificateRequest because the
-cert-manager webhook could not be reached; the Cilium agent container was
-terminated and its Pod remained `PodInitializing`, with its startup cause still
-unknown. The upstream source service/API recovered and its export was retained.
-Neither lane reached a target workload checkpoint or a round trip. Full logs:
-`/tmp/nodemigrate-36171620422/{k3s,kubernetes}.log`.
+preflight, but neither migration completed. K3s imported 58 CRDs and reached
+destination API readiness. Its Cilium `mount-bpf-fs` init container printed
+that bpffs was mounted, then remained CRI-Running for over a minute; later
+init containers did not start, Cilium kept its not-ready taint, and workload
+and CSI checks could not pass. The runtime evidence confirms the container
+was still reported running; the underlying cause is not yet established.
+Upstream imported all 54 CRDs, but CertificateRequest admission returned HTTP
+500 while the cert-manager webhook was unavailable after destination Cilium
+failed to initialize. Rollback restored the source in both lanes and retained
+the protected exports. Neither lane reached a target checkpoint, reverse
+migration, or parity comparison. Full logs:
+`/tmp/nodemigrate-36176504323/{k3s,kubernetes}.log`.
+
+The current PR head `7292bb8880cb1096c6fce195a4bbc9c9368d2ac1` passed
+nodemigrate tests, focused checks/packaging, release policy validation, and
+commit convention checks in [run 36177265014](https://github.com/centerionware/not-k8s/actions/runs/36177265014),
+[run 36177264886](https://github.com/centerionware/not-k8s/actions/runs/36177264886),
+[run 36177264782](https://github.com/centerionware/not-k8s/actions/runs/36177264782),
+and [run 36177260453](https://github.com/centerionware/not-k8s/actions/runs/36177260453).
+Those checks do not exercise the newer immutable ConfigMap, multi-version CRD,
+or allowed/denied NetworkPolicy fixtures at runtime; a current-head migration
+run is still required.
 
 The previous focused nodemigrate quick-check passed at SHA
 `29b6b7de9575e7cf0d43ca60becba868373d86f3` in
