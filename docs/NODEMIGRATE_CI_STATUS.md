@@ -41,6 +41,16 @@ Those checks do not exercise the newer immutable ConfigMap, multi-version CRD,
 or allowed/denied NetworkPolicy fixtures at runtime; a current-head migration
 run is still required.
 
+Current-head branch-runtime migration [run 36179275793](https://github.com/centerionware/not-k8s/actions/runs/36179275793)
+used code SHA `7292bb8880cb1096c6fce195a4bbc9c9368d2ac1`. Nodemigrate and
+combined-runtime builds passed in both lanes, as did the five-node Docker
+isolation preflight. Both lanes reached the expanded source fixtures; the
+allowed NetworkPolicy Job completed successfully, but a redundant follow-up
+log assertion failed because its `grep -q` command suppresses output. This is
+a harness defect fixed in the current worktree. The denied-policy probe and
+all migration stages were skipped; no migration parity was tested. Logs:
+`/tmp/nodemigrate-36179275793/nodemigrate-{k3s,kubernetes}-36179275793/`.
+
 The previous focused nodemigrate quick-check passed at SHA
 `29b6b7de9575e7cf0d43ca60becba868373d86f3` in
 [run 36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894).

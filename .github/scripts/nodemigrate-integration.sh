@@ -1075,10 +1075,9 @@ spec:
 YAML
     kubectl wait -n migration-policy-client --for=condition=Complete \
         "job/$policy_allow_job" --timeout=2m
-    kubectl logs -n migration-policy-client "job/$policy_allow_job" | grep -q "Welcome to nginx!" || {
-        echo "NetworkPolicy did not allow the selected client namespace at stage $stage" >&2
-        return 1
-    }
+    # The command exits successfully only when wget fetched nginx's page and
+    # grep found its welcome text. grep -q suppresses output, so Job completion
+    # is the behavior assertion; its logs intentionally contain no page body.
     kubectl apply -f - <<YAML
 apiVersion: batch/v1
 kind: Job
