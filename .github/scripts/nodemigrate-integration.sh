@@ -305,6 +305,7 @@ install_hostpath_driver() {
 }
 
 install_workloads() {
+    local stage=source
     kubectl label nodes --all operator.example/pool=blue --overwrite
     kubectl annotate nodes --all nodemigrate.io/source-uid=operator-node-value --overwrite
     kubectl taint nodes --all operator.example/dedicated=migration:PreferNoSchedule --overwrite
