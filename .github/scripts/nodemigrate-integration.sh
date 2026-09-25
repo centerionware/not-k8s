@@ -52,6 +52,11 @@ diagnostics() {
         done
         journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
             -u kube-apiserver --no-pager -n 250 || true
+        echo "Target API server diagnostics:"
+        systemctl status nodeapiserver --no-pager || true
+        journalctl -b -u nodeapiserver --no-pager -n 1000 || true
+        systemctl status nodestore --no-pager || true
+        journalctl -b -u nodestore --no-pager -n 1000 || true
     fi
     exit "$status"
 }
