@@ -233,15 +233,12 @@ fn migrate_to_nodestore(
             }
         }
     }
-    if let Err(error) =
-        service::stop_orphaned_cilium_envoy_processes(source, &source_cilium_identity)
-    {
+    if let Err(error) = service::stop_orphaned_cilium_processes(source, &source_cilium_identity) {
         if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping orphaned source Cilium Envoy processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+            bail!("stopping orphaned source Cilium processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
         }
-        return Err(error).context(
-            "stopping orphaned source Cilium Envoy processes; source service was restored",
-        );
+        return Err(error)
+            .context("stopping orphaned source Cilium processes; source service was restored");
     }
     let snapshot_result = if request.source_export.is_some() {
         export.snapshot_host_paths_for_node(&migrating_node_name)
@@ -446,14 +443,12 @@ fn migrate_worker_to_nodestore(
     } else {
         source_cilium_identity
     };
-    if let Err(error) =
-        service::stop_orphaned_cilium_envoy_processes(source, &source_cilium_identity)
-    {
+    if let Err(error) = service::stop_orphaned_cilium_processes(source, &source_cilium_identity) {
         if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping orphaned source worker Cilium Envoy processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+            bail!("stopping orphaned source worker Cilium processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
         }
         return Err(error).context(
-            "stopping orphaned source worker Cilium Envoy processes; source service was restored",
+            "stopping orphaned source worker Cilium processes; source service was restored",
         );
     }
     let replacement_state = if existing_node {

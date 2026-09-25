@@ -212,11 +212,11 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<SourceCi
     let containers: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("parsing CRI container list")?;
     let running = running_sandbox_ids(&containers);
-    let cilium_envoy_containers = cilium_agent_container_ids(&containers);
-    if !cilium_envoy_containers.is_empty() || !cilium_pod_uids.is_empty() {
+    let cilium_host_containers = cilium_host_container_ids(&containers);
+    if !cilium_host_containers.is_empty() || !cilium_pod_uids.is_empty() {
         eprintln!(
-            "nodemigrate: source Cilium process identities: CRI containers [{}], pod UIDs [{}]",
-            cilium_envoy_containers.join(","),
+            "nodemigrate: source Cilium host-process identities: CRI containers [{}], pod UIDs [{}]",
+            cilium_host_containers.join(","),
             cilium_pod_uids.join(",")
         );
     }
@@ -230,17 +230,17 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<SourceCi
         }
     }
     Ok(SourceCiliumIdentity {
-        container_ids: cilium_envoy_containers,
+        container_ids: cilium_host_containers,
         pod_uids: cilium_pod_uids,
     })
 }
 
-/// Cilium Envoy uses the host PID namespace. A stopped source container can
-/// leave its Envoy child holding the host-wide base-id socket, so retain the
-/// exact source Cilium agent/Envoy CRI container IDs and clean up only Envoy
-/// processes associated with those containers after the source is stopped.
+/// Source Cilium host-network containers can leave their agent, operator, or
+/// Envoy processes alive after their sandboxes stop. Retain exact source
+/// container and Pod identities; signal only known Cilium daemons attached to
+/// those identities so unrelated or destination processes remain untouched.
 #[cfg(unix)]
-pub fn stop_orphaned_cilium_envoy_processes(
+pub fn stop_orphaned_cilium_processes(
     installation: &Installation,
     identity: &SourceCiliumIdentity,
 ) -> Result<usize> {
@@ -252,7 +252,7 @@ pub fn stop_orphaned_cilium_envoy_processes(
     let pids = processes_in_source_cilium_identity(proc_root, identity)?;
     if pids.is_empty() {
         eprintln!(
-            "nodemigrate: found no remaining Cilium Envoy process for {} source container ID(s) and {} source pod UID(s)",
+            "nodemigrate: found no remaining source Cilium daemon for {} source container ID(s) and {} source pod UID(s)",
             identity.container_ids.len(),
             identity.pod_uids.len()
         );
@@ -262,7 +262,7 @@ pub fn stop_orphaned_cilium_envoy_processes(
 
     let stopped = signal_processes(&pids, libc::SIGTERM)?;
     if wait_for_source_process_exit(proc_root, identity, Duration::from_secs(5))? {
-        eprintln!("nodemigrate: stopped {stopped} leftover Cilium Envoy process(es) by source container or pod identity");
+        eprintln!("nodemigrate: stopped {stopped} leftover source Cilium daemon process(es) by exact container or pod identity");
         cleanup_stale_cilium_envoy_sockets(installation)?;
         return Ok(stopped);
     }
@@ -271,18 +271,17 @@ pub fn stop_orphaned_cilium_envoy_processes(
     let killed = signal_processes(&remaining, libc::SIGKILL)?;
     ensure!(
         wait_for_source_process_exit(proc_root, identity, Duration::from_secs(2))?,
-        "Cilium Envoy process remained in a stopped source CRI container or pod after SIGKILL; refusing destination cutover"
+        "source Cilium daemon process remained in a stopped source CRI container or pod after SIGKILL; refusing destination cutover"
     );
     eprintln!(
-        "nodemigrate: stopped {stopped} leftover Cilium Envoy process(es) with SIGTERM and forced {} remaining source-container/pod process(es) to exit",
-        killed
+        "nodemigrate: stopped {stopped} leftover source Cilium daemon process(es) with SIGTERM and forced {killed} remaining source-identity process(es) to exit",
     );
     cleanup_stale_cilium_envoy_sockets(installation)?;
     Ok(stopped + killed)
 }
 
 #[cfg(not(unix))]
-pub fn stop_orphaned_cilium_envoy_processes(
+pub fn stop_orphaned_cilium_processes(
     installation: &Installation,
     _identity: &SourceCiliumIdentity,
 ) -> Result<usize> {
@@ -290,7 +289,7 @@ pub fn stop_orphaned_cilium_envoy_processes(
     Ok(0)
 }
 
-fn cilium_agent_container_ids(containers: &serde_json::Value) -> Vec<String> {
+fn cilium_host_container_ids(containers: &serde_json::Value) -> Vec<String> {
     let mut ids = containers
         .get("containers")
         .and_then(serde_json::Value::as_array)
@@ -310,8 +309,13 @@ fn cilium_agent_container_ids(containers: &serde_json::Value) -> Vec<String> {
                         .and_then(|labels| labels.get("nodelet.dev/container-name"))
                 })
                 .and_then(serde_json::Value::as_str);
-            matches!(name, Some("cilium-agent" | "cilium-envoy"))
-                || matches!(label_name, Some("cilium-agent" | "cilium-envoy"))
+            matches!(
+                name,
+                Some("cilium-agent" | "cilium-envoy" | "cilium-operator")
+            ) || matches!(
+                label_name,
+                Some("cilium-agent" | "cilium-envoy" | "cilium-operator")
+            )
         })
         .filter_map(|container| {
             container
@@ -361,7 +365,7 @@ fn processes_in_source_cilium_identity(
                     .with_context(|| format!("reading command line for process {pid}"))
             }
         };
-        if !is_cilium_envoy_process(&command_line) {
+        if !is_cilium_host_process(&command_line) {
             continue;
         }
         let cgroup = match std::fs::read_to_string(entry.path().join("cgroup")) {
@@ -446,14 +450,23 @@ fn is_containerd_shim_for_source(
 }
 
 #[cfg(unix)]
-fn is_cilium_envoy_process(command_line: &[u8]) -> bool {
+fn is_cilium_host_process(command_line: &[u8]) -> bool {
     command_line
         .split(|byte| *byte == 0)
         .next()
         .and_then(|executable| std::str::from_utf8(executable).ok())
         .and_then(|executable| Path::new(executable).file_name())
         .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, "cilium-envoy" | "cilium-envoy-starter"))
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "cilium-agent"
+                    | "cilium-operator"
+                    | "cilium-operator-generic"
+                    | "cilium-envoy"
+                    | "cilium-envoy-starter"
+            )
+        })
 }
 
 #[cfg(unix)]
@@ -517,7 +530,7 @@ fn signal_processes(pids: &[i32], signal: i32) -> Result<usize> {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() != Some(libc::ESRCH) {
                 return Err(error).with_context(|| {
-                    format!("sending signal {signal} to Cilium Envoy process {pid} in a source CRI container")
+                    format!("sending signal {signal} to source Cilium daemon process {pid} in a source CRI container")
                 });
             }
         }
@@ -1122,7 +1135,7 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cilium_agent_container_ids, running_sandbox_ids, source_pod_sandbox_ids,
+        cilium_host_container_ids, running_sandbox_ids, source_pod_sandbox_ids,
         static_pod_sandbox_ids, SourceCiliumIdentity,
     };
 
@@ -1169,6 +1182,7 @@ mod tests {
                 {"id": "ready", "state": "SANDBOX_READY"},
                 {"id": "not-ready", "state": "SANDBOX_NOTREADY"},
                 {"id": "other-cilium", "state": "SANDBOX_READY", "metadata": {"name": "cilium-envoy-node-a", "namespace": "kube-system", "uid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}},
+                {"id": "operator", "state": "SANDBOX_READY", "metadata": {"name": "cilium-operator-abc", "namespace": "kube-system", "uid": "22222222-3333-4444-8555-666666666666"}},
                 {"metadata": {"name": "missing-id"}, "state": "SANDBOX_READY"},
                 {"id": "", "state": "SANDBOX_READY"}
             ]
@@ -1180,16 +1194,19 @@ mod tests {
                 vec![
                     "ready".to_string(),
                     "cilium".to_string(),
-                    "other-cilium".to_string()
+                    "other-cilium".to_string(),
+                    "operator".to_string()
                 ],
                 vec![
                     "ready".to_string(),
                     "not-ready".to_string(),
                     "cilium".to_string(),
-                    "other-cilium".to_string()
+                    "other-cilium".to_string(),
+                    "operator".to_string()
                 ],
                 vec![
                     "11111111-2222-4333-8444-555555555555".to_string(),
+                    "22222222-3333-4444-8555-666666666666".to_string(),
                     "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_string()
                 ]
             )
@@ -1221,25 +1238,27 @@ mod tests {
     }
 
     #[test]
-    fn finds_cilium_envoy_cri_containers_by_name_or_label() {
+    fn finds_cilium_host_daemon_cri_containers_by_name_or_label() {
         let containers = serde_json::json!({
             "containers": [
                 {"id": SOURCE_CONTAINER_ID, "metadata": {"name": "cilium-envoy"}},
                 {"id": "container-1", "metadata": {"name": "cilium-agent"}},
                 {"id": "container-2", "labels": {"io.kubernetes.container.name": "cilium-envoy"}},
                 {"id": "container-3", "labels": {"nodelet.dev/container-name": "cilium-envoy"}},
-                {"id": "ordinary", "metadata": {"name": "cilium-operator"}},
+                {"id": "container-4", "metadata": {"name": "cilium-operator"}},
+                {"id": "ordinary", "metadata": {"name": "ordinary-app"}},
                 {"id": "", "metadata": {"name": "cilium-envoy"}},
                 {"id": "container-2", "metadata": {"name": "cilium-envoy"}}
             ]
         });
 
         assert_eq!(
-            cilium_agent_container_ids(&containers),
+            cilium_host_container_ids(&containers),
             vec![
                 "container-1".to_string(),
                 "container-2".to_string(),
                 "container-3".to_string(),
+                "container-4".to_string(),
                 SOURCE_CONTAINER_ID.to_string()
             ]
         );
@@ -1290,7 +1309,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn matches_only_envoy_processes_in_the_recorded_source_container() {
+    fn matches_known_cilium_daemons_only_in_recorded_source_containers_or_pods() {
         use super::processes_in_source_cilium_identity;
 
         let proc_root = tempfile::tempdir().unwrap();
@@ -1313,6 +1332,37 @@ mod tests {
         std::fs::write(
             other_process.join("cgroup"),
             "0::/kubepods/cri-containerd-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope\n",
+        )
+        .unwrap();
+
+        let source_agent = proc_root.path().join("108");
+        std::fs::create_dir(&source_agent).unwrap();
+        std::fs::write(source_agent.join("cmdline"), b"/usr/bin/cilium-agent\0").unwrap();
+        std::fs::write(
+            source_agent.join("cgroup"),
+            format!("0::/kubepods/cri-containerd-{SOURCE_CONTAINER_ID}.scope\n"),
+        )
+        .unwrap();
+
+        let source_operator = proc_root.path().join("109");
+        std::fs::create_dir(&source_operator).unwrap();
+        std::fs::write(
+            source_operator.join("cmdline"),
+            b"/usr/bin/cilium-operator-generic\0",
+        )
+        .unwrap();
+        std::fs::write(
+            source_operator.join("cgroup"),
+            "0::/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod8536f215_fc22_41fa_b8b6_f0245c88e125.slice/cri-containerd-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.scope\n",
+        )
+        .unwrap();
+
+        let other_agent = proc_root.path().join("110");
+        std::fs::create_dir(&other_agent).unwrap();
+        std::fs::write(other_agent.join("cmdline"), b"/usr/bin/cilium-agent\0").unwrap();
+        std::fs::write(
+            other_agent.join("cgroup"),
+            "0::/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podaaaaaaaa_bbbb_4ccc_8ddd_eeeeeeeeeeee.slice/cri-containerd-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope\n",
         )
         .unwrap();
 
@@ -1398,7 +1448,7 @@ mod tests {
                 }
             )
             .unwrap(),
-            vec![101, 104, 106]
+            vec![101, 104, 106, 108, 109]
         );
     }
 

@@ -15,24 +15,19 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Focused `nodelet` quick-check passed at code SHA
-`8a08536ffb9809378b9ff806d2596f88445b0ac5` in [run 36159523228](https://github.com/centerionware/not-k8s/actions/runs/36159523228).
-Branch-runtime migration [run 36159532331](https://github.com/centerionware/not-k8s/actions/runs/36159532331)
-also used SHA `8a08536ffb9809378b9ff806d2596f88445b0ac5`; utility/runtime builds
-and the five-node Docker preflight passed. K3s and upstream source fixtures and
-Cilium CRI cleanup passed. Exact source-identity cleanup stopped two leftover
-Envoy processes and removed three stale sockets; K3s no longer reproduced the
-previous Envoy `errno=98` bind failure. The K3s Cilium agent still did not reach
-CNI readiness: `mount-cgroup` started, exited with code 1, and was removed
-before the final CRI inspection, leaving CSI and CoreDNS unavailable. Nodelet
-logs now correlate create/start/retry records by Pod and container ID, and the
-post-failure harness captured that the failed ID was already gone. The current
-worktree adds a half-second Cilium `mount-cgroup` log watcher during target CSI
-setup; it has not yet been exercised by a migration run. Upstream accepted all
-54 CRD apply requests, then CertificateRequest import returned HTTP 500 while
-the target cert-manager webhook was unreachable. Rollback restored source and
-retained the protected export. Neither lane reached target parity, reverse
-migration, or a round-trip comparison. Both required merge gates remain open.
+Focused `nodelet` quick-check passed at SHA
+`f4e6fecfc121ed590ffa94380d3fcc5c4ee11edd` in [run 36165304260](https://github.com/centerionware/not-k8s/actions/runs/36165304260).
+Branch-runtime migration [run 36165304330](https://github.com/centerionware/not-k8s/actions/runs/36165304330)
+used the same SHA. The nodemigrate and combined-runtime builds and five-node
+Docker isolation preflight passed. CRI showed Cilium's `mount-cgroup` container
+using AppArmor `Unconfined`, and its log confirmed cgroup v2 mounted. K3s then
+failed because leftover source Cilium agent/operator processes held destination
+ports `4244`, `4240`, and `9963`; the worktree extends cleanup to processes
+matching exact source identities. Upstream failed CertificateRequest import
+with HTTP 500 because the cert-manager webhook was unreachable; rollback
+restored the source and retained the protected export. Neither lane reached the
+target workload/storage checkpoint, reverse migration, or parity comparison.
+Both required merge gates remain open.
 
 ## Workflow
 

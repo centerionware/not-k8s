@@ -7,7 +7,24 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
-## Latest runtime defect
+## Latest integration attempt
+
+Branch-runtime migration [36165304330](https://github.com/centerionware/not-k8s/actions/runs/36165304330)
+at SHA `f4e6fecfc121ed590ffa94380d3fcc5c4ee11edd` passed the nodemigrate and
+combined-runtime builds and the five-node Docker isolation preflight. The
+nodelet AppArmor fix was verified at runtime: CRI showed the Cilium
+`mount-cgroup` container using `Unconfined` (`profile_type: 1`) and its log
+reported `Mounted cgroupv2 filesystem`. K3s then failed Cilium startup because
+orphaned source `cilium-agent` and `cilium-operator` processes held destination
+ports `4244`, `4240`, and `9963`; the current worktree extends exact source
+container/Pod identity cleanup to those daemons. The upstream lane failed
+CertificateRequest import with HTTP 500 because the cert-manager webhook was
+unreachable; rollback restored the source and retained the protected export.
+Neither lane reached the target workload/storage checkpoint, reverse
+migration, or parity comparison. Focused `nodelet` quick-check passed in
+[36165304260](https://github.com/centerionware/not-k8s/actions/runs/36165304260).
+
+## Previous runtime defect
 
 At SHA `f97432ccc3edc65c846cb4c3c7bc7da3e30487f9`, branch-runtime K3s+Cilium
 and upstream+Cilium run
