@@ -559,6 +559,58 @@ metadata:
   name: migration-apps
 ---
 apiVersion: v1
+kind: Service
+metadata:
+  name: migration-external-db
+  namespace: migration-apps
+spec:
+  ports:
+  - name: postgres
+    port: 5432
+    protocol: TCP
+    targetPort: 5432
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: migration-external-db
+  namespace: migration-apps
+subsets:
+- addresses:
+  - ip: 192.0.2.20
+  ports:
+  - name: postgres
+    port: 5432
+    protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: migration-external-db-v4
+  namespace: migration-apps
+  labels:
+    kubernetes.io/service-name: migration-external-db
+    endpointslice.kubernetes.io/managed-by: nodemigrate-test-fixture
+addressType: IPv4
+endpoints:
+- addresses: [192.0.2.20]
+  conditions:
+    ready: true
+ports:
+- name: postgres
+  port: 5432
+  protocol: TCP
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: migration-application-lock
+  namespace: migration-apps
+spec:
+  holderIdentity: nodemigrate-fixture
+  leaseDurationSeconds: 60
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: migration-user-metadata
@@ -1256,6 +1308,25 @@ verify_stage() {
         .kind == "StatefulSet" and .name == "migration-stateful"))] | length >= 2
     ' >/dev/null || {
         echo "StatefulSet rollout history was not preserved at stage $stage" >&2
+        return 1
+    }
+    kubectl get endpoints migration-external-db -n migration-apps -o json | jq -e '
+      .subsets[0].addresses[0].ip == "192.0.2.20" and
+      .subsets[0].ports[0].name == "postgres" and .subsets[0].ports[0].port == 5432
+    ' >/dev/null || {
+        echo "user-managed Endpoints state changed at stage $stage" >&2
+        return 1
+    }
+    kubectl get endpointslice migration-external-db-v4 -n migration-apps -o json | jq -e '
+      .metadata.labels["endpointslice.kubernetes.io/managed-by"] == "nodemigrate-test-fixture" and
+      .endpoints[0].addresses == ["192.0.2.20"] and .ports[0].port == 5432
+    ' >/dev/null || {
+        echo "user-managed EndpointSlice state changed at stage $stage" >&2
+        return 1
+    }
+    kubectl get lease migration-application-lock -n migration-apps -o json | jq -e \
+        '.spec.holderIdentity == "nodemigrate-fixture" and .spec.leaseDurationSeconds == 60' >/dev/null || {
+        echo "application Lease state changed at stage $stage" >&2
         return 1
     }
     local preserved_annotation

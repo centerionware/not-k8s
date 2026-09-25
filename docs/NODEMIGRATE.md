@@ -100,10 +100,31 @@ commands do not start a migration and do not request confirmation.
 
 The utility exports API resources, including custom resources and system
 add-ons such as Cilium, through the source API, then applies them through the
-destination API. Kubernetes-managed transient resources are recreated by the
-destination controllers. Owner references and persistent-volume claim UIDs
-are remapped to the destination UIDs. Kine and etcd database files are not
-copied between distributions.
+destination API. It preserves user-managed `Endpoints`, `EndpointSlices`, and
+coordination `Leases`. Endpoint and EndpointSlice records owned by Kubernetes
+controllers, the default Kubernetes API service endpoints, node-heartbeat
+Leases, and other runtime-generated resources are recreated for the target
+cluster. Owner references and persistent-volume claim UIDs are remapped to the
+destination UIDs. Kine and etcd database files are not copied between
+distributions.
+
+The export classifies resources by lifecycle rather than excluding whole API
+groups without inspection:
+
+| Resource state | Migration treatment |
+| --- | --- |
+| Nodes | Recreated by the destination agent; labels, annotations, taints, and schedulability are restored from the protected node snapshot, then fresh registration and readiness are required. |
+| Controller-owned Pods and static-pod mirror Pods | Recreated by their durable controller or retained static-pod manifest. Standalone Pods remain in the export. |
+| Kubernetes-managed Endpoints and EndpointSlices | Recreated from Services, Pods, or the API server's built-in Kubernetes Service. User/add-on-managed endpoint objects are transferred. |
+| `kube-node-lease` Leases | Recreated by the destination kubelet for the newly registered Node. Other coordination Leases are transferred. |
+| Events and resource metrics | Runtime observations; new events and metrics are produced by the destination components. |
+| `VolumeAttachment` objects | Recreated by the destination CSI attacher from migrated claims and workloads; storage binding, attachment, and payload access are checked after cutover. |
+| `ComponentStatus` and service-account-token Secrets | `ComponentStatus` is read-only derived state. Service-account tokens are reissued for destination identities; ordinary user Secrets are transferred. |
+
+Resource status fields are rebuilt by destination controllers and are checked
+through their resulting readiness and behavior. User-managed objects keep
+their durable specifications and data across source, target, and return
+checkpoints.
 
 If the source uses an external CNI such as Cilium, nodebootstrap is started
 with CNI setup disabled so it preserves the provider's host configuration.

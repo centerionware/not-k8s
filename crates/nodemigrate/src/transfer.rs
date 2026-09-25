@@ -27,12 +27,15 @@ use crate::{
     request::Distribution,
 };
 
+// These object kinds are not durable API inputs for the replacement:
+// ComponentStatus is read-only, Events and metrics are observations, Nodes
+// are re-registered from the protected scheduling snapshot, and
+// VolumeAttachments must be recreated by the destination CSI attacher.
+// Leases and endpoint objects need object-level checks because users and
+// add-ons can own durable instances of those kinds.
 const SKIP_KINDS: &[&str] = &[
     "ComponentStatus",
-    "Endpoints",
-    "EndpointSlice",
     "Event",
-    "Lease",
     "Node",
     "NodeMetrics",
     "PodMetrics",
@@ -1591,12 +1594,59 @@ fn skip_kind(kind: &str) -> bool {
     SKIP_KINDS.contains(&kind)
 }
 
+fn label_value<'a>(object: &'a Value, key: &str) -> Option<&'a str> {
+    object
+        .pointer("/metadata/labels")
+        .and_then(Value::as_object)
+        .and_then(|labels| labels.get(key))
+        .and_then(Value::as_str)
+}
+
+fn is_default_kubernetes_service_endpoint(object: &Value) -> bool {
+    object.pointer("/metadata/namespace").and_then(Value::as_str) == Some("default")
+        && (object.pointer("/metadata/name").and_then(Value::as_str) == Some("kubernetes")
+            || label_value(object, "kubernetes.io/service-name") == Some("kubernetes"))
+}
+
+fn skip_regenerated_endpoint(object: &Value, kind: &str) -> bool {
+    match kind {
+        "Endpoints" => {
+            is_default_kubernetes_service_endpoint(object)
+                || label_value(object, "endpoints.kubernetes.io/managed-by")
+                    == Some("endpoint-controller")
+        }
+        "EndpointSlice" => {
+            is_default_kubernetes_service_endpoint(object)
+                || matches!(
+                    label_value(object, "endpointslice.kubernetes.io/managed-by"),
+                    Some(
+                        "endpointslice-controller.k8s.io"
+                            | "endpointslicemirroring-controller.k8s.io"
+                    )
+                )
+        }
+        _ => false,
+    }
+}
+
 fn skip_object(object: &Value) -> bool {
     let kind = object
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if skip_kind(kind) {
+        return true;
+    }
+    if skip_regenerated_endpoint(object, kind) {
+        return true;
+    }
+    // Kubelets renew these node-heartbeat Leases continuously; the target
+    // kubelet must create a fresh Lease for its newly registered Node. Other
+    // Leases can carry application or add-on state and are migrated.
+    if kind == "Lease"
+        && object.pointer("/metadata/namespace").and_then(Value::as_str)
+            == Some("kube-node-lease")
+    {
         return true;
     }
     if kind == "Pod" {
@@ -1996,6 +2046,101 @@ current-context: test
             "kind": "PodMetrics",
             "metadata": {"name": "pod-a", "namespace": "apps"}
         })));
+    }
+
+    #[test]
+    fn migration_export_preserves_user_endpoints_and_leases() {
+        for object in [
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Endpoints",
+                "metadata": {"name": "external-db", "namespace": "migration-apps"},
+                "subsets": [{"addresses": [{"ip": "192.0.2.20"}], "ports": [{"port": 5432}]}]
+            }),
+            serde_json::json!({
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {
+                    "name": "external-db-v4",
+                    "namespace": "migration-apps",
+                    "labels": {
+                        "kubernetes.io/service-name": "external-db",
+                        "endpointslice.kubernetes.io/managed-by": "migration-operator"
+                    }
+                },
+                "addressType": "IPv4",
+                "endpoints": [{"addresses": ["192.0.2.20"]}],
+                "ports": [{"port": 5432}]
+            }),
+            serde_json::json!({
+                "apiVersion": "coordination.k8s.io/v1",
+                "kind": "Lease",
+                "metadata": {"name": "migration-lock", "namespace": "migration-apps"},
+                "spec": {"holderIdentity": "migration-controller"}
+            }),
+        ] {
+            assert!(
+                sanitize(object).is_some(),
+                "user-managed endpoint or application Lease was omitted"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_export_skips_only_kubernetes_regenerated_endpoints_and_node_leases() {
+        for object in [
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Endpoints",
+                "metadata": {
+                    "name": "web",
+                    "namespace": "apps",
+                    "labels": {"endpoints.kubernetes.io/managed-by": "endpoint-controller"}
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Endpoints",
+                "metadata": {"name": "kubernetes", "namespace": "default"}
+            }),
+            serde_json::json!({
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {
+                    "name": "web-abc",
+                    "namespace": "apps",
+                    "labels": {"endpointslice.kubernetes.io/managed-by": "endpointslice-controller.k8s.io"}
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {
+                    "name": "kubernetes",
+                    "namespace": "default",
+                    "labels": {"kubernetes.io/service-name": "kubernetes"}
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {
+                    "name": "web-mirror-abc",
+                    "namespace": "apps",
+                    "labels": {"endpointslice.kubernetes.io/managed-by": "endpointslicemirroring-controller.k8s.io"}
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "coordination.k8s.io/v1",
+                "kind": "Lease",
+                "metadata": {"name": "node-a", "namespace": "kube-node-lease"}
+            }),
+        ] {
+            assert!(
+                sanitize(object).is_none(),
+                "Kubernetes-regenerated endpoint or node Lease was exported"
+            );
+        }
     }
 
     #[test]

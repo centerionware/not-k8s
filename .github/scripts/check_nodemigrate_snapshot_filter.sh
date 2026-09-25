@@ -38,6 +38,12 @@ pv_after="$(jq -cn '{apiVersion:"v1",kind:"PersistentVolume",metadata:{name:"dat
 for transient in \
     '{"apiVersion":"v1","kind":"Node","metadata":{"name":"node-a"}}' \
     '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetrics","metadata":{"name":"node-a"}}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"web","namespace":"apps","labels":{"endpoints.kubernetes.io/managed-by":"endpoint-controller"}}}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"kubernetes","namespace":"default"}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"web-abc","namespace":"apps","labels":{"endpointslice.kubernetes.io/managed-by":"endpointslice-controller.k8s.io"}}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"web-mirror-abc","namespace":"apps","labels":{"endpointslice.kubernetes.io/managed-by":"endpointslicemirroring-controller.k8s.io"}}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"kubernetes","namespace":"default","labels":{"kubernetes.io/service-name":"kubernetes"}}}' \
+    '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"node-a","namespace":"kube-node-lease"}}' \
     '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"apps","ownerReferences":[{"kind":"ReplicaSet","name":"web","uid":"source-uid","controller":true}]}}' \
     '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"mirror-pod","namespace":"kube-system","annotations":{"kubernetes.io/config.mirror":"mirror-uid"}}}' \
     '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"PodMetrics","metadata":{"name":"pod-a","namespace":"apps"}}' \
@@ -50,6 +56,10 @@ done
 
 for durable in \
     '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"standalone","namespace":"apps"}}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"external-db","namespace":"migration-apps"},"subsets":[{"addresses":[{"ip":"192.0.2.20"}],"ports":[{"port":5432}]}]}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"custom-web","namespace":"apps","labels":{"endpoints.kubernetes.io/managed-by":"custom-endpoint-controller"}}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"external-db-v4","namespace":"migration-apps","labels":{"kubernetes.io/service-name":"external-db","endpointslice.kubernetes.io/managed-by":"migration-operator"}},"addressType":"IPv4","endpoints":[{"addresses":["192.0.2.20"]}],"ports":[{"port":5432}]}' \
+    '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"migration-lock","namespace":"migration-apps"},"spec":{"holderIdentity":"migration-controller"}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps"}}' \
     '{"apiVersion":"apps/v1","kind":"ControllerRevision","metadata":{"name":"db-old","namespace":"apps"}}'; do
     [[ -n "$(jq -cS -f "$FILTER" <<< "$durable")" ]] || {
