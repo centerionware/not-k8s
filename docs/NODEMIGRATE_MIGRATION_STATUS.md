@@ -9,19 +9,22 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime migration [36098546161](https://github.com/centerionware/not-k8s/actions/runs/36098546161)
-used SHA `4e41430e2f1b7805b36ad9562f8423ec7f4e1a54`. The focused
-`nodemigrate` quick-check passed in [36098539568](https://github.com/centerionware/not-k8s/actions/runs/36098539568),
-as did the utility/runtime builds and five-node Docker preflight. K3s completed
-forward migration, but Cilium Envoy still failed to bind
-`/var/run/cilium/envoy/sockets` with `errno=98`, even after sandbox shutdown
-and filesystem socket cleanup. The source of the bound socket is not yet
-known. Upstream completed bootstrap but import failed for
-`cert-manager.io/v1/CertificateRequest migration-test-1`; rollback restored
-the source API and kept the protected export. The captured error omitted the
-API response. The worktree adds socket/process diagnostics and preserves full
-import error chains. Quick-check and migration reruns are pending. No reverse
-migration or semantic parity gate has passed.
+Branch-runtime migration [36100281843](https://github.com/centerionware/not-k8s/actions/runs/36100281843)
+used SHA `fa9d5ae34c77772d9a020a0251b706943f8b1cd7`. The targeted
+`nodemigrate` quick-check passed in [36100274964](https://github.com/centerionware/not-k8s/actions/runs/36100274964),
+as did the utility/runtime builds and five-node Docker preflight. K3s forward
+migration completed, but Cilium Envoy again failed its socket bind with
+`errno=98`. Diagnostics found active Cilium agent and Envoy listeners and an
+Envoy child under a containerd shim; the CRI report did not identify that
+shim's sandbox. This checkout's K3s cleanup had been using the generic CRI
+fallback, so it now detects the configured endpoint and defaults to K3s's
+embedded containerd socket. That correction still needs focused verification
+and a runtime rerun. Upstream bootstrap succeeded but importing
+`cert-manager.io/v1/CertificateRequest migration-test-1` returned HTTP 500.
+The complete error chain now names the failing route; the destination API
+server cause is unknown and needs a nodeapiserver fix. Rollback restored the
+source API and retained the protected export. No reverse migration or
+semantic parity gate has passed.
 
 ## Required migration test inventory
 

@@ -186,6 +186,7 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<()> {
     let (ready, all) = source_pod_sandbox_ids(&pods);
     tracing::info!(
         count = all.len(),
+        runtime_endpoint = %endpoint,
         "stopping source pod sandboxes before cutover"
     );
     for id in &ready {

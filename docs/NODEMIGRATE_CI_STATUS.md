@@ -97,6 +97,23 @@ new fixes.
   The worktree now preserves complete import error chains and adds host socket,
   directory, and process diagnostics for the next Cilium failure. No round
   trip, reverse migration, or parity gate passed.
+- At SHA `fa9d5ae34c77772d9a020a0251b706943f8b1cd7`, the targeted
+  `nodemigrate` quick-check passed in [run 36100274964](https://github.com/centerionware/not-k8s/actions/runs/36100274964).
+  Branch-runtime integration [run 36100281843](https://github.com/centerionware/not-k8s/actions/runs/36100281843)
+  passed both utility/runtime builds and the five-node Docker preflight, then
+  failed both migration lanes. K3s again failed Cilium readiness with
+  `errno=98`; `ss` captured active agent/Envoy socket owners and `ps` showed
+  Envoy under a containerd shim, but the diagnostics did not map that shim to
+  its CRI sandbox. The code review found K3s cleanup defaulted to the generic
+  `/run/containerd/containerd.sock`; the worktree now detects K3s's configured
+  endpoint and defaults to `/run/k3s/containerd/containerd.sock`. Upstream
+  bootstrap succeeded, then applying
+  `cert-manager.io/v1/CertificateRequest migration-test-1` returned HTTP 500.
+  Full error reporting exposed the object and route; the destination API
+  server cause is still unknown. The source API recovered and the protected
+  export remained available. No reverse migration or semantic parity check
+  ran. The endpoint change is pending focused quick-check and runtime retest;
+  the CertificateRequest failure is pending nodeapiserver diagnosis and fix.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

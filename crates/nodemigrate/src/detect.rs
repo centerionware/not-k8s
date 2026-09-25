@@ -283,7 +283,14 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
     Ok(Some(Installation {
         distribution: Distribution::K3s,
         role,
-        runtime_endpoint: None,
+        // K3s embeds containerd under /run/k3s by default. Falling back to
+        // /run/containerd/containerd.sock can target the replacement runtime
+        // instead of stopping the source cluster's pods before cutover.
+        runtime_endpoint: Some(
+            config
+                .runtime_endpoint
+                .unwrap_or_else(|| "unix:///run/k3s/containerd/containerd.sock".to_string()),
+        ),
         service_manager: detect_service_manager(
             layout,
             systemd_unit.is_some(),
@@ -731,6 +738,7 @@ fn is_kine_endpoint(endpoint: &str) -> bool {
 #[derive(Debug, Default)]
 struct K3sConfig {
     data_dir: Option<PathBuf>,
+    runtime_endpoint: Option<String>,
     write_kubeconfig: Option<PathBuf>,
     service_cidr: Option<String>,
     cluster_cidr: Option<String>,
@@ -748,6 +756,8 @@ impl K3sConfig {
         self.data_dir = yaml_string(value, "data-dir")
             .map(PathBuf::from)
             .or(self.data_dir.take());
+        self.runtime_endpoint =
+            yaml_string(value, "container-runtime-endpoint").or(self.runtime_endpoint.take());
         self.write_kubeconfig = yaml_string(value, "write-kubeconfig")
             .map(PathBuf::from)
             .or(self.write_kubeconfig.take());
@@ -781,6 +791,8 @@ impl K3sConfig {
             let Some(value) = value else { continue };
             if token.starts_with("--data-dir") {
                 self.data_dir = Some(PathBuf::from(value));
+            } else if token.starts_with("--container-runtime-endpoint") {
+                self.runtime_endpoint = Some(value.to_string());
             } else if token.starts_with("--write-kubeconfig") {
                 self.write_kubeconfig = Some(PathBuf::from(value));
             } else if token.starts_with("--service-cidr") {
@@ -1093,6 +1105,10 @@ mod tests {
         let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::K3s)
             .unwrap()
             .unwrap();
+        assert_eq!(
+            installation.runtime_endpoint.as_deref(),
+            Some("unix:///run/k3s/containerd/containerd.sock")
+        );
         let cluster = installation.cluster.unwrap();
         assert_eq!(cluster.cni.as_deref(), Some("cilium"));
         assert_eq!(
@@ -1106,6 +1122,25 @@ mod tests {
             Some(std::path::Path::new(
                 "/var/lib/rancher/k3s/data/current/bin"
             ))
+        );
+    }
+
+    #[test]
+    fn k3s_runtime_endpoint_honors_config_and_service_arguments() {
+        let mut config = K3sConfig::default();
+        config.merge_yaml(
+            &serde_yaml::from_str("container-runtime-endpoint: unix:///run/custom/cri.sock\n")
+                .unwrap(),
+        );
+        assert_eq!(
+            config.runtime_endpoint.as_deref(),
+            Some("unix:///run/custom/cri.sock")
+        );
+
+        config.merge_args("k3s server --container-runtime-endpoint=unix:///run/cli/cri.sock");
+        assert_eq!(
+            config.runtime_endpoint.as_deref(),
+            Some("unix:///run/cli/cri.sock")
         );
     }
 
