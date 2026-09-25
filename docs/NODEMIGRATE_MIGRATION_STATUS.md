@@ -9,20 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime run [36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808)
-confirmed that the K3s source InternalIP wait now works and both lanes complete
-forward migration. After cutover, Cilium Envoy fails to create its
-`/var/run/cilium/envoy/sockets` mountpoint with `read-only file system`.
-Parent-first sorting of each container's CRI volume mounts passed focused
-nodelet quick-check at SHA `e229ae742ab64327512086decdb9a08d58dbfe81` in
-[run 36089689032](https://github.com/centerionware/not-k8s/actions/runs/36089689032),
-but branch-runtime rerun [36089689047](https://github.com/centerionware/not-k8s/actions/runs/36089689047)
-reproduced the same error in both lanes. Captured YAML shows the `/var/run/cilium`
-parent mount belongs to the separate Cilium agent Pod, not the failing Envoy
-Pod; ordering therefore was not the cause or fix for this incident. Next,
-inspect Envoy's own final CRI/OCI request and mountpoint preparation.
-CNI/CoreDNS readiness, post-cutover storage and workload checks, reverse
-migration, and semantic comparison remain unverified.
+Branch-runtime migration [36091505933](https://github.com/centerionware/not-k8s/actions/runs/36091505933)
+used SHA `2debf9caf19def33d1253e046f85be8e1063d2d9`. Both utility and
+combined-runtime builds and the five-node Docker isolation preflight passed;
+both migration lanes completed forward migration and then failed during
+post-cutover Cilium startup. Captured `crictl inspect` data shows Envoy's own
+OCI mount list first binds its read-only `envoy-config` volume at
+`/var/run/cilium/envoy/`, then binds writable `sockets` and read-only
+`artifacts` below that path. runc attempts to create those child mountpoints
+inside the read-only parent and fails. The OCI root itself is not marked
+read-only. The previous parent-first CRI sort therefore did not address the
+actual overlap. Nodelet now prepares nested mountpoint directories within
+nodelet-managed parent volume sources only, preserving mount flags and leaving
+external hostPath/CSI sources untouched. Focused unit checks and a migration
+rerun are pending. CNI/CoreDNS readiness, post-cutover storage/workloads,
+reverse migration, and semantic comparison remain unverified.
 
 ## Required migration test inventory
 

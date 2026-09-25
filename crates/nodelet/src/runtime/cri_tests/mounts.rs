@@ -33,10 +33,8 @@ fn nested_volume_mounts_are_ordered_parent_before_child() {
     volumes.insert("envoy-sockets".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/run/cilium/envoy/sockets")));
     volumes.insert("cilium-run".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/run/cilium")));
 
-    // The Cilium Envoy Pod declares the child sockets mount before its
-    // writable /var/run/cilium parent. OCI runtimes must apply the parent
-    // first so they can create the child mountpoint on that volume even when
-    // the image root filesystem is read-only.
+    // Kubernetes does not assign meaning to mount list order; keep ancestors
+    // before descendants for runtimes that process CRI mounts sequentially.
     let mounts = build_mounts(
         &[vm("envoy-sockets", "/var/run/cilium/envoy/sockets"), vm("cilium-run", "/var/run/cilium")],
         &volumes,
@@ -47,6 +45,72 @@ fn nested_volume_mounts_are_ordered_parent_before_child() {
     assert_eq!(mounts.len(), 2);
     assert_eq!(mounts[0].container_path, "/var/run/cilium");
     assert_eq!(mounts[1].container_path, "/var/run/cilium/envoy/sockets");
+}
+
+#[test]
+fn nested_mount_target_is_prepared_in_readonly_managed_parent_volume() {
+    let base = test_dir("readonly-parent");
+    let managed_root = base.join("volumes");
+    let parent_source = managed_root.join("envoy-config");
+    let child_source = base.join("host-envoy-sockets");
+    std::fs::create_dir_all(&parent_source).unwrap();
+    std::fs::create_dir_all(&child_source).unwrap();
+
+    let mounts = vec![
+        Mount {
+            container_path: "/var/run/cilium/envoy/".to_string(),
+            host_path: parent_source.to_string_lossy().into_owned(),
+            readonly: true,
+            ..Default::default()
+        },
+        Mount {
+            container_path: "/var/run/cilium/envoy/sockets".to_string(),
+            host_path: child_source.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    ];
+
+    prepare_managed_nested_mountpoints(&mounts, &managed_root).unwrap();
+
+    assert!(parent_source.join("sockets").is_dir());
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn nested_mount_target_does_not_modify_external_parent_volume() {
+    let base = test_dir("external-parent");
+    let managed_root = base.join("volumes");
+    let external_parent = base.join("external-config");
+    let child_source = base.join("host-envoy-sockets");
+    std::fs::create_dir_all(&managed_root).unwrap();
+    std::fs::create_dir_all(&external_parent).unwrap();
+    std::fs::create_dir_all(&child_source).unwrap();
+
+    let mounts = vec![
+        Mount {
+            container_path: "/etc/config/".to_string(),
+            host_path: external_parent.to_string_lossy().into_owned(),
+            readonly: true,
+            ..Default::default()
+        },
+        Mount {
+            container_path: "/etc/config/nested".to_string(),
+            host_path: child_source.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+    ];
+
+    prepare_managed_nested_mountpoints(&mounts, &managed_root).unwrap();
+
+    assert!(!external_parent.join("nested").exists());
+    let _ = std::fs::remove_dir_all(base);
+}
+
+fn test_dir(label: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("nodelet-nested-mount-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).unwrap();
+    path
 }
 
 #[test]

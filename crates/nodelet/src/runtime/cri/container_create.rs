@@ -412,6 +412,8 @@ impl CriRuntime {
                 ..Default::default()
             });
         }
+        prepare_managed_nested_mountpoints(&mounts, &PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes"))
+            .context("preparing nested targets under read-only nodelet-managed volumes")?;
         let mut resources = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes, self.node_swap_bytes, self.memory_swap_limited);
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
         let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
