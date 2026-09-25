@@ -1146,7 +1146,7 @@ mod tests {
                 {"id": "container-1", "metadata": {"name": "cilium-agent"}},
                 {"id": "container-2", "labels": {"io.kubernetes.container.name": "cilium-envoy"}},
                 {"id": "container-3", "labels": {"nodelet.dev/container-name": "cilium-envoy"}},
-                {"id": "ordinary", "metadata": {"name": "cilium-agent"}},
+                {"id": "ordinary", "metadata": {"name": "cilium-operator"}},
                 {"id": "", "metadata": {"name": "cilium-envoy"}},
                 {"id": "container-2", "metadata": {"name": "cilium-envoy"}}
             ]
