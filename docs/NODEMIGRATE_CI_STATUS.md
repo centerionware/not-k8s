@@ -201,19 +201,25 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest branch-runtime run used SHA `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b`
-in [run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808).
+The latest branch-runtime run used SHA `e229ae742ab64327512086decdb9a08d58dbfe81`
+in [run 36089689047](https://github.com/centerionware/not-k8s/actions/runs/36089689047).
 The nodemigrate and combined runtime release builds passed in both lanes, and
-the five-node Docker isolation preflight passed. The K3s lane confirms the
-bounded node-IP wait works: Cilium, source workloads, and forward migration
-completed. Both lanes then failed after cutover while Cilium Envoy repeatedly
-failed to create `/var/run/cilium/envoy/sockets` under its read-only root; CNI
-and CoreDNS remained unready, so hostpath CSI readiness and reverse migration
-did not run. The Pod declares the child sockets mount before its writable
-`/var/run/cilium` parent. Nodelet now orders nested CRI mounts parent-first and
-has a focused regression in the worktree; quick-check and another migration
-run are pending. Full logs are saved at
-`/tmp/nodemigrate-36088034808/artifacts/`. No local Cargo test/build was run.
+the five-node Docker isolation preflight passed. K3s source setup, Cilium,
+workloads, and forward migration completed. Both lanes failed after cutover
+because Cilium Envoy could not create `/var/run/cilium/envoy/sockets` under its
+read-only root. The attempted parent-first sort passed nodelet quick-check
+[36089689032](https://github.com/centerionware/not-k8s/actions/runs/36089689032),
+but this rerun reproduced the same error. Captured Pod YAML shows the parent
+mount is in the separate Cilium agent Pod, not Envoy's Pod; inspect Envoy's own
+CRI/OCI request before another fix. CNI/CoreDNS did not become ready, so
+hostpath CSI, post-cutover workload checks, reverse migration, and semantic
+comparison did not run. Full logs are saved at
+`/tmp/nodemigrate-36089689047/artifacts/`. No local Cargo test/build was run.
+
+The previous branch-runtime run used SHA `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b`
+in [run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808).
+It confirmed the bounded node-IP wait works, then found the same Envoy failure.
+Logs are saved at `/tmp/nodemigrate-36088034808/artifacts/`.
 
 Earlier release-backed run used SHA
 `093f2e440b16c4a2a585b424b816b97ab49480a9`. Focused nodemigrate crate tests
@@ -235,6 +241,10 @@ No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-25 | `e229ae742ab64327512086decdb9a08d58dbfe81` | Branch-runtime K3s + Cilium | Source setup and forward migration passed; the read-only-root Envoy mountpoint error remained after the parent-first mount-order change. CNI/CoreDNS, storage/workload checks, reverse migration, and state comparison did not run. | [Run 36089689047](https://github.com/centerionware/not-k8s/actions/runs/36089689047) |
+| 2026-09-25 | `e229ae742ab64327512086decdb9a08d58dbfe81` | Branch-runtime Kubernetes + Cilium | Forward migration passed; the identical Envoy mountpoint failure blocked post-cutover checks and reverse migration. | [Run 36089689047](https://github.com/centerionware/not-k8s/actions/runs/36089689047) |
+| 2026-09-25 | `e229ae742ab64327512086decdb9a08d58dbfe81` | Five-node Docker preflight | Passed; validates isolation/capabilities only, not Kubernetes/Cilium/migration parity. | [Run 36089689047](https://github.com/centerionware/not-k8s/actions/runs/36089689047) |
+| 2026-09-25 | `e229ae742ab64327512086decdb9a08d58dbfe81` | Targeted quick-check: `nodelet` | Passed focused CRI mount tests, but the mount-order change did not fix the Envoy runtime failure. | [Run 36089689032](https://github.com/centerionware/not-k8s/actions/runs/36089689032) |
 | 2026-09-25 | `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b` | Branch-runtime K3s + Cilium | Source setup passed, including Cilium, storage/workloads, and the node-IP wait; forward migration completed. Target Cilium Envoy then failed creating its nested volume mountpoint under a read-only root, preventing hostpath CSI readiness and reverse migration. | [Run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808) |
 | 2026-09-25 | `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b` | Branch-runtime Kubernetes + Cilium | Forward migration completed; target Cilium Envoy mountpoint failed identically, leaving CNI/CoreDNS and hostpath CSI unready. | [Run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808) |
 | 2026-09-25 | `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b` | Five-node Docker preflight | Passed; checks host isolation and capabilities, not Kubernetes or migration parity. | [Run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808) |

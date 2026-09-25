@@ -96,6 +96,32 @@ CSI PV/PVC data. Install cert-manager, nginx, Traefik ingress, and additional
 representative cluster programs/add-ons. Record source versions and CNI
 configuration.
 
+The migration fixture must cover a broad, explicit resource inventory rather
+than treating the current demo workloads as complete coverage. At minimum,
+create and round-trip ConfigMaps and Secrets; CRDs and representative custom
+resources; Deployments, ReplicaSets, StatefulSets (including claim templates),
+DaemonSets, Jobs, CronJobs, and standalone Pods; Helm-installed releases and
+their release records; Services and EndpointSlices; Ingress resources and
+Gateway API resources (`GatewayClass`, `Gateway`, `HTTPRoute`, and other route
+types supported by the selected controller); RBAC roles, bindings, and
+service accounts; namespaces, quotas, limits, policies, disruption budgets,
+and autoscalers; PVs, PVCs, StorageClasses, CSI drivers, and snapshots; and
+cert-manager issuers, certificates, and resulting secrets. Include Cilium
+configuration and policy custom resources. Install any required CRDs and
+controllers in the source before creating their custom resources.
+
+Also inventory every listable API resource exposed by source discovery and
+verify it is either migrated, deliberately regenerated as transient runtime
+state, or excluded with a documented Kubernetes lifecycle reason. The named
+examples are a minimum fixture, not permission to drop other resources.
+Preserve Helm release name, namespace, chart/version, values, revision, and
+managed resources so the release remains inspectable and manageable after
+each cutover. Compare durable object specifications and identities, test RBAC
+with real authorized and denied requests, exercise scheduled and controller
+workloads, and verify attached data and network paths. At source, not-k8s, and
+returned-source checkpoints, run the same assertions and compare normalized
+state; a successful API import alone is not evidence of workload parity.
+
 At each checkpoint—initial source, after migration to nodestore, and after
 migration back—check node readiness, workload availability, ingress routing,
 certificate readiness, add-on/custom-resource availability, PV/PVC binding,
