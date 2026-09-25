@@ -981,7 +981,7 @@ verify_stage() {
         return 1
     }
     kubectl get secret migration-user-secret -n migration-apps -o json | jq -e \
-        '.data.migration-secret == "bWlncmF0aW9uLXNlY3JldC12YWx1ZQ=="' >/dev/null || {
+        '.data["migration-secret"] == "bWlncmF0aW9uLXNlY3JldC12YWx1ZQ=="' >/dev/null || {
         echo "nodemigrate changed migration-user-secret data at stage $stage" >&2
         return 1
     }
