@@ -243,8 +243,11 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
         None
     };
     let (conf_dir, bin_dir) = k3s_containerd_cni_dirs(layout, &data_dir);
-    let active_provider =
-        detect_cni_provider(layout, &conf_dir).or_else(|| detect_external_cni(layout));
+    let configured_provider = detect_cni_provider(layout, &conf_dir);
+    let external_provider = detect_external_cni(layout);
+    let active_provider = configured_provider
+        .as_deref()
+        .or(external_provider.as_deref());
     let uses_nodebootstrap_flannel = role == NodeRole::ControlPlane
         && !config.disable_flannel
         && config.flannel_backend.as_deref().unwrap_or("vxlan") == "vxlan"
@@ -253,18 +256,21 @@ fn inspect_k3s(layout: &HostLayout) -> Result<Option<Installation>> {
             .is_none_or(|provider| provider == "flannel");
     let (cni, cni_conf_dir, cni_bin_dir) = if uses_nodebootstrap_flannel {
         (Some("flannel".to_string()), None, None)
+    } else if let Some(provider) = configured_provider {
+        (Some(provider), Some(conf_dir), Some(bin_dir))
+    } else if let Some(provider) = external_provider {
+        // K3s's embedded containerd defaults to private CNI directories even
+        // when an external CNI installs its config and binaries in the host's
+        // standard directories. Forward the directories where that provider
+        // was actually detected so the replacement runtime and CNI agent use
+        // the same host paths.
+        (
+            Some(provider),
+            Some(PathBuf::from("/etc/cni/net.d")),
+            Some(PathBuf::from("/opt/cni/bin")),
+        )
     } else {
-        if let Some(provider) = active_provider {
-            (Some(provider), Some(conf_dir), Some(bin_dir))
-        } else if let Some(provider) = detect_external_cni(layout) {
-            (
-                Some(provider),
-                Some(PathBuf::from("/etc/cni/net.d")),
-                Some(PathBuf::from("/opt/cni/bin")),
-            )
-        } else {
-            (None, Some(conf_dir), Some(bin_dir))
-        }
+        (None, Some(conf_dir), Some(bin_dir))
     };
     let cluster = ClusterConfig {
         data_dir: data_dir.clone(),
@@ -1122,6 +1128,54 @@ mod tests {
             Some(std::path::Path::new(
                 "/var/lib/rancher/k3s/data/current/bin"
             ))
+        );
+    }
+
+    #[test]
+    fn detects_external_cni_paths_when_k3s_private_directories_are_empty() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/systemd/system")).unwrap();
+        fs::create_dir_all(root.path().join("etc/rancher/k3s")).unwrap();
+        fs::create_dir_all(root.path().join("etc/cni/net.d")).unwrap();
+        fs::create_dir_all(root.path().join("opt/cni/bin")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/server/db")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/containerd")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/agent/etc/cni/net.d")).unwrap();
+        fs::create_dir_all(root.path().join("var/lib/rancher/k3s/data/current/bin")).unwrap();
+        fs::write(
+            root.path().join("etc/systemd/system/k3s.service"),
+            "[Service]\nExecStart=/usr/local/bin/k3s server\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/rancher/k3s/config.yaml"),
+            "flannel-backend: none\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path()
+                .join("var/lib/rancher/k3s/agent/etc/containerd/config.toml"),
+            "version = 2\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/cni/net.d/05-cilium.conflist"),
+            r#"{"cniVersion":"0.4.0","plugins":[{"type":"cilium-cni"}]}"#,
+        )
+        .unwrap();
+
+        let installation = inspect_distribution(&HostLayout::under(root.path()), Distribution::K3s)
+            .unwrap()
+            .unwrap();
+        let cluster = installation.cluster.unwrap();
+        assert_eq!(cluster.cni.as_deref(), Some("cilium"));
+        assert_eq!(
+            cluster.cni_conf_dir.as_deref(),
+            Some(std::path::Path::new("/etc/cni/net.d"))
+        );
+        assert_eq!(
+            cluster.cni_bin_dir.as_deref(),
+            Some(std::path::Path::new("/opt/cni/bin"))
         );
     }
 

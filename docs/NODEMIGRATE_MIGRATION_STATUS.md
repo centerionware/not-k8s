@@ -9,22 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Branch-runtime migration [36168559234](https://github.com/centerionware/not-k8s/actions/runs/36168559234)
-at code SHA `29b6b7de9575e7cf0d43ca60becba868373d86f3` passed the nodemigrate
-and combined-runtime builds and the five-node Docker isolation preflight. The
-focused nodemigrate quick-check passed at the same SHA in
-[36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894).
-Both K3s and upstream source fixtures passed. Source Cilium process cleanup
-found no remaining source daemon and removed three stale Envoy sockets. The
-K3s target Cilium init containers and agent started, but its CNI plugin
-continued reporting `cni plugin not initialized`, blocking CoreDNS and
-hostPath CSI recovery. In the upstream lane, the target API logged a failed
-cert-manager webhook invocation and returned HTTP 500 applying
-`CertificateRequest migration-test-1`; source rollback restored the API and
-retained the protected export. Neither lane reached the target checkpoint,
-reverse migration, or parity comparison. Both required migration merge gates
-remain open. Complete logs are at
-`/tmp/nodemigrate-36168559234/{k3s,kubernetes}.log`.
+Branch-runtime migration [36171620422](https://github.com/centerionware/not-k8s/actions/runs/36171620422)
+used code SHA `4fca1647799413929bdd319675db4cf3cba03bd5`. Nodemigrate and
+combined-runtime builds passed, as did the five-node Docker isolation
+preflight. Both migrations failed before the target workload checkpoint. K3s
+diagnostics showed that target containerd was configured to read
+`/var/lib/rancher/k3s/agent/etc/cni/net.d`, which was empty after K3s
+uninstall, while Cilium wrote `/etc/cni/net.d/05-cilium.conflist`. CoreDNS and
+hostPath CSI could not recover. A detector fix and regression for this
+external-CNI layout are now in the worktree; CI evidence is pending. Upstream
+imported 54 CRDs but failed on CertificateRequest admission because the
+cert-manager webhook could not be reached. Its Cilium agent container was
+terminated and Pod remained `PodInitializing`, with startup cause still
+unknown. Rollback restored the source API and retained the export. Neither
+lane reached reverse migration or parity comparison. Both required merge gates
+remain open. Full logs are at
+`/tmp/nodemigrate-36171620422/{k3s,kubernetes}.log`.
+
+The previous focused nodemigrate quick-check passed at SHA
+`29b6b7de9575e7cf0d43ca60becba868373d86f3` in
+[36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894);
+it does not include the new detector fix.
 
 ## Previous runtime defect
 

@@ -15,19 +15,24 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Focused nodemigrate quick-check passed at code SHA `29b6b7de9575e7cf0d43ca60becba868373d86f3`
-in [run 36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894).
-Branch-runtime migration [run 36168559234](https://github.com/centerionware/not-k8s/actions/runs/36168559234)
-at the same code SHA passed the nodemigrate and combined-runtime builds and
-five-node Docker isolation preflight. Source Cilium cleanup found no remaining
-source daemon and removed three stale Envoy sockets. Both source fixtures
-passed, but neither migration lane reached a target workload/storage
-checkpoint: K3s remained blocked by `cni plugin not initialized`; upstream
-CertificateRequest import returned HTTP 500 after the target API logged a
-failed cert-manager webhook request. Upstream rollback restored the source API
-and retained the export. Both required round-trip merge gates remain open.
-Complete lane logs are saved at
-`/tmp/nodemigrate-36168559234/{k3s,kubernetes}.log`.
+Branch-runtime migration [run 36171620422](https://github.com/centerionware/not-k8s/actions/runs/36171620422)
+used code SHA `4fca1647799413929bdd319675db4cf3cba03bd5`. Both nodemigrate and
+combined-runtime builds passed, as did the five-node Docker isolation
+preflight, but both migration steps failed. K3s confirmed a host CNI path
+mismatch: containerd looked in the empty K3s private config directory, while
+Cilium wrote its config under `/etc/cni/net.d`. The new detector regression
+and fix are in the current worktree and have not yet run in CI. Upstream
+imported 54 CRDs, then failed to apply a CertificateRequest because the
+cert-manager webhook could not be reached; the Cilium agent container was
+terminated and its Pod remained `PodInitializing`, with its startup cause still
+unknown. The upstream source service/API recovered and its export was retained.
+Neither lane reached a target workload checkpoint or a round trip. Full logs:
+`/tmp/nodemigrate-36171620422/{k3s,kubernetes}.log`.
+
+The previous focused nodemigrate quick-check passed at SHA
+`29b6b7de9575e7cf0d43ca60becba868373d86f3` in
+[run 36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894).
+It does not include the new CNI-path fix.
 
 ## Workflow
 
