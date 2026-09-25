@@ -1005,6 +1005,32 @@ spec:
   dnsNames:
   - migration.test
 YAML
+    kubectl create namespace migration-policy-client --dry-run=client -o yaml | kubectl apply -f -
+    kubectl label namespace migration-policy-client \
+        nodemigrate.io/policy-client=true --overwrite
+    kubectl apply -f - <<'YAML'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migration-nginx-ingress
+  namespace: migration-apps
+spec:
+  podSelector:
+    matchLabels:
+      app: migration-nginx
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+    - namespaceSelector:
+        matchLabels:
+          nodemigrate.io/policy-client: "true"
+    ports:
+    - protocol: TCP
+      port: 80
+YAML
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=10m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed --timeout=10m
@@ -1013,6 +1039,80 @@ YAML
     kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
     wait_for_httproute_condition migration-apps migration-nginx Accepted
     wait_for_httproute_condition migration-apps migration-nginx ResolvedRefs
+    kubectl get networkpolicy migration-nginx-ingress -n migration-apps -o json | jq -e '
+        .spec.podSelector.matchLabels.app == "migration-nginx" and
+        .spec.policyTypes == ["Ingress"] and
+        ([.spec.ingress[0].from[]?.namespaceSelector.matchLabels | select(."kubernetes.io/metadata.name" == "traefik" or ."nodemigrate.io/policy-client" == "true")] | length) == 2
+    ' >/dev/null || {
+        echo "NetworkPolicy state changed at stage $stage" >&2
+        return 1
+    }
+    local policy_allow_job="migration-policy-allow-$stage"
+    local policy_deny_job="migration-policy-deny-$stage"
+    kubectl apply -f - <<YAML
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $policy_allow_job
+  namespace: migration-policy-client
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: probe
+        image: busybox:1.36.1
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
+        command: [sh, -ec]
+        args:
+        - >-
+          wget -qO- -T 5 http://migration-nginx.migration-apps.svc.cluster.local
+          | grep -q "Welcome to nginx!"
+YAML
+    kubectl wait -n migration-policy-client --for=condition=Complete \
+        "job/$policy_allow_job" --timeout=2m
+    kubectl logs -n migration-policy-client "job/$policy_allow_job" | grep -q "Welcome to nginx!" || {
+        echo "NetworkPolicy did not allow the selected client namespace at stage $stage" >&2
+        return 1
+    }
+    kubectl apply -f - <<YAML
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $policy_deny_job
+  namespace: migration-apps
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: probe
+        image: busybox:1.36.1
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
+        command: [sh, -ec]
+        args:
+        - >-
+          nslookup migration-nginx.migration-apps.svc.cluster.local >/dev/null;
+          if wget -qO- -T 5 http://migration-nginx.migration-apps.svc.cluster.local;
+          then echo network-policy-unexpectedly-allowed; exit 1;
+          else echo network-policy-denied; fi
+YAML
+    kubectl wait -n migration-apps --for=condition=Complete \
+        "job/$policy_deny_job" --timeout=2m
+    kubectl logs -n migration-apps "job/$policy_deny_job" | grep -q network-policy-denied || {
+        echo "NetworkPolicy did not deny the unselected client namespace at stage $stage" >&2
+        return 1
+    }
+    kubectl delete job -n migration-policy-client "$policy_allow_job" --wait=true
+    kubectl delete job -n migration-apps "$policy_deny_job" --wait=true
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     # Verify that the migrated ConfigMap and Secret still feed a real container.
     kubectl exec -n migration-apps migration-standalone -- sh -ec \
