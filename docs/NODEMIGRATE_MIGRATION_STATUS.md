@@ -22,8 +22,11 @@ back, restored source service/API, and retained protected exports. No target
 workload checkpoint, reverse migration, or parity comparison passed. The
 focused nodeapiserver quick-check passed at SHA `8555845f65bd0faed72d21d9b0b8c8b547960e6c`
 ([run 36148848411](https://github.com/centerionware/not-k8s/actions/runs/36148848411)).
-The current worktree bounds substring results by their source string and adds
-a TLSRoute hostname cost regression; quick-check and runtime retest are pending.
+The substring fix focused quick-check passed at SHA
+`f97432ccc3edc65c846cb4c3c7bc7da3e30487f9`
+([run 36150653684](https://github.com/centerionware/not-k8s/actions/runs/36150653684)).
+Its branch-runtime retest is running in
+[run 36150670405](https://github.com/centerionware/not-k8s/actions/runs/36150670405).
 
 At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
 [run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
