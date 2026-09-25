@@ -140,6 +140,25 @@ new fixes.
   protected export retention passed. No reverse migration or parity gate ran.
   The worktree now moves K3s sandbox cleanup ahead of service shutdown; that
   change and the target Cilium/webhook path require focused and runtime retest.
+- At SHA `459570ee4fdcea8128456f84058882159111a85a`, focused nodemigrate
+  quick-check passed in [run 36104107511](https://github.com/centerionware/not-k8s/actions/runs/36104107511).
+  Branch-runtime migration [run 36104132045](https://github.com/centerionware/not-k8s/actions/runs/36104132045)
+  passed the nodemigrate/runtime builds and Docker preflight. K3s imported all
+  48 discovered CRDs and passed destination API readiness, then failed the
+  post-cutover CSI fixture because Cilium/CNI remained unready
+  (`cni plugin not initialized`); CoreDNS and hostPath CSI Pods stayed
+  unready, so no return migration ran. The upstream target reached import but
+  failed applying `cert-manager.io/v1/CertificateRequest migration-test-1`
+  with HTTP 500 because the cert-manager webhook URL was unreachable. The
+  source API recovered and the export remained available. Cilium/CNI readiness
+  remains unresolved.
+- Latest-release migration [run 36104248971](https://github.com/centerionware/not-k8s/actions/runs/36104248971)
+  at the same utility SHA verified and used the regular `v0.8.0` runtime.
+  K3s also passed forward import and destination API readiness, but then hit
+  the same Cilium/CNI and CSI readiness failure. The upstream lane reproduced
+  the unreachable cert-manager webhook and the known `v0.8.0` CSR `ExtraValue`
+  protobuf failure; rollback restored the source API and retained the export.
+  Neither source lane reached a round trip or full parity checkpoint.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high
@@ -522,6 +541,9 @@ No local Cargo test/build was run.
 | 2026-09-25 | `3c1c75ae5b6cba74c39c6040ace131ef052d2124` | Docker-only image build | Failed before probes because the versioned `bpftool` binary was packaged directly under `/usr/lib/linux-tools-*`, while the initial Dockerfile search assumed an intermediate `/usr/lib/linux-tools/` directory. The path search was widened to the observed Ubuntu package layout. | [Run 36077228915](https://github.com/centerionware/not-k8s/actions/runs/36077228915) |
 | 2026-09-25 | `dd31443360d6d3412783ebe27d7b44661f496eef` | Docker-only five-node preflight | Passed. Built the image; all five isolated systemd containers passed CRI, BTF/bpffs, BPF compile/load, distinct network and mount namespaces and machine IDs, independent writable persistent volumes, pairwise inter-node reachability, and single-node stop/restart isolation. K3s and upstream migration lanes were intentionally skipped. This verifies container isolation only, not Kubernetes/Cilium behavior or migration parity. | [Run 36077448685](https://github.com/centerionware/not-k8s/actions/runs/36077448685) |
 | 2026-09-25 | `dd31443360d6d3412783ebe27d7b44661f496eef` | PR validation | Shell and snapshot checks passed. | [Run 36077436572](https://github.com/centerionware/not-k8s/actions/runs/36077436572) |
+| 2026-09-25 | `459570ee4fdcea8128456f84058882159111a85a` | Focused nodemigrate quick-check | Passed the nodemigrate component check, including K3s container runtime endpoint detection and source sandbox shutdown ordering. | [Run 36104107511](https://github.com/centerionware/not-k8s/actions/runs/36104107511) |
+| 2026-09-25 | `459570ee4fdcea8128456f84058882159111a85a` | Branch-runtime K3s+Cilium and upstream+Cilium | Both utility/runtime builds and Docker five-node preflight passed. K3s forward import accepted 48 CRDs and target API readiness passed, but Cilium/CNI did not initialize, blocking CoreDNS, CSI readiness, post-cutover workload checks, and reverse migration. Upstream import failed on the CertificateRequest admission webhook with HTTP 500; source API and protected export recovery passed. | [Run 36104132045](https://github.com/centerionware/not-k8s/actions/runs/36104132045) |
+| 2026-09-25 | `459570ee4fdcea8128456f84058882159111a85a` | Latest-release `v0.8.0` K3s+Cilium and upstream+Cilium | Utility builds, `v0.8.0` digest verification, and Docker preflight passed. K3s forward import/API readiness passed, then failed Cilium/CNI and CSI readiness. Upstream failed on the unavailable CertificateRequest webhook and the known CSR `ExtraValue` protobuf defect; rollback restored source API and retained the protected export. No reverse migration or semantic parity gate passed. | [Run 36104248971](https://github.com/centerionware/not-k8s/actions/runs/36104248971) |
 
 For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.

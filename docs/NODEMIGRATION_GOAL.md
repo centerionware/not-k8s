@@ -97,18 +97,67 @@ representative cluster programs/add-ons. Record source versions and CNI
 configuration.
 
 The migration fixture must cover a broad, explicit resource inventory rather
-than treating the current demo workloads as complete coverage. At minimum,
-create and round-trip ConfigMaps and Secrets; CRDs and representative custom
-resources; Deployments, ReplicaSets, StatefulSets (including claim templates),
-DaemonSets, Jobs, CronJobs, and standalone Pods; Helm-installed releases and
-their release records; Services and EndpointSlices; Ingress resources and
-Gateway API resources (`GatewayClass`, `Gateway`, `HTTPRoute`, and other route
-types supported by the selected controller); RBAC roles, bindings, and
-service accounts; namespaces, quotas, limits, policies, disruption budgets,
-and autoscalers; PVs, PVCs, StorageClasses, CSI drivers, and snapshots; and
-cert-manager issuers, certificates, and resulting secrets. Include Cilium
-configuration and policy custom resources. Install any required CRDs and
-controllers in the source before creating their custom resources.
+than treating the current demo workloads as complete coverage. Every resource
+below must be present where applicable, migrated, and checked at the initial
+source, not-k8s target, and returned-source checkpoints. Checks include
+identity and durable spec/data parity plus the relevant behavior (controller
+reconciliation, scheduling, access, routing, storage, or policy); API import
+alone does not count. This includes the specifically required ConfigMaps,
+CRDs and custom resources, StatefulSets, Deployments, Helm charts/releases,
+CronJobs, DaemonSets, Ingress, Gateway API, and RBAC, along with the following
+minimum coverage:
+
+- **Configuration and access:** Namespaces, ConfigMaps (including binary
+  data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings,
+  ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses.
+  Exercise allowed and denied API actions with real service-account
+  credentials. Preserve secret data securely and verify consumers can still
+  use it.
+- **Workloads and rollout state:** Deployments, ReplicaSets, StatefulSets and
+  `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and
+  standalone Pods. Check selectors, pod templates, rollout/revision history,
+  replica/readiness state, successful job execution, cron scheduling, and
+  unique application data. Include ReplicaSet and ControllerRevision history
+  needed by owners; verify regenerated controller-owned Pods become healthy.
+- **Charts and add-ons:** Helm chart releases and release records (name,
+  namespace, chart/version, values, revision, and manifest), plus every
+  managed resource. Verify `helm list`, release inspection, workload health,
+  and a safe follow-up Helm operation after each cutover. Include cert-manager,
+  ingress controllers, Cilium, the storage driver, and other installed
+  operators/add-ons. A chart's rendered resources and its Helm release state
+  both need coverage.
+- **Services and routing:** Services, legacy Endpoints where served,
+  EndpointSlices, IngressClasses and Ingresses, and Gateway API
+  `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `TLSRoute`,
+  and `UDPRoute` where supported by the selected controller. Check DNS,
+  service reachability, HTTP/TLS routing, and certificate use.
+- **RBAC and admission:** Role and cluster-role grants and bindings, service
+  accounts, admission policies, validating/mutating webhook configurations,
+  and APIService registrations where present. Check allowed and denied
+  requests and that admission/webhook-backed workloads function after each
+  transition.
+- **CRDs and operator state:** CRDs and representative custom resources,
+  including Cilium configuration/policy, cert-manager Issuers,
+  ClusterIssuers, Certificates and CertificateRequests, Gateway API resources,
+  and operator-managed durable state. Verify discovery, conversion,
+  reconciliation, status, and resulting Secrets or routes. Install the CRDs
+  and controllers at the source before creating custom resources.
+- **Storage and data:** PVs, PVCs, StorageClasses, static hostPath/local
+  volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where
+  applicable, VolumeSnapshotClasses, VolumeSnapshots, and snapshot contents.
+  Check binding, topology, provider configuration/credentials, attachment,
+  and unique payload data for every configured provisioner.
+- **Scheduling, policy, and node state:** Nodes and their labels, annotations,
+  taints, and unschedulable setting; PodDisruptionBudgets,
+  HorizontalPodAutoscalers and other installed autoscalers, NetworkPolicies,
+  RuntimeClasses, affinity, tolerations, topology spread, and supported
+  scheduling/security constraints.
+  Check both stored policy and resulting scheduling or allow/deny behavior.
+- **Other discovered API resources:** Include Events, Leases, coordination and
+  discovery objects, token/request resources, and every other listable resource
+  reported by source API discovery in the inventory. For each kind, verify
+  migration or classify it as regenerated transient state or exclude it only
+  with a specific Kubernetes lifecycle reason. Do not silently omit a kind.
 
 Also inventory every listable API resource exposed by source discovery and
 verify it is either migrated, deliberately regenerated as transient runtime

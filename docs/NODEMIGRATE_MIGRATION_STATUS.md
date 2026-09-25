@@ -9,27 +9,29 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-The endpoint detector passed focused quick-check [36102588479](https://github.com/centerionware/not-k8s/actions/runs/36102588479)
-at SHA `f5a2ccb6f35bc72237d904c7c75bacda63a26fac`. Branch-runtime migration
-[36102292369](https://github.com/centerionware/not-k8s/actions/runs/36102292369)
-at SHA `e9ed0b48144987d1b36629eed372b23d96686659` and latest-release migration
-[36102899864](https://github.com/centerionware/not-k8s/actions/runs/36102899864)
-at SHA `d23ac3b606126865c11f412a2712fac7a88a9bea` both built the requested
-utility/runtime targets and passed the five-node Docker preflight, but both
-K3s lanes failed before transfer because sandbox cleanup ran after stopping
-K3s's embedded containerd. The correct CRI endpoint returned `connection
-refused`. The worktree now stops K3s sandboxes before disabling K3s; focused
-quick-check and runtime verification are pending.
+At SHA `459570ee4fdcea8128456f84058882159111a85a`, the focused nodemigrate
+quick-check passed in [run 36104107511](https://github.com/centerionware/not-k8s/actions/runs/36104107511).
+The K3s cleanup-order fix now gets past source sandbox shutdown: in both the
+branch-runtime run [36104132045](https://github.com/centerionware/not-k8s/actions/runs/36104132045)
+and the latest-release `v0.8.0` run
+[36104248971](https://github.com/centerionware/not-k8s/actions/runs/36104248971),
+nodemigrate imported all 48 discovered CRDs, reported destination API
+readiness, and retained the protected export. Neither lane completed the
+post-migration workload/storage checks or reverse migration. In both K3s
+lanes, Cilium/CNI remained unready (`cni plugin not initialized`), CoreDNS and
+the hostPath CSI Pods did not recover, and the fixture timed out waiting for
+the CSI driver. The earlier `connection refused` to K3s's embedded containerd
+did not recur.
 
-Both upstream lanes reached nodestore bootstrap and failed importing
-`cert-manager.io/v1/CertificateRequest migration-test-1`. The expanded journal
-from run `36102899864` shows the API server's 500 was caused by an unreachable
-`cert-manager-webhook` service while Cilium networking was failing; the Cilium
-CNI plugin exited with `signal: killed` and workload/webhook Pods stayed
-unready. The same v0.8.0 lane also reproduced the known CSR `ExtraValue`
-protobuf error, while the branch-runtime lane did not report that CSR failure.
-Rollback restored the source API and retained the protected export in both
-lanes. No reverse migration or semantic parity gate has passed.
+The upstream lanes in both runs failed while importing
+`cert-manager.io/v1/CertificateRequest migration-test-1`: the cert-manager
+admission webhook could not be reached after target Cilium networking failed,
+so the API server returned HTTP 500. Run `36104248971` against `v0.8.0` also
+reproduced the known CSR `ExtraValue` protobuf error. The branch-runtime lane
+did not report that codec failure. Its API/object import still did not complete
+because of the CertificateRequest webhook failure. The release-backed failed
+cutover restored the source API and retained the protected export. No reverse
+migration, workload-parity checkpoint, or semantic round trip has passed.
 
 ## Required migration test inventory
 
@@ -40,18 +42,21 @@ the same object/state and behavior assertions pass through a full round trip.
 
 | Resource group | Required migration and behavior checks | Current fixture status |
 | --- | --- | --- |
-| Configuration and identity | Namespaces, ConfigMaps, Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings, ClusterRoleBindings, resource quotas, LimitRanges, and PriorityClasses; verify object data and exercise allowed and denied requests with real service-account credentials. | Some are created by add-ons and migration setup; no broad semantic parity or RBAC behavior matrix has passed. |
-| Workload controllers | Deployments, ReplicaSets, StatefulSets and claim templates, DaemonSets on every node, Jobs, CronJobs, and standalone Pods; verify selectors, templates, history, replica/readiness counts, job execution, schedule, and data after each transition. | The fixture includes an nginx Deployment, migration StatefulSet, and standalone data-seed Pod. Source setup and forward import ran, but target workload readiness and round-trip behavior are blocked by Cilium startup. DaemonSet, Job, and CronJob assertions are not yet implemented. |
-| Helm-managed applications | Helm release metadata and records (name, namespace, chart/version, values, revision, and manifest), plus all managed resources; verify `helm list`, release inspection, health, and a safe follow-up Helm operation after each cutover. | Traefik and cert-manager are installed by Helm in source setup. Their release state has no explicit round-trip assertion. |
-| Service networking and ingress | Services, EndpointSlices, NetworkPolicies, Ingress resources, Gateway API `GatewayClass`, `Gateway`, `HTTPRoute`, and other route types supported by the installed controller; verify DNS, service reachability, policy allow/deny, HTTP/TLS routing, and certificate use. | Traefik Ingress and nginx route probes exist in the single-node fixture; Gateway API, policy, and broad Service/EndpointSlice parity checks remain absent. |
-| Persistent storage | PVs, PVCs, StorageClasses, static hostPath/local volumes, dynamic CSI volumes, CSIDrivers/CSINodes, VolumeAttachments where applicable, snapshots, snapshot contents, and claim templates; verify bindings, topology, provider configuration, attach behavior, and unique payload data. | Static hostPath and dynamic hostPath CSI PVC data are seeded. Current target run cannot reach post-cutover storage checks because Cilium/CNI is unready; provider and multi-node attachment coverage is absent. |
-| CRDs and operator resources | CRDs plus representative custom resources and controller-generated durable resources, including Cilium policy/configuration resources, cert-manager Issuer/ClusterIssuer/Certificate resources, and Gateway API CRDs/resources; verify discovery, conversion, reconciliation, status, and resulting Secrets/routes. | Cilium and cert-manager are installed and their CRD/custom-resource state is sampled. Broad custom-resource coverage and successful target reconciliation are unverified. |
-| Policies and cluster behavior | PodDisruptionBudgets, autoscalers, NetworkPolicies, admission policies/webhooks, RuntimeClasses, node selectors/affinity, tolerations, topology spread, and other supported scheduling/security constraints; verify both stored policy and observable decisions. | Not yet represented as a systematic test matrix. |
-| Full API inventory | Enumerate source discovery and every listable API resource. Compare durable object identity/spec/data after migration; explicitly classify each exception as regenerated transient state or a documented lifecycle exclusion. Add newly discovered resource kinds to the fixture where they can be created safely. | The harness captures a source object inventory and semantic checkpoint, but its completeness and migration parity have not passed a full round trip. |
+| Configuration and identity | Namespaces, ConfigMaps (including binary data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings, ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses; verify identity/data and allowed plus denied requests using real service-account credentials. | Some objects are created by add-ons and migration setup; no full semantic parity or RBAC behavior matrix has passed. |
+| Workload controllers | Deployments, ReplicaSets, StatefulSets and `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and standalone Pods; verify selectors, templates, rollout/revision history, replica/readiness counts, job execution, schedule, and unique application data at each checkpoint. | Fixture includes an nginx Deployment, migration StatefulSet, and standalone data-seed Pod. Source setup and forward import ran, but target workload readiness and round-trip behavior are blocked by Cilium startup. DaemonSet, Job, CronJob, and rollout-history behavior assertions remain incomplete. |
+| Helm-managed applications | Helm charts/releases and release records (name, namespace, chart/version, values, revision, manifest), plus all chart-managed resources; verify `helm list`, release inspection, workload health, and a safe follow-up Helm operation after each cutover. | Traefik and cert-manager are installed by Helm in source setup. Their release state and management operations have no explicit round-trip assertion. |
+| Service networking and ingress | Services, Endpoints where served, EndpointSlices, IngressClasses and Ingresses, NetworkPolicies, and Gateway API `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `TLSRoute`, and `UDPRoute` where supported; verify DNS, service reachability, policy allow/deny, HTTP/TLS routing, and certificate use. | Traefik Ingress and nginx route probes exist in the single-node fixture; Gateway API, policy behavior, and broad Service/EndpointSlice parity checks remain absent. |
+| Persistent storage | PVs, PVCs, StorageClasses, static hostPath/local volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where applicable, VolumeSnapshotClasses, VolumeSnapshots, snapshot contents, and StatefulSet claim templates; verify binding, topology, provider configuration/credentials, attachment behavior, and unique payload data. | Static hostPath and dynamic hostPath CSI PVC data are seeded. Current target run cannot reach post-cutover storage checks because Cilium/CNI is unready; provider and multi-node attachment coverage is absent. |
+| CRDs and operator resources | CRDs plus representative custom resources and durable operator state, including Cilium configuration/policy, cert-manager Issuers, ClusterIssuers, Certificates and CertificateRequests, and Gateway API resources; verify discovery, version conversion, reconciliation, status, and resulting Secrets/routes. | Cilium and cert-manager CRD/custom-resource state is sampled. Broad custom-resource coverage and successful target reconciliation are unverified. |
+| Policies, admission, and scheduling | PodDisruptionBudgets, autoscalers, NetworkPolicies, validating/mutating webhook configurations, admission policies, APIService registrations where present, RuntimeClasses, node selectors/affinity, tolerations, topology spread, and other supported constraints; verify stored configuration and observable decisions. | Not yet represented as a systematic test matrix. |
+| Full API inventory | Enumerate source discovery and every listable API resource, including Events, Leases, coordination/discovery objects and token/request resources. Compare durable object identity/spec/data after migration; classify each other kind as migrated, regenerated transient state, or excluded with a specific Kubernetes lifecycle reason. Add safe-to-create discovered kinds to the fixture. | The harness captures a source object inventory and semantic checkpoint, but completeness and migration parity have not passed a full round trip. |
 
-The list above is a minimum. Any additional API kind, add-on, data path, or
-controller behavior found in source discovery or real workloads must be added
-to this matrix and exercised unless its lifecycle is explicitly documented.
+The list above is a minimum. Every named resource group must be tested for
+migration and behavior at all three checkpoints; a source setup or successful
+API import is not a passing test. Any additional API kind, add-on, data path,
+or controller behavior found in source discovery or real workloads must be
+added to this matrix and exercised unless its lifecycle is explicitly
+documented.
 
 ## Migration coverage
 
