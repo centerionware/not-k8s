@@ -203,7 +203,7 @@ mod tests {
         // left wrapped in a `Call` the way a real function invocation
         // would be.
         let Expr::Comprehension(comp) = &expr.expr else { panic!("expected the .all() macro to desugar directly into a Comprehension, got {:?}", expr.expr) };
-        let root = super::decl_type::decl_type_for(&serde_json::json!({
+        let root = super::super::decl_type::decl_type_for(&serde_json::json!({
             "type": "object",
             "properties": {
                 "spec": {
@@ -223,7 +223,7 @@ mod tests {
     fn single_variable_map_comprehension_tracks_keys() {
         let expr = compile("self.spec.annotations.all(key, key.matches('a+'))");
         let Expr::Comprehension(comp) = &expr.expr else { panic!("expected a CEL comprehension") };
-        let root = super::decl_type::decl_type_for(&serde_json::json!({
+        let root = super::super::decl_type::decl_type_for(&serde_json::json!({
             "type": "object",
             "properties": {
                 "spec": {
