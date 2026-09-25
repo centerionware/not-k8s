@@ -16,7 +16,7 @@ now performs RBAC checks for each impersonated ServiceAccount and group before
 using that identity for the request. Focused `nodeapiserver,nodemigrate`
 quick-check passed at SHA `d4847449a84a5014515f31b3d9d522e455910cf7` in
 [run 36080595243](https://github.com/centerionware/not-k8s/actions/runs/36080595243).
-The branch-runtime migration rerun is [run 36080871524](https://github.com/centerionware/not-k8s/actions/runs/36080871524); its migration result is still pending.
+In branch-runtime run [36080871524](https://github.com/centerionware/not-k8s/actions/runs/36080871524), both K3s and kubeadm forward migrations reached destination API readiness. The lanes then stopped during post-cutover hostpath CSI setup: two CSI StatefulSet Pods stayed `Terminating` for over five minutes. Captured API audit had no ReplicaSet/Pod create or delete requests before timeout, so controller recovery and the cause of the stuck deletions remain unverified. The test script now collects nodelet journal, CRI state, Pod YAML, and events on this failure. Do not treat a forced fixture deletion as a fix; first identify whether this belongs to nodelet teardown, controller startup/authorization, or setup sequencing. Forward workload verification, reverse migration, and semantic comparison remain pending.
 
 ## Migration coverage
 

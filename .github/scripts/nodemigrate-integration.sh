@@ -217,7 +217,16 @@ install_hostpath_driver() {
             /tmp/nodemigrate-hostpath-setup.sh
     fi
     mkdir -p "$kubelet_data_dir/plugins" "$kubelet_data_dir/plugins_registry"
-    NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh
+    if ! NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh; then
+        echo "Hostpath CSI setup failed; collecting nodelet and pod teardown diagnostics" >&2
+        systemctl status nodelet --no-pager >&2 || true
+        journalctl -u nodelet -b --no-pager -n 1000 >&2 || true
+        crictl --runtime-endpoint unix:///run/containerd/containerd.sock pods -a >&2 || true
+        kubectl get pods -A -o wide >&2 || true
+        kubectl get pods -A -l app.kubernetes.io/instance=hostpath.csi.k8s.io -o yaml >&2 || true
+        kubectl get events -A --sort-by=.metadata.creationTimestamp >&2 || true
+        return 1
+    fi
     kubectl get storageclass csi-hostpath-sc
 }
 

@@ -53,7 +53,11 @@ new fixes.
   worktree. Quick-check run `36080298252` first found a missing mutable borrow;
   after the one-line compile fix, `nodeapiserver,nodemigrate` passed in run
   `36080595243` on SHA `d4847449a84a5014515f31b3d9d522e455910cf7`. Branch-runtime
-  retest `36080871524` is running. The five-node Docker preflight passed in run
+  retest `36080871524` completed both lanes through destination API readiness;
+  both then failed post-cutover hostpath CSI setup with two Pods stuck
+  `Terminating`. The API audit contained no ReplicaSet/Pod create or delete
+  requests before timeout, so controller recovery is still unverified. The
+  fixture now saves nodelet/CRI/Pod diagnostics for the next run. The five-node Docker preflight passed in run
   `36080300450` before that workflow was canceled to avoid spending more CI on
   the known compile failure.
 - The migration CLI warns about the high data-loss risk and requires exact
