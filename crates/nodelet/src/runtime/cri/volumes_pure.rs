@@ -385,7 +385,7 @@ pub(crate) fn build_mounts(
     envs: &[KeyValue],
     handler_supports_recursive_ro: bool,
 ) -> Vec<Mount> {
-    volume_mounts
+    let mut mounts = volume_mounts
         .iter()
         .filter_map(|vm| {
             let sub_path = match &vm.sub_path_expr {
@@ -436,7 +436,15 @@ pub(crate) fn build_mounts(
                 ResolvedVolume::Invalid(_) => None,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // OCI runtimes create a mount's destination inside the rootfs before
+    // applying that mount. If a child mount appears before a writable parent
+    // volume, creating the child destination can fail under
+    // readOnlyRootFilesystem. Kubernetes does not assign meaning to
+    // volumeMount list order, so mount ancestors before their descendants;
+    // stable sorting preserves the declared order for paths at the same depth.
+    mounts.sort_by_key(|mount| std::path::Path::new(&mount.container_path).components().count());
+    mounts
 }
 
 /// Build CRI `Device` entries for a container's `volumeDevices` (round

@@ -201,18 +201,19 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest branch-runtime run used SHA `315f621fbb90d9d624d26167313740e756691059`
-in [run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991).
-The Docker five-node preflight passed. The K3s lane exited before migration
-because the fixture queried the InternalIP before K3s had registered its first
-Node; its diagnostics show the Node registering seconds later as `NotReady`.
-The kubeadm lane completed forward migration and failed at hostpath CSI
-readiness. CRI diagnostics show Cilium's `config` init container running while
-`cilium-envoy` exits at OCI mountpoint creation for
-`/var/run/cilium/envoy/sockets` with `read-only file system`; CoreDNS and CNI
-remain unready. A bounded wait for the source Node InternalIP is now in the
-worktree. A new branch-runtime rerun is needed to validate it and continue
-runtime diagnosis. No local Cargo test/build was run.
+The latest branch-runtime run used SHA `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b`
+in [run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808).
+The nodemigrate and combined runtime release builds passed in both lanes, and
+the five-node Docker isolation preflight passed. The K3s lane confirms the
+bounded node-IP wait works: Cilium, source workloads, and forward migration
+completed. Both lanes then failed after cutover while Cilium Envoy repeatedly
+failed to create `/var/run/cilium/envoy/sockets` under its read-only root; CNI
+and CoreDNS remained unready, so hostpath CSI readiness and reverse migration
+did not run. The Pod declares the child sockets mount before its writable
+`/var/run/cilium` parent. Nodelet now orders nested CRI mounts parent-first and
+has a focused regression in the worktree; quick-check and another migration
+run are pending. Full logs are saved at
+`/tmp/nodemigrate-36088034808/artifacts/`. No local Cargo test/build was run.
 
 Earlier release-backed run used SHA
 `093f2e440b16c4a2a585b424b816b97ab49480a9`. Focused nodemigrate crate tests
@@ -234,6 +235,9 @@ No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-25 | `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b` | Branch-runtime K3s + Cilium | Source setup passed, including Cilium, storage/workloads, and the node-IP wait; forward migration completed. Target Cilium Envoy then failed creating its nested volume mountpoint under a read-only root, preventing hostpath CSI readiness and reverse migration. | [Run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808) |
+| 2026-09-25 | `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b` | Branch-runtime Kubernetes + Cilium | Forward migration completed; target Cilium Envoy mountpoint failed identically, leaving CNI/CoreDNS and hostpath CSI unready. | [Run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808) |
+| 2026-09-25 | `4a4c75e8fa9dab61e62672a14aa956ef7e16b74b` | Five-node Docker preflight | Passed; checks host isolation and capabilities, not Kubernetes or migration parity. | [Run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808) |
 | 2026-09-25 | `315f621fbb90d9d624d26167313740e756691059` | Branch-runtime K3s + Cilium | Failed before migration: K3s API was reachable before the Node registered; fixture's JSONPath query indexed an empty node list. A bounded node-IP wait is added in the worktree. | [Run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991) |
 | 2026-09-25 | `315f621fbb90d9d624d26167313740e756691059` | Branch-runtime Kubernetes + Cilium | Forward migration completed; post-cutover hostpath CSI readiness failed. Cilium Envoy repeatedly exited because runc could not create its volume target under the read-only image root. | [Run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991) |
 | 2026-09-25 | `315f621fbb90d9d624d26167313740e756691059` | Five-node Docker preflight | Passed. This checks isolation and host capabilities only, not Kubernetes or migration parity. | [Run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991) |

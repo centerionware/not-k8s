@@ -28,6 +28,28 @@ fn resolves_a_simple_mount_to_its_volume_directory() {
 }
 
 #[test]
+fn nested_volume_mounts_are_ordered_parent_before_child() {
+    let mut volumes = HashMap::new();
+    volumes.insert("envoy-sockets".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/run/cilium/envoy/sockets")));
+    volumes.insert("cilium-run".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/run/cilium")));
+
+    // The Cilium Envoy Pod declares the child sockets mount before its
+    // writable /var/run/cilium parent. OCI runtimes must apply the parent
+    // first so they can create the child mountpoint on that volume even when
+    // the image root filesystem is read-only.
+    let mounts = build_mounts(
+        &[vm("envoy-sockets", "/var/run/cilium/envoy/sockets"), vm("cilium-run", "/var/run/cilium")],
+        &volumes,
+        &[],
+        false,
+    );
+
+    assert_eq!(mounts.len(), 2);
+    assert_eq!(mounts[0].container_path, "/var/run/cilium");
+    assert_eq!(mounts[1].container_path, "/var/run/cilium/envoy/sockets");
+}
+
+#[test]
 fn mount_naming_an_unresolved_volume_is_dropped_not_errored() {
     // e.g. a projected/serviceAccountToken volume resolve_volumes() didn't
     // materialize — must not produce a Mount pointing at a nonexistent path.
