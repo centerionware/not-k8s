@@ -826,8 +826,8 @@ YAML
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
     kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
-    kubectl wait -n migration-apps --for=condition=Accepted httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
-    kubectl wait -n migration-apps --for=condition=ResolvedRefs httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
+    wait_for_httproute_condition migration-apps migration-nginx Accepted
+    wait_for_httproute_condition migration-apps migration-nginx ResolvedRefs
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     # Verify that the migrated ConfigMap and Secret still feed a real container.
     kubectl exec -n migration-apps migration-standalone -- sh -ec \
@@ -873,6 +873,26 @@ YAML
     kubectl wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl delete pod -n migration-apps migration-seed --wait=true
+}
+
+wait_for_httproute_condition() {
+    local namespace="${1:?missing HTTPRoute namespace}"
+    local route="${2:?missing HTTPRoute name}"
+    local condition="${3:?missing HTTPRoute condition}"
+    local deadline=$((SECONDS + 120))
+    while (( SECONDS < deadline )); do
+        if kubectl get httproute "$route" -n "$namespace" -o json \
+            | jq -e --arg condition "$condition" '
+                [.status.parents[]?.conditions[]? | select(.type == $condition and .status == "True")]
+                | length > 0
+            ' >/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    kubectl get httproute "$route" -n "$namespace" -o yaml >&2 || true
+    echo "HTTPRoute $namespace/$route did not reach condition $condition=True" >&2
+    return 1
 }
 
 verify_stage() {
@@ -927,8 +947,8 @@ verify_stage() {
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
     kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
-    kubectl wait -n migration-apps --for=condition=Accepted httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
-    kubectl wait -n migration-apps --for=condition=ResolvedRefs httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
+    wait_for_httproute_condition migration-apps migration-nginx Accepted
+    wait_for_httproute_condition migration-apps migration-nginx ResolvedRefs
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
     kubectl get replicasets -n migration-apps -l app=migration-nginx -o json | jq -e '.items | length >= 2' >/dev/null || {
