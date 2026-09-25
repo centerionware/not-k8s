@@ -44,8 +44,10 @@ source sandboxes, then targets only Envoy processes whose cgroup matches those
 exact IDs after disabling the source service. Cleanup failures restore the
 source service. Unit regressions cover CRI metadata selection, systemd/cgroupfs
 ID parsing, and process identity matching. Focused quick-check and runtime
-retest are pending; both lanes still lack a successful round trip or parity
-checkpoint.
+retest are pending; the first focused attempt at SHA
+`5736a03302b203e49cea66365f54b55d53e293a5` found a Rust `HashSet` borrowed-key
+type mismatch before runtime. The matcher now stores `&str` keys, and a rerun
+is pending. Both lanes still lack a successful round trip or parity checkpoint.
 
 ## Required migration test inventory
 

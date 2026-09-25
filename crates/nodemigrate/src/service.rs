@@ -308,6 +308,7 @@ fn cilium_envoy_container_ids(containers: &serde_json::Value) -> Vec<String> {
 fn processes_in_cri_containers(proc_root: &Path, container_ids: &[String]) -> Result<Vec<i32>> {
     let container_ids = container_ids
         .iter()
+        .map(String::as_str)
         .collect::<std::collections::HashSet<_>>();
     let entries = std::fs::read_dir(proc_root)
         .with_context(|| format!("listing processes in {}", proc_root.display()))?;
@@ -339,7 +340,7 @@ fn processes_in_cri_containers(proc_root: &Path, container_ids: &[String]) -> Re
                 return Err(error).with_context(|| format!("reading cgroup for process {pid}"))
             }
         };
-        if cgroup_container_id(&cgroup).is_some_and(|id| container_ids.contains(&id)) {
+        if cgroup_container_id(&cgroup).is_some_and(|id| container_ids.contains(id)) {
             pids.push(pid);
         }
     }
