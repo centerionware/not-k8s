@@ -1159,14 +1159,29 @@ YAML
     trap 'kill "$port_forward_pid" 2>/dev/null || true' RETURN
     local response=""
     local gateway_response=""
+    local response_body=""
+    local gateway_response_body=""
+    local response_status=""
+    local gateway_response_status=""
     for _ in $(seq 1 30); do
-        response="$(curl -fsS -H 'Host: migration.test' http://127.0.0.1:18080/ 2>/dev/null || true)"
-        gateway_response="$(curl -fsS -H 'Host: migration-gateway.test' http://127.0.0.1:18080/ 2>/dev/null || true)"
-        [[ "$response" == *"Welcome to nginx!"* && "$gateway_response" == *"Welcome to nginx!"* ]] && break
+        response="$(curl -sS -H 'Host: migration.test' -w $'\n%{http_code}' http://127.0.0.1:18080/ 2>/dev/null || true)"
+        gateway_response="$(curl -sS -H 'Host: migration-gateway.test' -w $'\n%{http_code}' http://127.0.0.1:18080/ 2>/dev/null || true)"
+        response_body="${response%$'\n'*}"
+        gateway_response_body="${gateway_response%$'\n'*}"
+        response_status="${response##*$'\n'}"
+        gateway_response_status="${gateway_response##*$'\n'}"
+        [[ "$response_body" == *"Welcome to nginx!"* && "$gateway_response_body" == *"Welcome to nginx!"* ]] && break
         sleep 2
     done
-    [[ "$response" == *"Welcome to nginx!"* && "$gateway_response" == *"Welcome to nginx!"* ]] || {
+    [[ "$response_body" == *"Welcome to nginx!"* && "$gateway_response_body" == *"Welcome to nginx!"* ]] || {
         cat /tmp/traefik-port-forward.log >&2 || true
+        printf 'Ingress probe HTTP status: %s; response body: %.500s\n' "$response_status" "$response_body" >&2
+        printf 'Gateway probe HTTP status: %s; response body: %.500s\n' "$gateway_response_status" "$gateway_response_body" >&2
+        kubectl get svc,endpoints,endpointslices -n traefik -o wide >&2 || true
+        kubectl get svc,endpoints,endpointslices -n migration-apps -o wide >&2 || true
+        kubectl describe ingress migration-nginx -n migration-apps >&2 || true
+        kubectl describe httproute migration-nginx -n migration-apps >&2 || true
+        kubectl logs deploy/traefik -n traefik --tail=100 >&2 || true
         echo "Traefik Ingress or Gateway API did not route to nginx at stage $stage" >&2
         return 1
     }

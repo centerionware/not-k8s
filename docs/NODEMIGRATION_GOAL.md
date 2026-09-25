@@ -154,10 +154,14 @@ minimum coverage:
   scheduling/security constraints.
   Check both stored policy and resulting scheduling or allow/deny behavior.
 - **Other discovered API resources:** Include Events, Leases, coordination and
-  discovery objects, token/request resources, and every other listable resource
-  reported by source API discovery in the inventory. For each kind, verify
-  migration or classify it as regenerated transient state or exclude it only
-  with a specific Kubernetes lifecycle reason. Do not silently omit a kind.
+  discovery objects, token/request resources, PodTemplates,
+  ReplicationControllers, ControllerRevisions, APIService registrations,
+  StorageVersions, and every other listable resource reported by source API
+  discovery in the inventory. This applies across core, apps, batch, networking,
+  storage, autoscaling, policy, admission, node, and installed custom API groups.
+  For each kind, verify migration or classify it as regenerated transient state
+  or exclude it only with a specific Kubernetes lifecycle reason. Do not
+  silently omit a kind just because it is not named in this document.
 
 Also inventory every listable API resource exposed by source discovery and
 verify it is either migrated, deliberately regenerated as transient runtime
