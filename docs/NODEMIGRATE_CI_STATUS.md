@@ -121,10 +121,25 @@ new fixes.
   passed on SHA `f5a2ccb6f35bc72237d904c7c75bacda63a26fac` in
   [run 36102588479](https://github.com/centerionware/not-k8s/actions/runs/36102588479).
   Branch-runtime migration [36102292369](https://github.com/centerionware/not-k8s/actions/runs/36102292369)
-  is still running on SHA `e9ed0b48144987d1b36629eed372b23d96686659`; its
-  five-node Docker preflight passed. A later commit adds separate, expanded
-  `nodeapiserver`/`nodestore` journal capture for the CertificateRequest
-  failure and still needs migration-lane execution.
+  on SHA `e9ed0b48144987d1b36629eed372b23d96686659` passed both utility/runtime
+  builds and the Docker preflight, but both migration lanes failed. K3s CRI
+  cleanup ran after stopping K3s, so the embedded socket at
+  `/run/k3s/containerd/containerd.sock` refused the connection. Upstream
+  restored the source API after a CertificateRequest HTTP 500; its branch
+  runtime did not report a CSR ExtraValue error.
+- Latest-release migration [36102899864](https://github.com/centerionware/not-k8s/actions/runs/36102899864)
+  on SHA `d23ac3b606126865c11f412a2712fac7a88a9bea` built the current utility,
+  downloaded the latest regular release `v0.8.0`, and passed the Docker
+  preflight. Both migration lanes failed. The K3s lane confirmed the same
+  embedded CRI shutdown ordering. The upstream lane's dedicated API journal
+  showed the CertificateRequest 500 came from the unavailable
+  `cert-manager-webhook` service while target Cilium networking was unhealthy;
+  containerd reported the Cilium CNI plugin exited with `signal: killed`.
+  The known `v0.8.0` CSR `ExtraValue` protobuf defect also reproduced, while
+  the branch-runtime lane did not report that failure. Source rollback and
+  protected export retention passed. No reverse migration or parity gate ran.
+  The worktree now moves K3s sandbox cleanup ahead of service shutdown; that
+  change and the target Cilium/webhook path require focused and runtime retest.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

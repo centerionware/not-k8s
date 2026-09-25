@@ -201,21 +201,31 @@ fn migrate_to_nodestore(
         "Protected API object export saved at {}",
         export.dir.display()
     );
-    let previous_service = service::disable(source)?;
-    if let Err(error) = service::stop_upstream_static_pods(source) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping upstream static pods failed ({error:#}) and restoring the source service failed ({restore_error:#})");
-        }
-        return Err(error)
-            .context("stopping source Kubernetes static pods; source service was restored");
+    // Stopping the K3s service also stops its embedded containerd. Tear down
+    // K3s pod sandboxes while that CRI endpoint is still available; otherwise
+    // cleanup would run after `/run/k3s/containerd/containerd.sock` disappears
+    // and source containers could remain bound to host sockets and mounts.
+    if source.distribution == request::Distribution::K3s {
+        service::stop_source_pod_sandboxes(source)
+            .context("stopping K3s pod sandboxes before disabling the source service")?;
     }
-    if let Err(error) = service::stop_source_pod_sandboxes(source) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping source pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+    let previous_service = service::disable(source)?;
+    if source.distribution == request::Distribution::Kubernetes {
+        if let Err(error) = service::stop_upstream_static_pods(source) {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("stopping upstream static pods failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+            }
+            return Err(error)
+                .context("stopping source Kubernetes static pods; source service was restored");
         }
-        return Err(error).context(
-            "stopping source pod sandboxes before migration; source service was restored",
-        );
+        if let Err(error) = service::stop_source_pod_sandboxes(source) {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("stopping source pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+            }
+            return Err(error).context(
+                "stopping source pod sandboxes before migration; source service was restored",
+            );
+        }
     }
     let snapshot_result = if request.source_export.is_some() {
         export.snapshot_host_paths_for_node(&migrating_node_name)
@@ -260,7 +270,8 @@ fn migrate_to_nodestore(
                 source,
                 previous_service,
                 &export,
-                error.context("destination bootstrap succeeded but Kubernetes object import failed"),
+                error
+                    .context("destination bootstrap succeeded but Kubernetes object import failed"),
             ));
         }
     }
@@ -1142,8 +1153,14 @@ fn apply_cni_runtime_paths(
 ) -> Result<()> {
     match (conf_dir, bin_dir) {
         (Some(conf_dir), Some(bin_dir)) => {
-            ensure!(conf_dir.is_absolute(), "CNI config directory must be absolute");
-            ensure!(bin_dir.is_absolute(), "CNI binary directory must be absolute");
+            ensure!(
+                conf_dir.is_absolute(),
+                "CNI config directory must be absolute"
+            );
+            ensure!(
+                bin_dir.is_absolute(),
+                "CNI binary directory must be absolute"
+            );
             command
                 .env("NODEBOOTSTRAP_CNI_CONF_DIR", conf_dir)
                 .env("NODEBOOTSTRAP_CNI_BIN_DIR", bin_dir);

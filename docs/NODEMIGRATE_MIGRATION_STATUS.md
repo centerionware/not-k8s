@@ -9,22 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime migration [36100281843](https://github.com/centerionware/not-k8s/actions/runs/36100281843)
-used SHA `fa9d5ae34c77772d9a020a0251b706943f8b1cd7`. The targeted
-`nodemigrate` quick-check passed in [36100274964](https://github.com/centerionware/not-k8s/actions/runs/36100274964),
-as did the utility/runtime builds and five-node Docker preflight. K3s forward
-migration completed, but Cilium Envoy again failed its socket bind with
-`errno=98`. Diagnostics found active Cilium agent and Envoy listeners and an
-Envoy child under a containerd shim; the CRI report did not identify that
-shim's sandbox. This checkout's K3s cleanup had been using the generic CRI
-fallback, so it now detects the configured endpoint and defaults to K3s's
-embedded containerd socket. That correction still needs focused verification
-and a runtime rerun. Upstream bootstrap succeeded but importing
-`cert-manager.io/v1/CertificateRequest migration-test-1` returned HTTP 500.
-The complete error chain now names the failing route; the destination API
-server cause is unknown and needs a nodeapiserver fix. Rollback restored the
-source API and retained the protected export. No reverse migration or
-semantic parity gate has passed.
+The endpoint detector passed focused quick-check [36102588479](https://github.com/centerionware/not-k8s/actions/runs/36102588479)
+at SHA `f5a2ccb6f35bc72237d904c7c75bacda63a26fac`. Branch-runtime migration
+[36102292369](https://github.com/centerionware/not-k8s/actions/runs/36102292369)
+at SHA `e9ed0b48144987d1b36629eed372b23d96686659` and latest-release migration
+[36102899864](https://github.com/centerionware/not-k8s/actions/runs/36102899864)
+at SHA `d23ac3b606126865c11f412a2712fac7a88a9bea` both built the requested
+utility/runtime targets and passed the five-node Docker preflight, but both
+K3s lanes failed before transfer because sandbox cleanup ran after stopping
+K3s's embedded containerd. The correct CRI endpoint returned `connection
+refused`. The worktree now stops K3s sandboxes before disabling K3s; focused
+quick-check and runtime verification are pending.
+
+Both upstream lanes reached nodestore bootstrap and failed importing
+`cert-manager.io/v1/CertificateRequest migration-test-1`. The expanded journal
+from run `36102899864` shows the API server's 500 was caused by an unreachable
+`cert-manager-webhook` service while Cilium networking was failing; the Cilium
+CNI plugin exited with `signal: killed` and workload/webhook Pods stayed
+unready. The same v0.8.0 lane also reproduced the known CSR `ExtraValue`
+protobuf error, while the branch-runtime lane did not report that CSR failure.
+Rollback restored the source API and retained the protected export in both
+lanes. No reverse migration or semantic parity gate has passed.
 
 ## Required migration test inventory
 
