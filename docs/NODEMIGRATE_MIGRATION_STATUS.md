@@ -33,6 +33,20 @@ because of the CertificateRequest webhook failure. The release-backed failed
 cutover restored the source API and retained the protected export. No reverse
 migration, workload-parity checkpoint, or semantic round trip has passed.
 
+Follow-up diagnostics in branch-runtime run
+[36107163563](https://github.com/centerionware/not-k8s/actions/runs/36107163563)
+at SHA `1a6f43162dae86349534129bae0217f34a36c398` confirmed that the process
+holding the K3s Envoy sockets was left by the source runtime: its cgroup named
+CRI container `ef96e5cf937fed840c1bfcc03df0ef667927c7f666ba4963da35faaa9f80f39a`
+and its parent shim used `/run/k3s/containerd/containerd.sock` under
+`k3s.service`. The worktree now records the Cilium Envoy CRI IDs while stopping
+source sandboxes, then targets only Envoy processes whose cgroup matches those
+exact IDs after disabling the source service. Cleanup failures restore the
+source service. Unit regressions cover CRI metadata selection, systemd/cgroupfs
+ID parsing, and process identity matching. Focused quick-check and runtime
+retest are pending; both lanes still lack a successful round trip or parity
+checkpoint.
+
 ## Required migration test inventory
 
 The acceptance fixture must migrate and verify the following resource groups
