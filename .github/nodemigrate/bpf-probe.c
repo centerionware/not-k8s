@@ -7,4 +7,4 @@ int nodemigrate_probe(void *context)
     return 0;
 }
 
-char license[] SEC("license") = "GPL";
+char LICENSE[] SEC("license") = "GPL";
