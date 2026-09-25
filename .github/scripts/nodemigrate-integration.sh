@@ -847,7 +847,7 @@ YAML
         return 1
     }
     kubectl get priorityclass migration-priority -o json | jq -e \
-        '.value == 100000 and .globalDefault == false' >/dev/null || {
+        '.value == 100000 and ((.globalDefault // false) == false)' >/dev/null || {
         echo "PriorityClass state changed at stage $stage" >&2
         return 1
     }
