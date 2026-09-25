@@ -481,6 +481,18 @@ YAML
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
+    kubectl patch -n migration-apps deployment migration-nginx --type=merge \
+        -p '{"spec":{"template":{"metadata":{"annotations":{"migration.nodemigrate/revision":"second"}}}}}'
+    kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl patch -n migration-apps statefulset migration-stateful --type=merge \
+        -p '{"spec":{"template":{"metadata":{"annotations":{"migration.nodemigrate/revision":"second"}}}}}'
+    kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
+    kubectl get replicasets -n migration-apps -l app=migration-nginx -o json \
+        | jq -e '.items | length >= 2' >/dev/null
+    kubectl get controllerrevisions.apps -n migration-apps -o json | jq -e '
+      [.items[] | select(any(.metadata.ownerReferences[]?;
+        .kind == "StatefulSet" and .name == "migration-stateful"))] | length >= 2
+    ' >/dev/null
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager --timeout=5m
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager-webhook --timeout=5m
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager-cainjector --timeout=5m
@@ -533,6 +545,17 @@ verify_stage() {
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
+    kubectl get replicasets -n migration-apps -l app=migration-nginx -o json | jq -e '.items | length >= 2' >/dev/null || {
+        echo "Deployment rollout history was not preserved at stage $stage" >&2
+        return 1
+    }
+    kubectl get controllerrevisions.apps -n migration-apps -o json | jq -e '
+      [.items[] | select(any(.metadata.ownerReferences[]?;
+        .kind == "StatefulSet" and .name == "migration-stateful"))] | length >= 2
+    ' >/dev/null || {
+        echo "StatefulSet rollout history was not preserved at stage $stage" >&2
+        return 1
+    }
     local preserved_annotation
     local configmap_json
     configmap_json="$(kubectl get configmap migration-user-metadata -n migration-apps -o json)"
