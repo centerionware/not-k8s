@@ -431,7 +431,7 @@ pub(crate) fn nodestore_etcd_servers() -> String {
 /// only use loopback when the host has no global IPv4 address at all. The
 /// later CNI handoff replaces the temporary host address with the bridge
 /// gateway, which is the address reachable from pod network namespaces.
-fn detect_advertise_address() -> String {
+pub(crate) fn detect_advertise_address() -> String {
     detect_cni_address()
         .or_else(detect_host_address)
         .unwrap_or_else(|| "127.0.0.1".to_string())
