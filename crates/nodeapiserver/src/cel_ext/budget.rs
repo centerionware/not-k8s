@@ -149,4 +149,24 @@ mod tests {
         };
         assert!(estimated_cost > limit);
     }
+
+    #[test]
+    fn bounded_map_key_comprehensions_use_schema_cardinality_and_key_size() {
+        let root = super::super::decl_type::decl_type_for(&json!({
+            "type": "object",
+            "properties": {
+                "annotations": {
+                    "type": "object",
+                    "maxProperties": 16,
+                    "additionalProperties": {"type": "string", "maxLength": 4096}
+                }
+            }
+        }))
+        .unwrap();
+        let result = check_rule_cost(&root, "self.annotations.all(key, key.matches('a+'))");
+        assert!(
+            result.is_ok(),
+            "bounded map-key validation should fit the CEL cost limit, got {result:?}"
+        );
+    }
 }

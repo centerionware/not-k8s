@@ -9,6 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
+At SHA `c56d3f3ecce3a43339ba0df23aec02a36193d841`, focused nodeapiserver
+quick-check [run 36145507191](https://github.com/centerionware/not-k8s/actions/runs/36145507191)
+passed the Gateway API CEL global `matches` regression. The branch-runtime
+K3s+Cilium and upstream+Cilium run
+[36145520889](https://github.com/centerionware/not-k8s/actions/runs/36145520889)
+passed builds, the Docker isolation preflight, and expanded source fixtures in
+both lanes. Both invoked nodemigrate but rolled back because three Gateway API
+CRDs contain bounded annotation-map key comprehensions that nodeapiserver's
+CEL type checker and static-cost estimator do not yet model. The upstream lane
+also encountered an unreachable cert-manager admission webhook while target
+Cilium networking was unavailable. No target workload checkpoint, reverse
+migration, or parity comparison passed. The current worktree adds typed map
+support and map-key cost resolution; focused CI and runtime retests are
+pending.
+
 At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
 [run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
 built nodemigrate and the combined runtime and passed the five-node Docker
