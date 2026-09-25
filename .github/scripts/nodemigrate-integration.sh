@@ -1020,6 +1020,10 @@ spec:
       containers:
       - name: check
         image: $NODEMIGRATE_KUBECTL_IMAGE
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
         command: ["kubectl"]
         args: ["get", "configmap", "migration-user-metadata", "-n", "migration-apps", "-o", "name"]
 ---
@@ -1037,6 +1041,10 @@ spec:
       containers:
       - name: check
         image: $NODEMIGRATE_KUBECTL_IMAGE
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
         command: ["kubectl"]
         args: ["get", "node", "\$(NODE_NAME)", "-o", "name"]
         env:
@@ -1059,6 +1067,10 @@ spec:
       containers:
       - name: check
         image: $NODEMIGRATE_KUBECTL_IMAGE
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
         command: ["kubectl"]
         args: ["get", "secret", "migration-user-secret", "-n", "migration-apps", "-o", "name"]
 YAML
@@ -1089,6 +1101,10 @@ spec:
   containers:
   - name: verify
     image: busybox:1.36.1
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
     command: [sh, -c, 'test "$(cat /static/marker)" = static-persistent-data && test "$(cat /csi/marker)" = csi-persistent-data']
     volumeMounts:
     - name: static
