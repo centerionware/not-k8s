@@ -69,14 +69,20 @@ No run has passed reverse migration or full parity.
 To diagnose the remaining target Cilium failure, the integration harness was
 extended to capture current and previous `cilium-agent` and `config` container
 logs when post-cutover storage setup fails. The first run revealed it selected
-the stale source kubeconfig after cutover, so it emitted no Cilium agent logs.
-The worktree now prefers the active `KUBECONFIG`; shell/snapshot validation
-passed in
-[run 36114345183](https://github.com/centerionware/not-k8s/actions/runs/36114345183).
-The branch-runtime run [36114368998](https://github.com/centerionware/not-k8s/actions/runs/36114368998)
-reproduced the Cilium readiness failure but produced no agent logs; rerun with
-the active-kubeconfig correction is pending. No cause or fix for the target
-agent readiness failure is claimed until those logs are reviewed.
+the stale source kubeconfig after cutover. The active-kubeconfig correction is
+in SHA `ccb4d413ae61418dd3c9121e02992781f874cacd`; its branch-runtime rerun
+[36116466142](https://github.com/centerionware/not-k8s/actions/runs/36116466142)
+captured destination diagnostics. The selected Cilium Pod name returned
+`NotFound`, while the available init-container output only reached “Establishing
+connection to apiserver”; the Cilium agent stayed `PodInitializing`, and
+containerd repeatedly failed CoreDNS sandbox networking with `cni plugin not
+initialized`. This confirms the collection path is querying the destination,
+but does not identify why the agent Pod lookup is stale or why Cilium fails to
+initialize. Both K3s and upstream migration lanes failed; upstream again hit an
+internal error importing `CertificateRequest migration-test-1`, and source
+recovery/export retention passed. No reverse migration or parity checkpoint
+passed. Logs: `/tmp/nodemigrate-36116466142/nodemigrate-k3s-36116466142/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-36116466142/nodemigrate-kubernetes-36116466142/nodemigrate-kubernetes.log`.
 
 ## Required migration test inventory
 
@@ -91,7 +97,7 @@ the same object/state and behavior assertions pass through a full round trip.
 | Workload controllers | Deployments, ReplicaSets, StatefulSets and `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and standalone Pods; verify selectors, templates, rollout/revision history, replica/readiness counts, job execution, schedule, and unique application data at each checkpoint. | Fixture includes an nginx Deployment, migration StatefulSet, and standalone data-seed Pod. Source setup and forward import ran, but target workload readiness and round-trip behavior are blocked by Cilium startup. DaemonSet, Job, CronJob, and rollout-history behavior assertions remain incomplete. |
 | Helm-managed applications | Helm charts/releases and release records (name, namespace, chart/version, values, revision, manifest), plus all chart-managed resources; verify `helm list`, release inspection, workload health, and a safe follow-up Helm operation after each cutover. | Traefik and cert-manager are installed by Helm in source setup. Their release state and management operations have no explicit round-trip assertion. |
 | Service networking and ingress | Services, Endpoints where served, EndpointSlices, IngressClasses and Ingresses, NetworkPolicies, and Gateway API `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `TLSRoute`, and `UDPRoute` where supported; verify DNS, service reachability, policy allow/deny, HTTP/TLS routing, and certificate use. | Traefik Ingress and nginx route probes exist in the single-node fixture; Gateway API, policy behavior, and broad Service/EndpointSlice parity checks remain absent. |
-| Persistent storage | PVs, PVCs, StorageClasses, static hostPath/local volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where applicable, VolumeSnapshotClasses, VolumeSnapshots, snapshot contents, and StatefulSet claim templates; verify binding, topology, provider configuration/credentials, attachment behavior, and unique payload data. | Static hostPath and dynamic hostPath CSI PVC data are seeded. Current target run cannot reach post-cutover storage checks because Cilium/CNI is unready; provider and multi-node attachment coverage is absent. |
+| Persistent storage | PVs, PVCs, StorageClasses, static hostPath/local volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where applicable, VolumeSnapshotClasses, VolumeSnapshots, snapshot contents, and StatefulSet claim templates; verify binding, topology, provider configuration/credentials, attachment behavior, and unique payload data. | Static hostPath and dynamic hostPath CSI PVC data are seeded. In run 36116466142, post-cutover storage checks could not run because Cilium/CNI remained unready; provider and multi-node attachment coverage is absent. |
 | CRDs and operator resources | CRDs plus representative custom resources and durable operator state, including Cilium configuration/policy, cert-manager Issuers, ClusterIssuers, Certificates and CertificateRequests, and Gateway API resources; verify discovery, version conversion, reconciliation, status, and resulting Secrets/routes. | Cilium and cert-manager CRD/custom-resource state is sampled. Broad custom-resource coverage and successful target reconciliation are unverified. |
 | Policies, admission, and scheduling | PodDisruptionBudgets, autoscalers, NetworkPolicies, validating/mutating webhook configurations, admission policies, APIService registrations where present, RuntimeClasses, node selectors/affinity, tolerations, topology spread, and other supported constraints; verify stored configuration and observable decisions. | Not yet represented as a systematic test matrix. |
 | Full API inventory | Enumerate source discovery and every listable API resource, including Events, Leases, coordination/discovery objects and token/request resources. Compare durable object identity/spec/data after migration; classify each other kind as migrated, regenerated transient state, or excluded with a specific Kubernetes lifecycle reason. Add safe-to-create discovered kinds to the fixture. | The harness captures a source object inventory and semantic checkpoint, but completeness and migration parity have not passed a full round trip. |
