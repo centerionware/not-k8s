@@ -112,14 +112,19 @@ new fixes.
   Full error reporting exposed the object and route; the destination API
   server cause is still unknown. The source API recovered and the protected
   export remained available. No reverse migration or semantic parity check
-  ran. The endpoint change is pending focused quick-check and runtime retest;
+  ran. The endpoint change is pending runtime retest;
   the CertificateRequest failure is pending nodeapiserver diagnosis and fix.
 - The focused rerun for endpoint detection, quick-check [36102292310](https://github.com/centerionware/not-k8s/actions/runs/36102292310)
   on SHA `e9ed0b48144987d1b36629eed372b23d96686659` failed at compilation:
   the new unit test referenced `K3sConfig` without importing it into the test
-  module. The import is fixed in the latest worktree; focused quick-check is
-  pending. Branch-runtime migration [36102292369](https://github.com/centerionware/not-k8s/actions/runs/36102292369)
-  is still running on the same SHA; its five-node Docker preflight passed.
+  module. After adding that import, the focused `nodemigrate` quick-check
+  passed on SHA `f5a2ccb6f35bc72237d904c7c75bacda63a26fac` in
+  [run 36102588479](https://github.com/centerionware/not-k8s/actions/runs/36102588479).
+  Branch-runtime migration [36102292369](https://github.com/centerionware/not-k8s/actions/runs/36102292369)
+  is still running on SHA `e9ed0b48144987d1b36629eed372b23d96686659`; its
+  five-node Docker preflight passed. A later commit adds separate, expanded
+  `nodeapiserver`/`nodestore` journal capture for the CertificateRequest
+  failure and still needs migration-lane execution.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high
