@@ -134,6 +134,8 @@ install_tools() {
     fi
     helm version --short
     kubectl version --client
+    NODEMIGRATE_KUBECTL_IMAGE="registry.k8s.io/kubectl:$(kubectl version --client -o json | jq -r '.clientVersion.gitVersion')"
+    export NODEMIGRATE_KUBECTL_IMAGE
 }
 
 install_containerd() {
@@ -300,13 +302,18 @@ install_workloads() {
     helm repo add jetstack https://charts.jetstack.io --force-update
     helm repo add traefik https://traefik.github.io/charts --force-update
     helm repo update
+    local gateway_api_version="${GATEWAY_API_VERSION:-v1.6.1}"
+    kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml"
+    kubectl wait --for=condition=Established crd/gatewayclasses.gateway.networking.k8s.io --timeout=2m
+    kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=2m
     helm upgrade --install cert-manager jetstack/cert-manager \
         --version "${CERT_MANAGER_VERSION:-v1.21.2}" \
         --namespace cert-manager --create-namespace --set crds.enabled=true \
         --wait --timeout 10m
     helm upgrade --install traefik traefik/traefik \
         --namespace traefik --create-namespace \
-        --set service.type=ClusterIP --set ingressClass.enabled=true
+        --set service.type=ClusterIP --set ingressClass.enabled=true \
+        --set providers.kubernetesGateway.enabled=true
 
     mkdir -p "$STATIC_PATH"
     if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
@@ -370,6 +377,108 @@ data:
   migration-marker: user-config-data
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-user-binary
+  namespace: migration-apps
+binaryData:
+  payload.bin: AAECAw==
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: migration-user-secret
+  namespace: migration-apps
+type: Opaque
+data:
+  migration-secret: bWlncmF0aW9uLXNlY3JldC12YWx1ZQ==
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: migration-reader
+  namespace: migration-apps
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: migration-config-reader
+  namespace: migration-apps
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["migration-user-metadata"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: migration-config-reader
+  namespace: migration-apps
+subjects:
+- kind: ServiceAccount
+  name: migration-reader
+  namespace: migration-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: migration-config-reader
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: migration-cron
+  namespace: migration-apps
+spec:
+  schedule: "0 0 1 1 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: check
+            image: busybox:1.36.1
+            command: ["sh", "-c", "echo migration-cron-ran"]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migration-job
+  namespace: migration-apps
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: check
+        image: busybox:1.36.1
+        command: ["sh", "-c", "echo migration-job-ran"]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: migration-daemon
+  namespace: migration-apps
+spec:
+  selector:
+    matchLabels:
+      app: migration-daemon
+  template:
+    metadata:
+      labels:
+        app: migration-daemon
+    spec:
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: check
+        image: busybox:1.36.1
+        command: ["sh", "-c", "sleep 36000"]
+---
+apiVersion: v1
 kind: Pod
 metadata:
   name: migration-standalone
@@ -417,6 +526,18 @@ spec:
         ports:
         - name: http
           containerPort: 80
+        volumeMounts:
+        - name: state
+          mountPath: /state
+  volumeClaimTemplates:
+  - metadata:
+      name: state
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: csi-hostpath-sc
+      resources:
+        requests:
+          storage: 1Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -527,6 +648,47 @@ spec:
             port:
               number: 80
 ---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: migration-traefik
+spec:
+  controllerName: traefik.io/gateway-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: migration-traefik
+  namespace: migration-apps
+spec:
+  gatewayClassName: migration-traefik
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: migration-nginx
+  namespace: migration-apps
+spec:
+  parentRefs:
+  - name: migration-traefik
+  hostnames:
+  - migration-gateway.test
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: migration-nginx
+      port: 80
+---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -551,8 +713,15 @@ YAML
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=10m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed --timeout=10m
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
+    kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
+    kubectl wait -n migration-apps --for=condition=Accepted httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
+    kubectl wait -n migration-apps --for=condition=ResolvedRefs httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
+    kubectl exec -n migration-apps migration-stateful-0 -- sh -c \
+        'echo stateful-persistent-data > /state/marker'
+    kubectl wait -n migration-apps --for=condition=Complete job/migration-job --timeout=5m
     kubectl patch -n migration-apps deployment migration-nginx --type=merge \
         -p '{"spec":{"template":{"metadata":{"annotations":{"migration.nodemigrate/revision":"second"}}}}}'
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
@@ -613,8 +782,21 @@ verify_stage() {
         return 1
     }
     kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
+    kubectl rollout status -n migration-apps daemonset/migration-daemon --timeout=5m
+    local expected_daemon_nodes actual_daemon_nodes
+    expected_daemon_nodes="$(kubectl get nodes -o json | jq '.items | length')"
+    actual_daemon_nodes="$(kubectl get daemonset migration-daemon -n migration-apps -o json \
+        | jq -r '[.status.desiredNumberScheduled, .status.numberReady] | @tsv')"
+    [[ "$actual_daemon_nodes" == "$expected_daemon_nodes"$'\t'"$expected_daemon_nodes" ]] || {
+        echo "DaemonSet migration-daemon is not ready on every node at stage $stage: expected=$expected_daemon_nodes/$expected_daemon_nodes actual=$actual_daemon_nodes" >&2
+        return 1
+    }
     kubectl get crd ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
+    kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
+    kubectl wait -n migration-apps --for=condition=Accepted httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
+    kubectl wait -n migration-apps --for=condition=ResolvedRefs httproutes.gateway.networking.k8s.io/migration-nginx --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
     kubectl get replicasets -n migration-apps -l app=migration-nginx -o json | jq -e '.items | length >= 2' >/dev/null || {
@@ -640,6 +822,77 @@ verify_stage() {
         echo "nodemigrate changed migration-user-metadata data at stage $stage" >&2
         return 1
     }
+    kubectl get configmap migration-user-binary -n migration-apps -o json | jq -e \
+        '.binaryData["payload.bin"] == "AAECAw=="' >/dev/null || {
+        echo "nodemigrate changed migration-user-binary data at stage $stage" >&2
+        return 1
+    }
+    kubectl get secret migration-user-secret -n migration-apps -o json | jq -e \
+        '.data.migration-secret == "bWlncmF0aW9uLXNlY3JldC12YWx1ZQ=="' >/dev/null || {
+        echo "nodemigrate changed migration-user-secret data at stage $stage" >&2
+        return 1
+    }
+    [[ "$(kubectl exec -n migration-apps migration-stateful-0 -- cat /state/marker)" == stateful-persistent-data ]] || {
+        echo "StatefulSet claim-template data changed at stage $stage" >&2
+        return 1
+    }
+    kubectl wait -n migration-apps --for=condition=Complete job/migration-job --timeout=5m
+    kubectl logs -n migration-apps job/migration-job | grep migration-job-ran >/dev/null || {
+        echo "Job workload did not execute at stage $stage" >&2
+        return 1
+    }
+    local cron_job="migration-cron-check-$stage"
+    kubectl create job --from=cronjob/migration-cron "$cron_job" -n migration-apps
+    kubectl wait -n migration-apps --for=condition=Complete "job/$cron_job" --timeout=5m
+    kubectl logs -n migration-apps "job/$cron_job" | grep migration-cron-ran >/dev/null || {
+        echo "CronJob did not execute its workload at stage $stage" >&2
+        return 1
+    }
+    kubectl delete job -n migration-apps "$cron_job" --wait=true
+    local rbac_allow_job="migration-rbac-allow-$stage"
+    local rbac_deny_job="migration-rbac-deny-$stage"
+    kubectl apply -f - <<YAML
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $rbac_allow_job
+  namespace: migration-apps
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: migration-reader
+      containers:
+      - name: check
+        image: $NODEMIGRATE_KUBECTL_IMAGE
+        command: ["kubectl"]
+        args: ["get", "configmap", "migration-user-metadata", "-n", "migration-apps", "-o", "name"]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $rbac_deny_job
+  namespace: migration-apps
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: migration-reader
+      containers:
+      - name: check
+        image: $NODEMIGRATE_KUBECTL_IMAGE
+        command: ["kubectl"]
+        args: ["get", "secret", "migration-user-secret", "-n", "migration-apps", "-o", "name"]
+YAML
+    kubectl wait -n migration-apps --for=condition=Complete "job/$rbac_allow_job" --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Failed "job/$rbac_deny_job" --timeout=5m
+    kubectl logs -n migration-apps "job/$rbac_deny_job" | grep Forbidden >/dev/null || {
+        echo "service-account RBAC did not deny Secret access at stage $stage" >&2
+        return 1
+    }
+    kubectl delete job -n migration-apps "$rbac_allow_job" "$rbac_deny_job" --wait=true
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m
@@ -675,19 +928,36 @@ YAML
     kubectl delete pod -n migration-apps migration-data-check --wait=true
 
     kubectl rollout status -n traefik deployment/traefik --timeout=5m
+    local traefik_chart_version
+    traefik_chart_version="$(helm list -n traefik --output json \
+        | jq -r '.[] | select(.name == "traefik" and .status == "deployed") | .chart | sub("^traefik-"; "")')"
+    [[ -n "$traefik_chart_version" ]] || {
+        echo "Traefik Helm release is missing or not deployed at stage $stage" >&2
+        return 1
+    }
+    helm get manifest traefik -n traefik | grep '^kind: Deployment$' >/dev/null
+    helm get values traefik -n traefik -o json | jq -e '.service.type == "ClusterIP"' >/dev/null
+    helm history traefik -n traefik -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
+    helm get manifest cert-manager -n cert-manager | grep '^kind: Deployment$' >/dev/null
+    helm get values cert-manager -n cert-manager -o json | jq -e '.crds.enabled == true' >/dev/null
+    helm history cert-manager -n cert-manager -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
+    helm upgrade traefik traefik/traefik -n traefik --version "$traefik_chart_version" \
+        --reuse-values --dry-run=server --hide-secret >/dev/null
     kubectl delete pod -n traefik migration-route-check --ignore-not-found --wait=true
     kubectl port-forward -n traefik svc/traefik 18080:80 >/tmp/traefik-port-forward.log 2>&1 &
     local port_forward_pid=$!
     trap 'kill "$port_forward_pid" 2>/dev/null || true' RETURN
     local response=""
+    local gateway_response=""
     for _ in $(seq 1 30); do
         response="$(curl -fsS -H 'Host: migration.test' http://127.0.0.1:18080/ 2>/dev/null || true)"
-        [[ "$response" == *"Welcome to nginx!"* ]] && break
+        gateway_response="$(curl -fsS -H 'Host: migration-gateway.test' http://127.0.0.1:18080/ 2>/dev/null || true)"
+        [[ "$response" == *"Welcome to nginx!"* && "$gateway_response" == *"Welcome to nginx!"* ]] && break
         sleep 2
     done
-    [[ "$response" == *"Welcome to nginx!"* ]] || {
+    [[ "$response" == *"Welcome to nginx!"* && "$gateway_response" == *"Welcome to nginx!"* ]] || {
         cat /tmp/traefik-port-forward.log >&2 || true
-        echo "Traefik did not route to the nginx workload at stage $stage" >&2
+        echo "Traefik Ingress or Gateway API did not route to nginx at stage $stage" >&2
         return 1
     }
     kill "$port_forward_pid" 2>/dev/null || true
@@ -723,7 +993,7 @@ capture_semantic_checkpoint() {
       }] | sort_by(.name)
     ' > "$stage_dir/nodes.json"
 
-    kubectl get configmap,deployment,service,ingress,pvc -n migration-apps -o json \
+    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,service,ingress,pvc -n migration-apps -o json \
       | canonicalize_api_list > "$stage_dir/application.json"
     kubectl get pv -o json \
       | jq -S '[.items[] | select(.spec.claimRef.namespace == "migration-apps") | {
@@ -764,8 +1034,14 @@ capture_semantic_checkpoint() {
       | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
       > "$stage_dir/certificate-secret.sha256"
     kubectl get configmap migration-user-metadata -n migration-apps -o json \
-      | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
-      > "$stage_dir/user-configmap-data.sha256"
+        | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
+        > "$stage_dir/user-configmap-data.sha256"
+    kubectl get configmap migration-user-binary -n migration-apps -o json \
+        | jq -S -c '.binaryData // {}' | sha256sum | awk '{print $1}' \
+        > "$stage_dir/user-binary-configmap-data.sha256"
+    kubectl get secret migration-user-secret -n migration-apps -o json \
+        | jq -S -c '.data // {}' | sha256sum | awk '{print $1}' \
+        > "$stage_dir/user-secret-data.sha256"
 
     jq -S -n \
       --slurpfile nodes "$stage_dir/nodes.json" \
@@ -848,7 +1124,13 @@ assert_round_trip_unchanged() {
         echo "ConfigMap contents changed during the migration round trip" >&2
         return 1
     fi
-    echo "PASS: returned semantic state, certificate secret, and ConfigMap contents match the source checkpoint"
+    for digest in user-binary-configmap-data user-secret-data; do
+        if ! cmp -s "$initial/$digest.sha256" "$returned/$digest.sha256"; then
+            echo "$digest changed during the migration round trip" >&2
+            return 1
+        fi
+    done
+    echo "PASS: returned semantic state, text and binary ConfigMaps, Secret digests, certificate secret, and PVC data match the source checkpoint"
 }
 
 assert_migratable_api_state_unchanged() {
