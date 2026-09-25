@@ -15,19 +15,19 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Focused `nodelet` quick-check passed at SHA
-`f4e6fecfc121ed590ffa94380d3fcc5c4ee11edd` in [run 36165304260](https://github.com/centerionware/not-k8s/actions/runs/36165304260).
-Branch-runtime migration [run 36165304330](https://github.com/centerionware/not-k8s/actions/runs/36165304330)
-used the same SHA. The nodemigrate and combined-runtime builds and five-node
-Docker isolation preflight passed. CRI showed Cilium's `mount-cgroup` container
-using AppArmor `Unconfined`, and its log confirmed cgroup v2 mounted. K3s then
-failed because leftover source Cilium agent/operator processes held destination
-ports `4244`, `4240`, and `9963`; the worktree extends cleanup to processes
-matching exact source identities. Upstream failed CertificateRequest import
-with HTTP 500 because the cert-manager webhook was unreachable; rollback
-restored the source and retained the protected export. Neither lane reached the
-target workload/storage checkpoint, reverse migration, or parity comparison.
-Both required merge gates remain open.
+Focused nodemigrate quick-check passed at code SHA `29b6b7de9575e7cf0d43ca60becba868373d86f3`
+in [run 36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894).
+Branch-runtime migration [run 36168559234](https://github.com/centerionware/not-k8s/actions/runs/36168559234)
+at the same code SHA passed the nodemigrate and combined-runtime builds and
+five-node Docker isolation preflight. Source Cilium cleanup found no remaining
+source daemon and removed three stale Envoy sockets. Both source fixtures
+passed, but neither migration lane reached a target workload/storage
+checkpoint: K3s remained blocked by `cni plugin not initialized`; upstream
+CertificateRequest import returned HTTP 500 after the target API logged a
+failed cert-manager webhook request. Upstream rollback restored the source API
+and retained the export. Both required round-trip merge gates remain open.
+Complete lane logs are saved at
+`/tmp/nodemigrate-36168559234/{k3s,kubernetes}.log`.
 
 ## Workflow
 

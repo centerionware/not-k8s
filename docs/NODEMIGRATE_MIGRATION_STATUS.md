@@ -9,20 +9,22 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Branch-runtime migration [36165304330](https://github.com/centerionware/not-k8s/actions/runs/36165304330)
-at SHA `f4e6fecfc121ed590ffa94380d3fcc5c4ee11edd` passed the nodemigrate and
-combined-runtime builds and the five-node Docker isolation preflight. The
-nodelet AppArmor fix was verified at runtime: CRI showed the Cilium
-`mount-cgroup` container using `Unconfined` (`profile_type: 1`) and its log
-reported `Mounted cgroupv2 filesystem`. K3s then failed Cilium startup because
-orphaned source `cilium-agent` and `cilium-operator` processes held destination
-ports `4244`, `4240`, and `9963`; the current worktree extends exact source
-container/Pod identity cleanup to those daemons. The upstream lane failed
-CertificateRequest import with HTTP 500 because the cert-manager webhook was
-unreachable; rollback restored the source and retained the protected export.
-Neither lane reached the target workload/storage checkpoint, reverse
-migration, or parity comparison. Focused `nodelet` quick-check passed in
-[36165304260](https://github.com/centerionware/not-k8s/actions/runs/36165304260).
+Branch-runtime migration [36168559234](https://github.com/centerionware/not-k8s/actions/runs/36168559234)
+at code SHA `29b6b7de9575e7cf0d43ca60becba868373d86f3` passed the nodemigrate
+and combined-runtime builds and the five-node Docker isolation preflight. The
+focused nodemigrate quick-check passed at the same SHA in
+[36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894).
+Both K3s and upstream source fixtures passed. Source Cilium process cleanup
+found no remaining source daemon and removed three stale Envoy sockets. The
+K3s target Cilium init containers and agent started, but its CNI plugin
+continued reporting `cni plugin not initialized`, blocking CoreDNS and
+hostPath CSI recovery. In the upstream lane, the target API logged a failed
+cert-manager webhook invocation and returned HTTP 500 applying
+`CertificateRequest migration-test-1`; source rollback restored the API and
+retained the protected export. Neither lane reached the target checkpoint,
+reverse migration, or parity comparison. Both required migration merge gates
+remain open. Complete logs are at
+`/tmp/nodemigrate-36168559234/{k3s,kubernetes}.log`.
 
 ## Previous runtime defect
 
