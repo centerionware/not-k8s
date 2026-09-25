@@ -55,13 +55,15 @@ new fixes.
   `36080595243` on SHA `d4847449a84a5014515f31b3d9d522e455910cf7`. Branch-runtime
   rerun `36082829012` built nodemigrate and the combined branch runtime in both
   lanes, and the five-node Docker preflight passed. Both migrations reached
-  destination API readiness but failed post-cutover: nodelet remained behind
-  its CoreDNS gate, Cilium host-network Pods stayed `Unknown`, containerd
-  reported `cni plugin not initialized`, and CSI Pods stayed `Terminating`.
-  This identifies a nodelet startup deadlock. The fix now reconciles local
-  host-network Pods during the gate; focused nodelet quick-check and migration
-  rerun are pending. The diagnostic fixture also records nodelet journal, CRI
-  state, Pod YAML, and events.
+  destination API readiness but failed post-cutover with the CoreDNS gate
+  blocking Cilium. Nodelet now reconciles local host-network Pods during the
+  gate; focused `nodelet` quick-check passed in `36084558060`. Branch-runtime
+  migration rerun `36084558323` confirms Cilium sandbox/init startup now runs,
+  but remains blocked on runc's read-only-root mountpoint failure for
+  `/var/run/cilium/envoy/sockets`; CNI and CoreDNS stay unready, so CSI stays
+  `Terminating`. The next fix targets nodelet CRI volume mounts under a
+  read-only image. Diagnostics now save nodelet journal, CRI sandboxes and
+  containers, Cilium Pod YAML, and events.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

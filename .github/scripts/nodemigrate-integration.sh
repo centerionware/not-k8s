@@ -222,7 +222,9 @@ install_hostpath_driver() {
         systemctl status nodelet --no-pager >&2 || true
         journalctl -u nodelet -b --no-pager -n 1000 >&2 || true
         crictl --runtime-endpoint unix:///run/containerd/containerd.sock pods -o json >&2 || true
+        crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json >&2 || true
         kubectl get pods -A -o wide >&2 || true
+        kubectl get pods -n kube-system -l k8s-app=cilium -o yaml >&2 || true
         kubectl get pods -A -l app.kubernetes.io/instance=hostpath.csi.k8s.io -o yaml >&2 || true
         kubectl get events -A --sort-by=.metadata.creationTimestamp >&2 || true
         return 1
