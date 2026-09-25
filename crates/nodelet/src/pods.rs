@@ -669,6 +669,15 @@ impl PodController {
                         .iter()
                         .filter(|pod| is_local_host_network_pod(pod, &self.node_name))
                     {
+                        if pod.metadata.namespace.as_deref() == Some(COREDNS_NAMESPACE)
+                            && pod.metadata.name.as_deref().is_some_and(|name| name.starts_with("cilium-"))
+                        {
+                            info!(
+                                pod = %pod.metadata.name.as_deref().unwrap_or_default(),
+                                uid = %pod.metadata.uid.as_deref().unwrap_or_default(),
+                                "reconciling Cilium bootstrap Pod while CoreDNS is gated"
+                            );
+                        }
                         self.reconcile_with_timeout(pod.clone()).await;
                     }
                 }
@@ -1216,6 +1225,21 @@ impl PodController {
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
                 debug!(target: "nk_watch_trace", pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "runtime ensure completed; publishing status");
+                if ns == COREDNS_NAMESPACE && name.starts_with("cilium-") {
+                    let init_status = status
+                        .init_containers
+                        .iter()
+                        .map(|container| (&container.name, container.running, container.exit_code))
+                        .collect::<Vec<_>>();
+                    info!(
+                        pod = %format!("{ns}/{name}"),
+                        phase = status.phase.as_str(),
+                        initialized = status.initialized,
+                        message = ?status.message,
+                        init_containers = ?init_status,
+                        "Cilium Pod runtime reconciliation completed"
+                    );
+                }
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);

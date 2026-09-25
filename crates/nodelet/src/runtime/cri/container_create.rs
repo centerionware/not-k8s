@@ -818,6 +818,30 @@ impl CriRuntime {
         let exited_v = ContainerState::ContainerExited as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
 
+        // Cilium is an external-CNI bootstrap dependency: if an init
+        // container exits but the Pod does not advance, every ordinary
+        // workload (including CoreDNS) can remain blocked behind it. Keep a
+        // concise inventory in normal CI logs so we can distinguish the CRI
+        // inventory from event delivery and Pod-status publication.
+        if id.namespace == "kube-system" && id.name.starts_with("cilium-") {
+            let observed = init_containers
+                .iter()
+                .map(|container| {
+                    let state = existing.iter().find(|candidate| {
+                        candidate.labels.get(CTR_NAME_LABEL).is_some_and(|name| name == &container.name)
+                            && candidate.labels.get(CTR_INIT_LABEL).is_some_and(|value| value == "true")
+                    });
+                    (container.name.as_str(), state.map(|container| container.state))
+                })
+                .collect::<Vec<_>>();
+            info!(
+                pod = %format!("{}/{}", id.namespace, id.name),
+                sandbox = %sandbox_id,
+                init_containers = ?observed,
+                "observed Cilium init-container CRI state"
+            );
+        }
+
         for container in init_containers {
             let existing_ctr = existing.iter().find(|c| {
                 c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)

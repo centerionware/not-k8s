@@ -221,9 +221,13 @@ and `/tmp/nodemigrate-36116466142/nodemigrate-kubernetes-36116466142/nodemigrate
 ## Required migration test inventory
 
 The acceptance fixture must migrate and verify the following resource groups
-at the initial source, not-k8s target, and returned-source checkpoints. Rows
-marked partial describe current fixture setup only; no row is complete until
-the same object/state and behavior assertions pass through a full round trip.
+in both directions: K3s → not-k8s → K3s and upstream Kubernetes → not-k8s →
+upstream Kubernetes. Check identity, spec, data, status, ownership, and
+observable behavior at the initial source, not-k8s target, and returned-source
+checkpoints. Rows marked partial describe current fixture setup only; no row
+is complete until the same object/state and behavior assertions pass through
+a full round trip. The named fixtures below extend the existing migration
+tests; they do not replace or narrow any existing coverage.
 
 | Resource group | Required migration and behavior checks | Current fixture status |
 | --- | --- | --- |
@@ -234,14 +238,19 @@ the same object/state and behavior assertions pass through a full round trip.
 | Persistent storage | PVs, PVCs, StorageClasses, static hostPath/local volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where applicable, VolumeSnapshotClasses, VolumeSnapshots, snapshot contents, and StatefulSet claim templates; verify binding, topology, provider configuration/credentials, attachment behavior, and unique payload data. | Static hostPath and dynamic hostPath CSI PVC data remain seeded; the StatefulSet now also owns a dynamic CSI claim template with a distinct payload checked at every checkpoint. The current Cilium failure prevents target storage checks; provider and multi-node attachment coverage is absent. |
 | CRDs and operator resources | CRDs plus representative custom resources and durable operator state, including Cilium configuration/policy, cert-manager Issuers, ClusterIssuers, Certificates and CertificateRequests, and Gateway API resources; verify discovery, version conversion, reconciliation, status, and resulting Secrets/routes. | Cilium, cert-manager, and Gateway API CRDs/custom resources are sampled and Gateway API resources have route status/behavior checks. The fixture now adds a user-defined cluster-scoped MigrationRecord CRD with served v1alpha1/v1 versions plus a durable custom resource; every stage checks Established/discovery and reads the same object through v1alpha1. The custom resource fingerprint also participates in the all-discovered API inventory. Static validation passed; target/return runtime behavior is pending. Broader operator-specific resources and successful target reconciliation remain unverified. |
 | Policies, admission, and scheduling | PodDisruptionBudgets, autoscalers, NetworkPolicies, validating/mutating webhook configurations, admission policies, APIService registrations where present, RuntimeClasses, node selectors/affinity, tolerations, topology spread, and other supported constraints; verify stored configuration and observable decisions. | An ingress NetworkPolicy now has real allowed and denied service probes from separate namespaces at every migration stage; fixture runtime validation is pending. PDB/HPA behavior, webhook/admission decisions beyond installed cert-manager, APIService behavior, RuntimeClass, and expanded scheduling constraints remain unrepresented. |
-| Full API inventory | Enumerate source discovery and every listable API resource and subresource. In addition to the rows above, cover Nodes and node status/configuration, Events and Leases, PodDisruptionBudgets, HPA and other autoscaling APIs, Pod Security admission, admission webhook configurations and CA bundles, ValidatingAdmissionPolicies and bindings, APIService registrations, RuntimeClasses, Priority and Fairness configuration, Dynamic Resource Allocation classes/claims/slices where served, EndpointSlices, certificate requests/signing requests, service-account token and authorization review behavior, and storage expansion/snapshot/attachment resources. Include init and ephemeral containers, rollout history, owner references/finalizers, and status fields that affect controller recovery. Compare identity, spec, data, status, ownership, and observable behavior at source, target, and returned-source checkpoints. Every discovered kind must migrate or be regenerated only when its owning Kubernetes lifecycle necessarily recreates it; do not silently omit kinds because they are uncommon or add-on-owned. | The harness captures a source object inventory and semantic checkpoint, but completeness and migration parity have not passed a full round trip. The additional API families and lifecycle behaviors in this row are acceptance requirements, not yet verified coverage. |
+| Full API inventory | Enumerate source discovery and every listable API resource and subresource. In addition to all fixtures above, cover Nodes and node status/configuration, Events and Leases, PodDisruptionBudgets, HPA and other autoscaling APIs, Pod Security admission, admission webhook configurations and CA bundles, ValidatingAdmissionPolicies and bindings, APIService registrations, RuntimeClasses, Priority and Fairness configuration, Dynamic Resource Allocation classes/claims/slices where served, EndpointSlices, certificate requests/signing requests, service-account token and authorization review behavior, and storage expansion/snapshot/attachment resources. Include init and ephemeral containers, rollout history, owner references/finalizers, conversion and admission webhooks, service-account identity, Secret references, and status fields that affect controller recovery. Compare identity, spec, data, status, ownership, and observable behavior at source, target, and returned-source checkpoints in both migration directions. Every discovered kind must migrate or be regenerated only when its owning Kubernetes lifecycle necessarily recreates it; do not silently omit kinds because they are uncommon, transient, or add-on-owned. | The harness captures a source object inventory and semantic checkpoint, but completeness and bidirectional migration parity have not passed a full round trip. The additional API families and lifecycle behaviors in this row are acceptance requirements, not yet verified coverage. |
 
-The list above is a minimum. Every named resource group must be tested for
-migration and behavior at all three checkpoints; a source setup or successful
-API import is not a passing test. Any additional API kind, add-on, data path,
-or controller behavior found in source discovery or real workloads must be
-added to this matrix and exercised unless its lifecycle is explicitly
-documented.
+The list above is a minimum and supplements resource kinds already present in
+the fixture. This explicitly includes ConfigMaps, CRDs and their custom
+resources, StatefulSets, Deployments, Helm chart releases and chart-managed
+objects, CronJobs, DaemonSets, Ingresses, Gateway API objects, and RBAC.
+Every named and previously covered resource group must be tested for
+migration and behavior at all three checkpoints in both directions; a source
+setup, successful API import, or one-way migration is not a passing test. Any
+additional API kind, add-on, data path, or controller behavior found in source
+discovery or real workloads must be added to this matrix and exercised unless
+its lifecycle is explicitly documented. If a kind cannot be preserved
+directly, its required regeneration and equivalent behavior must be asserted.
 
 ## Migration coverage
 
