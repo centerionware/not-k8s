@@ -9,6 +9,25 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
+At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
+[run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
+built nodemigrate and the combined runtime and passed the five-node Docker
+preflight. K3s source checks passed, forward import accepted all 48 CRDs, and
+the destination API passed readiness. The Cilium config init container
+connected to the destination API and read `cilium-config`, but CNI remained
+uninitialized and hostPath CSI setup failed before the target checkpoint. The
+failure handler still queried the stopped source kubeconfig, so its unknown-CA
+errors and `NotFound` Cilium Pod lookup did not reveal the destination agent's
+state; the harness now switches to the target kubeconfig before post-cutover
+work. Upstream again failed importing `CertificateRequest migration-test-1`
+with HTTP 500 because the cert-manager webhook could not be reached while
+destination CNI failed. Upstream rollback recovered the source API and retained
+the protected export. No reverse migration or parity checkpoint passed.
+The focused `nodebootstrap` quick-check passed the automatic API-address SAN
+regression at SHA `8230c5f63faabada5393cc29cd3c6aed082177cb` in
+[run 36120097438](https://github.com/centerionware/not-k8s/actions/runs/36120097438);
+the runtime Cilium readiness effect remains unverified.
+
 At SHA `459570ee4fdcea8128456f84058882159111a85a`, the focused nodemigrate
 quick-check passed in [run 36104107511](https://github.com/centerionware/not-k8s/actions/runs/36104107511).
 The K3s cleanup-order fix now gets past source sandbox shutdown: in both the

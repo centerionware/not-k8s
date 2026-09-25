@@ -911,6 +911,8 @@ main() {
         echo "PASS: source service and API recovered; protected export retained at $recovery_dir"
         return "$migration_status"
     fi
+    CURRENT_KUBECONFIG="$nodestore_kubeconfig"
+    export KUBECONFIG="$nodestore_kubeconfig"
     KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet true
     verify_stage nodestore "$nodestore_kubeconfig"
     assert_migratable_api_state_unchanged source nodestore
@@ -920,6 +922,8 @@ main() {
     NODEMIGRATE_SOURCE_KUBECONFIG="$nodestore_kubeconfig" \
     NODEMIGRATE_DESTINATION_KUBECONFIG="$SOURCE_KUBECONFIG" \
         "$MIGRATE" "to=$SOURCE_DIST" from=nodestore
+    CURRENT_KUBECONFIG="$SOURCE_KUBECONFIG"
+    export KUBECONFIG="$SOURCE_KUBECONFIG"
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet true
     verify_stage returned "$SOURCE_KUBECONFIG"
     assert_round_trip_unchanged
