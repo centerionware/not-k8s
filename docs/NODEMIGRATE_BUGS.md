@@ -2,26 +2,38 @@
 
 Last updated: 2026-09-25
 
+Latest branch-runtime migration [36186694756](https://github.com/centerionware/not-k8s/actions/runs/36186694756)
+used code SHA `d4be86e33d9140faa9258eaff112bebed3216fa4`. The focused
+`nodelet` quick-check [36186694438](https://github.com/centerionware/not-k8s/actions/runs/36186694438)
+passed on that SHA; the migration utility/runtime builds and five-node Docker
+isolation preflight also passed. In K3s, the API showed `config`,
+`mount-cgroup`, and `apply-sysctl-overwrites` complete, and `mount-bpf-fs`
+started. Its log showed bpffs mounted and containerd later had no live task,
+while the captured Pod status still said that init container was Running.
+This narrows the stale-status issue to the final observed init transition; it
+does not prove that the prior CRI event fallback handled or missed the event.
+The upstream CertificateRequest webhook failure remains downstream of target
+CNI unavailability. Neither lane reached target workloads, reverse migration,
+or parity. Logs: `/tmp/nodemigrate-36186694756/`.
+
 This living list tracks defects exposed while exercising nodemigrate against
 the latest regular release (`v0.8.0` at the time of the run), their owning
 components, branch fixes, and focused evidence. Release-backed failures caused
 by old component binaries remain visible until the fixes are included in the
 coordinated `v0.8.1` release.
 
-Latest branch-runtime integration [36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918)
-used code SHA `64baa5ab795bfd71fed1ffe193eb08e974e5345d`. Nodemigrate and
-combined-runtime builds and the five-node Docker isolation preflight passed.
-K3s passed source checks, exported 582 objects/59 CRDs, imported all 59 CRDs,
-and reached destination API readiness. The next Cilium init container,
-`apply-sysctl-overwrites`, exited successfully in CRI, but the Pod status stayed
-Running and Cilium never started its agent. Upstream imported 55 CRDs before
-CertificateRequest admission failed because the destination cert-manager
-webhook was unreachable while target CNI was unavailable. Source rollback and
-protected-export retention passed. Neither lane reached reverse migration or
-parity comparison. The exact CRI event payload was not captured; the nodelet
-event handler currently discards events without embedded sandbox status, so a
-container-ID lookup fallback is being tested. Logs are saved at
-`/tmp/nodemigrate-36183868918/`.
+Branch-runtime integration [36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918)
+used code SHA `64baa5ab795bfd71fed1ffe193eb08e974e5345d`. It exposed a possible
+missed CRI completion event. The nodelet container-ID lookup fallback added
+after that run passed focused tests, but the later [36186694756](https://github.com/centerionware/not-k8s/actions/runs/36186694756)
+run still captured an API Pod status saying `mount-bpf-fs` was Running after
+its log showed bpffs mounted and containerd had no live task. Earlier init
+containers did advance to Completed, so this is narrowed to the last observed
+transition; whether CRI omitted the event, the lookup failed, or reconciliation
+failed is not yet known. Event-path diagnostics are needed before another
+behavioral change. Upstream webhook errors remain downstream of CNI failure.
+Neither lane reached target workload checks, reverse migration, or parity.
+Logs: `/tmp/nodemigrate-36183868918/` and `/tmp/nodemigrate-36186694756/`.
 
 Latest-release integration [36174946764](https://github.com/centerionware/not-k8s/actions/runs/36174946764)
 used code SHA `85ed67ed2d4b5540b9cbe3268b061955d946a98b` with regular
@@ -39,9 +51,9 @@ neither lane reached a target checkpoint or round trip. Logs:
 
 | Bug | Owning component(s) | Fix in this branch | Focused evidence / state |
 | --- | --- | --- | --- |
+| Cilium init-container Pod status can remain `Running` after the containerd task exits successfully, blocking the next init container and CNI readiness. | `nodelet` CRI event-to-Pod reconciliation | A fallback now maps CRI events without embedded PodSandboxStatus through container labels and queues that Pod for normal reconciliation. INFO diagnostics now expose Cilium event arrival and whether events without Pod metadata resolve to a Pod key. The fallback predicate has focused tests. Keep the behavior fix provisional until event arrival, label lookup, queued reconcile, and final Pod status are observable in a migration run; do not infer that the fallback is sufficient from unit tests. | Reproduced before the fix in [run 36183868918](https://github.com/centerionware/not-k8s/actions/runs/36183868918). Focused `nodelet` quick-check passed after the fallback change in [run 36186694438](https://github.com/centerionware/not-k8s/actions/runs/36186694438). Run [36186694756](https://github.com/centerionware/not-k8s/actions/runs/36186694756) advanced through `config`, `mount-cgroup`, and `apply-sysctl-overwrites`; `mount-bpf-fs` logged successful bpffs mount and its containerd task was absent, but Pod status still reported Running. Diagnostic logging is in the current worktree; exact event arrival/lookup/reconcile outcome remains unverified. |
 | Nodelet ignored Pod- and container-level AppArmor profiles when creating CRI containers. Cilium requested `Unconfined`, but CRI OCI inspection showed `cri-containerd.apparmor.d`; its `mount-cgroup` init container then failed opening `/hostproc/1/ns/cgroup`. | `nodelet` CRI security-context translation | Map Kubernetes `RuntimeDefault`, `Unconfined`, and `Localhost` profiles into CRI `SecurityProfile`, with container-over-pod precedence; retain runtime-default confinement for unexpected profile types. Add regressions for pod-level propagation, override, localhost reference, unset, and unknown values. | Confirmed in [migration run 36162293718](https://github.com/centerionware/not-k8s/actions/runs/36162293718). Fixed in SHA `f4e6fecf`; focused nodelet quick-check passed in [36165304260](https://github.com/centerionware/not-k8s/actions/runs/36165304260). Branch-runtime [36165304330](https://github.com/centerionware/not-k8s/actions/runs/36165304330) showed CRI `profile_type: 1` (`Unconfined`) and `Mounted cgroupv2 filesystem`; later source Cilium port conflicts still prevented the K3s target checkpoint. |
 | After source sandbox shutdown, orphaned source Cilium daemons kept host ports and sockets open. The destination agent could not bind Hubble `:4244` and health `:4240`; its operator could not bind metrics `:9963`. Host socket inspection showed both old and destination `cilium-agent` PIDs, and a source `cilium-operator` PID. | `nodemigrate` source Cilium cutover cleanup | Extend exact CRI-container/Pod-UID cleanup from Envoy to the source `cilium-agent` and `cilium-operator` executables. Signal only known Cilium daemons whose cgroup or shim ancestry matches captured source identities; leave all unrelated and destination processes untouched. | Confirmed in K3s lane of [run 36165304330](https://github.com/centerionware/not-k8s/actions/runs/36165304330). Implemented at code SHA `29b6b7de9575e7cf0d43ca60becba868373d86f3`; focused nodemigrate quick-check passed in [36168559894](https://github.com/centerionware/not-k8s/actions/runs/36168559894). Branch-runtime run [36168559234](https://github.com/centerionware/not-k8s/actions/runs/36168559234) confirmed no source Cilium daemon remained and three stale Envoy sockets were removed. The original port collision did not recur; target CNI is now blocked by the separate unresolved initialization failure below. |
-| Cilium's destination agent can start and report restored datapath endpoints while new Pod sandboxes still fail because containerd cannot initialize the configured CNI. This blocks CoreDNS and hostPath CSI and prevents webhook-backed cert-manager resources from being imported. | `nodemigrate` CNI path detection; `nodelet` CNI startup remains a separate open investigation | K3s root cause confirmed: when Cilium's active config is in `/etc/cni/net.d` but K3s's private CNI directory is empty, detection forwarded the K3s fallback paths to nodebootstrap. The worktree now selects `/etc/cni/net.d` and `/opt/cni/bin` when that is where an external provider is detected, with a regression for this layout. Upstream still needs a Cilium agent startup diagnosis; do not weaken webhook admission or mark the target ready from API availability alone. | Confirmed by diagnostics in [run 36171620422](https://github.com/centerionware/not-k8s/actions/runs/36171620422): K3s containerd expected `/var/lib/rancher/k3s/agent/etc/cni/net.d`, which was empty, while Cilium wrote `/etc/cni/net.d/05-cilium.conflist`; the agent reported writing there and all workload sandboxes continued failing. The fix is committed at SHA `85ed67ed2d4b5540b9cbe3268b061955d946a98b`; focused nodemigrate checks passed in [run 36174671510](https://github.com/centerionware/not-k8s/actions/runs/36174671510). Latest-release run [36174946764](https://github.com/centerionware/not-k8s/actions/runs/36174946764) confirms detection selected `/etc/cni/net.d` and found Cilium config, but failed earlier during API import, so post-cutover CNI readiness remains unverified. In the same run, upstream Cilium's `cilium-agent` container was terminated, its Pod remained `PodInitializing`, and cert-manager webhook invocation failed during CertificateRequest import. The exact upstream startup cause remains unverified. Neither lane reached a workload checkpoint or round trip. |
 | Migration dropped standalone Pod workloads and ReplicaSet/ControllerRevision rollout history by treating all Pods and all revision objects as disposable controller state. The checkpoint filter repeated the same omission, hiding the lost state. | `nodemigrate` | Export standalone Pods and ReplicaSet/ControllerRevision history; skip only controller-owned Pods and static-pod mirrors that are regenerated by their owning controller or kubelet. Align the semantic snapshot filter and add a standalone Pod and StatefulSet history to the round-trip fixture. | Confirmed by `SKIP_KINDS` and the matching snapshot normalizer. Focused exporter tests and real source → nodestore → source checks are being added; targeted nodemigrate CI and branch-runtime integration are pending. |
 | Source objects can use an API version that the destination no longer serves even though discovery exposes another version of the same group and kind. ClusterTrustBundle import failed against `v0.8.0`. | `nodemigrate` | Negotiate the discovered destination version only for the same API group and kind; retain source version otherwise and report selected conversion. | Focused nodemigrate checks passed at SHA `954f1be3d12fb7f0334db8d8ff6efae28ca0e4250` ([run 36068373192](https://github.com/centerionware/not-k8s/actions/runs/36068373192)). Release integrations `36068417485` and `36071174265` confirmed ClusterTrustBundle/v1 was applied through v1beta1. |
 | Gateway API v1.6.1's `safe-upgrades` ValidatingAdmissionPolicy uses the global CEL function `matches(string, regex)`. nodeapiserver did not register that function, so three Gateway CRDs were rejected during migration with `Undeclared reference to 'matches'`. | `nodeapiserver` CEL runtime | Register the global `matches` function using the existing bounded regex path and add a focused regression with the exact policy expression shape. | Reproduced in both branch-runtime lanes of [run 36142617576](https://github.com/centerionware/not-k8s/actions/runs/36142617576). The fix at SHA `c56d3f3ecce3a43339ba0df23aec02a36193d841` passed the `nodeapiserver` quick-check ([run 36145507191](https://github.com/centerionware/not-k8s/actions/runs/36145507191)); both lanes in [run 36145520889](https://github.com/centerionware/not-k8s/actions/runs/36145520889) passed this CEL function and then exposed the separate map-comprehension issue below. In latest-release run [36153673997](https://github.com/centerionware/not-k8s/actions/runs/36153673997), both source fixtures passed but the `v0.8.0` target again rejected Gateway CRDs with `Undeclared reference to 'matches'`; this confirms the release baseline defect remains until the branch server fix ships in `v0.8.1`. The upstream CertificateRequest HTTP 500 remains independently tracked. |

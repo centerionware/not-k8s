@@ -15,6 +15,24 @@ new fixes.
 
 ## Latest branch-runtime result
 
+The newest branch-runtime migration [run 36186694756](https://github.com/centerionware/not-k8s/actions/runs/36186694756)
+used SHA `d4be86e33d9140faa9258eaff112bebed3216fa4`. The nodemigrate and
+combined-runtime builds and five-node Docker isolation preflight passed. The
+focused `nodelet` quick-check passed on the same SHA in
+[run 36186694438](https://github.com/centerionware/not-k8s/actions/runs/36186694438).
+K3s source setup/import passed (59 CRDs accepted, API ready), but the target
+did not become CNI-ready: `config`, `mount-cgroup`, and
+`apply-sysctl-overwrites` completed; `mount-bpf-fs` logged a successful bpffs
+mount and later had no live containerd task, while the captured Pod status
+still said Running. Upstream imported 55 CRDs and then failed
+CertificateRequest admission because its webhook could not be reached while
+CNI was unavailable. Rollback and protected-export retention passed in both
+lanes. Neither lane reached target workload checks, reverse migration, or
+parity. Logs were saved at `/tmp/nodemigrate-36186694756/`. The nodelet event
+fallback has passed its component tests but has not yet been confirmed to
+resolve this final init-status transition; the next run needs to expose event
+arrival, Pod lookup, and reconcile outcome.
+
 Branch-runtime migration [run 36176504323](https://github.com/centerionware/not-k8s/actions/runs/36176504323)
 used code SHA `77e023f1349a6345f5a2bccd1e3a838887b3bbc5`. Both nodemigrate and
 combined-runtime builds passed, as did the five-node Docker isolation

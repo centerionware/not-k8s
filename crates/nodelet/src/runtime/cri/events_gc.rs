@@ -108,6 +108,7 @@ pub(crate) async fn run_cri_events(channel: &Channel, tx: &UnboundedSender<Strin
                 loop {
                     match stream.message().await {
                         Ok(Some(ev)) => {
+                            let has_pod_metadata = ev.pod_sandbox_status.as_ref().and_then(|s| s.metadata.as_ref()).is_some();
                             let key = if let Some(meta) = ev.pod_sandbox_status.as_ref().and_then(|s| s.metadata.as_ref()) {
                                 Some(crate::runtime::pod_key(&meta.namespace, &meta.name))
                             } else if let Some(container_id) = container_event_lookup_id(&ev) {
@@ -122,6 +123,16 @@ pub(crate) async fn run_cri_events(channel: &Channel, tx: &UnboundedSender<Strin
                             } else {
                                 None
                             };
+                            let is_cilium_pod = key.as_deref().is_some_and(|key| key.starts_with("kube-system/cilium-"));
+                            if !has_pod_metadata || is_cilium_pod {
+                                info!(
+                                    pod = key.as_deref().unwrap_or("<unmapped>"),
+                                    container_id = %ev.container_id,
+                                    event_type = ev.container_event_type,
+                                    has_pod_metadata,
+                                    "CRI container event resolved for migration lifecycle diagnostics"
+                                );
+                            }
                             if let Some(key) = key {
                                 debug!(pod = %key, container_id = %ev.container_id, event_type = ev.container_event_type,
                                     "CRI container event");
