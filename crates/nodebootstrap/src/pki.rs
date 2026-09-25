@@ -540,7 +540,7 @@ mod tests {
             .expect("apiserver cert should have a SAN extension");
         let expected_ip = [10_u8, 1, 1, 125];
         assert!(san_ext.value.general_names.iter().any(|name| {
-            matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if ip == expected_ip.as_slice())
+            matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == expected_ip.as_slice())
         }));
     }
 
