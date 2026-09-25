@@ -177,7 +177,15 @@ install_cilium() {
     local cni_bin_path=/opt/cni/bin
     local api_host="${NODEMIGRATE_CILIUM_API_HOST:-}"
     if [[ -z "$api_host" ]]; then
-        api_host="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
+        # K3s can take a few seconds to register its first Node after the API
+        # becomes reachable. Do not treat that normal startup window as a
+        # missing-CNI error; Cilium itself is what will make the Node Ready.
+        local deadline=$((SECONDS + 180))
+        while (( SECONDS < deadline )); do
+            api_host="$(kubectl get nodes -o json | jq -r '.items[0].status.addresses[]? | select(.type == "InternalIP") | .address' 2>/dev/null | head -n1 || true)"
+            [[ -n "$api_host" ]] && break
+            sleep 2
+        done
     fi
     [[ -n "$api_host" ]] || { echo "could not determine the source API node IP for Cilium" >&2; return 1; }
     helm repo add cilium https://helm.cilium.io/ --force-update

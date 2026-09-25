@@ -201,7 +201,20 @@ support is not guaranteed.
 
 ## Verification log
 
-The latest completed migration run used SHA
+The latest branch-runtime run used SHA `315f621fbb90d9d624d26167313740e756691059`
+in [run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991).
+The Docker five-node preflight passed. The K3s lane exited before migration
+because the fixture queried the InternalIP before K3s had registered its first
+Node; its diagnostics show the Node registering seconds later as `NotReady`.
+The kubeadm lane completed forward migration and failed at hostpath CSI
+readiness. CRI diagnostics show Cilium's `config` init container running while
+`cilium-envoy` exits at OCI mountpoint creation for
+`/var/run/cilium/envoy/sockets` with `read-only file system`; CoreDNS and CNI
+remain unready. A bounded wait for the source Node InternalIP is now in the
+worktree. A new branch-runtime rerun is needed to validate it and continue
+runtime diagnosis. No local Cargo test/build was run.
+
+Earlier release-backed run used SHA
 `093f2e440b16c4a2a585b424b816b97ab49480a9`. Focused nodemigrate crate tests
 and packaging, integration shell validation, and commit convention passed
 (runs `36058334362`, `36058334455`, and `36058331222`). Manual
@@ -221,6 +234,9 @@ No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-25 | `315f621fbb90d9d624d26167313740e756691059` | Branch-runtime K3s + Cilium | Failed before migration: K3s API was reachable before the Node registered; fixture's JSONPath query indexed an empty node list. A bounded node-IP wait is added in the worktree. | [Run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991) |
+| 2026-09-25 | `315f621fbb90d9d624d26167313740e756691059` | Branch-runtime Kubernetes + Cilium | Forward migration completed; post-cutover hostpath CSI readiness failed. Cilium Envoy repeatedly exited because runc could not create its volume target under the read-only image root. | [Run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991) |
+| 2026-09-25 | `315f621fbb90d9d624d26167313740e756691059` | Five-node Docker preflight | Passed. This checks isolation and host capabilities only, not Kubernetes or migration parity. | [Run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991) |
 | 2026-09-24 | `daac9ad05285e6ff749d4c51a18f9b71c8fb7dee` | Targeted quick-check: `nodebootstrap,nodemigrate` | Passed; predates bidirectional changes | [Run 35949477611](https://github.com/centerionware/not-k8s/actions/runs/35949477611) |
 | 2026-09-24 | `55704b1c202c248ab633aac8c74877c46499e59f` | Nodemigrate crate checks | Failed compile; fixes are in worktree, rerun pending | [Run 35952766075](https://github.com/centerionware/not-k8s/actions/runs/35952766075) |
 | 2026-09-24 | `55704b1c202c248ab633aac8c74877c46499e59f` | Targeted quick-check | Failed compile; fixes are in worktree, rerun pending | [Run 35952782893](https://github.com/centerionware/not-k8s/actions/runs/35952782893) |
