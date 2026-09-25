@@ -43,6 +43,25 @@ capture_cilium_envoy_process_owners() {
     done < <(ps -eo pid=,comm= | awk '$2 == "cilium-envoy" || $2 == "cilium-envoy-st" { print $1 }')
 }
 
+capture_cilium_agent_logs() {
+    local pod kubeconfig="${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}"
+    while IFS= read -r pod; do
+        [[ -n "$pod" ]] || continue
+        echo "Cilium agent logs for $pod (current):"
+        KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+            -c cilium-agent --tail=300 || true
+        echo "Cilium agent logs for $pod (previous):"
+        KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+            -c cilium-agent --previous --tail=300 || true
+        echo "Cilium config init logs for $pod (current and previous):"
+        KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+            -c config --tail=100 || true
+        KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+            -c config --previous --tail=100 || true
+    done < <(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o name 2>/dev/null || true)
+}
+
 diagnostics() {
     status=$?
     if [[ $status -ne 0 ]]; then
@@ -54,15 +73,7 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system deployment/cilium-operator \
                 --all-containers --tail=100 || true
-            local cilium_pod
-            while IFS= read -r cilium_pod; do
-                [[ -n "$cilium_pod" ]] || continue
-                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system "$cilium_pod" \
-                    -c config --previous --tail=100 || true
-                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system "$cilium_pod" \
-                    -c cilium-agent --previous --tail=100 || true
-            done < <(KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods -n kube-system \
-                -l k8s-app=cilium -o name 2>/dev/null || true)
+            capture_cilium_agent_logs
         fi
         for cni_path in /etc/cni/net.d /opt/cni/bin \
             /var/lib/rancher/k3s/agent/etc/cni/net.d /var/lib/rancher/k3s/data/current/bin; do
@@ -274,6 +285,7 @@ install_hostpath_driver() {
         done
         kubectl get pods -A -o wide >&2 || true
         kubectl get pods -n kube-system -l k8s-app=cilium -o yaml >&2 || true
+        capture_cilium_agent_logs >&2 || true
         kubectl get pods -A -l app.kubernetes.io/instance=hostpath.csi.k8s.io -o yaml >&2 || true
         kubectl get events -A --sort-by=.metadata.creationTimestamp >&2 || true
         return 1
