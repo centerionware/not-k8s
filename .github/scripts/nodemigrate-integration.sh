@@ -70,7 +70,10 @@ diagnostics() {
         if [[ -n "$CURRENT_KUBECONFIG" && -f "$CURRENT_KUBECONFIG" ]]; then
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods,pvc,pv -A -o wide || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get gatewayclass,gateway,httproute -A -o yaml || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n traefik deployment/traefik \
+                --all-containers --tail=500 || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system deployment/cilium-operator \
                 --all-containers --tail=100 || true
             capture_cilium_agent_logs
@@ -314,6 +317,9 @@ install_workloads() {
         --namespace traefik --create-namespace \
         --set service.type=ClusterIP --set ingressClass.enabled=true \
         --set providers.kubernetesGateway.enabled=true
+    # Do not create Gateway API resources until the controller is ready to
+    # reconcile them; otherwise fixture setup can time out on stale status.
+    kubectl rollout status -n traefik deployment/traefik --timeout=5m
 
     mkdir -p "$STATIC_PATH"
     if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
