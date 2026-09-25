@@ -50,8 +50,12 @@ new fixes.
   `system:kube-controller-manager`, despite nodecontroller sending per-controller
   impersonation headers. The API server did not process those headers. An RBAC-
   checked impersonation implementation and focused parser tests are now in the
-  worktree; quick-check and the branch-runtime lane must be rerun on the pushed
-  fix before considering controller creation verified.
+  worktree. Quick-check run `36080298252` first found a missing mutable borrow;
+  after the one-line compile fix, `nodeapiserver,nodemigrate` passed in run
+  `36080595243` on SHA `d4847449a84a5014515f31b3d9d522e455910cf7`. Branch-runtime
+  retest `36080871524` is running. The five-node Docker preflight passed in run
+  `36080300450` before that workflow was canceled to avoid spending more CI on
+  the known compile failure.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high

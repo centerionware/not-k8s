@@ -7,6 +7,17 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+## Latest runtime defect
+
+The branch-runtime migration at `3ef3ddf1e544a4ba7eda328c1b841ccd51aee9e1`
+confirmed that nodeapiserver ignored controller impersonation headers and
+authorized ReplicaSet creates as `system:kube-controller-manager`. The server
+now performs RBAC checks for each impersonated ServiceAccount and group before
+using that identity for the request. Focused `nodeapiserver,nodemigrate`
+quick-check passed at SHA `d4847449a84a5014515f31b3d9d522e455910cf7` in
+[run 36080595243](https://github.com/centerionware/not-k8s/actions/runs/36080595243).
+The branch-runtime migration rerun is [run 36080871524](https://github.com/centerionware/not-k8s/actions/runs/36080871524); its migration result is still pending.
+
 ## Migration coverage
 
 | Scenario or behavior | Implementation | Verification |
