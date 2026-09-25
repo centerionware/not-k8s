@@ -169,4 +169,22 @@ mod tests {
             "bounded map-key validation should fit the CEL cost limit, got {result:?}"
         );
     }
+
+    #[test]
+    fn substring_regex_rules_use_the_bounded_source_string_size() {
+        let root = super::super::decl_type::decl_type_for(&json!({
+            "type": "array",
+            "maxItems": 1024,
+            "items": {"type": "string", "maxLength": 253}
+        }))
+        .unwrap();
+        let result = check_rule_cost(
+            &root,
+            "self.all(hostname, hostname.substring(2).matches('^[a-z]+$'))",
+        );
+        assert!(
+            result.is_ok(),
+            "bounded hostname substring rules should fit the CEL cost limit, got {result:?}"
+        );
+    }
 }

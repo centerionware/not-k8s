@@ -268,6 +268,23 @@ impl<'a> Coster<'a> {
             self.computed_sizes.insert(expr.id, size);
             return Some(size);
         }
+        if let Expr::Call(call) = &expr.expr {
+            if call.func_name == "substring" {
+                if let Some(target) = &call.target {
+                    if let Some(source_size) = self.compute_size(target) {
+                        // A substring cannot be longer than its source. The
+                        // lower bound is zero because the requested offsets
+                        // may select an empty range.
+                        let size = SizeEstimate {
+                            min: 0,
+                            max: source_size.max,
+                        };
+                        self.computed_sizes.insert(expr.id, size);
+                        return Some(size);
+                    }
+                }
+            }
+        }
         let root = self.root?;
         let path = resolve_path(expr, &self.scope)?;
         let size = estimate_size(root, &path)?;
