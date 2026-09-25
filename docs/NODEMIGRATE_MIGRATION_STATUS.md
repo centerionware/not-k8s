@@ -9,24 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-At SHA `6a2e99d6b205626ae125e231d276c1936c3f1986`, branch-runtime K3s+Cilium
+At SHA `f97432ccc3edc65c846cb4c3c7bc7da3e30487f9`, branch-runtime K3s+Cilium
 and upstream+Cilium run
-[36148384987](https://github.com/centerionware/not-k8s/actions/runs/36148384987)
-passed utility/runtime builds, the Docker isolation preflight, and expanded
-source fixtures. Typed map and key-comprehension support reduced Gateway API
-CRD import failures from three to one; TLSRoute still failed because CEL cost
-estimation could not bound the result of `hostname.substring(2).matches(...)`.
-Upstream also failed importing CertificateRequest while its cert-manager
-webhook was unreachable during destination Cilium startup. Both lanes rolled
-back, restored source service/API, and retained protected exports. No target
-workload checkpoint, reverse migration, or parity comparison passed. The
-focused nodeapiserver quick-check passed at SHA `8555845f65bd0faed72d21d9b0b8c8b547960e6c`
-([run 36148848411](https://github.com/centerionware/not-k8s/actions/runs/36148848411)).
-The substring fix focused quick-check passed at SHA
-`f97432ccc3edc65c846cb4c3c7bc7da3e30487f9`
-([run 36150653684](https://github.com/centerionware/not-k8s/actions/runs/36150653684)).
-Its branch-runtime retest is running in
-[run 36150670405](https://github.com/centerionware/not-k8s/actions/runs/36150670405).
+[36150670405](https://github.com/centerionware/not-k8s/actions/runs/36150670405)
+passed utility/runtime builds, the Docker isolation preflight, source fixtures,
+and all CRD imports (58/58 K3s, 54/54 upstream). K3s forward migration
+completed and the destination API passed readiness. Cilium Envoy then failed
+binding its host socket with `errno=98`; CNI stayed uninitialized and the
+hostPath CSI and CoreDNS checks could not proceed. Diagnostics show source
+cleanup matched no process to the recorded source Cilium CRI IDs and removed
+three stale sockets. The later host Envoy PIDs had cgroup CRI ID
+`e14332ccaab8e20bdecfcff6bcc7140104799be59028628b3ebb15bcbd17e78a` and ancestor
+shim ID `e512be6d65204325544d6ea9e454bd4f94e12617cde8e12bb630354239d7cf9f`,
+which do not match the source IDs. Their ownership still needs tracing before
+any cleanup change. Upstream import failed on CertificateRequest admission
+because destination Cilium networking left the cert-manager webhook
+unreachable; rollback restored the source service/API and retained the export.
+No target workload checkpoint, reverse migration, or parity comparison passed.
+Focused nodeapiserver quick-checks passed at map fix SHA `8555845f`
+([36148848411](https://github.com/centerionware/not-k8s/actions/runs/36148848411))
+and substring fix SHA `f97432cc`
+([36150653684](https://github.com/centerionware/not-k8s/actions/runs/36150653684)).
 
 At SHA `4b3301af7713a90b4273275415c94e2164a1f5d2`, branch-runtime integration
 [run 36119449016](https://github.com/centerionware/not-k8s/actions/runs/36119449016)
