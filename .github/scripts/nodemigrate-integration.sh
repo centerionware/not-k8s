@@ -1038,7 +1038,7 @@ spec:
       - name: check
         image: $NODEMIGRATE_KUBECTL_IMAGE
         command: ["kubectl"]
-        args: ["get", "node", "$(NODE_NAME)", "-o", "name"]
+        args: ["get", "node", "\$(NODE_NAME)", "-o", "name"]
         env:
         - name: NODE_NAME
           valueFrom:
