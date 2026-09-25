@@ -1,5 +1,7 @@
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::{os::unix::fs::FileTypeExt, path::Path};
 
 use anyhow::{bail, ensure, Context, Result};
 
@@ -190,9 +192,31 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<()> {
         checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
             .with_context(|| format!("stopping source pod sandbox {id}"))?;
     }
+    let output = command(
+        "crictl",
+        &["--runtime-endpoint", &endpoint, "ps", "-a", "-o", "json"],
+    )
+    .context("checking for running source containers after stopping pod sandboxes")?;
+    ensure!(
+        output.status.success(),
+        "crictl could not list source containers: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let containers: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parsing CRI container list")?;
+    let running = running_sandbox_ids(&containers);
     for id in &all {
-        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
-            .with_context(|| format!("removing source pod sandbox {id}"))?;
+        if let Err(error) = checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id]) {
+            ensure!(
+                !running.contains(id),
+                "removing source pod sandbox {id} failed while its container is still running: {error:#}"
+            );
+            tracing::warn!(sandbox_id = id, error = %error, "stopped source sandbox could not be removed; continuing with no running containers");
+        }
+    }
+    let removed = cleanup_stale_cilium_envoy_sockets(installation)?;
+    if removed > 0 {
+        tracing::info!(removed, "removed stale Cilium Envoy Unix sockets");
     }
     Ok(())
 }
@@ -201,8 +225,7 @@ fn source_pod_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<String>
     let Some(items) = pods.get("items").and_then(serde_json::Value::as_array) else {
         return (Vec::new(), Vec::new());
     };
-    let mut ready = Vec::new();
-    let mut all = Vec::new();
+    let mut sandboxes = Vec::new();
     for pod in items {
         let Some(id) = pod
             .get("id")
@@ -211,12 +234,100 @@ fn source_pod_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<String>
         else {
             continue;
         };
-        all.push(id.to_string());
-        if pod.get("state").and_then(serde_json::Value::as_str) == Some("SANDBOX_READY") {
-            ready.push(id.to_string());
+        let is_cilium = pod
+            .get("metadata")
+            .and_then(|metadata| metadata.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| name.starts_with("cilium"))
+            || pod
+                .get("labels")
+                .and_then(|labels| labels.get("k8s-app"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|app| app == "cilium" || app == "cilium-envoy");
+        let is_ready =
+            pod.get("state").and_then(serde_json::Value::as_str) == Some("SANDBOX_READY");
+        sandboxes.push((id.to_string(), is_ready, is_cilium));
+    }
+    // CNI teardown for ordinary pods may depend on the Cilium agent. Stop and
+    // remove Cilium pods last, after the rest of the source sandboxes.
+    sandboxes.sort_by_key(|(_, _, is_cilium)| *is_cilium);
+    let ready = sandboxes
+        .iter()
+        .filter(|(_, is_ready, _)| *is_ready)
+        .map(|(id, _, _)| id.clone())
+        .collect();
+    let all = sandboxes.into_iter().map(|(id, _, _)| id).collect();
+    (ready, all)
+}
+
+fn running_sandbox_ids(containers: &serde_json::Value) -> std::collections::HashSet<String> {
+    containers
+        .get("containers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|container| {
+            container.get("state").and_then(serde_json::Value::as_str) == Some("CONTAINER_RUNNING")
+        })
+        .filter_map(|container| {
+            container
+                .get("podSandboxId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn cleanup_stale_cilium_envoy_sockets(installation: &Installation) -> Result<usize> {
+    let is_cilium = installation
+        .cluster
+        .as_ref()
+        .and_then(|cluster| cluster.cni.as_deref())
+        .is_some_and(|cni| cni.eq_ignore_ascii_case("cilium"));
+    if !is_cilium {
+        return Ok(0);
+    }
+    #[cfg(unix)]
+    {
+        remove_unix_sockets(Path::new("/var/run/cilium/envoy/sockets"))
+            .context("removing stale Cilium Envoy sockets after source containers stopped")
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(0)
+    }
+}
+
+#[cfg(unix)]
+fn remove_unix_sockets(directory: &Path) -> Result<usize> {
+    let metadata = match std::fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", directory.display()))
+        }
+    };
+    ensure!(
+        metadata.file_type().is_dir(),
+        "Cilium Envoy socket path {} is not a directory",
+        directory.display()
+    );
+    let mut removed = 0;
+    for entry in
+        std::fs::read_dir(directory).with_context(|| format!("listing {}", directory.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading entry in {}", directory.display()))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("reading socket metadata for {}", path.display()))?;
+        if metadata.file_type().is_socket() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing stale Unix socket {}", path.display()))?;
+            removed += 1;
         }
     }
-    (ready, all)
+    Ok(removed)
 }
 
 fn wait_for_api_port_release() -> Result<()> {
@@ -663,7 +774,7 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
-    use super::{source_pod_sandbox_ids, static_pod_sandbox_ids};
+    use super::{running_sandbox_ids, source_pod_sandbox_ids, static_pod_sandbox_ids};
 
     #[test]
     fn selects_only_kube_system_file_static_pod_sandboxes() {
@@ -701,6 +812,7 @@ mod tests {
     fn selects_every_source_sandbox_and_only_stops_ready_ones() {
         let pods = serde_json::json!({
             "items": [
+                {"id": "cilium", "state": "SANDBOX_READY", "metadata": {"name": "cilium-agent", "namespace": "kube-system"}},
                 {"id": "ready", "state": "SANDBOX_READY"},
                 {"id": "not-ready", "state": "SANDBOX_NOTREADY"},
                 {"metadata": {"name": "missing-id"}, "state": "SANDBOX_READY"},
@@ -711,8 +823,12 @@ mod tests {
         assert_eq!(
             source_pod_sandbox_ids(&pods),
             (
-                vec!["ready".to_string()],
-                vec!["ready".to_string(), "not-ready".to_string()]
+                vec!["ready".to_string(), "cilium".to_string()],
+                vec![
+                    "ready".to_string(),
+                    "not-ready".to_string(),
+                    "cilium".to_string()
+                ]
             )
         );
     }
@@ -723,5 +839,39 @@ mod tests {
             source_pod_sandbox_ids(&serde_json::json!({})),
             (vec![], vec![])
         );
+    }
+
+    #[test]
+    fn running_container_ids_are_grouped_by_pod_sandbox() {
+        let containers = serde_json::json!({
+            "containers": [
+                {"podSandboxId": "running", "state": "CONTAINER_RUNNING"},
+                {"podSandboxId": "exited", "state": "CONTAINER_EXITED"},
+                {"podSandboxId": "", "state": "CONTAINER_RUNNING"}
+            ]
+        });
+
+        assert_eq!(
+            running_sandbox_ids(&containers),
+            ["running".to_string()].into_iter().collect()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removes_only_unix_sockets_from_cilium_socket_directory() {
+        use super::remove_unix_sockets;
+        use std::{os::unix::net::UnixListener, path::Path};
+
+        let temp = tempfile::tempdir().unwrap();
+        let socket_path = temp.path().join("envoy.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let regular_file = temp.path().join("keep.txt");
+        std::fs::write(&regular_file, b"keep").unwrap();
+        drop(listener);
+
+        assert_eq!(remove_unix_sockets(temp.path()).unwrap(), 1);
+        assert!(!Path::new(&socket_path).exists());
+        assert_eq!(std::fs::read(regular_file).unwrap(), b"keep");
     }
 }

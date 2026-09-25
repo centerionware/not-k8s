@@ -9,17 +9,19 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest runtime defect
 
-Branch-runtime migration [36095002578](https://github.com/centerionware/not-k8s/actions/runs/36095002578)
-used SHA `3e9c0940bb4331eca01a83b5bb89f12f0f615585`. The standalone utility,
-combined runtime, and five-node Docker preflight passed. Both lanes completed
-forward migration, then failed Cilium/hostpath CSI readiness. Envoy logs show
-`errno=98` binding `/var/run/cilium/envoy/sockets`: the old source Envoy CRI
-sandbox was still running while the migrated DaemonSet started a second one.
-This is a nodemigrate cutover defect, separate from the fixed nodelet nested
-mountpoint failure. The worktree now stops/removes source pod sandboxes before
-destination activation and restores the source service if cleanup fails.
-Focused nodemigrate quick-check and a migration rerun are pending; reverse
-migration and semantic parity remain unverified.
+Branch-runtime migration [36096822314](https://github.com/centerionware/not-k8s/actions/runs/36096822314)
+used SHA `8d4f4a690f906a7fe4de2cbb88778b27599029cb`. The focused
+`nodemigrate` quick-check passed in [36096815873](https://github.com/centerionware/not-k8s/actions/runs/36096815873),
+as did the utility/runtime builds and five-node Docker preflight. Upstream
+migration safely rolled back when containerd returned `DeadlineExceeded`
+removing a stopped sandbox. K3s completed forward migration, but Envoy still
+failed to bind `/var/run/cilium/envoy/sockets` with `errno=98` after source
+sandboxes had been stopped, so CNI and CSI readiness remained blocked. The
+worktree now stops ordinary sandboxes before Cilium, checks for remaining
+running containers before tolerating stale sandbox metadata, and removes only
+Unix sockets in the detected Cilium Envoy directory. Those changes need a
+targeted quick-check and migration rerun; reverse migration and semantic parity
+remain unverified.
 
 ## Required migration test inventory
 

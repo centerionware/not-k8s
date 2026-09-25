@@ -74,6 +74,17 @@ new fixes.
   activation, with source-service rollback on cleanup failure. Focused
   nodemigrate quick-check and migration rerun are pending; no round trip or
   parity gate has passed.
+- On fix SHA `8d4f4a690f906a7fe4de2cbb88778b27599029cb`, focused
+  `nodemigrate` quick-check passed in [run 36096815873](https://github.com/centerionware/not-k8s/actions/runs/36096815873).
+  The migration run [36096822314](https://github.com/centerionware/not-k8s/actions/runs/36096822314)
+  passed both nodemigrate/runtime builds and Docker preflight, but neither
+  migration lane passed: upstream rollback handled a containerd `rmp`
+  `DeadlineExceeded` while removing a stopped sandbox; K3s advanced through
+  cutover but Envoy still hit `errno=98` on a stale Cilium socket. The
+  worktree now orders Cilium teardown last, checks that no source containers
+  are running before tolerating stale sandbox metadata, and cleans only Unix
+  sockets in the detected Cilium Envoy directory. Focused crate verification
+  and migration rerun are pending.
 - The migration CLI warns about the high data-loss risk and requires exact
   `yes` on an interactive terminal. Noninteractive runs write the same
   `⚠️⚠️⚠️⚠️⚠️` warning to stderr for service and CI logs, naming the high
