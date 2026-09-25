@@ -15,6 +15,27 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Branch-runtime migration [run 36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
+used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. Both scoped runtime
+builds and the five-node Docker isolation preflight passed. K3s source checks
+passed and nodemigrate imported all 59 captured CRDs; destination API
+readiness passed. Cilium then stopped at `mount-bpf-fs`: the CRI stop event
+included Pod metadata, CRI later reported exit 0, but the captured Pod status
+still said Running and no following init container was created. CSI setup
+timed out. Upstream accepted all 55 captured CRDs, then CertificateRequest
+admission returned HTTP 500 after destination Cilium networking disappeared.
+Both lanes restored the source and retained protected exports; neither reached
+target workloads, reverse migration, or semantic parity. The CiliumNode 409
+diagnostic was not exercised in this run. Logs are at
+`/tmp/nodemigrate-36195385046/{k3s,kubernetes}/`.
+
+Focused `nodeapiserver` quick-check [36195027134](https://github.com/centerionware/not-k8s/actions/runs/36195027134)
+passed on the same SHA. Branch-runtime rerun [36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992)
+is now exercising Cilium reconcile/CRI inventory diagnostics; its K3s,
+upstream, and Docker preflight outcomes are pending. Focused `nodelet`
+quick-check [36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777)
+passed on SHA `9974e763`.
+
 Branch-runtime migration [run 36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
 used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Nodemigrate and
 combined-runtime builds passed in both lanes, and the five-node Docker
