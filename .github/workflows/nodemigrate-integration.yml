@@ -8,6 +8,14 @@ on:
         required: false
         type: boolean
         default: false
+      runtime_source:
+        description: Runtime to test for the single-node migration lanes
+        required: false
+        type: choice
+        options:
+          - release
+          - branch
+        default: release
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
@@ -95,7 +103,12 @@ jobs:
       - name: Build nodemigrate
         run: cargo build --release -p nodemigrate
 
+      - name: Build branch runtime
+        if: inputs.runtime_source == 'branch'
+        run: cargo build --release --features cri -p notk8s
+
       - name: Fetch latest runtime
+        if: inputs.runtime_source != 'branch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

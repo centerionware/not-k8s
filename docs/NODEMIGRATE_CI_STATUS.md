@@ -27,7 +27,10 @@ new fixes.
   GitHub-published SHA-256 digest and required components, then runs
   `.github/scripts/nodemigrate-integration.sh` as root and uploads its log.
   Set `docker_only=true` to run the five-node Docker capability/isolation
-  preflight without repeating the K3s and upstream lanes.
+  preflight without repeating the K3s and upstream lanes. Set
+  `runtime_source=branch` to build the combined runtime from the tested branch
+  for the single-node lanes; the default `release` mode remains the v0.8.0
+  baseline check. Neither option runs the general build/e2e workflows.
   The latest regular release was verified as `v0.8.0` on 2026-09-24, so the
   PR utility runs against that release. Run `36065059567` completed the
   utility builds, runtime downloads, full source CNI/Cilium/CSI/workload
