@@ -799,11 +799,12 @@ async fn persist_update(
         // Lost the race: something else wrote to this key between our
         // read above and this write.
         if group == "cilium.io" && resource == "ciliumnodes" {
+            let object_name = object
+                .pointer("/metadata/name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<missing>");
             tracing::warn!(
-                name = object
-                    .pointer("/metadata/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("<missing>"),
+                name = object_name,
                 compared_resource_version = existing_kv.mod_revision,
                 "CiliumNode update lost a storage compare-and-swap race"
             );
