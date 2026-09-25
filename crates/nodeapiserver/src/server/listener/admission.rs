@@ -11,7 +11,7 @@
 /// fields are populated and which stages/levels this uses.
 async fn handle_with_audit(
     req: Request<Incoming>,
-    storage: Option<StorageClient>,
+    mut storage: Option<StorageClient>,
     cache_registry: crate::cacher::CacheRegistry,
     pure_admission: Arc<crate::admission::chain::MutatingRegistry>,
     pod_node_selector_config: Option<Arc<crate::admission::pod_node_selector::PluginConfig>>,
