@@ -89,6 +89,49 @@ capture_cilium_init_container_diagnostics() {
     done <<< "$pod_records"
 }
 
+capture_cni_host_diagnostics() {
+    local config file pod
+    for config in /etc/containerd/config.toml \
+        /var/lib/rancher/k3s/agent/etc/containerd/config.toml; do
+        [[ -f "$config" ]] || continue
+        echo "Containerd CNI settings from $config:"
+        awk '
+            /^\[plugins\..*\.cni\]$/ { printing = 1; print; next }
+            printing && /^\[/ { printing = 0 }
+            printing { print }
+        ' "$config"
+    done
+    for dir in /etc/cni/net.d /opt/cni/bin \
+        /var/lib/rancher/k3s/agent/etc/cni/net.d \
+        /var/lib/rancher/k3s/data/current/bin; do
+        [[ -e "$dir" ]] || continue
+        echo "CNI directory inventory: $dir"
+        ls -la "$dir" || true
+        if [[ -d "$dir" && "$dir" == */net.d ]]; then
+            while IFS= read -r -d '' file; do
+                echo "CNI config summary: $file"
+                jq -c '(.plugins // [ . ]) | map({type, name, log_file})' \
+                    "$file" 2>/dev/null || echo "CNI config is not JSON: $file"
+                sha256sum "$file" || true
+            done < <(find "$dir" -maxdepth 1 -type f \
+                \( -name '*.conf' -o -name '*.conflist' -o -name '*.json' \) \
+                -print0 2>/dev/null)
+        fi
+    done
+    for dir in /var/run/cilium /run/cilium; do
+        [[ -e "$dir" ]] || continue
+        echo "Cilium runtime socket inventory: $dir"
+        find "$dir" -maxdepth 3 -type s -printf '%p\n' 2>/dev/null || true
+    done
+    pod="$(kubectl -n kube-system get pods -l k8s-app=cilium \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [[ -n "$pod" ]]; then
+        echo "Cilium agent status from pod/$pod:"
+        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+            cilium-dbg status --verbose 2>&1 || true
+    fi
+}
+
 watch_cilium_mount_cgroup_logs() {
     local container_json containers container_id container_name state output
     declare -A last_logs=()
@@ -151,6 +194,7 @@ diagnostics() {
                 ls -la "$cni_path" || true
             fi
         done
+        KUBECONFIG="$CURRENT_KUBECONFIG" capture_cni_host_diagnostics || true
         echo "Cilium Envoy host-process ownership:"
         capture_cilium_envoy_process_owners || true
         journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
