@@ -957,7 +957,7 @@ mod tests {
 
     use super::{
         detect_external_cni, inspect_distribution, inspect_host, Distribution, HostLayout,
-        K3sDatastore, NodeRole, ServiceManager,
+        K3sConfig, K3sDatastore, NodeRole, ServiceManager,
     };
 
     #[test]
