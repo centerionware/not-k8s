@@ -223,6 +223,11 @@ layers with OverlayFS `invalid argument`, so the API server never started.
 The test node's CRI snapshotter is now set to containerd's `native` file-copy
 snapshotter to avoid nested OverlayFS inside Docker. The next kubeadm/Cilium
 preflight is pending.
+Run [36271561812](https://github.com/centerionware/not-k8s/actions/runs/36271561812)
+confirmed the node setup reached containerd configuration; the sed expression
+for changing its snapshotter then broke the nested shell quoting. The harness
+now uses a simpler exact-value replacement and checks the generated setting
+before restarting containerd.
 
 ## Earlier branch-runtime attempt
 

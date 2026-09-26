@@ -196,7 +196,7 @@ EOF
         echo "$HOSTNAME: configuring and restarting containerd"
         mkdir -p /etc/containerd
         containerd config default >/etc/containerd/config.toml
-        sed -i -E "s/^([[:space:]]*snapshotter[[:space:]]*=[[:space:]]*)[\"']overlayfs[\"']/\1\"native\"/" /etc/containerd/config.toml
+        sed -i "s/snapshotter = \"overlayfs\"/snapshotter = \"native\"/" /etc/containerd/config.toml
         sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
         grep -n "snapshotter = \"native\"" /etc/containerd/config.toml
         systemctl restart containerd
