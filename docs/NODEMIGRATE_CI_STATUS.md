@@ -53,6 +53,14 @@ survival under control-plane loss, restart recovery, or migration check passed.
 Log: `/tmp/nodemigrate-36273723872-job.log` and artifact
 `/tmp/nodemigrate-36273723872-artifact/nodemigrate-docker-preflight.log`.
 
+Docker-only run [36274669206](https://github.com/centerionware/not-k8s/actions/runs/36274669206)
+at SHA `3d6787dd6f5869b24fd55252addee857ffd3d72d` failed before the node
+containers were created: the mountinfo assertion's embedded `awk` program
+expanded `$5` in the wrong shell. The assertion now uses a POSIX `case` check
+on the `/sys/fs/bpf` mountinfo line instead. `bash -n`, `sh -ec` fixture, and
+`git diff --check` pass; another Docker-only run is pending. Log:
+`/tmp/nodemigrate-36274669206-job.log`.
+
 Another Docker-only run is pending. Logs:
 `/tmp/nodemigrate-36272360238-job.log` and
 `/tmp/nodemigrate-36272577668-job.log`.

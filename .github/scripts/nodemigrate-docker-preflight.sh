@@ -128,12 +128,15 @@ for index in "${!NODES[@]}"; do
             echo "FAIL: making this node's private bpffs mount shared is unavailable" >&2
             exit 1
         }
-        awk '\''$5 == "/sys/fs/bpf" && $0 ~ / shared:[0-9]+ / { found=1 } END { exit !found }'\'' \
-            /proc/self/mountinfo || {
+        mountinfo_line="$(grep " /sys/fs/bpf " /proc/self/mountinfo)"
+        case "$mountinfo_line" in
+            *" shared:"*) ;;
+            *)
                 echo "FAIL: this node's bpffs mount is not shared for nested Cilium Pods" >&2
-                grep " /sys/fs/bpf " /proc/self/mountinfo >&2 || true
+                printf "%s\n" "$mountinfo_line" >&2
                 exit 1
-            }
+                ;;
+        esac
         printf "%s\n" "$HOSTNAME" > /var/lib/nodemigrate-volume/node-identity || {
             echo "FAIL: node persistent volume is not writable" >&2
             exit 1
