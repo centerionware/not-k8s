@@ -46,6 +46,23 @@ failed its CertificateRequest import with HTTP 500, then recovered its source
 and retained its protected export. Logs are under
 `/tmp/nodemigrate-36223445443/`.
 
+Release-backed migration [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539)
+at SHA `f86fad5622d48582c24531df4b88368096d632d9` fetched `v0.8.0`. Both
+nodemigrate builds and Docker preflight passed; both lanes failed during
+forward import and recovered their sources while retaining protected exports.
+K3s captured 582 objects/59 CRDs, but v0.8.0 rejected three Gateway API CRDs
+for unsupported CEL `matches`. Target snapshots reported no schedulable Nodes,
+no running Cilium/cert-manager Pods, and no webhook endpoints. The mounted-CA
+probe had no usable Pod: `kubectl exec` failed because nodelet port 10250
+refused connections. The source Node returned Ready after rollback. This is
+stronger evidence for a target Node/runtime readiness failure than a CA
+mismatch; the run did not establish the bytes mounted in Cilium. Upstream also
+failed CertificateRequest and CSR imports with HTTP 500 and hit the same
+Gateway API CRD incompatibility. Neither lane reached target workload checks,
+reverse migration, or parity. The watcher now records target Node conditions
+and reports a failed mounted-CA probe explicitly. Artifacts:
+`/tmp/nodemigrate-36228920539/`.
+
 Release-backed migration [36228127861](https://github.com/centerionware/not-k8s/actions/runs/36228127861)
 at SHA `d92abf28397e143c266c115cf2deb7d694f23374` fetched the regular
 `v0.8.0` runtime. Both source CA checks and the Docker preflight passed, but

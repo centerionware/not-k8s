@@ -128,6 +128,15 @@ watch_target_forward_state() {
                         podIP: .status.podIP,
                         nodeName: .spec.nodeName
                     }]' || true
+                echo 'target node scheduling and readiness:'
+                KUBECONFIG="$kubeconfig" kubectl get nodes -o json 2>&1 \
+                    | jq -cS '[.items[]? | {
+                        name: .metadata.name,
+                        unschedulable: (.spec.unschedulable // false),
+                        taints: .spec.taints,
+                        conditions: [.status.conditions[]? | {type, status, reason, message}],
+                        addresses: .status.addresses
+                    }]' || true
                 echo 'cert-manager pods:'
                 KUBECONFIG="$kubeconfig" kubectl get pods -n cert-manager -o json 2>&1 \
                     | jq -cS '[.items[]? | {
@@ -199,10 +208,16 @@ watch_target_forward_state() {
                         | while IFS=$'\t' read -r pod_ns pod_name container_name; do
                             [[ -n "$pod_name" && -n "$container_name" ]] || continue
                             printf '%s/%s container=%s ' "$pod_ns" "$pod_name" "$container_name"
-                            KUBECONFIG="$kubeconfig" kubectl --request-timeout=5s \
-                                exec -n "$pod_ns" "$pod_name" -c "$container_name" -- \
-                                cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-                                | sha256sum || true
+                            if mounted_ca_b64="$(KUBECONFIG="$kubeconfig" \
+                                kubectl --request-timeout=5s exec -n "$pod_ns" \
+                                    "$pod_name" -c "$container_name" -- \
+                                    cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                                | base64 -w0)"; then
+                                printf '%s' "$mounted_ca_b64" | base64 -d 2>/dev/null \
+                                    | sha256sum || true
+                            else
+                                echo 'mounted CA unavailable (exec failed; see preceding error)'
+                            fi
                         done || true
                 else
                     echo 'target admin kubeconfig did not expose a flattened API CA'

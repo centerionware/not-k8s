@@ -15,6 +15,24 @@ new fixes.
 
 ## Latest release-backed result
 
+Release-backed migration [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539)
+used SHA `f86fad5622d48582c24531df4b88368096d632d9` and fetched regular
+release `v0.8.0`. Both nodemigrate builds and the five-node Docker preflight
+passed. K3s source fixture passed and captured 582 objects/59 CRDs. Import
+failed on three Gateway API CRDs because v0.8.0's CEL runtime does not know
+`matches`; the Gateway object could not be restored without its API. Target
+snapshots showed no schedulable Nodes, no running Cilium or cert-manager Pods,
+and no cert-manager webhook endpoints. The mounted-CA probe could not read a
+Pod because `kubectl exec` reached nodelet on port 10250 and got connection
+refused. The Node became Ready after rollback, so its later state is source
+recovery evidence. Upstream also returned HTTP 500 importing CertificateRequest
+and CSR objects and hit the same Gateway API CEL incompatibility. Rollback
+restored both sources and retained protected exports. Neither lane reached
+target workload/storage checks, reverse migration, or parity. This run does
+not prove a mounted-CA mismatch. It points first to target Node readiness and
+nodelet service availability; the watcher now records Node readiness on the
+next run. Artifacts: `/tmp/nodemigrate-36228920539/`.
+
 Release-backed migration [36228127861](https://github.com/centerionware/not-k8s/actions/runs/36228127861)
 used SHA `d92abf28397e143c266c115cf2deb7d694f23374` and fetched the regular
 release runtime `v0.8.0`. Both nodemigrate builds, the five-node Docker

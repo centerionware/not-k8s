@@ -12,16 +12,32 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Each must preserve identity/data/state and behavior through K3s → not-k8s → K3s and upstream Kubernetes → not-k8s → upstream Kubernetes; most target, return, and full round-trip assertions remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Release-backed run 36228127861 confirmed namespace CA ConfigMaps match the v0.8.0 kubeconfig, but Cilium/Traefik still reject the API certificate after the new importer seeds destination CA maps. Root cause remains open; the watcher now records mounted service-account CA fingerprints. v0.8.0 also rejected three Gateway API CRDs because its CEL runtime lacks `matches`; upstream import returned HTTP 500 for a CertificateRequest and CSR. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Release-backed run 36228920539 showed the K3s target had no nodes available to schedule pods during migration; cert-manager had no endpoints and the Cilium/cert-manager mounted-CA probe could not exec because nodelet's port 10250 refused connections. This does not establish a CA mismatch. v0.8.0 also rejected three Gateway API CRDs for missing CEL `matches`; upstream CertificateRequest and CSR imports returned HTTP 500. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed run [36228127861](https://github.com/centerionware/not-k8s/actions/runs/36228127861) fetched v0.8.0, passed both utility builds and Docker isolation, then failed forward import in both lanes. K3s still had Cilium/Traefik TLS trust errors. Upstream also failed CertificateRequest and CSR imports (HTTP 500) and Gateway API CRDs (unsupported CEL `matches`). Both sources recovered and protected exports were retained; no target parity or reverse migration passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed run [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539) fetched v0.8.0, passed both utility builds and Docker isolation, then failed forward import in both lanes. K3s target had no schedulable Node, so Cilium/cert-manager pods and webhook endpoints did not come up; mounted-CA probe was blocked by nodelet port 10250 refusing connections. Upstream also failed CertificateRequest and CSR imports (HTTP 500) and Gateway API CRDs (unsupported CEL `matches`). Both sources recovered and exports were retained; no target parity or reverse migration passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed in run `36077448685`: five systemd containers have independent namespaces, machine IDs, CRI/BPF capability, writable persistent volumes, peer connectivity, and stop/restart isolation. This is infrastructure evidence, not proof of Kubernetes control-plane, Cilium datapath, or migration parity. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Release-backed migration [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539)
+  at SHA `f86fad5622d48582c24531df4b88368096d632d9` fetched `v0.8.0`; utility
+  builds and the Docker five-node preflight passed. K3s source fixture passed
+  and nodemigrate captured 582 objects/59 CRDs. Three Gateway API CRDs were
+  rejected by v0.8.0's unsupported CEL `matches`, so the target could not
+  import the matching Gateway object. During the target window the API had no
+  schedulable nodes; Cilium and cert-manager did not reach running status and
+  the cert-manager webhook had no endpoints. Mounted-CA probing was blocked:
+  nodelet's port 10250 refused `kubectl exec`; the later Ready Node was observed
+  after source rollback. Upstream again failed CertificateRequest and CSR
+  imports with HTTP 500 and hit the same Gateway API CEL failures. Both sources
+  recovered and protected exports were retained. Neither lane reached a target
+  workload/storage checkpoint, reverse migration, or parity. The logs therefore
+  do not prove a mounted-CA mismatch; the no-node/readiness failure is the
+  stronger live target evidence.
 
 - Release-backed migration [36228127861](https://github.com/centerionware/not-k8s/actions/runs/36228127861)
   at SHA `d92abf28397e143c266c115cf2deb7d694f23374` fetched regular release
