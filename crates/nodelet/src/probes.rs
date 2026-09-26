@@ -117,7 +117,7 @@ pub fn has_any_probe(containers: &[Container]) -> bool {
 /// `httpGet`/`tcpSocket`/`exec` is actually set (schema allows it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeCheck {
-    Http { path: String, port: u16, https: bool },
+    Http { path: String, port: u16, https: bool, host: Option<String>, headers: Vec<(String, String)> },
     Tcp { port: u16 },
     Exec { command: Vec<String> },
     /// `probe.grpc` (round 29) — the standard `grpc.health.v1.Health/Check`
@@ -149,7 +149,8 @@ pub fn probe_check(probe: &Probe, container: &Container) -> ProbeCheck {
         let port = resolve_port(&http.port, container);
         let path = http.path.clone().unwrap_or_else(|| "/".to_string());
         let https = http.scheme.as_deref() == Some("HTTPS");
-        ProbeCheck::Http { path, port, https }
+        let headers = http.http_headers.iter().map(|header| (header.name.clone(), header.value.clone())).collect();
+        ProbeCheck::Http { path, port, https, host: http.host.clone(), headers }
     } else if let Some(tcp) = &probe.tcp_socket {
         ProbeCheck::Tcp { port: resolve_port(&tcp.port, container) }
     } else if let Some(exec) = &probe.exec {
@@ -233,7 +234,7 @@ async fn check_tcp(host: &str, port: u16, timeout: Duration) -> bool {
     matches!(tokio::time::timeout(timeout, TcpStream::connect((host, port))).await, Ok(Ok(_)))
 }
 
-async fn check_http(host: &str, port: u16, path: &str, timeout: Duration) -> bool {
+async fn check_http(host: &str, port: u16, path: &str, headers: &[(String, String)], timeout: Duration) -> bool {
     if port == 0 {
         return false;
     }
@@ -241,7 +242,19 @@ async fn check_http(host: &str, port: u16, path: &str, timeout: Duration) -> boo
     let path = path.to_string();
     tokio::time::timeout(timeout, async move {
         let mut stream = TcpStream::connect((host.as_str(), port)).await.ok()?;
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        let host_header = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("host"))
+            .map(|(_, value)| value.as_str())
+            .unwrap_or(host);
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\n");
+        for (name, value) in headers.iter().filter(|(name, _)| !name.eq_ignore_ascii_case("host")) {
+            req.push_str(name);
+            req.push_str(": ");
+            req.push_str(value);
+            req.push_str("\r\n");
+        }
+        req.push_str("Connection: close\r\n\r\n");
         stream.write_all(req.as_bytes()).await.ok()?;
         let mut buf = Vec::with_capacity(256);
         let mut chunk = [0u8; 512];
@@ -314,13 +327,14 @@ async fn run_check(
     timeout: Duration,
 ) -> bool {
     match check {
-        ProbeCheck::Http { path, port, https } => {
+        ProbeCheck::Http { path, port, https, host, headers } => {
+            let host = host.as_deref().unwrap_or(pod_ip);
             if *https {
                 // TLS probing isn't implemented; a bare connect at least
                 // proves the port accepts connections. See docs/GAP_CLOSURE.md.
-                check_tcp(pod_ip, *port, timeout).await
+                check_tcp(host, *port, timeout).await
             } else {
-                check_http(pod_ip, *port, path, timeout).await
+                check_http(host, *port, path, headers, timeout).await
             }
         }
         ProbeCheck::Tcp { port } => check_tcp(pod_ip, *port, timeout).await,

@@ -15,6 +15,26 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Branch-runtime migration [run 36212326763](https://github.com/centerionware/not-k8s/actions/runs/36212326763)
+used SHA `b2c4f8824faf2c490aa13bf61f0a7c4509a27d05`. Both scoped utility and
+runtime builds and the five-node Docker isolation preflight passed; both
+`Run migration` steps failed. In K3s, the CoreDNS-gate teardown fix advanced
+past the prior stale-CSI-Pod failure: new CSI Pods were created with
+`/var/lib/nodelet` paths, but remained Pending because the node still had
+`node.cilium.io/agent-not-ready:NoSchedule`. The Cilium agent container was
+Running but not Ready; `cilium status` reported 42/44 controllers healthy,
+85 modules OK, and 1/1 cluster nodes reachable. The operator had repeated
+liveness-probe restarts, and its node-taint-sync controller started only
+seconds before the migration timed out. These observations do not yet prove
+which readiness condition or controller action is causal. Upstream again
+failed applying `CertificateRequest/migration-test-1`: the cert-manager
+webhook could not be reached and the API returned HTTP 500. Both lanes
+restored the source and retained the protected export. Neither reached target
+workload checks, reverse migration, or semantic parity. The regular build gate
+and full e2e were not run. Logs:
+`/tmp/nodemigrate-36212326763-k3s.log` and
+`/tmp/nodemigrate-36212326763-kubernetes.log`.
+
 Branch-runtime migration [run 36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237)
 used diagnostic SHA `0bc658e76b58f4f29ce2d69c310826fab8fe9ea9`. Both scoped
 nodemigrate/runtime builds passed, as did the five-node Docker preflight; both

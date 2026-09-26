@@ -9,6 +9,28 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36212326763](https://github.com/centerionware/not-k8s/actions/runs/36212326763)
+used SHA `b2c4f8824faf2c490aa13bf61f0a7c4509a27d05`. Both scoped builds and
+five-node Docker preflight passed. In the K3s lane, the nodelet startup-gate
+teardown change cleared the prior stale CSI Pod blockage: replacement CSI Pods
+had target `/var/lib/nodelet` paths and were newly created. They remained
+Pending because the node retained Cilium's
+`node.cilium.io/agent-not-ready:NoSchedule` taint. The Cilium agent container
+was Running but not Ready; `cilium status` showed 42/44 controllers healthy,
+all 85 reported modules OK, and 1/1 node reachable. Inspection found nodelet
+ignored the probes' `httpGet.host: 127.0.0.1` and configured headers, instead
+connecting to the Pod IP; the Cilium health server bound to loopback. The
+operator's repeated liveness failures and agent readiness failure are
+consistent with this confirmed probe defect. The fix and focused request tests
+are in the worktree; quick-check and migration rerun are pending. Upstream again rolled back
+after the cert-manager webhook could not be reached for
+`CertificateRequest/migration-test-1` and the API returned HTTP 500. Source
+recovery and protected-export retention passed in both lanes. Neither lane
+reached target workload, return-migration, or state-parity checks. The regular
+build gate and full e2e were not run. Logs:
+`/tmp/nodemigrate-36212326763-k3s.log` and
+`/tmp/nodemigrate-36212326763-kubernetes.log`.
+
 Branch-runtime migration [36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237)
 used diagnostic SHA `0bc658e76b58f4f29ce2d69c310826fab8fe9ea9`. Both scoped
 builds and five-node Docker preflight passed. In K3s, all six Cilium init
@@ -285,7 +307,7 @@ tests; they do not replace or narrow any existing coverage.
 | Resource group | Required migration and behavior checks | Current fixture status |
 | --- | --- | --- |
 | Configuration and identity | Namespaces, ConfigMaps (including binary data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings, ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses; verify identity/data and allowed plus denied requests using real service-account credentials. | The fixture includes text/binary ConfigMaps, an immutable ConfigMap mounted into and read by a standalone Pod, a Secret consumed through Pod environment, namespaced and cluster-scoped RBAC, and real-token Jobs for allowed ConfigMap/Node reads and denied Secret reads. ResourceQuota, LimitRange, PriorityClass, immutable state, and mounted data are asserted at each stage. Static checks pass for the additive immutable ConfigMap and user-CRD fixture; runtime validation is pending. Additional RBAC/quota behavior cases and round-trip verification remain pending. |
-| Workload controllers | Deployments, ReplicaSets, StatefulSets and `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and standalone Pods; verify selectors, templates, rollout/revision history, replica/readiness counts, job execution, schedule, and unique application data at each checkpoint. | The fixture includes an nginx Deployment, a StatefulSet backed by a CSI claim template with a seeded payload, an all-node DaemonSet, a completed Job, a manually triggered CronJob, and a standalone data-seed Pod. Both source lanes passed these checks and invoked nodemigrate in run 36142617576. Target and returned-source checks remain unverified because destination import rolled back on Gateway API admission-policy evaluation. |
+| Workload controllers | Deployments, ReplicaSets, StatefulSets and `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and standalone Pods; verify selectors, templates, rollout/revision history, replica/readiness counts, job execution, schedule, and unique application data at each checkpoint. | The fixture includes an nginx Deployment, a StatefulSet backed by a CSI claim template with a seeded payload, an all-node DaemonSet, a completed Job, a manually triggered CronJob, and a standalone data-seed Pod. Both source lanes passed source checks and invoked nodemigrate in run 36142617576. Runs 36211105237 and 36212326763 still fail before target workload assertions; returned-source checks and parity remain unverified. |
 | Helm-managed applications | Helm charts/releases and release records (name, namespace, chart/version, values, revision, manifest), plus all chart-managed resources; verify `helm list`, release inspection, workload health, and a safe follow-up Helm operation after each cutover. | Traefik, cert-manager, and Cilium are installed by Helm. Source-stage checks inspected values, manifests, history, and version-pinned server-side dry-run upgrades of Traefik and Cilium in both lanes of run 36140783446. Post-migration release state and follow-up operations remain unverified. |
 | Service networking and ingress | Services, user-managed Endpoints and EndpointSlices, controller-generated endpoints, IngressClasses and Ingresses, NetworkPolicies, and Gateway API `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `TLSRoute`, and `UDPRoute` where supported; verify DNS, service reachability, policy allow/deny, HTTP/TLS routing, and certificate use. | The fixture now creates a selectorless Service with user-managed Endpoints and EndpointSlice objects and checks their state at every checkpoint; generic source/target/return fingerprints cover them too. The exporter skips only recognized Kubernetes-generated endpoint records and preserves custom-managed ones. Source route probes passed in run 36142617576, but target and return behavior remain blocked before workload checks. The Cilium NetworkPolicy fixture probes both allowed and denied service access; broader route protocols and endpoint traffic behavior remain pending. |
 | Persistent storage | PVs, PVCs, StorageClasses, static hostPath/local volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where applicable, VolumeSnapshotClasses, VolumeSnapshots, snapshot contents, and StatefulSet claim templates; verify binding, topology, provider configuration/credentials, attachment behavior, and unique payload data. | Static hostPath and dynamic hostPath CSI PVC data remain seeded; the StatefulSet now also owns a dynamic CSI claim template with a distinct payload checked at every checkpoint. The current Cilium failure prevents target storage checks; provider and multi-node attachment coverage is absent. |

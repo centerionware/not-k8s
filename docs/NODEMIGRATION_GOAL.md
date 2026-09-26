@@ -1,6 +1,6 @@
 # nodemigrate full migration goal
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
 
 This document defines the complete intended scope and acceptance criteria for
 the standalone `nodemigrate` utility. It is the task-specific authority for
