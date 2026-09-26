@@ -1677,6 +1677,73 @@ record_fixture_storage_specs() {
     done
 }
 
+exercise_statefulset_scaling() {
+    local stage="$1"
+    local claim_uid claim_uid_after ordinal_one_pv deadline
+    claim_uid="$(kubectl get pvc state-migration-stateful-0 -n migration-apps \
+        -o jsonpath='{.metadata.uid}')"
+    [[ -n "$claim_uid" ]] || {
+        echo "StatefulSet ordinal 0 PVC has no UID at stage=$stage" >&2
+        return 1
+    }
+
+    kubectl scale statefulset/migration-stateful -n migration-apps --replicas=2
+    kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-stateful-1 --timeout=5m
+    kubectl wait -n migration-apps \
+        --for=jsonpath='{.status.phase}'=Bound pvc/state-migration-stateful-1 --timeout=5m
+    kubectl get statefulset migration-stateful -n migration-apps -o json | jq -e '
+      .spec.replicas == 2 and
+      (.status.readyReplicas // 0) == 2 and
+      (.status.observedGeneration // 0) == .metadata.generation
+    ' >/dev/null || {
+        echo "StatefulSet did not reconcile both replicas at stage=$stage" >&2
+        return 1
+    }
+    kubectl exec -n migration-apps migration-stateful-1 -- sh -c \
+        'echo ordinal-one-transient-data > /state/marker'
+    [[ "$(kubectl exec -n migration-apps migration-stateful-1 -- cat /state/marker)" == ordinal-one-transient-data ]] || {
+        echo "StatefulSet ordinal 1 could not read its own claim-template data at stage=$stage" >&2
+        return 1
+    }
+    ordinal_one_pv="$(kubectl get pvc state-migration-stateful-1 -n migration-apps \
+        -o jsonpath='{.spec.volumeName}')"
+    [[ -n "$ordinal_one_pv" ]] || {
+        echo "StatefulSet ordinal 1 PVC has no bound PV at stage=$stage" >&2
+        return 1
+    }
+    kubectl get pv "$ordinal_one_pv" -o json | jq -e \
+        '.spec.persistentVolumeReclaimPolicy == "Delete"' >/dev/null || {
+            echo "StatefulSet scale fixture requires Delete reclaim for temporary ordinal 1 PV $ordinal_one_pv" >&2
+            return 1
+        }
+
+    kubectl scale statefulset/migration-stateful -n migration-apps --replicas=1
+    kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
+    kubectl wait -n migration-apps --for=delete pod/migration-stateful-1 --timeout=5m
+    kubectl delete pvc state-migration-stateful-1 -n migration-apps --wait=true
+    deadline=$((SECONDS + 300))
+    while kubectl get pv "$ordinal_one_pv" >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            echo "Temporary StatefulSet ordinal 1 PV was not reclaimed at stage=$stage: $ordinal_one_pv" >&2
+            return 1
+        fi
+        sleep 2
+    done
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-stateful-0 --timeout=5m
+    claim_uid_after="$(kubectl get pvc state-migration-stateful-0 -n migration-apps \
+        -o jsonpath='{.metadata.uid}')"
+    [[ "$claim_uid_after" == "$claim_uid" ]] || {
+        echo "StatefulSet ordinal 0 PVC identity changed during scale at stage=$stage" >&2
+        return 1
+    }
+    [[ "$(kubectl exec -n migration-apps migration-stateful-0 -- cat /state/marker)" == stateful-persistent-data ]] || {
+        echo "StatefulSet ordinal 0 data changed during scale at stage=$stage" >&2
+        return 1
+    }
+    echo "PASS StatefulSet ordinal scale, claim-template provisioning and ordinal 0 data at stage=$stage"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -1829,6 +1896,7 @@ YAML
     wait_for_httproute_condition migration-apps migration-nginx ResolvedRefs
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
     kubectl rollout status -n migration-apps statefulset/migration-stateful --timeout=5m
+    exercise_statefulset_scaling "$stage"
     kubectl get replicasets -n migration-apps -l app=migration-nginx -o json | jq -e '.items | length >= 2' >/dev/null || {
         echo "Deployment rollout history was not preserved at stage $stage" >&2
         return 1
