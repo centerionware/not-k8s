@@ -72,6 +72,14 @@ it does not explain CoreDNS readiness or prove the full Cilium setup. Logs:
 `/tmp/nodemigrate-36229667964/nodemigrate-k3s.log` and
 `/tmp/nodemigrate-36229667964/nodemigrate-kubernetes.log`.
 
+Follow-up source inspection found the K3s target's `default/kubernetes`
+EndpointSlice still pointed at `127.0.0.1:6443` while its Node InternalIP was
+`10.1.0.61`. Bootstrap refreshed this API endpoint only for Flannel, leaving
+CoreDNS on external CNI without a Pod-reachable endpoint. The branch now
+refreshes the nodeapiserver endpoint to the explicit advertise address or a
+detected non-loopback host address for external CNI. Focused nodebootstrap CI
+and the migration runtime rerun are pending; this is not yet runtime-verified.
+
 Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
 used SHA `edd697e94e009b7d3796de13b2ed68c076255625`. Both standalone utility
 and combined-runtime builds passed, as did the five-node Docker preflight.

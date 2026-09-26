@@ -452,7 +452,7 @@ fn detect_cni_address() -> Option<String> {
         })
 }
 
-fn detect_host_address() -> Option<String> {
+pub(crate) fn detect_host_address() -> Option<String> {
     std::process::Command::new("ip")
         .args(["-4", "-o", "addr", "show", "scope", "global"])
         .output()

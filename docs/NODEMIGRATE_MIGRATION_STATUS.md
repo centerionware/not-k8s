@@ -29,6 +29,15 @@ destination CA, but other CNI behavior and CoreDNS remain unverified. Logs:
 `/tmp/nodemigrate-36229667964/nodemigrate-k3s.log` and
 `/tmp/nodemigrate-36229667964/nodemigrate-kubernetes.log`.
 
+The API endpoint is a stronger cause candidate than the probe itself: the K3s
+target's `default/kubernetes` EndpointSlice still contained `127.0.0.1:6443`
+while the Node InternalIP was `10.1.0.61`. `nodebootstrap` refreshed that
+endpoint only for Flannel, so the external Cilium lane retained loopback. The
+branch now refreshes nodeapiserver's endpoint for non-Flannel CNI using an
+explicit advertise address or a detected non-loopback host IP. The focused
+nodebootstrap quick-check and migration rerun are pending; the fix is not yet
+verified.
+
 Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
 used SHA `edd697e94e009b7d3796de13b2ed68c076255625`. Both builds and the
 five-node isolation preflight passed. Both source-stage CA checks passed, and

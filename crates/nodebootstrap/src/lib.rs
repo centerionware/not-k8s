@@ -134,10 +134,7 @@ pub fn run_all() -> Result<()> {
         // nodecontroller then needs to run briefly so node-ipam allocates the
         // PodCIDR that flanneld needs before it can write subnet.env.
         rbac::run_with(&cfg)?;
-        if !cfg.skip_nodelet
-            && cfg.with_cri
-            && cfg.cni_provider.as_deref() == Some("flannel")
-        {
+        if !cfg.skip_nodelet && cfg.with_cri && cfg.cni_provider.as_deref() == Some("flannel") {
             services::ensure_nodecontroller(&cfg)?;
             services::ensure_nodescheduler(&cfg)?;
             cni::wait_for_flannel_subnet(&cfg)?;
@@ -148,6 +145,14 @@ pub fn run_all() -> Result<()> {
             // controller that allocated the subnet is restarted below after
             // this refresh, so neither replacement controller begins its
             // normal watch lifecycle against the old apiserver instance.
+            targets::refresh_network_advertise_address(&cfg)?;
+        }
+        if !cfg.skip_nodelet && cfg.with_cri && cfg.cni_provider.as_deref() != Some("flannel") {
+            // External CNIs do not create Flannel's cni0 bridge. The
+            // nodeapiserver target must publish a host address reachable from
+            // Pod network namespaces instead of leaving the temporary
+            // loopback endpoint in the kubernetes Service. Upstream's target
+            // handoff is a no-op for external providers.
             targets::refresh_network_advertise_address(&cfg)?;
         }
         services::ensure_nodecontroller(&cfg)?;

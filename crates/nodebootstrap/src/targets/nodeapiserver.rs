@@ -238,7 +238,7 @@ pub fn enable_nodelet_proxy(_cfg: &Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::SYSTEM_NAMESPACES;
+    use super::{external_cni_advertise_address, SYSTEM_NAMESPACES};
 
     #[test]
     fn replacement_apiserver_seeds_the_standard_namespaces() {
@@ -247,13 +247,28 @@ mod tests {
             &["default", "kube-system", "kube-public", "kube-node-lease"]
         );
     }
+
+    #[test]
+    fn external_cni_requires_a_non_loopback_host_address() {
+        let error = external_cni_advertise_address(None).unwrap_err();
+        assert!(error.to_string().contains("set --advertise-address"));
+    }
+
+    #[test]
+    fn external_cni_publishes_the_detected_host_address() {
+        assert_eq!(
+            external_cni_advertise_address(Some("10.1.0.61".to_string())).unwrap(),
+            "10.1.0.61"
+        );
+    }
 }
 
 /// The replacement apiserver does not run upstream's bootstrap-controller.
-/// Refresh the endpoint object after CNI has assigned a reachable bridge
-/// address; `service_reconciler` owns the object contents for this target.
+/// Refresh the endpoint object to a Pod-reachable address; `service_reconciler`
+/// owns the object contents for this target.
 pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
-    let needs_cni_seed = cfg.advertise_address.is_none();
+    let uses_flannel = cfg.cni_provider.as_deref() == Some("flannel");
+    let needs_cni_seed = uses_flannel && cfg.advertise_address.is_none();
     if needs_cni_seed {
         // A replacement apiserver does not have upstream's bootstrap Pod to
         // cause the first CNI network namespace to be created. Reuse the
@@ -261,11 +276,11 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
         // in-cluster endpoint.
         super::upstream::ensure_cni_seed_pod(cfg)?;
     }
-    let address = cfg
-        .advertise_address
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(super::upstream::wait_for_cni_address);
+    let address = match cfg.advertise_address.clone() {
+        Some(address) => Ok(address),
+        None if uses_flannel => super::upstream::wait_for_cni_address(),
+        None => external_cni_advertise_address(super::upstream::detect_host_address()),
+    };
     let result = address.and_then(|address| {
         crate::service_reconciler::reconcile_nodeapiserver_endpoint(cfg, &address)
     });
@@ -273,6 +288,12 @@ pub fn refresh_network_advertise_address(cfg: &Config) -> Result<()> {
         super::upstream::remove_cni_seed_pod(cfg);
     }
     result
+}
+
+fn external_cni_advertise_address(detected_host_address: Option<String>) -> Result<String> {
+    detected_host_address.context(
+        "no non-loopback host address is available for the external-CNI apiserver Service endpoint; set --advertise-address",
+    )
 }
 
 fn wait_for_readyz(cfg: &Config) -> Result<()> {
