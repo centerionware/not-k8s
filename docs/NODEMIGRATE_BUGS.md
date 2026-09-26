@@ -15,8 +15,11 @@ captured the target object in both lanes: the host survived but nested
 `http.paths` and its backend were absent, while `IngressClass.spec.controller`
 was correct. This confirms a `nodeapiserver` protobuf storage codec bug. The
 initial diagnostic check only ran on source; it is now moved into every stage
-check. A codec fix and regression are in progress, with quick-check and
-migration rerun pending. PR validation
+check. The codec fix and regression are pushed as `4984eb2e`; focused
+`nodeapiserver` quick-check [36255128063](https://github.com/centerionware/not-k8s/actions/runs/36255128063)
+passed. Dedicated migration rerun
+[36255128061](https://github.com/centerionware/not-k8s/actions/runs/36255128061)
+is in progress after its Docker preflight passed. PR validation
 [36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
 passed. Logs:
 `/tmp/nodemigrate-36253413938-artifacts/nodemigrate-{k3s,kubernetes}-36253413938/`.

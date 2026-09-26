@@ -12,7 +12,7 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Each must preserve identity/data/state and behavior through K3s → not-k8s → K3s and upstream Kubernetes → not-k8s → upstream Kubernetes; most target, return, and full round-trip assertions remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Job selector defaulting, migrated PVC bind-status recovery, CSI staging paths, hostPath/local PV mounting, and query-free SPDY port-forwarding have focused evidence. Run 36253413938 confirmed that `nodeapiserver` persisted Ingress rules without their embedded HTTP paths in both lanes. The protobuf codec fix and regression are in progress; focused and migration reruns are pending. No return migration or parity checkpoint passed. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Job selector defaulting, migrated PVC bind-status recovery, CSI staging paths, hostPath/local PV mounting, and query-free SPDY port-forwarding have focused evidence. Run 36253413938 confirmed that `nodeapiserver` persisted Ingress rules without their embedded HTTP paths in both lanes. Codec fix/regression passed `nodeapiserver` quick-check 36255128063; dedicated migration rerun 36255128061 is in progress. No return migration or parity checkpoint passed. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
@@ -32,8 +32,11 @@ separate living documents below.
   run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
   showed query-free SPDY port-forwarding works through Gateway API (HTTP 200).
   A codec fix/regression and moving the exact spec assertion to every stage
-  are in progress. No target semantic checkpoint, return migration, or round
-  trip has passed.
+  passed its focused quick-check at `4984eb2e` in
+  [36255128063](https://github.com/centerionware/not-k8s/actions/runs/36255128063).
+  Dedicated migration rerun [36255128061](https://github.com/centerionware/not-k8s/actions/runs/36255128061)
+  has passed Docker preflight and is compiling/running both lanes. No target
+  semantic checkpoint, return migration, or round trip has passed yet.
 
 - Branch-runtime migration [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
   used head SHA `294a6c64`. Docker five-node preflight and both utility and

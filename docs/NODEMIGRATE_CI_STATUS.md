@@ -36,8 +36,11 @@ the target Ingress has its host but has lost the embedded `http.paths` backend;
 the IngressClass controller is correct. This confirms a nodeapiserver
 protobuf-codec defect. A fix for embedded `IngressRuleValue`, a codec
 round-trip regression, and moving the assertion into every `verify_stage` are
-in progress. `nodeapiserver` quick-check and a migration rerun are pending.
-Logs:
+Focus check [36255128063](https://github.com/centerionware/not-k8s/actions/runs/36255128063)
+passed at `4984eb2e`. Migration rerun
+[36255128061](https://github.com/centerionware/not-k8s/actions/runs/36255128061)
+is in progress: Docker preflight passed and both runtime builds are underway.
+Logs from the previous run:
 `/tmp/nodemigrate-36253413938-artifacts/nodemigrate-{k3s,kubernetes}-36253413938/`.
 No general build or e2e gate was run.
 

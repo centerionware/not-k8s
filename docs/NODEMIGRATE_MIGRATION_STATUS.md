@@ -30,12 +30,15 @@ at that SHA passed source checks, then failed both target lanes at Ingress
 routing. Its saved target JSON proves `spec.rules[].host` survived while the
 embedded `http.paths` backend was dropped; the IngressClass controller was
 correct. This confirms nodeapiserver's protobuf storage codec lost the
-Go-embedded `IngressRuleValue` field. The codec fix and a v1 codec regression
-are now in the worktree, and the Ingress rule assertion is moved into
+Go-embedded `IngressRuleValue` field. Commit `4984eb2e` fixes the codec,
+adds a v1 round-trip regression, and moves the Ingress rule assertion into
 `verify_stage` so it runs at source, target, and return checkpoints. Focused
-`nodeapiserver` quick-check and a migration rerun are pending. The Docker
-preflight and both runtime builds passed in 36253413938, but no target
-semantic checkpoint, return migration, or parity comparison passed. Logs:
+`nodeapiserver` quick-check [36255128063](https://github.com/centerionware/not-k8s/actions/runs/36255128063)
+passed at fix commit `4984eb2e`. Migration rerun
+[36255128061](https://github.com/centerionware/not-k8s/actions/runs/36255128061)
+is in progress; its Docker preflight passed and runtime builds are underway.
+The earlier run had no target semantic checkpoint, return migration, or
+parity comparison. Logs:
 `/tmp/nodemigrate-36253413938-artifacts/nodemigrate-{k3s,kubernetes}-36253413938/`.
 
 PR validation [36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
