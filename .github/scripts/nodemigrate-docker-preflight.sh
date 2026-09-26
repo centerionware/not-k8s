@@ -128,8 +128,8 @@ for index in "${!NODES[@]}"; do
             echo "FAIL: making the private node bpffs mount shared is unavailable" >&2
             exit 1
         }
-        findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf
-        bpffs_propagation="$(findmnt -n -o PROPAGATION --target /sys/fs/bpf)"
+        findmnt -n -t bpf -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf
+        bpffs_propagation="$(findmnt -n -t bpf -o PROPAGATION --target /sys/fs/bpf)"
         if [ "$bpffs_propagation" != shared ]; then
             echo "FAIL: topmost node bpffs mount is not shared for nested Cilium Pods" >&2
             grep " /sys/fs/bpf " /proc/self/mountinfo >&2 || true

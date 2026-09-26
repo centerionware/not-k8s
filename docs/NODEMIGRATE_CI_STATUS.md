@@ -72,16 +72,27 @@ run is pending. Log: `/tmp/nodemigrate-36274819916-job.log`.
 Docker-only run [36274980364](https://github.com/centerionware/not-k8s/actions/runs/36274980364)
 at SHA `3f82684a1a0e6185296c13ab1ced14a54952f300` reached kubeadm/Cilium but
 still failed with `/sys/fs/bpf` reported not shared inside nested Pods. The
-previous check searched all mountinfo records and could have matched a lower
-overmounted entry while the topmost mount remained private. The harness now
-checks the topmost mount's `PROPAGATION` via `findmnt` and prints both findmnt
-and mountinfo state in failure diagnostics. This diagnosis is an inference
-from the mismatch between the old check and Cilium's runc error; the new
-findmnt evidence is pending. Log:
+first follow-up hypothesis was that the old check found a lower overmounted
+entry, but [run 36276058940](https://github.com/centerionware/not-k8s/actions/runs/36276058940)
+later showed that the bpffs entry itself was shared. The Cilium error must
+therefore be investigated across the node-to-Pod mount handoff. The failed
+follow-up's two-row `findmnt` result is recorded below. Log:
 `/tmp/nodemigrate-36274980364-job.log` and artifact
 `/tmp/nodemigrate-36274980364-artifact/nodemigrate-docker-preflight.log`.
 
-Another Docker-only run is pending. Logs:
+Docker-only run [36276058940](https://github.com/centerionware/not-k8s/actions/runs/36276058940)
+at SHA `d55e1dcdb543add420a5ab9b942ca015c749d50a` failed in 50 seconds before
+kubeadm. The `findmnt` query returned two mounts at `/sys/fs/bpf`: a private
+tmpfs and a shared bpffs. The bpffs entry itself was shared; the single-value
+assertion incorrectly treated both rows as one value. This disproves the
+earlier guess that the mountinfo check merely found a lower private mount
+record, but Cilium's later private-mount error remains unexplained. The
+assertion now filters by filesystem type `bpf`; the next Docker-only run will
+show whether Cilium sees that shared mount. Log:
+`/tmp/nodemigrate-36276058940-job.log` and artifact
+`/tmp/nodemigrate-36276058940-artifact/nodemigrate-docker-preflight.log`.
+
+Earlier Docker-only attempts are archived at these logs:
 `/tmp/nodemigrate-36272360238-job.log` and
 `/tmp/nodemigrate-36272577668-job.log`.
 
