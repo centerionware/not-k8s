@@ -1166,10 +1166,17 @@ fn bootstrap_command_with_config(
     if command.get_program().to_string_lossy().ends_with("notk8s") {
         command.arg("bootstrap");
     }
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+        .context("reading mount table to detect active kubelet CSI staging paths")?;
+    let csi_staging_root = migration_csi_staging_root(
+        std::env::var_os("NODEMIGRATE_CSI_STAGING_ROOT").map(PathBuf::from),
+        &mountinfo,
+    )?;
     command
         .args(args)
         .env("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", ipv4_cluster_cidr)
-        .env("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", ipv6_cluster_cidr);
+        .env("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", ipv6_cluster_cidr)
+        .env("NODELET_CSI_STAGING_ROOT", csi_staging_root);
     if config.cni.as_deref() != Some("flannel")
         || config.flannel_backend.as_deref().unwrap_or("vxlan") != "vxlan"
     {
@@ -1186,6 +1193,70 @@ fn bootstrap_command_with_config(
         command.env("NODEBOOTSTRAP_CLUSTER_DNS_IP6", address);
     }
     Ok(command)
+}
+
+fn migration_csi_staging_root(configured: Option<PathBuf>, mountinfo: &str) -> Result<PathBuf> {
+    let detected = detect_csi_staging_root(mountinfo)?;
+    if let (Some(configured), Some(detected)) = (&configured, &detected) {
+        ensure!(
+            configured == detected,
+            "NODEMIGRATE_CSI_STAGING_ROOT {} differs from active CSI staging root {}; refusing a cutover that would request duplicate staging",
+            configured.display(),
+            detected.display()
+        );
+    }
+    let root = configured
+        .or(detected)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/kubelet/plugins/kubernetes.io/csi"));
+    ensure!(
+        root.is_absolute(),
+        "NODEMIGRATE_CSI_STAGING_ROOT must be an absolute path"
+    );
+    Ok(root)
+}
+
+fn detect_csi_staging_root(mountinfo: &str) -> Result<Option<PathBuf>> {
+    let mut detected: Option<PathBuf> = None;
+    for line in mountinfo.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let Some(mountpoint) = fields.get(4) else {
+            continue;
+        };
+        let mountpoint = mountpoint
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        let path = PathBuf::from(mountpoint);
+        let components: Vec<_> = path
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect();
+        for index in 0..components.len().saturating_sub(5) {
+            if components[index..index + 3] != ["plugins", "kubernetes.io", "csi"]
+                || components[index + 5] != "globalmount"
+                || components[index + 4].len() != 64
+                || !components[index + 4].bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                continue;
+            }
+            let mut root = PathBuf::from("/");
+            for component in &components[1..index] {
+                root.push(component);
+            }
+            if let Some(previous) = &detected {
+                ensure!(
+                    previous == &root,
+                    "active CSI staging mounts use multiple roots ({} and {}); refusing migration",
+                    previous.display(),
+                    root.display()
+                );
+            } else {
+                detected = Some(root);
+            }
+        }
+    }
+    Ok(detected)
 }
 
 fn apply_cni_runtime_paths(
@@ -1271,14 +1342,19 @@ fn print_help() {
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
          disables the source service, and keeps the export. Source uninstall\n\
-         happens only with uninstall-after-migrate=true."
+         happens only with uninstall-after-migrate=true.\n\
+         \n\
+         Active CSI staging roots are detected from host mount state. If the\n\
+         source uses a nonstandard CSI root and has no staged volumes, set\n\
+         NODEMIGRATE_CSI_STAGING_ROOT to that absolute plugin directory."
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cni_runtime_paths, confirm_migration, replacement_worker_args,
+        apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
+        migration_csi_staging_root, replacement_worker_args,
         reverse_node_replacement_state, validate_destination_node_replacement,
         validate_reverse_control_plane_options, validate_skip_api_import,
     };
@@ -1288,7 +1364,7 @@ mod tests {
         request::{Distribution, MigrationRequest},
     };
     use std::collections::HashMap;
-    use std::{io::Cursor, path::Path, process::Command};
+    use std::{io::Cursor, path::{Path, PathBuf}, process::Command};
 
     #[test]
     fn interactive_migration_requires_exact_yes() {
@@ -1413,6 +1489,44 @@ mod tests {
             &mut command,
             Some(Path::new("relative")),
             Some(Path::new("/opt/cni/bin"))
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn migration_uses_kubelet_csi_staging_root_and_accepts_an_explicit_root() {
+        assert_eq!(
+            migration_csi_staging_root(None, "").unwrap(),
+            Path::new("/var/lib/kubelet/plugins/kubernetes.io/csi")
+        );
+        assert_eq!(
+            migration_csi_staging_root(Some(PathBuf::from(
+                "/srv/kubelet/plugins/kubernetes.io/csi"
+            )), "")
+            .unwrap(),
+            Path::new("/srv/kubelet/plugins/kubernetes.io/csi")
+        );
+        assert!(migration_csi_staging_root(Some(PathBuf::from("relative/csi")), "").is_err());
+    }
+
+    #[test]
+    fn migration_detects_active_kubelet_csi_staging_root() {
+        let root = "/srv/kubelet/plugins/kubernetes.io/csi";
+        let mountinfo = format!(
+            "36 25 0:32 / {root}/hostpath.csi.k8s.io/{}/globalmount rw,nosuid - ext4 /dev/sdb rw\n",
+            "a".repeat(64)
+        );
+        assert_eq!(
+            detect_csi_staging_root(&mountinfo).unwrap(),
+            Some(PathBuf::from(root))
+        );
+        assert_eq!(
+            migration_csi_staging_root(None, &mountinfo).unwrap(),
+            PathBuf::from(root)
+        );
+        assert!(migration_csi_staging_root(
+            Some(PathBuf::from("/var/lib/kubelet/plugins/kubernetes.io/csi")),
+            &mountinfo
         )
         .is_err());
     }

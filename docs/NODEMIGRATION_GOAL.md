@@ -71,6 +71,13 @@ bump the regular release version. This is a target, not publication authority.
   is required. Do not exclude a volume class by assumption. If a concrete
   provider prerequisite prevents a safe move, report the exact prerequisite
   and recovery state instead of silently dropping or rebinding the volume.
+  For an in-place runtime replacement, preserve the source kubelet's CSI
+  global staging path and make it visible to the replacement CSI node plugin.
+  Reuse the existing provider stage where valid; do not ask a CSI driver to
+  stage the same volume at a second path while its prior stage remains active.
+  Detect an active source path from host mount state and support an explicit
+  configured root when no source stage is mounted; fail before cutover if the
+  configured root contradicts a live stage.
 - Keep the source installation available but stopped/disabled by default.
   Only uninstall it when the operator explicitly requests that action.
 - Protect exports and secrets, retain the export for recovery, restore the

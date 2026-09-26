@@ -9,6 +9,19 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Run [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356)
+cleared the hostpath provider's lost-volume-catalog failure after the fixture
+persisted `/csi-data-dir` across the CSI Pod restart. Both lanes then reached
+target API readiness and failed when nodelet requested CSI staging at a second
+path: its raw-handle `/var/lib/nodelet/csi/...` path differed from the source
+kubelet's SHA-256 `/var/lib/kubelet/plugins/kubernetes.io/csi/.../globalmount`
+path. The worktree now makes nodelet use kubelet-compatible hashed paths,
+passes the source root through migration bootstrap and the nodelet service,
+and mounts that preserved path into the target CSI test Pod. Focused CI and a
+rerun are pending, so the fix is not yet verified. No target semantic parity,
+reverse migration, or round trip passed. Logs:
+`/tmp/nodemigrate-36243049356/artifacts/`.
+
 The current test harness now configures hostpath CSI `/csi-data-dir` on
 node-local persistent storage before fixture volumes are provisioned. The
 driver's volume catalog and payload should therefore survive its Pod restart

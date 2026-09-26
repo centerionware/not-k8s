@@ -15,6 +15,22 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Migration run [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356)
+used SHA `3f9808fc22af4206dc447bd5665f38c2ad06d3c2`. Both utility/runtime builds
+and Docker five-node preflight passed. Both source fixtures passed and target
+API readiness was reached. In both lanes the target workload checkpoint then
+timed out: hostpath CSI rejected `NodeStageVolume` with `FailedPrecondition`
+because the same volume was already staged at kubelet's path. No target
+workload parity, reverse migration, returned-source check, or full round trip
+passed. Logs: `/tmp/nodemigrate-36243049356/artifacts/`.
+
+The worktree fixes nodelet's path layout to use kubelet's hashed globalmount
+convention, carries the source stage root through nodemigrate into the
+nodelet service, and mounts that preserved path into the replacement CSI test
+Pod. The hostpath provider's persistent `/csi-data-dir` change cleared its
+earlier missing-volume-catalog error. Focused component quick-check and a
+migration rerun are pending. No build.yml or full e2e gate was run.
+
 Follow-up migration setup now mounts hostpath CSI's `/csi-data-dir` from
 node-local persistent storage before provisioning fixture claims. This keeps
 the provider's own volume catalog and payload available when the source CSI

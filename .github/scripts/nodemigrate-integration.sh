@@ -681,6 +681,46 @@ install_hostpath_driver() {
             echo "hostpath CSI state directory is not backed by the node disk" >&2
             return 1
         }
+
+    if [[ "$kubelet_data_dir" == /var/lib/nodelet ]]; then
+        # Nodelet deliberately keeps the source kubelet's global staging path
+        # during this same-node migration. Mount that host directory into the
+        # replacement CSI Pod with bidirectional propagation so the driver
+        # sees the existing NodeStageVolume mount and can publish it again.
+        local stage_volume=nodemigrate-source-csi-stage
+        local plugin_json stage_container_index stage_patch
+        plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+        stage_container_index="$(jq -r '
+            [.spec.template.spec.containers | to_entries[] | select(.value.name == "hostpath") | .key][0] // empty
+        ' <<<"$plugin_json")"
+        [[ "$stage_container_index" =~ ^[0-9]+$ ]] || {
+            echo "hostpath CSI StatefulSet has no hostpath container" >&2
+            return 1
+        }
+        stage_patch="$(jq -cn --arg name "$stage_volume" --argjson container "$stage_container_index" '
+            [
+              {op:"add",path:"/spec/template/spec/volumes/-",value:{name:$name,hostPath:{path:"/var/lib/kubelet/plugins/kubernetes.io/csi",type:"DirectoryOrCreate"}}},
+              {op:"add",path:("/spec/template/spec/containers/" + ($container|tostring) + "/volumeMounts/-"),value:{name:$name,mountPath:"/var/lib/kubelet/plugins/kubernetes.io/csi",mountPropagation:"Bidirectional"}}
+            ]')"
+        kubectl patch statefulset csi-hostpathplugin -n default --type=json -p "$stage_patch"
+        kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
+        kubectl get statefulset csi-hostpathplugin -n default -o json | jq -e \
+            --arg name "$stage_volume" \
+            '.spec.template.spec.volumes[] | select(.name == $name)
+             | .hostPath.path == "/var/lib/kubelet/plugins/kubernetes.io/csi"' >/dev/null || {
+                echo "replacement hostpath CSI Pod cannot see the preserved kubelet staging directory" >&2
+                return 1
+            }
+        kubectl get statefulset csi-hostpathplugin -n default -o json | jq -e \
+            --arg name "$stage_volume" \
+            '.spec.template.spec.containers[] | select(.name == "hostpath")
+             | .volumeMounts[] | select(.name == $name)
+             | .mountPath == "/var/lib/kubelet/plugins/kubernetes.io/csi"
+               and .mountPropagation == "Bidirectional"' >/dev/null || {
+                echo "replacement hostpath CSI container does not receive the preserved staging mount" >&2
+                return 1
+            }
+    fi
     kubectl get storageclass csi-hostpath-sc
 }
 
