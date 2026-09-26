@@ -19,6 +19,7 @@ on:
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
+      - '.github/scripts/check_nodemigrate_helm_snapshot.sh'
       - '.github/scripts/nodemigrate-docker-preflight.sh'
       - '.github/scripts/nodemigrate-snapshot-normalize.jq'
       - '.github/scripts/nodemigrate-application-snapshot.jq'
@@ -55,6 +56,9 @@ jobs:
 
       - name: Check snapshot jq
         run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
+
+      - name: Check Helm state
+        run: bash .github/scripts/check_nodemigrate_helm_snapshot.sh
 
   docker-preflight:
     if: github.event_name == 'workflow_dispatch'
