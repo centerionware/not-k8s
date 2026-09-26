@@ -1664,6 +1664,16 @@ async fn apply_object(
         .name
         .as_deref()
         .context("migration object has no metadata.name")?;
+    let api_root = if resource.group.is_empty() {
+        format!("/api/{}", resource.version)
+    } else {
+        format!("/apis/{}/{}", resource.group, resource.version)
+    };
+    let api_path = if let Some(namespace) = object.metadata.namespace.as_deref() {
+        format!("{api_root}/namespaces/{namespace}/{}/{name}", resource.resource)
+    } else {
+        format!("{api_root}/{}/{name}", resource.resource)
+    };
     if kind == "CustomResourceDefinition" {
         match api.create(&PostParams::default(), &object).await {
             Ok(created) => return Ok(created),
@@ -1682,7 +1692,7 @@ async fn apply_object(
             &Patch::Apply(&object),
         )
         .await
-        .with_context(|| format!("applying {type_meta}/{kind} {name}"))?;
+        .with_context(|| format!("applying {type_meta}/{kind} {name} via {api_path}"))?;
     Ok(applied)
 }
 

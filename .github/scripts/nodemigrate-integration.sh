@@ -105,14 +105,47 @@ capture_cilium_init_container_diagnostics() {
     done <<< "$pod_records"
 }
 
-watch_target_forward_state() {
+probe_webhook_route() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local service_json cluster_ip endpoint_json address port status
+    service_json="$(KUBECONFIG="$kubeconfig" kubectl get service cert-manager-webhook \
+        -n cert-manager -o json 2>/dev/null)" || return 0
+    cluster_ip="$(jq -r '.spec.clusterIP // empty' <<< "$service_json")"
+    if [[ -n "$cluster_ip" && "$cluster_ip" != None ]]; then
+        status="$(curl -k --connect-timeout 2 --max-time 3 -sS -o /dev/null \
+            -w '%{http_code}' "https://$cluster_ip:443/healthz" 2>&1 || true)"
+        echo "Webhook ClusterIP TCP/HTTPS probe $cluster_ip:443: $status"
+    else
+        echo "Webhook ClusterIP probe unavailable: Service has no ClusterIP"
+    fi
+    endpoint_json="$(KUBECONFIG="$kubeconfig" kubectl get endpointslices \
+        -n cert-manager -l kubernetes.io/service-name=cert-manager-webhook \
+        -o json 2>/dev/null)" || return 0
+    while IFS=$'\t' read -r address port; do
+        [[ -n "$address" && "$port" =~ ^[0-9]+$ ]] || continue
+        status="$(curl -k --connect-timeout 2 --max-time 3 -sS -o /dev/null \
+            -w '%{http_code}' "https://$address:$port/healthz" 2>&1 || true)"
+        echo "Webhook ready EndpointSlice TCP/HTTPS probe $address:$port: $status"
+    done < <(jq -r '
+        .items[]? as $slice
+        | $slice.ports[]? as $port
+        | select($port.port != null)
+        | $slice.endpoints[]? as $endpoint
+        | select($endpoint.conditions.ready != false)
+        | $endpoint.addresses[]?
+        | [., $port.port] | @tsv
+    ' <<< "$endpoint_json")
+}
+
+watch_migration_target_state() {
     local kubeconfig="${1:?missing target kubeconfig}"
-    local stop_file="${2:?missing watcher stop file}"
-    local output_file="${3:?missing watcher output file}"
+    local ready_service="${2:?missing target API service}"
+    local stop_file="${3:?missing watcher stop file}"
+    local output_file="${4:?missing watcher output file}"
     local previous_snapshot="" snapshot now last_capture=0
     : > "$output_file"
     while [[ ! -e "$stop_file" ]]; do
-        if systemctl is-active --quiet nodeapiserver \
+        if systemctl is-active --quiet "$ready_service" \
             && KUBECONFIG="$kubeconfig" kubectl --request-timeout=2s \
                 get --raw=/readyz >/dev/null 2>&1; then
             snapshot="$(
@@ -177,6 +210,8 @@ watch_target_forward_state() {
                     }]' || true
                 echo 'nodeproxy service state:'
                 systemctl is-active nodeproxy 2>&1 || true
+                echo 'cert-manager webhook host-network probes:'
+                probe_webhook_route "$kubeconfig"
                 echo 'namespace service-account CA bundles match target API CA:'
                 target_ca_b64="$(KUBECONFIG="$kubeconfig" kubectl config view \
                     --raw --flatten --minify -o json \
@@ -254,7 +289,7 @@ stop_target_forward_watch() {
     touch "$TARGET_WATCH_STOP_FILE"
     wait "$TARGET_WATCH_PID" 2>/dev/null || true
     TARGET_WATCH_PID=""
-    echo "Target state captured during forward migration:"
+    echo "Target state captured during migration:"
     if [[ -s "$TARGET_WATCH_LOG" ]]; then
         cat "$TARGET_WATCH_LOG"
     else
@@ -2196,7 +2231,7 @@ main() {
     TARGET_WATCH_STOP_FILE="$WORK/target-forward-watch.$$.stop"
     TARGET_WATCH_LOG="$WORK/target-forward-watch.$$.log"
     rm -f "$TARGET_WATCH_STOP_FILE" "$TARGET_WATCH_LOG"
-    watch_target_forward_state "$nodestore_kubeconfig" \
+    watch_migration_target_state "$nodestore_kubeconfig" nodeapiserver \
         "$TARGET_WATCH_STOP_FILE" "$TARGET_WATCH_LOG" &
     TARGET_WATCH_PID=$!
     echo "Migrating $SOURCE_DIST -> nodestore"
@@ -2251,10 +2286,27 @@ main() {
 
     MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
     echo "Migrating nodestore -> $SOURCE_DIST"
-    NODEMIGRATE_REPLACE_NODE=true \
-    NODEMIGRATE_SOURCE_KUBECONFIG="$nodestore_kubeconfig" \
-    NODEMIGRATE_DESTINATION_KUBECONFIG="$SOURCE_KUBECONFIG" \
-        "$MIGRATE" "to=$SOURCE_DIST" from=nodestore
+    local source_api_service=k3s
+    [[ "$SOURCE_DIST" == kubernetes ]] && source_api_service=kubelet
+    TARGET_WATCH_STOP_FILE="$WORK/target-return-watch.$$.stop"
+    TARGET_WATCH_LOG="$WORK/target-return-watch.$$.log"
+    rm -f "$TARGET_WATCH_STOP_FILE" "$TARGET_WATCH_LOG"
+    watch_migration_target_state "$SOURCE_KUBECONFIG" "$source_api_service" \
+        "$TARGET_WATCH_STOP_FILE" "$TARGET_WATCH_LOG" &
+    TARGET_WATCH_PID=$!
+    local return_migration_status=0
+    if NODEMIGRATE_REPLACE_NODE=true \
+        NODEMIGRATE_SOURCE_KUBECONFIG="$nodestore_kubeconfig" \
+        NODEMIGRATE_DESTINATION_KUBECONFIG="$SOURCE_KUBECONFIG" \
+            "$MIGRATE" "to=$SOURCE_DIST" from=nodestore; then
+        return_migration_status=0
+    else
+        return_migration_status=$?
+    fi
+    stop_target_forward_watch
+    if [[ "$return_migration_status" -ne 0 ]]; then
+        return "$return_migration_status"
+    fi
     CURRENT_KUBECONFIG="$SOURCE_KUBECONFIG"
     export KUBECONFIG="$SOURCE_KUBECONFIG"
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet true
