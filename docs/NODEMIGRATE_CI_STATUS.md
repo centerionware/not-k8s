@@ -198,6 +198,11 @@ containers. Run [36270390355](https://github.com/centerionware/not-k8s/actions/r
 confirmed a 3 GiB `/swapfile` with zero used; the next run logs memory/swap,
 disables swap on the runner, and verifies it is off before kubelet setup. No
 kubeadm or Cilium checks have passed yet.
+Run [36270521782](https://github.com/centerionware/not-k8s/actions/runs/36270521782)
+confirmed the 15 GiB runner had 3 GiB of unused swap, which was disabled; host
+module loading, sysctl setup, and all five isolation checks passed. Setup then
+failed writing `/etc/containerd/config.toml` because the directory was absent.
+The probe now creates `/etc/containerd` before generating its configuration.
 
 ## Earlier branch-runtime attempt
 
