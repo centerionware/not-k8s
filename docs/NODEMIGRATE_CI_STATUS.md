@@ -26,10 +26,12 @@ Ready, but the CSI redeployment could not become ready: its old
 `csi-hostpath-socat-0` and `csi-hostpathplugin-0` Pods retained the source
 `/var/lib/kubelet` host paths and a deletion timestamp for over five minutes,
 with no Pod IP or container status. The target manifests had already been
-configured for `/var/lib/nodelet`. Nodelet's captured journal contains no
-teardown/retry record for these two Pods; the cause of the missing or stalled
-teardown remains unconfirmed. Target workload, reverse-migration, and parity
-checks did not run. Upstream again failed restoring
+configured for `/var/lib/nodelet`. Nodelet was still repeatedly reconciling
+Cilium "while CoreDNS is gated" at 02:00:39Z and had no teardown record for
+either ordinary CSI Pod. The startup gate was not processing these terminating
+Pods. A fix now starts local Pod teardown during the gate; its focused
+quick-check and runtime effect are pending. Target workload,
+reverse-migration, and parity checks did not run. Upstream again failed restoring
 `CertificateRequest/migration-test-1` because its cert-manager webhook was
 unreachable; rollback restored the source API and retained the protected
 export. The ordinary build gate and general e2e were not run. Logs:

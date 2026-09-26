@@ -665,10 +665,14 @@ impl PodController {
             .await
             {
                 Ok(Ok(pods)) => {
-                    for pod in pods
-                        .iter()
-                        .filter(|pod| is_local_host_network_pod(pod, &self.node_name))
-                    {
+                    for pod in &pods {
+                        if is_local_terminating_pod(pod, &self.node_name) {
+                            self.spawn_teardown(pod.clone());
+                            continue;
+                        }
+                        if !is_local_host_network_pod(pod, &self.node_name) {
+                            continue;
+                        }
                         if pod.metadata.namespace.as_deref() == Some(COREDNS_NAMESPACE)
                             && pod.metadata.name.as_deref().is_some_and(|name| name.starts_with("cilium-"))
                         {
@@ -1438,6 +1442,13 @@ impl PodController {
             }
         }
 
+        info!(
+            pod = %format!("{ns}/{name}"),
+            uid = %uid.as_deref().unwrap_or_default(),
+            deletion_timestamp = ?pod.metadata.deletion_timestamp,
+            "starting Pod teardown"
+        );
+
         self.stop_probe_supervisor(&ns, &name);
 
         let runtime = self.runtime.clone();
@@ -2118,6 +2129,11 @@ fn is_local_host_network_pod(pod: &Pod, node_name: &str) -> bool {
     pod.spec.as_ref().is_some_and(|spec| {
         spec.node_name.as_deref() == Some(node_name) && spec.host_network.unwrap_or(false)
     })
+}
+
+fn is_local_terminating_pod(pod: &Pod, node_name: &str) -> bool {
+    pod.metadata.deletion_timestamp.is_some()
+        && pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref()) == Some(node_name)
 }
 
 fn api_pod_is_ready(pod: &Pod) -> bool {

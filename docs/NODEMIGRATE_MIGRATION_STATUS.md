@@ -19,10 +19,11 @@ init containers completed and the node became Ready. Hostpath CSI was then
 reapplied with `/var/lib/nodelet` paths, but its previous Pods remained in
 `Terminating` with their source `/var/lib/kubelet` paths for more than five
 minutes. They had no Pod IP or container status, and the nodelet journal did
-not record teardown/retry for either Pod. The precise watch/teardown cause is
-unconfirmed; a targeted nodelet log now records accepted terminating-Pod watch
-events for the next run. The CSI gate failed before workload, reverse, or
-parity checks. Upstream again failed CertificateRequest restoration because
+not record teardown/retry for either Pod. The nodelet journal shows it was still inside `wait_for_coredns()` at the
+failure and had not processed the ordinary terminating CSI Pods. The startup
+gate now starts teardown for locally assigned terminating Pods while it waits;
+a focused regression and next runtime run are pending. The CSI gate failed
+before workload, reverse, or parity checks. Upstream again failed CertificateRequest restoration because
 the target cert-manager webhook was unreachable; rollback restored the source
 API and retained the protected export. Neither lane reached workload checks,
 reverse migration, or semantic parity. The regular build gate and full e2e were
