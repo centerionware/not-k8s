@@ -79,7 +79,12 @@ K3s lane was still in progress.
 
 The fixture now also exercises Deployment `/scale` at each checkpoint (two
 available replicas, then back to one). Local shell syntax and helper checks
-pass; validation and runtime checks for this latest change are pending.
+passed. Migration workflow validation
+[36266043924](https://github.com/centerionware/not-k8s/actions/runs/36266043924)
+and focused `nodemigrate` tests
+[36266043923](https://github.com/centerionware/not-k8s/actions/runs/36266043923)
+passed at `28d04774`. Runtime verification remains pending because the active
+K3s migration run predates this fixture change.
 
 ## Earlier branch-runtime attempt
 

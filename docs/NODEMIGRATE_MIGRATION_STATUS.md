@@ -74,8 +74,13 @@ K3s migration job predates this fixture addition and remained in progress at
 
 The same checkpoint now exercises the Deployment `/scale` subresource by
 scaling nginx to two available replicas and back to one, waiting for each
-controller reconciliation. Local shell syntax and helper checks pass; PR
-validation and runtime evidence for this latest addition are pending.
+controller reconciliation. Local shell syntax and helper checks passed. On
+PR SHA `28d04774`, migration workflow validation
+[36266043924](https://github.com/centerionware/not-k8s/actions/runs/36266043924)
+and focused `nodemigrate` tests
+[36266043923](https://github.com/centerionware/not-k8s/actions/runs/36266043923)
+passed. The older K3s runtime job still predates this change and remained
+active at 2026-09-26 19:27 UTC.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
