@@ -4,6 +4,23 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Migration run [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
+on SHA `606f46f624007dfd6215be26b97e54817fe020af` root-caused the CSI mount
+failure in both K3s+Cilium and upstream Kubernetes+Cilium. The source and
+target PVs retained the same CSI volume handle, but each freshly installed
+hostpath CSI driver's volume inventory did not contain that handle. The CSI
+controller returned `NotFound: volume id ... does not exist in the volumes
+list` to repeated `NodeStageVolume` calls, and the StatefulSet Pod stayed
+Pending. The PV's hostpath topology label still matched the destination Node;
+affinity is not the blocker. `nodemigrate` currently snapshots `hostPath` and
+`local` PV filesystem paths only; it neither moves CSI payloads nor recreates
+provider volume state. This is a confirmed nodemigrate storage migration bug,
+not a nodelet mount or scheduler bug. Fix must transfer data through a
+provider-supported path and create/restore a destination volume before
+importing dependent claims/workloads, while retaining a recoverable source
+copy. No CSI data parity, semantic checkpoint, reverse migration, or full
+round trip passed. Artifacts: `/tmp/nodemigrate-36241224151/`.
+
 Migration run [36239708922](https://github.com/centerionware/not-k8s/actions/runs/36239708922)
 reproduced the StatefulSet CSI mount stall in both source lanes. The target PV
 had required node affinity `topology.hostpath.csi/node In [runnervmtr4k5]`,
@@ -312,6 +329,7 @@ neither lane reached a target checkpoint or round trip. Logs:
 
 | Bug | Owning component(s) | Fix in this branch | Focused evidence / state |
 | --- | --- | --- | --- |
+| Import preserved CSI PV metadata and source `volumeHandle`, but the destination CSI driver has no matching provider volume state. `NodeStageVolume` repeatedly returns `NotFound`, so PVC-backed workloads remain Pending; hostPath/local path snapshots do not cover CSI volumes. | `nodemigrate` API transfer and persistent-volume migration | Add a provider-supported CSI data/state transfer path that creates or restores destination volumes before dependent PVCs/workloads are imported, preserves payload and source recovery, and verifies data at each checkpoint. | Confirmed in both lanes of [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151): target hostpath CSI returned `volume id ... does not exist in the volumes list`; source/target PV handles were identical and target node affinity matched. Fix and focused migration evidence are pending. Logs: `/tmp/nodemigrate-36241224151/`. |
 | Server-side apply created imported StatefulSets without `metadata.generation`. `nodecontroller` consequently wrote `status.observedGeneration=null`, and `kubectl rollout status` waited forever for a generation that did not exist. | `nodeapiserver` create-on-apply path | Reuse server-owned generation-1 initialization for create-on-apply and ordinary POST; add a focused regression that verifies client-supplied generation is replaced. | Confirmed in both lanes of [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283): the StatefulSet had generation and observedGeneration null while replica/revision status was populated. Fix and test are in the worktree; nodeapiserver quick-check and migration rerun are pending. |
 | The target-state watcher compared `kubectl -o wide` output, including AGE. Normal age increments made every poll look like a state transition and flooded the migration log with repeated pod, log, and event snapshots. | `.github/scripts/nodemigrate-integration.sh` diagnostics | Compare stable normalized pod phase/conditions/container readiness/restarts/IP/node and cert-manager endpoint state. Keep a bounded 30-second diagnostic sample for logs even when state is unchanged. | Confirmed by the many snapshots only seconds apart in both lanes of [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465), including timestamps that advanced while readiness did not. The correction at `35161a3f`, included in run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297), emitted 10 K3s and 9 upstream snapshots and captured target-time pod and endpoint state; `bash -n` and `git diff --check` passed. This validates bounded diagnostic capture, not the root cause of either migration failure. |
 | The ResourceQuota controller compared all `status.used` entries with a map containing only its supported `pods`/`services` keys. If admission supplied `requests.storage`, merge-patching the partial map preserved that unsupported entry, so every ResourceQuota watch update triggered another unchanged status PATCH. The migration fixture produced 6,376–8,366 quota range calls per 30 seconds and over 1,100 quota status PATCHes in about 1.2 seconds. | `nodecontroller` ResourceQuota controller | Compare only the entries this controller owns. Merge-patch its supported entries and clear stale owned keys with explicit nulls, leaving unsupported quota usage intact. Add regression coverage for `requests.storage` and stale supported keys. | Fix at SHA `0e7cf32a` passed focused `nodecontroller` quick-check [36207090965](https://github.com/centerionware/not-k8s/actions/runs/36207090965). Branch-runtime migration [36207264515](https://github.com/centerionware/not-k8s/actions/runs/36207264515) then observed zero `migration-quota/status` PATCHes and only 14–276 K3s / 32–310 upstream ResourceQuota Range calls per 30-second window, versus thousands before. |

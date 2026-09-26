@@ -15,6 +15,19 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Migration run [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
+used SHA `606f46f624007dfd6215be26b97e54817fe020af`. Docker preflight, both
+runtime builds, both source fixtures, and the target's Node/Cilium/Gateway/
+DaemonSet/Deployment/standalone Pod/CA/CSI-readiness checks passed. Both lanes
+then failed at the StatefulSet CSI mount. Captured nodelet and CSI logs show
+`NodeStageVolume` returned `NotFound` because the imported CSI volume handle
+was missing from the target hostpath driver's volume inventory. Source and
+target PV handles were identical and node affinity matched; the import copied
+CSI metadata without transferring payload or provider state. This is now a
+confirmed nodemigrate storage migration defect. No semantic checkpoint,
+reverse migration, or round trip passed. Artifacts:
+`/tmp/nodemigrate-36241224151/`.
+
 Migration run [36239708922](https://github.com/centerionware/not-k8s/actions/runs/36239708922)
 used SHA `64fdb6572639b53d51b5d0c8fc2ddeaac7dc09af`. Docker preflight and
 both nodemigrate/branch-runtime builds passed. Both source fixtures passed,

@@ -9,6 +9,19 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch migration [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
+used SHA `606f46f624007dfd6215be26b97e54817fe020af`. Both builds, Docker
+preflight, source fixtures, and destination readiness checks through CSI
+readiness passed. Both lanes failed when the StatefulSet volume was staged:
+the target hostpath CSI driver returned `NotFound` because the imported PV's
+source volume handle was absent from its volume inventory. The source and
+target handles matched, the PV topology matched the target Node, and nodelet
+retries confirmed this was not a scheduling or affinity failure. Existing
+nodemigrate snapshots cover `hostPath` and `local` PV paths, but not CSI
+payloads or provider inventory. Migration stopped before the semantic
+checkpoint; no return migration or parity passed. Artifacts:
+`/tmp/nodemigrate-36241224151/`.
+
 Branch migration [36239708922](https://github.com/centerionware/not-k8s/actions/runs/36239708922)
 used SHA `64fdb6572639b53d51b5d0c8fc2ddeaac7dc09af`. Both runtime builds,
 the Docker preflight, both source fixtures, and target Node/Cilium/Gateway/
