@@ -48,6 +48,8 @@ for transient in \
     '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"apps","ownerReferences":[{"kind":"ReplicaSet","name":"web","uid":"source-uid","controller":true}]}}' \
     '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"mirror-pod","namespace":"kube-system","annotations":{"kubernetes.io/config.mirror":"mirror-uid"}}}' \
     '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"PodMetrics","metadata":{"name":"pod-a","namespace":"apps"}}' \
+    '{"apiVersion":"cilium.io/v2","kind":"CiliumEndpoint","metadata":{"name":"pod-a","namespace":"apps"}}' \
+    '{"apiVersion":"cilium.io/v2","kind":"CiliumIdentity","metadata":{"name":"12345"}}' \
     '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
     [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
         echo "transient object was included in the migratable snapshot" >&2
@@ -61,6 +63,7 @@ for durable in \
     '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"custom-web","namespace":"apps","labels":{"endpoints.kubernetes.io/managed-by":"custom-endpoint-controller"}}}' \
     '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"external-db-v4","namespace":"migration-apps","labels":{"kubernetes.io/service-name":"external-db","endpointslice.kubernetes.io/managed-by":"migration-operator"}},"addressType":"IPv4","endpoints":[{"addresses":["192.0.2.20"]}],"ports":[{"port":5432}]}' \
     '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"migration-lock","namespace":"migration-apps"},"spec":{"holderIdentity":"migration-controller"}}' \
+    '{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a"},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}]}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps"}}' \
     '{"apiVersion":"apps/v1","kind":"ControllerRevision","metadata":{"name":"db-old","namespace":"apps"}}'; do
     [[ -n "$(jq -cS -f "$FILTER" <<< "$durable")" ]] || {

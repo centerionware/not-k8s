@@ -15,6 +15,39 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Migration run [36257337049](https://github.com/centerionware/not-k8s/actions/runs/36257337049)
+uses SHA `7c5f2935146647c045f3f27d0d3dc9317ebfc9ed` and the branch runtime;
+the Docker preflight passed and both migration lanes are running. This rerun
+follows the prior branch-runtime run's successful target checks and parity
+assertion failure. The harness now checks that every durable source API
+object identity remains at the target, separately checks stable fixture state,
+and classifies CiliumEndpoint/CiliumIdentity as regenerated runtime state
+while retaining CiliumNode in the migratable inventory. A local snapshot
+normalizer check covers those classifications. No result is known yet.
+
+Run [36256671367](https://github.com/centerionware/not-k8s/actions/runs/36256671367)
+used SHA `7c5f2935146647c045f3f27d0d3dc9317ebfc9ed` against the latest regular
+release, v0.8.0. Docker preflight, utility builds, and both source fixtures
+passed. The v0.8.0 K3s target retained a Kubernetes API endpoint of
+`127.0.0.1`, leaving Cilium and cert-manager without running Pods; upstream
+failed CertificateRequest admission because its webhook was unreachable and
+CSR import because of the known `ExtraValue` codec error. Both sources
+recovered and retained their protected exports. Neither target-stage checks
+nor the object-retention comparison ran. This is release-baseline evidence,
+not a result for the branch runtime fixes. Artifacts:
+`/tmp/nodemigrate-36256671367-artifacts/`.
+
+Branch-runtime run [36255128061](https://github.com/centerionware/not-k8s/actions/runs/36255128061)
+used SHA `4984eb2e8a285f284c8bbbb9581362cdd61d0f6c`. Both lanes passed source
+and target (`nodestore`) stage checks, including the Ingress route/spec and
+fixture workload/storage assertions. They then failed the all-object exact
+fingerprint comparison before reverse migration. Its diff mixed target-added
+controller/Cilium runtime objects and API-server-defaulted or controller-
+updated hashes with durable source identity, so it did not establish a
+migration data loss. Harness comparison was corrected on `7c5f2935`; branch
+runtime rerun is in progress. Logs:
+`/tmp/nodemigrate-36255128061-artifacts/`.
+
 Run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
 used SHA `16c90a9721dd1f0bbcdc1a11723d7438d173b49f`. Both lanes passed the
 source checks and target static hostPath/CSI data reads. The `nodeapiserver`
@@ -36,11 +69,8 @@ the target Ingress has its host but has lost the embedded `http.paths` backend;
 the IngressClass controller is correct. This confirms a nodeapiserver
 protobuf-codec defect. A fix for embedded `IngressRuleValue`, a codec
 round-trip regression, and moving the assertion into every `verify_stage` are
-Focus check [36255128063](https://github.com/centerionware/not-k8s/actions/runs/36255128063)
-passed at `4984eb2e`. Migration rerun
-[36255128061](https://github.com/centerionware/not-k8s/actions/runs/36255128061)
-is in progress: Docker preflight passed and both runtime builds are underway.
-Logs from the previous run:
+Focused check [36255128063](https://github.com/centerionware/not-k8s/actions/runs/36255128063)
+passed at `4984eb2e`. Logs from the preceding run:
 `/tmp/nodemigrate-36253413938-artifacts/nodemigrate-{k3s,kubernetes}-36253413938/`.
 No general build or e2e gate was run.
 
