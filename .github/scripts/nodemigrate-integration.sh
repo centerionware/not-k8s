@@ -1679,13 +1679,38 @@ record_fixture_storage_specs() {
 
 exercise_statefulset_scaling() {
     local stage="$1"
-    local claim_uid claim_uid_after ordinal_one_pv deadline
+    local claim_uid claim_uid_after ordinal_one_pv deadline original_min_ready_seconds
     claim_uid="$(kubectl get pvc state-migration-stateful-0 -n migration-apps \
         -o jsonpath='{.metadata.uid}')"
     [[ -n "$claim_uid" ]] || {
         echo "StatefulSet ordinal 0 PVC has no UID at stage=$stage" >&2
         return 1
     }
+    original_min_ready_seconds="$(kubectl get statefulset migration-stateful -n migration-apps \
+        -o json | jq -r '.spec.minReadySeconds // 0')"
+
+    kubectl patch statefulset migration-stateful -n migration-apps --type=merge \
+        -p '{"spec":{"minReadySeconds":1}}'
+    kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
+    kubectl get statefulset migration-stateful -n migration-apps -o json | jq -e '
+      .spec.minReadySeconds == 1 and
+      (.status.observedGeneration // 0) == .metadata.generation and
+      (.status.readyReplicas // 0) == 1
+    ' >/dev/null || {
+        echo "StatefulSet controller did not reconcile the spec update at stage=$stage" >&2
+        return 1
+    }
+    kubectl patch statefulset migration-stateful -n migration-apps --type=merge \
+        -p "{\"spec\":{\"minReadySeconds\":$original_min_ready_seconds}}"
+    kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
+    kubectl get statefulset migration-stateful -n migration-apps -o json | jq -e \
+        --argjson minReadySeconds "$original_min_ready_seconds" '
+          (.spec.minReadySeconds // 0) == $minReadySeconds and
+          (.status.observedGeneration // 0) == .metadata.generation
+        ' >/dev/null || {
+            echo "StatefulSet did not return to its original spec after the update probe at stage=$stage" >&2
+            return 1
+        }
 
     kubectl scale statefulset/migration-stateful -n migration-apps --replicas=2
     kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
