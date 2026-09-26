@@ -217,6 +217,12 @@ certificates/manifests, and started kubelet. It then timed out while waiting for
 the API server to create the bootstrap admin binding. The preflight now collects
 kubelet/containerd journals, CRI task/container state, and systemd-container
 logs on all five nodes before cleanup when `kubeadm init` fails.
+Run [36271304303](https://github.com/centerionware/not-k8s/actions/runs/36271304303)
+captured the cause: containerd repeatedly failed to mount static-pod rootfs
+layers with OverlayFS `invalid argument`, so the API server never started.
+The test node's CRI snapshotter is now set to containerd's `native` file-copy
+snapshotter to avoid nested OverlayFS inside Docker. The next kubeadm/Cilium
+preflight is pending.
 
 ## Earlier branch-runtime attempt
 
