@@ -101,9 +101,6 @@ macro_rules! handle_aggregate {
             Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::NoNodeAddress)) => {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
             }
-            Err(proxy::pod_stream::Error::MissingPort) => {
-                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "at least one port is required for port-forward")));
-            }
             Err(proxy::pod_stream::Error::InvalidPort(port)) => {
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &format!("invalid port {port}"))));
             }

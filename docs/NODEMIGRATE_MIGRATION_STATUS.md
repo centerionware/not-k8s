@@ -9,22 +9,23 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Run [36248706224](https://github.com/centerionware/not-k8s/actions/runs/36248706224)
-used SHA `b14185a1e484fca6d0b986bcf01219fe822ff149`. Both K3s+Cilium and
-upstream Kubernetes+Cilium lanes passed the CronJob selector/log assertion,
-RBAC Jobs, certificate readiness, Cilium/Gateway, Deployment, StatefulSet,
-DaemonSet, standalone Pod, and static PVC binding checks. Both then timed out
-waiting for `Pod/migration-data-check`: nodelet did not mount the bound static
-hostPath PV. The binder fix is confirmed; this new nodelet bug blocks static PV
-data verification. Neither lane reached return migration or semantic parity.
-Artifacts and logs: `/tmp/nodemigrate-36248706224-artifacts/` and
-`/tmp/nodemigrate-36248706224-{k3s,kubernetes}-job.log`.
+Run [36250505911](https://github.com/centerionware/not-k8s/actions/runs/36250505911)
+used SHA `4d28a58886be2ced6f2c22626c4b370d8aa4bef3`. Both K3s+Cilium and
+upstream Kubernetes+Cilium lanes passed the source checks and target checks
+through PVC binding and storage data reads: the `migration-data-check` Pod
+reached `Succeeded` with both static hostPath and CSI claims. This confirms the
+nodelet hostPath/local PV resolver and the migrated-PVC binder fixes at the
+target data path. Both then failed the Ingress/Gateway probes because
+`nodeapiserver` rejected valid SPDY port-forward requests that omit the
+optional query port list. No return migration or semantic parity checkpoint
+passed. Logs and artifacts:
+`/tmp/nodemigrate-36250505911-artifacts/nodemigrate-{k3s,kubernetes}-36250505911/`.
 
-Focused `nodecontroller` quick-check [36248706148](https://github.com/centerionware/not-k8s/actions/runs/36248706148)
-passed at that SHA. A nodelet change is in progress to mount bound hostPath
-and local PV sources directly; it includes focused source-extraction tests.
-The next allowed checks are a `nodelet` quick-check and the dedicated migration
-workflow. No regular build or full e2e gate was run.
+Focused `nodelet` quick-check [36250504453](https://github.com/centerionware/not-k8s/actions/runs/36250504453)
+passed at the same SHA. The nodeapiserver port-forward compatibility fix and
+focused regression are in progress; next checks are its `nodeapiserver`
+quick-check and the dedicated migration workflow. No regular build or full e2e
+gate was run.
 
 Earlier `nodeapiserver` quick-check
 [36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)

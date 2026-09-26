@@ -16,7 +16,6 @@ const ATTACH_QUERY_KEYS: &[&str] = &["stdin", "stdout", "stderr", "input", "outp
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     Pod(PodError),
-    MissingPort,
     InvalidPort(String),
 }
 
@@ -95,9 +94,6 @@ pub fn target(pod: &Value, node: &Value, subresource: &str, pairs: &[(String, St
                     ports.push(parsed.to_string());
                 }
             }
-            if ports.is_empty() {
-                return Err(Error::MissingPort);
-            }
             let query = ports.into_iter().map(|port| ("port".to_string(), port));
             (format!("/portForward/{namespace}/{name}"), encoded_query(query))
         }
@@ -145,7 +141,9 @@ mod tests {
     }
 
     #[test]
-    fn portforward_requires_a_port() {
-        assert_eq!(target(&pod(), &node(), "portforward", &[]), Err(Error::MissingPort));
+    fn portforward_allows_spdy_requests_without_initial_query_ports() {
+        let target = target(&pod(), &node(), "portforward", &[]).unwrap();
+        assert_eq!(target.path, "/portForward/default/demo");
+        assert_eq!(target.query, "");
     }
 }

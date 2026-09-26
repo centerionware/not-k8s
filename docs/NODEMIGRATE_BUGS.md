@@ -4,18 +4,26 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
-Migration run [36248706224](https://github.com/centerionware/not-k8s/actions/runs/36248706224)
-used SHA `b14185a1e484fca6d0b986bcf01219fe822ff149`. Focused
-`nodecontroller` quick-check [36248706148](https://github.com/centerionware/not-k8s/actions/runs/36248706148)
-passed. Both migration lanes now restore the imported static PVC to `Bound`,
-confirming the binder fix. They then timed out waiting for
-`Pod/migration-data-check`: nodelet's PVC resolver only mounted CSI-backed PVs
-and left the fixture's bound `hostPath` PV unresolved. This confirms a separate
-nodelet storage bug. The current worktree adds direct hostPath/local PV path
-resolution with validation and focused source extraction tests; quick-check and
-migration retest are pending. No return migration ran. Logs and artifacts:
-`/tmp/nodemigrate-36248706224-{k3s,kubernetes}-job.log` and
-`/tmp/nodemigrate-36248706224-artifacts/`.
+Migration run [36250505911](https://github.com/centerionware/not-k8s/actions/runs/36250505911)
+used SHA `4d28a58886be2ced6f2c22626c4b370d8aa4bef3`. Focused `nodelet`
+quick-check [36250504453](https://github.com/centerionware/not-k8s/actions/runs/36250504453)
+passed. In both K3s+Cilium and upstream Kubernetes+Cilium lanes, imported
+static claims reached `Bound` and the `migration-data-check` Pod reached
+`Succeeded`, confirming that nodelet now mounts the hostPath PV data. The
+lanes then failed at target-stage Ingress/Gateway probes: nodeapiserver
+rejected `kubectl port-forward`'s SPDY request because it has no initial
+`ports` query parameter. Kubernetes sends the port in each SPDY stream header;
+the query list is optional for this protocol. The current change removes the
+unconditional missing-port rejection and adds a focused regression. Its
+quick-check and migration rerun are pending. Neither lane returned to the
+source or completed parity. Logs and artifacts:
+`/tmp/nodemigrate-36250505911-artifacts/nodemigrate-{k3s,kubernetes}-36250505911/`.
+
+The preceding nodelet work resolves bound `hostPath` and `local` PV sources
+directly, validating declared hostPath types and requiring local PV paths to
+be directories. It passed the focused `nodelet` quick-check and the migration
+data-read assertion in both lanes above. A new confirmed `nodeapiserver`
+port-forward compatibility bug is listed in the tracker below.
 
 Follow-up to [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151):
 the upstream hostpath CSI driver keeps volume state and payload under
@@ -354,6 +362,7 @@ neither lane reached a target checkpoint or round trip. Logs:
 
 | Bug | Owning component(s) | Fix in this branch | Focused evidence / state |
 | --- | --- | --- | --- |
+| `kubectl port-forward` over SPDY may omit the initial `ports` query parameter; Kubernetes sends the remote port in each SPDY stream header. `nodeapiserver` rejected the valid connect request before proxying it to nodelet, preventing Ingress and Gateway API data-plane checks after migration. | `nodeapiserver` Pod port-forward request translation | Allow an empty query port list on the SPDY path and proxy the upgrade unchanged. Keep supplied `port`/`ports` values normalized for WebSocket requests. Add a regression for a valid port-forward target without query ports. | Confirmed in both lanes of [36250505911](https://github.com/centerionware/not-k8s/actions/runs/36250505911): both target API servers returned `at least one port is required for port-forward` for `kubectl port-forward`, so Ingress and Gateway probes returned HTTP 000. The source-stage probes passed against upstream APIs. Code and focused regression are in the branch; `nodeapiserver` quick-check and migration retest are pending. |
 | During migration, nodelet requests a second stage path for a volume that kubelet already staged. Nodelet's old path used the raw volume handle under `/var/lib/nodelet/csi`; kubelet uses the SHA-256 handle under `/var/lib/kubelet/plugins/kubernetes.io/csi`. The CSI provider returns `FailedPrecondition: already staged`, leaving workloads Pending. | `nodelet` CSI staging and `nodebootstrap` migration service configuration | Use kubelet-compatible driver/hash/globalmount layout, detect the active source root from mount state, pass it into the generated nodelet service, and expose the preserved staging mount to the replacement CSI Pod. Validate an explicit root against active stages. | Confirmed in [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356). Implemented in `4014685a` and `fc2e5082`; quick-check [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553) passed. Migration run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026) then confirmed `NodeStageVolume` and `NodePublishVolume` succeeded in both lanes. Cross-provider or different-node CSI data transfer remains unverified. Logs: `/tmp/nodemigrate-36245509026/artifacts/`. |
 | Newly created batch/v1 Jobs did not receive Kubernetes-generated selector labels. The Job controller created Pods, but `kubectl logs job/...` selected unrelated Pods. | `nodeapiserver` Job create defaulting for POST and create-on-apply | After assigning request identity and UID, generate upstream legacy and prefixed Job/template labels plus UID-based `spec.selector.matchLabels`; preserve manual selectors. | Confirmed in both lanes of [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026). Fixed in `bd3b4f8f`; focused quick-check [36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622) passed. Both lanes of [36247102741](https://github.com/centerionware/not-k8s/actions/runs/36247102741) passed the CronJob log-selection assertion. |
 | A migrated PVC can retain `pv.kubernetes.io/bind-completed` and `spec.volumeName` after export strips controller-owned `status`. The PV binder treated the stale marker as complete and never restored `status.phase=Bound`, leaving the static claim Pending. | `nodecontroller` persistent-volume binder; `nodemigrate` status sanitization is the import trigger | Treat the claim as fully bound only when volumeName, bind-completed annotation, and status phase `Bound` are all present. Reconcile incomplete imported claims through the existing prebound-PV path. Add regression coverage for a stale marker without status. | Confirmed in both lanes of [36247102741](https://github.com/centerionware/not-k8s/actions/runs/36247102741). Fixed in `b14185a1`; focused `nodecontroller` quick-check [36248706148](https://github.com/centerionware/not-k8s/actions/runs/36248706148) passed, and migration [36248706224](https://github.com/centerionware/not-k8s/actions/runs/36248706224) observed both imported claims reach `Bound`. |
