@@ -9,6 +9,20 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated migration run [36224872002](https://github.com/centerionware/not-k8s/actions/runs/36224872002)
+used SHA `cf1b984a9427165401ec1fa8df386cc950539845`. Both source fixtures
+completed setup, but the new `verify_stage source` CA assertion reported all
+nine namespace bundles mismatched on each lane. The shell check decoded the
+kubeconfig CA into command substitution, which likely removed the PEM trailing
+newline; the run did not capture the compared CA bytes, so the exact mismatch
+was not independently established. Crucially, this assertion failed before
+`nodemigrate` ran and says nothing about the exporter change or destination
+trust. The assertion now compares base64-encoded CA bytes without newline
+normalization. Focused nodemigrate tests passed at this SHA in
+[run 36224841930](https://github.com/centerionware/not-k8s/actions/runs/36224841930);
+runtime validation remains pending. Both migration lanes, target stages, and
+round trips remain unverified.
+
 Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
 used SHA `9e8701291e2cd8f821f53e1e43d0bc306fd2f035`. The five-node Docker
 preflight and both utility/combined-runtime builds passed. K3s reached target

@@ -169,16 +169,16 @@ watch_target_forward_state() {
                 echo 'nodeproxy service state:'
                 systemctl is-active nodeproxy 2>&1 || true
                 echo 'namespace service-account CA bundles match target API CA:'
-                target_ca_pem="$(KUBECONFIG="$kubeconfig" kubectl config view \
+                target_ca_b64="$(KUBECONFIG="$kubeconfig" kubectl config view \
                     --raw --flatten --minify -o json \
                     | jq -r '.clusters[0].cluster["certificate-authority-data"] // empty' \
-                    | base64 --decode 2>/dev/null || true)"
-                if [[ -n "$target_ca_pem" ]]; then
+                    || true)"
+                if [[ -n "$target_ca_b64" ]]; then
                     KUBECONFIG="$kubeconfig" kubectl get configmaps -A -o json 2>&1 \
-                        | jq -cS --arg ca "$target_ca_pem" '
+                        | jq -cS --arg ca "$target_ca_b64" '
                             [.items[]? | select(.metadata.name == "kube-root-ca.crt") | {
                               namespace: .metadata.namespace,
-                              matchesTargetApiCa: ((.data["ca.crt"] // "") == $ca)
+                              matchesTargetApiCa: ((.data["ca.crt"] // "" | @base64) == $ca)
                             }]
                           ' || true
                 else
@@ -1391,11 +1391,10 @@ verify_stage() {
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
-    local expected_ca_pem expected_namespace_count deadline trust_bundles
-    expected_ca_pem="$(kubectl config view --raw --flatten --minify -o json \
-        | jq -r '.clusters[0].cluster["certificate-authority-data"] // empty' \
-        | base64 --decode)"
-    [[ -n "$expected_ca_pem" ]] || {
+    local expected_ca_b64 expected_namespace_count deadline trust_bundles
+    expected_ca_b64="$(kubectl config view --raw --flatten --minify -o json \
+        | jq -r '.clusters[0].cluster["certificate-authority-data"] // empty')"
+    [[ -n "$expected_ca_b64" ]] || {
         echo "active kubeconfig has no certificate authority data at stage $stage" >&2
         return 1
     }
@@ -1405,10 +1404,10 @@ verify_stage() {
     trust_bundles=""
     while (( SECONDS < deadline )); do
         if kubectl get configmaps -A -o json | jq -e \
-            --arg ca "$expected_ca_pem" --argjson count "$expected_namespace_count" '
+            --arg ca "$expected_ca_b64" --argjson count "$expected_namespace_count" '
               [.items[] | select(.metadata.name == "kube-root-ca.crt")] as $bundles
               | ($bundles | length) == $count
-                and all($bundles[]; (.data["ca.crt"] // "") == $ca)
+                and all($bundles[]; ((.data["ca.crt"] // "") | @base64) == $ca)
             ' >/dev/null 2>&1; then
             trust_bundles="match"
             break
@@ -1417,10 +1416,10 @@ verify_stage() {
     done
     if [[ "$trust_bundles" != match ]]; then
         echo "namespace kube-root-ca.crt bundles do not match the active API CA at stage $stage" >&2
-        kubectl get configmaps -A -o json | jq -cS --arg ca "$expected_ca_pem" '
+        kubectl get configmaps -A -o json | jq -cS --arg ca "$expected_ca_b64" '
           [.items[] | select(.metadata.name == "kube-root-ca.crt") | {
             namespace: .metadata.namespace,
-            matchesTargetApiCa: ((.data["ca.crt"] // "") == $ca)
+            matchesTargetApiCa: ((.data["ca.crt"] // "" | @base64) == $ca)
           }]
         ' >&2 || true
         return 1

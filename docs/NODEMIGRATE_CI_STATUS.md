@@ -15,6 +15,18 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Dedicated migration run [36224872002](https://github.com/centerionware/not-k8s/actions/runs/36224872002)
+used SHA `cf1b984a9427165401ec1fa8df386cc950539845`. Both utility and
+combined-runtime builds and the five-node Docker preflight passed, but both
+lanes stopped at `verify_stage source` before `nodemigrate` was invoked. The
+new fixture assertion reported namespace CA mismatches because it decoded PEM
+into shell command substitution, which strips trailing newlines. This run
+provides no runtime evidence for the exporter change. The comparison now uses
+the exact base64 CA bytes from kubeconfig and ConfigMap data; the corrected
+check and migration behavior await a rerun. Focused nodemigrate tests passed
+on the same SHA in [run 36224841930](https://github.com/centerionware/not-k8s/actions/runs/36224841930).
+No general build or full e2e was dispatched.
+
 Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
 used SHA `9e8701291e2cd8f821f53e1e43d0bc306fd2f035`. The five-node Docker
 preflight and both utility/combined-runtime builds passed. K3s reached target
