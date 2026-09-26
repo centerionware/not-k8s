@@ -13,6 +13,25 @@ coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
 release-backed regression baseline, not a claim that its runtime contains the
 new fixes.
 
+## Latest release-backed result
+
+Release-backed migration [36228127861](https://github.com/centerionware/not-k8s/actions/runs/36228127861)
+used SHA `d92abf28397e143c266c115cf2deb7d694f23374` and fetched the regular
+release runtime `v0.8.0`. Both nodemigrate builds, the five-node Docker
+preflight, and both source-stage CA checks passed. Both forward migrations
+then failed. K3s Cilium/Traefik continued to reject the target API certificate
+with `x509: certificate signed by unknown authority` even though namespace CA
+ConfigMaps matched the target kubeconfig and nodemigrate seeded them before
+workload import. The upstream lane returned HTTP 500 importing
+`CertificateRequest/migration-test-1` and a CSR; it also rejected three current
+Gateway API CRDs because this release's CEL runtime does not recognize
+`matches`. Rollback restored both sources and retained protected exports. No
+target workload/storage checkpoint, reverse migration, or parity check passed.
+The mounted-CA fingerprint diagnostic was added after this run, so it remains
+unverified. Focused nodemigrate crate tests passed at the same SHA in
+[run 36228012548](https://github.com/centerionware/not-k8s/actions/runs/36228012548).
+The general full build and full e2e gates were not dispatched.
+
 ## Latest branch-runtime result
 
 Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)

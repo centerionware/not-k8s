@@ -181,6 +181,29 @@ watch_target_forward_state() {
                               matchesTargetApiCa: ((.data["ca.crt"] // "" | @base64) == $ca)
                             }]
                           ' || true
+                    echo 'target API CA fingerprint:'
+                    printf '%s' "$target_ca_b64" | base64 -d 2>/dev/null | sha256sum || true
+                    echo 'mounted service-account CA fingerprints for Cilium and cert-manager:'
+                    KUBECONFIG="$kubeconfig" kubectl get pods -A -o json 2>/dev/null \
+                        | jq -r '
+                            .items[]?
+                            | select((.metadata.namespace == "kube-system" and
+                                      (.metadata.labels["k8s-app"] // "") == "cilium") or
+                                     (.metadata.namespace == "cert-manager" and
+                                      (.metadata.labels["app.kubernetes.io/component"] // "") == "webhook"))
+                            | .metadata.namespace as $ns
+                            | .metadata.name as $pod
+                            | .spec.containers[]?.name
+                            | [$ns, $pod, .] | @tsv
+                          ' \
+                        | while IFS=$'\t' read -r pod_ns pod_name container_name; do
+                            [[ -n "$pod_name" && -n "$container_name" ]] || continue
+                            printf '%s/%s container=%s ' "$pod_ns" "$pod_name" "$container_name"
+                            KUBECONFIG="$kubeconfig" kubectl --request-timeout=5s \
+                                exec -n "$pod_ns" "$pod_name" -c "$container_name" -- \
+                                cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                                | sha256sum || true
+                        done || true
                 else
                     echo 'target admin kubeconfig did not expose a flattened API CA'
                 fi

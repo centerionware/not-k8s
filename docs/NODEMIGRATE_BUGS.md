@@ -46,6 +46,20 @@ failed its CertificateRequest import with HTTP 500, then recovered its source
 and retained its protected export. Logs are under
 `/tmp/nodemigrate-36223445443/`.
 
+Release-backed migration [36228127861](https://github.com/centerionware/not-k8s/actions/runs/36228127861)
+at SHA `d92abf28397e143c266c115cf2deb7d694f23374` fetched the regular
+`v0.8.0` runtime. Both source CA checks and the Docker preflight passed, but
+both lanes failed during forward import and recovered their sources while
+retaining protected exports. K3s Cilium/Traefik still reported API TLS
+`unknown authority` after destination CA ConfigMaps were seeded and matched.
+This confirms the ConfigMap value alone does not establish what CA a running
+Pod has mounted; the harness now records service-account CA fingerprints for
+Cilium and cert-manager. Upstream also returned HTTP 500 for CertificateRequest
+and CSR import, while v0.8.0 rejected three current Gateway API CRDs because
+its CEL runtime does not support the policy's `matches` function. No target
+workload checkpoint, reverse migration, or parity comparison passed. Logs:
+`/tmp/nodemigrate-36228127861/`.
+
 Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
 used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The Docker
 preflight and both utility/runtime builds passed; both migration lanes failed.
