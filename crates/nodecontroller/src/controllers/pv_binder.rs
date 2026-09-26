@@ -104,7 +104,12 @@ fn is_fully_bound(pvc: &PersistentVolumeClaim) -> bool {
         .annotations
         .as_ref()
         .is_some_and(|annotations| annotations.contains_key(BIND_COMPLETED_ANNOTATION));
-    has_volume && bind_completed
+    let bound_phase = pvc
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.as_deref())
+        == Some("Bound");
+    has_volume && bind_completed && bound_phase
 }
 
 fn access_modes_satisfy(pv: &PersistentVolume, pvc: &PersistentVolumeClaim) -> bool {
@@ -921,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_only_sees_a_claim_as_fully_bound_after_the_completion_barrier() {
+    fn claim_with_a_stale_completion_marker_but_no_bound_status_is_reconciled() {
         let mut claim = claim_for_class("fast");
         claim.spec.as_mut().unwrap().volume_name = Some("pv-a".to_string());
         assert!(!is_fully_bound(&claim));
@@ -930,6 +935,16 @@ mod tests {
             BIND_COMPLETED_ANNOTATION.to_string(),
             "yes".to_string(),
         )]));
+        // nodemigrate removes controller-owned status before import but can
+        // retain the binder's annotation and volume reference. That is not a
+        // completed binding until the destination status controller restores
+        // `phase: Bound`.
+        assert!(!is_fully_bound(&claim));
+
+        claim.status = Some(PersistentVolumeClaimStatus {
+            phase: Some("Bound".to_string()),
+            ..Default::default()
+        });
         assert!(is_fully_bound(&claim));
     }
 

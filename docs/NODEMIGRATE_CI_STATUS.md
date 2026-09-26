@@ -15,25 +15,25 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
-Migration run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
-used SHA `4014685a8c66fca8f8fe2353048ec8d039c76654`. Both nodemigrate/runtime
-builds, Docker five-node preflight, source fixtures, and CSI catalog checks
-passed. In both K3s+Cilium and upstream Kubernetes+Cilium lanes, nodelet then
-successfully reused the source kubelet CSI stage path; `NodeStageVolume` and
-`NodePublishVolume` succeeded. The run failed at the CronJob assertion because
-the generated Job selector was absent: `kubectl logs job/...` matched six Pods
-and selected a Cilium daemon Pod rather than the completed CronJob Pod. This
-is a nodeapiserver Job-create defaulting bug, now fixed in the worktree for
-POST and create-on-apply paths with focused regressions. The migration run did
-not reach semantic target parity or reverse migration. Logs:
-`/tmp/nodemigrate-36245509026/artifacts/`.
+Migration run [36247102741](https://github.com/centerionware/not-k8s/actions/runs/36247102741)
+used SHA `bd3b4f8f4fae50af73fab88e01a4752f06e01640`. Docker five-node
+preflight, both nodemigrate builds, and both branch runtime builds passed.
+Both K3s+Cilium and upstream Kubernetes+Cilium lanes passed the CronJob
+selector/log check, RBAC Jobs, certificate readiness, Cilium/Gateway,
+Deployment, StatefulSet, DaemonSet, and standalone Pod checks. They failed
+when the target static PVC did not return to `Bound`; reverse migration and
+full semantic parity were not reached. The saved artifacts and job logs are
+under `/tmp/nodemigrate-36247102741-artifacts/` and
+`/tmp/nodemigrate-36247102741-{k3s,kubernetes}-job.log`.
 
-Quick-check [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
-passed at SHA `fc2e5082fb845378b39b44b53994a2b248d74fb4`, including
-`nodelet`, `nodebootstrap`, and `nodemigrate`. This verifies the CSI staging
-path change. Quick-check for the current nodeapiserver Job selector fix and a
-new end-to-end migration attempt remain pending. No regular `build.yml` or
-full e2e gate was run.
+Focused nodeapiserver quick-check
+[36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)
+passed at the same SHA, verifying the Job selector implementation. Diagnosis
+found that migration removes PVC status but retains the source bind-completed
+annotation; nodecontroller then skipped the claim despite missing
+`status.phase=Bound`. A nodecontroller fix and regression test are now in the
+worktree. Its quick-check and the next migration run are pending. No regular
+`build.yml` or full e2e gate was run.
 
 Follow-up migration setup now mounts hostpath CSI's `/csi-data-dir` from
 node-local persistent storage before provisioning fixture claims. This keeps

@@ -9,27 +9,26 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
-used SHA `4014685a8c66fca8f8fe2353048ec8d039c76654`. Both K3s+Cilium and
-upstream Kubernetes+Cilium lanes passed source fixture checks, retained the
-hostpath CSI volume catalog, and successfully completed `NodeStageVolume` and
-`NodePublishVolume` at the source kubelet staging path. The target workload
-checkpoint then failed at the CronJob assertion: the generated Job Pod
-completed, but the API server had not generated the Job selector, so
-`kubectl logs job/...` selected six Pods and chose an unrelated daemon Pod.
-This identifies a separate nodeapiserver Job defaulting bug. A worktree fix
-generates the upstream UID selector and template labels for POST and
-create-on-apply after assigning URL identity and UID; focused tests cover
-automatic labels and manual selectors. That fix has not yet passed CI. There
-was no target semantic parity, reverse migration, or complete round trip.
-Logs: `/tmp/nodemigrate-36245509026/artifacts/`.
+Run [36247102741](https://github.com/centerionware/not-k8s/actions/runs/36247102741)
+used SHA `bd3b4f8f4fae50af73fab88e01a4752f06e01640`. Docker preflight and both
+utility/runtime builds passed. Both K3s+Cilium and upstream Kubernetes+Cilium
+lanes passed the CronJob Job selector/log assertion, RBAC Jobs, certificate
+readiness, and target checks through workload controllers and Gateway API.
+Both then timed out waiting for the imported static PVC to regain `Bound`
+status; no return migration or full parity passed. The exporter removes
+Kubernetes object status but keeps the source PVC's bind-completed annotation.
+The PV binder incorrectly skipped this incomplete claim. A fix now requires
+the PVC status phase to be Bound before the binder treats it as complete; its
+focused regression and migration retest are pending. Logs and artifacts:
+`/tmp/nodemigrate-36247102741-artifacts/` and
+`/tmp/nodemigrate-36247102741-{k3s,kubernetes}-job.log`.
 
-Quick-check [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
-passed at SHA `fc2e5082fb845378b39b44b53994a2b248d74fb4` for `nodelet`,
-`nodebootstrap`, and `nodemigrate`, verifying the CSI staging-path fix. The
-earlier mount-root parser failure from quick-check 36245508890 is corrected.
-The next focused check must include `nodeapiserver`, followed by another
-dedicated migration run. No regular build or full e2e gate was run.
+Quick-check [36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)
+passed `nodeapiserver` tests at the same SHA, verifying generated Job selectors
+for POST and create-on-apply. Earlier CSI staging-path quick-check
+[36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
+passed `nodelet`, `nodebootstrap`, and `nodemigrate`. No regular build or full
+e2e gate was run.
 
 The current test harness now configures hostpath CSI `/csi-data-dir` on
 node-local persistent storage before fixture volumes are provisioned. The
