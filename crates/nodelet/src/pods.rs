@@ -737,7 +737,7 @@ impl PodController {
                 // The API's old status is not proof that the corresponding
                 // containerd task survived the restart. Establish the local
                 // runtime state and probe supervisor before judging readiness.
-                let mut runtime_status = match self.runtime.status(&namespace, &name).await {
+                let runtime_status = match self.runtime.status(&namespace, &name).await {
                     Ok(status) => status,
                     Err(error) => {
                         warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to inspect local CoreDNS runtime status; reconciling");
@@ -750,14 +750,16 @@ impl PodController {
                     status.pod_ip.is_none() || !probe_supervisor_running
                 });
                 if needs_reconcile {
-                    self.reconcile_with_timeout(pod.clone()).await;
-                    runtime_status = match self.runtime.status(&namespace, &name).await {
-                        Ok(status) => status,
-                        Err(error) => {
-                            warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to re-read local CoreDNS runtime status");
-                            None
-                        }
-                    };
+                    // CNI is still starting while this gate is active. A local
+                    // CoreDNS reconcile can spend the full 30-second runtime
+                    // budget waiting for a sandbox that cannot start until
+                    // CNI is ready. Running those reconciles inline starves
+                    // the next host-network CNI-agent pass; with several
+                    // replicas, one loop can delay Cilium init-container
+                    // progress by minutes. Queue each key through the normal
+                    // bounded, coalescing worker pool and let this gate keep
+                    // checking CNI bootstrap and runtime readiness.
+                    self.enqueue_pod_reconcile(pod.clone());
                 }
 
                 if runtime_status
