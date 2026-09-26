@@ -45,6 +45,64 @@ const SKIP_KINDS: &[&str] = &[
     "VolumeAttachment",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SkipReason {
+    ReadOnlyComponentStatus,
+    EphemeralEvents,
+    NodeReregistration,
+    LiveMetrics,
+    CsiReattachment,
+    ApiServiceRouting,
+    ControllerManagedEndpoints,
+    DestinationCaBundle,
+    NodeHeartbeatLease,
+    StaticPodMirror,
+    ControllerOwnedPod,
+    ServiceAccountToken,
+}
+
+impl SkipReason {
+    fn description(self) -> &'static str {
+        match self {
+            Self::ReadOnlyComponentStatus => {
+                "read-only status reported by the source control plane"
+            }
+            Self::EphemeralEvents => {
+                "transient observations; event history is not durable workload state"
+            }
+            Self::NodeReregistration => {
+                "nodes register with the destination and scheduling metadata is restored separately"
+            }
+            Self::LiveMetrics => "samples are refreshed by the destination metrics provider",
+            Self::CsiReattachment => "destination CSI controllers recreate attachment state",
+            Self::ApiServiceRouting => {
+                "the destination control plane recreates its Kubernetes API routing"
+            }
+            Self::ControllerManagedEndpoints => {
+                "the owning service controller recalculates endpoint state"
+            }
+            Self::DestinationCaBundle => {
+                "the destination regenerates this bundle from its own API CA"
+            }
+            Self::NodeHeartbeatLease => {
+                "the destination kubelet creates a lease for the re-registered node"
+            }
+            Self::StaticPodMirror => "the retained static pod manifest recreates its API mirror",
+            Self::ControllerOwnedPod => "the durable workload controller recreates this pod",
+            Self::ServiceAccountToken => {
+                "the destination token controller generates a new token secret"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ResourceExportSummary {
+    migrated_objects: usize,
+    skipped_objects: BTreeMap<SkipReason, usize>,
+    skipped_resource: Option<SkipReason>,
+}
+
 const IMPORT_RETRY_ATTEMPTS: u32 = 60;
 const IMPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 #[derive(Debug, Clone)]
@@ -472,14 +530,28 @@ impl KubeApi {
                 }
             }
             let mut listed_resources = BTreeSet::new();
+            let mut resource_summaries = BTreeMap::<String, ResourceExportSummary>::new();
             for group in discovery.groups() {
                 for version in group.versions() {
                     for (resource, capabilities) in group.versioned_resources(version) {
-                        if !capabilities.supports_operation(verbs::LIST)
-                            || skip_kind(&resource.kind)
-                            || !listed_resources
-                                .insert((resource.group.clone(), resource.plural.clone()))
+                        if !capabilities.supports_operation(verbs::LIST) {
+                            continue;
+                        }
+                        if !listed_resources
+                            .insert((resource.group.clone(), resource.plural.clone()))
                         {
+                            continue;
+                        }
+                        let resource_name = if resource.group.is_empty() {
+                            resource.plural.clone()
+                        } else {
+                            format!("{}.{}", resource.plural, resource.group)
+                        };
+                        let summary = resource_summaries
+                            .entry(resource_name)
+                            .or_default();
+                        if let Some(reason) = skip_kind_reason(&resource.kind) {
+                            summary.skipped_resource = Some(reason);
                             continue;
                         }
                         let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
@@ -496,7 +568,10 @@ impl KubeApi {
                                 let mut value = serde_json::to_value(object)
                                     .context("serializing Kubernetes object")?;
                                 preserve_discovered_type_meta(&mut value, &resource)?;
-                                if !skip_object(&value) {
+                                if let Some(reason) = object_skip_reason(&value) {
+                                    *summary.skipped_objects.entry(reason).or_default() += 1;
+                                } else {
+                                    summary.migrated_objects += 1;
                                     objects.push(value);
                                 }
                             }
@@ -507,6 +582,25 @@ impl KubeApi {
                             }
                         }
                     }
+                }
+            }
+            for (resource, summary) in resource_summaries {
+                if let Some(reason) = summary.skipped_resource {
+                    eprintln!(
+                        "nodemigrate: source API resource {resource}: skipped all objects; reason={}",
+                        reason.description()
+                    );
+                    continue;
+                }
+                eprintln!(
+                    "nodemigrate: source API resource {resource}: {} objects selected for migration",
+                    summary.migrated_objects
+                );
+                for (reason, count) in summary.skipped_objects {
+                    eprintln!(
+                        "nodemigrate: source API resource {resource}: skipped {count} objects; reason={}",
+                        reason.description()
+                    );
                 }
             }
             Ok::<_, anyhow::Error>((objects, labels, node_states))
@@ -1874,8 +1968,18 @@ fn retryable_import_error(error: &anyhow::Error, retry_not_found: bool) -> bool 
     })
 }
 
-fn skip_kind(kind: &str) -> bool {
-    SKIP_KINDS.contains(&kind)
+fn skip_kind_reason(kind: &str) -> Option<SkipReason> {
+    if !SKIP_KINDS.contains(&kind) {
+        return None;
+    }
+    Some(match kind {
+        "ComponentStatus" => SkipReason::ReadOnlyComponentStatus,
+        "Event" => SkipReason::EphemeralEvents,
+        "Node" => SkipReason::NodeReregistration,
+        "NodeMetrics" | "PodMetrics" => SkipReason::LiveMetrics,
+        "VolumeAttachment" => SkipReason::CsiReattachment,
+        _ => return None,
+    })
 }
 
 fn label_value<'a>(object: &'a Value, key: &str) -> Option<&'a str> {
@@ -1895,37 +1999,47 @@ fn is_default_kubernetes_service_endpoint(object: &Value) -> bool {
             || label_value(object, "kubernetes.io/service-name") == Some("kubernetes"))
 }
 
-fn skip_regenerated_endpoint(object: &Value, kind: &str) -> bool {
+fn regenerated_endpoint_skip_reason(object: &Value, kind: &str) -> Option<SkipReason> {
     match kind {
         "Endpoints" => {
-            is_default_kubernetes_service_endpoint(object)
-                || label_value(object, "endpoints.kubernetes.io/managed-by")
-                    == Some("endpoint-controller")
+            if is_default_kubernetes_service_endpoint(object) {
+                Some(SkipReason::ApiServiceRouting)
+            } else if label_value(object, "endpoints.kubernetes.io/managed-by")
+                == Some("endpoint-controller")
+            {
+                Some(SkipReason::ControllerManagedEndpoints)
+            } else {
+                None
+            }
         }
         "EndpointSlice" => {
-            is_default_kubernetes_service_endpoint(object)
-                || matches!(
-                    label_value(object, "endpointslice.kubernetes.io/managed-by"),
-                    Some(
-                        "endpointslice-controller.k8s.io"
-                            | "endpointslicemirroring-controller.k8s.io"
-                    )
+            if is_default_kubernetes_service_endpoint(object) {
+                Some(SkipReason::ApiServiceRouting)
+            } else if matches!(
+                label_value(object, "endpointslice.kubernetes.io/managed-by"),
+                Some(
+                    "endpointslice-controller.k8s.io" | "endpointslicemirroring-controller.k8s.io"
                 )
+            ) {
+                Some(SkipReason::ControllerManagedEndpoints)
+            } else {
+                None
+            }
         }
-        _ => false,
+        _ => None,
     }
 }
 
-fn skip_object(object: &Value) -> bool {
+fn object_skip_reason(object: &Value) -> Option<SkipReason> {
     let kind = object
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if skip_kind(kind) {
-        return true;
+    if let Some(reason) = skip_kind_reason(kind) {
+        return Some(reason);
     }
-    if skip_regenerated_endpoint(object, kind) {
-        return true;
+    if let Some(reason) = regenerated_endpoint_skip_reason(object, kind) {
+        return Some(reason);
     }
     // This per-namespace bundle is derived from the destination cluster CA.
     // Copying the source value makes in-cluster clients reject the target API
@@ -1934,7 +2048,7 @@ fn skip_object(object: &Value) -> bool {
     if kind == "ConfigMap"
         && object.pointer("/metadata/name").and_then(Value::as_str) == Some("kube-root-ca.crt")
     {
-        return true;
+        return Some(SkipReason::DestinationCaBundle);
     }
     // Kubelets renew these node-heartbeat Leases continuously; the target
     // kubelet must create a fresh Lease for its newly registered Node. Other
@@ -1945,7 +2059,7 @@ fn skip_object(object: &Value) -> bool {
             .and_then(Value::as_str)
             == Some("kube-node-lease")
     {
-        return true;
+        return Some(SkipReason::NodeHeartbeatLease);
     }
     if kind == "Pod" {
         let annotations = object
@@ -1965,12 +2079,24 @@ fn skip_object(object: &Value) -> bool {
                 })
             });
         if is_static_pod_mirror || is_controller_owned {
-            return true;
+            return Some(if is_static_pod_mirror {
+                SkipReason::StaticPodMirror
+            } else {
+                SkipReason::ControllerOwnedPod
+            });
         }
     }
-    object.get("kind").and_then(Value::as_str) == Some("Secret")
+    if kind == "Secret"
         && object.pointer("/type").and_then(Value::as_str)
             == Some("kubernetes.io/service-account-token")
+    {
+        return Some(SkipReason::ServiceAccountToken);
+    }
+    None
+}
+
+fn skip_object(object: &Value) -> bool {
+    object_skip_reason(object).is_some()
 }
 
 fn sanitize(mut object: Value) -> Option<SanitizedObject> {
@@ -2105,11 +2231,11 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
-        namespace_ca_bundle_matches, node_scheduling_patch, object_type_label,
+        namespace_ca_bundle_matches, node_scheduling_patch, object_skip_reason, object_type_label,
         persistent_host_paths, preserve_discovered_type_meta, restore_cni_path_backups,
-        retryable_import_error, same_group_kind, sanitize, skip_object, snapshot_k3s_cni_paths,
-        summarize_import_failures, write_export_manifest, ApiResource, Export, ExportedObject,
-        KubeApi, NodeSchedulingState,
+        retryable_import_error, same_group_kind, sanitize, skip_kind_reason, skip_object,
+        snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest, ApiResource,
+        Export, ExportedObject, KubeApi, NodeSchedulingState, SkipReason,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -2455,16 +2581,37 @@ current-context: test
 
     #[test]
     fn migration_export_skips_ephemeral_metrics_api_objects() {
-        assert!(skip_object(&serde_json::json!({
-            "apiVersion": "metrics.k8s.io/v1beta1",
-            "kind": "NodeMetrics",
-            "metadata": {"name": "node-a"}
-        })));
-        assert!(skip_object(&serde_json::json!({
-            "apiVersion": "metrics.k8s.io/v1beta1",
-            "kind": "PodMetrics",
-            "metadata": {"name": "pod-a", "namespace": "apps"}
-        })));
+        assert_eq!(
+            object_skip_reason(&serde_json::json!({
+                "apiVersion": "metrics.k8s.io/v1beta1",
+                "kind": "NodeMetrics",
+                "metadata": {"name": "node-a"}
+            })),
+            Some(SkipReason::LiveMetrics)
+        );
+        assert_eq!(
+            object_skip_reason(&serde_json::json!({
+                "apiVersion": "metrics.k8s.io/v1beta1",
+                "kind": "PodMetrics",
+                "metadata": {"name": "pod-a", "namespace": "apps"}
+            })),
+            Some(SkipReason::LiveMetrics)
+        );
+    }
+
+    #[test]
+    fn migration_export_logs_service_account_token_lifecycle_exclusion() {
+        let token = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "type": "kubernetes.io/service-account-token",
+            "metadata": {"name": "builder-token", "namespace": "apps"}
+        });
+        assert_eq!(
+            object_skip_reason(&token),
+            Some(SkipReason::ServiceAccountToken)
+        );
+        assert!(sanitize(token).is_none());
     }
 
     #[test]
@@ -2475,7 +2622,10 @@ current-context: test
             "metadata": {"name": "kube-root-ca.crt", "namespace": "apps"},
             "data": {"ca.crt": "source-cluster-ca"}
         });
-        assert!(skip_object(&object));
+        assert_eq!(
+            object_skip_reason(&object),
+            Some(SkipReason::DestinationCaBundle)
+        );
         assert!(sanitize(object).is_none());
 
         assert!(!skip_object(&serde_json::json!({
@@ -2526,7 +2676,7 @@ current-context: test
 
     #[test]
     fn migration_export_skips_only_kubernetes_regenerated_endpoints_and_node_leases() {
-        for object in [
+        let cases = [
             serde_json::json!({
                 "apiVersion": "v1",
                 "kind": "Endpoints",
@@ -2573,12 +2723,37 @@ current-context: test
                 "kind": "Lease",
                 "metadata": {"name": "node-a", "namespace": "kube-node-lease"}
             }),
-        ] {
+        ];
+        for (index, object) in cases.into_iter().enumerate() {
+            let expected_reason = if index == 5 {
+                SkipReason::NodeHeartbeatLease
+            } else if index == 1 || index == 3 {
+                SkipReason::ApiServiceRouting
+            } else {
+                SkipReason::ControllerManagedEndpoints
+            };
+            assert_eq!(object_skip_reason(&object), Some(expected_reason));
             assert!(
                 sanitize(object).is_none(),
                 "Kubernetes-regenerated endpoint or node Lease was exported"
             );
         }
+    }
+
+    #[test]
+    fn migration_export_skip_kinds_have_explicit_lifecycle_reasons() {
+        for (kind, expected) in [
+            ("ComponentStatus", SkipReason::ReadOnlyComponentStatus),
+            ("Event", SkipReason::EphemeralEvents),
+            ("Node", SkipReason::NodeReregistration),
+            ("NodeMetrics", SkipReason::LiveMetrics),
+            ("PodMetrics", SkipReason::LiveMetrics),
+            ("VolumeAttachment", SkipReason::CsiReattachment),
+        ] {
+            assert_eq!(skip_kind_reason(kind), Some(expected));
+            assert!(!expected.description().is_empty());
+        }
+        assert_eq!(skip_kind_reason("Deployment"), None);
     }
 
     #[test]
@@ -2613,7 +2788,7 @@ current-context: test
 
     #[test]
     fn migration_export_skips_controller_regenerated_and_static_mirror_pods() {
-        assert!(sanitize(serde_json::json!({
+        let controller_owned = serde_json::json!({
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {
@@ -2627,10 +2802,14 @@ current-context: test
                     "controller": true
                 }]
             }
-        }))
-        .is_none());
+        });
+        assert_eq!(
+            object_skip_reason(&controller_owned),
+            Some(SkipReason::ControllerOwnedPod)
+        );
+        assert!(sanitize(controller_owned).is_none());
 
-        assert!(sanitize(serde_json::json!({
+        let mirror = serde_json::json!({
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {
@@ -2638,8 +2817,12 @@ current-context: test
                 "namespace": "kube-system",
                 "annotations": {"kubernetes.io/config.mirror": "mirror-uid"}
             }
-        }))
-        .is_none());
+        });
+        assert_eq!(
+            object_skip_reason(&mirror),
+            Some(SkipReason::StaticPodMirror)
+        );
+        assert!(sanitize(mirror).is_none());
     }
 
     #[test]
