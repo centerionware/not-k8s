@@ -1876,14 +1876,10 @@ verify_stage() {
         echo "No running nginx pod is available for the eviction subresource check at stage $stage" >&2
         return 1
     }
-    if eviction_response="$(kubectl create --raw "/api/v1/namespaces/migration-apps/pods/$nginx_pod/eviction" -f - 2>&1 <<YAML
-apiVersion: policy/v1
-kind: Eviction
-metadata:
-  name: $nginx_pod
-  namespace: migration-apps
-YAML
-)"; then
+    eviction_request="$(jq -cn --arg name "$nginx_pod" \
+        '{apiVersion:"policy/v1",kind:"Eviction",metadata:{name:$name,namespace:"migration-apps"}}')"
+    if eviction_response="$(printf '%s\n' "$eviction_request" \
+        | kubectl create --raw "/api/v1/namespaces/migration-apps/pods/$nginx_pod/eviction" -f - 2>&1)"; then
         echo "Pod eviction unexpectedly succeeded despite minAvailable=1 at stage $stage" >&2
         return 1
     fi

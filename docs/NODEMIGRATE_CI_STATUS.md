@@ -26,10 +26,18 @@ the five-node Kubernetes/Cilium simulation only. Migration was not run in this
 Docker-only invocation. Log: `/tmp/nodemigrate-36278826637-job.log`; artifact:
 `/tmp/nodemigrate-36278826637-artifact/nodemigrate-docker-preflight-36278826637/nodemigrate-docker-preflight.log`.
 
-The latest regular runtime release is `v0.8.0` (published 2026-09-08). The
-next authorized integration run uses the workflow's default `runtime_source=release`
-to test the migration utility against that release; this run's result is
-pending.
+Release-backed migration run [36279222996](https://github.com/centerionware/not-k8s/actions/runs/36279222996)
+at SHA `8e630ce3103b2eaf510a7212d2564ca391fb1e49` built `nodemigrate` and
+fetched the exact regular runtime asset `notk8s-0.8.0-linux-x86_64-release`
+for both K3s and upstream lanes. The Docker preflight passed again. Both
+migration lanes installed their source fixtures and passed source checks,
+including Ingress and API CA checks, then stopped before calling nodemigrate:
+the PDB/eviction assertion sent YAML through `kubectl create --raw`, which
+forwards the bytes unchanged and received a JSON parse error. This was a
+fixture failure, not evidence of migration behavior. The request is now built
+as JSON; release-backed rerun is pending. Full run log:
+`/tmp/nodemigrate-36279222996-job.log`; lane logs:
+`/tmp/nodemigrate-36279222996-artifacts/nodemigrate-{k3s,kubernetes}-36279222996/`.
 
 The Docker-only attempt [36271904146](https://github.com/centerionware/not-k8s/actions/runs/36271904146)
 used SHA `9b458e57836039745fee90bb34d0a0ceeb44ec4a`. The image build and
