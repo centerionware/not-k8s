@@ -18,6 +18,9 @@ CHECKPOINT_DIR="$WORK/checkpoints"
 SOURCE_KUBECONFIG=""
 CURRENT_KUBECONFIG=""
 MIGRATION_STARTED_AT=""
+TARGET_WATCH_PID=""
+TARGET_WATCH_STOP_FILE=""
+TARGET_WATCH_LOG=""
 
 if [[ "$LIBRARY_MODE" != true ]]; then
     exec > >(tee -a "$LOG") 2>&1
@@ -102,6 +105,60 @@ capture_cilium_init_container_diagnostics() {
     done <<< "$pod_records"
 }
 
+watch_target_forward_state() {
+    local kubeconfig="${1:?missing target kubeconfig}"
+    local stop_file="${2:?missing watcher stop file}"
+    local output_file="${3:?missing watcher output file}"
+    local previous_snapshot="" snapshot
+    : > "$output_file"
+    while [[ ! -e "$stop_file" ]]; do
+        if systemctl is-active --quiet nodeapiserver \
+            && KUBECONFIG="$kubeconfig" kubectl --request-timeout=2s \
+                get --raw=/readyz >/dev/null 2>&1; then
+            snapshot="$(
+                KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+                    -l 'k8s-app in (cilium,cilium-envoy,kube-dns)' -o wide 2>&1 || true
+                KUBECONFIG="$kubeconfig" kubectl get pods -n cert-manager -o wide 2>&1 || true
+                KUBECONFIG="$kubeconfig" kubectl get services,endpoints,endpointslices \
+                    -n cert-manager -o wide 2>&1 || true
+            )"
+            if [[ "$snapshot" != "$previous_snapshot" ]]; then
+                {
+                    echo "Target cluster state at $(date -u +%FT%TZ):"
+                    printf '%s\n' "$snapshot"
+                    echo "Target CoreDNS logs:"
+                    KUBECONFIG="$kubeconfig" kubectl logs -n kube-system \
+                        -l k8s-app=kube-dns --all-containers --tail=100 2>&1 || true
+                    echo "Target Cilium agent logs:"
+                    KUBECONFIG="$kubeconfig" kubectl logs -n kube-system \
+                        -l k8s-app=cilium -c cilium-agent --tail=100 2>&1 || true
+                    echo "Target cert-manager webhook logs:"
+                    KUBECONFIG="$kubeconfig" kubectl logs -n cert-manager \
+                        -l app.kubernetes.io/component=webhook --all-containers --tail=100 2>&1 || true
+                    echo "Target events:"
+                    KUBECONFIG="$kubeconfig" kubectl get events -A \
+                        --sort-by=.lastTimestamp 2>&1 | tail -n 80 || true
+                } >> "$output_file"
+                previous_snapshot="$snapshot"
+            fi
+        fi
+        sleep 2
+    done
+}
+
+stop_target_forward_watch() {
+    [[ -n "$TARGET_WATCH_PID" ]] || return 0
+    touch "$TARGET_WATCH_STOP_FILE"
+    wait "$TARGET_WATCH_PID" 2>/dev/null || true
+    TARGET_WATCH_PID=""
+    echo "Target state captured during forward migration:"
+    if [[ -s "$TARGET_WATCH_LOG" ]]; then
+        cat "$TARGET_WATCH_LOG"
+    else
+        echo "The target API did not become ready while the migration was running."
+    fi
+}
+
 capture_cni_host_diagnostics() {
     local config file pod
     for config in /etc/containerd/config.toml \
@@ -180,6 +237,7 @@ watch_cilium_mount_cgroup_logs() {
 diagnostics() {
     status=$?
     if [[ $status -ne 0 ]]; then
+        stop_target_forward_watch || true
         echo "Migration integration failed at $(date -u +%FT%TZ), exit=$status"
         echo "source=$SOURCE_DIST kubeconfig=${CURRENT_KUBECONFIG:-unset}"
         if [[ -n "$CURRENT_KUBECONFIG" && -f "$CURRENT_KUBECONFIG" ]]; then
@@ -197,7 +255,7 @@ diagnostics() {
                 --all-containers --tail=500 || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system deployment/cilium-operator \
                 --all-containers --tail=100 || true
-            echo "CoreDNS target readiness and diagnostics:"
+            echo "CoreDNS readiness for current kubeconfig:"
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods -n kube-system \
                 -l k8s-app=kube-dns -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pods -n kube-system \
@@ -1787,14 +1845,30 @@ main() {
     export NODEBOOTSTRAP_REPO_ROOT="$ROOT"
     local nodestore_kubeconfig=/etc/nodebootstrap/admin.kubeconfig
     MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
+    mkdir -p "$WORK"
+    TARGET_WATCH_STOP_FILE="$WORK/target-forward-watch.$$.stop"
+    TARGET_WATCH_LOG="$WORK/target-forward-watch.$$.log"
+    rm -f "$TARGET_WATCH_STOP_FILE" "$TARGET_WATCH_LOG"
+    watch_target_forward_state "$nodestore_kubeconfig" \
+        "$TARGET_WATCH_STOP_FILE" "$TARGET_WATCH_LOG" &
+    TARGET_WATCH_PID=$!
     echo "Migrating $SOURCE_DIST -> nodestore"
     local migration_status=0
-    if NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
-        NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig" \
-        "$MIGRATE" to=nodestore "from=$SOURCE_DIST"; then
+    (
+        export NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG"
+        export NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig"
+        exec "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
+    ) &
+    local migration_pid=$!
+    if wait "$migration_pid"; then
         migration_status=0
     else
         migration_status=$?
+    fi
+    stop_target_forward_watch
+    if [[ "$migration_status" -eq 0 ]]; then
+        :
+    else
         echo "Forward migration failed with status $migration_status; checking source rollback"
         local source_service=k3s
         [[ "$SOURCE_DIST" == kubernetes ]] && source_service=kubelet

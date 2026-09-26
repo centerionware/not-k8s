@@ -15,22 +15,31 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Branch-runtime migration [run 36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427)
-used head SHA `5a2a2630dc70ca27b5d0ed642a11319547f50869`. The five-node
-Docker preflight and scoped nodemigrate/combined-runtime builds passed in both
-lanes; both migration steps failed. In K3s, source checks and forward object
-transfer reached target API readiness. Cilium agent, Envoy, and operator were
-all `1/1 Running`; the observed `CiliumNode/runnervmtr4k5` update returned
-HTTP 200, so the earlier sequence of ten HTTP 409 updates did not recur in
-this run. Target hostpath CSI setup then failed. At failure, the three target
-CoreDNS pods were `Running` but `0/1` Ready; most other target pods, including
-the CSI pods, were `Unknown` with no IP. CoreDNS pod descriptions and logs were
-not captured, so the readiness failure's cause is unknown. In the upstream
-lane, import of `CertificateRequest/migration-test-1` returned HTTP 500 because
-the `webhook.cert-manager.io` admission endpoint could not be reached. Both
-lanes recovered their source service and retained the protected export. Neither
-reached target workload/storage checks, reverse migration, or parity. The
-general build gate and full e2e were not run. Logs:
+Branch-runtime migration [run 36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
+used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility
+and combined-runtime builds passed in both lanes, as did the five-node Docker
+preflight; both migration steps failed during forward object import. K3s
+accepted the CiliumNode update with HTTP 200, so the earlier repeated 409 did
+not recur. Import then failed applying `CertificateRequest/migration-test-1`
+because the cert-manager admission webhook could not be reached. Failure-time
+CoreDNS and Cilium pod diagnostics were collected after nodemigrate restored
+the source services. They do not describe target state and cannot explain the
+webhook failure. The new forward-migration watcher is intended to capture
+target pods, logs, and cert-manager service endpoints before rollback; runtime
+validation is pending. Both source services recovered and protected exports
+were retained. Neither lane reached target workload/storage checks, reverse
+migration, or parity. No general build gate or full e2e ran. Logs:
+`/tmp/nodemigrate-36217850294-k3s.log` and
+`/tmp/nodemigrate-36217850294-kubernetes.log`.
+
+Previous branch-runtime migration [run 36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427)
+used head SHA `5a2a2630dc70ca27b5d0ed642a11319547f50869`. Both builds and the
+Docker preflight passed. K3s reached target API readiness and the observed
+CiliumNode update returned HTTP 200, but target hostpath CSI setup failed; all
+three target CoreDNS pods were `Running` but `0/1` Ready, while most other
+target pods were `Unknown` with no IP. That artifact had no CoreDNS details.
+Upstream failed the same CertificateRequest webhook request with HTTP 500.
+Both lanes restored the source and retained protected exports. Logs:
 `/tmp/nodemigrate-36216429427-k3s.log` and
 `/tmp/nodemigrate-36216429427-kubernetes.log`.
 

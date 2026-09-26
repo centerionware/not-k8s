@@ -9,22 +9,34 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Branch-runtime migration [36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427)
-used head SHA `5a2a2630dc70ca27b5d0ed642a11319547f50869`. Both scoped
-nodemigrate/combined-runtime builds and the five-node Docker preflight passed;
-both migration lanes failed. K3s source assertions, forward transfer, and
-target API readiness passed. The target Cilium agent, Envoy, and operator were
-`1/1 Running`, and a CiliumNode update returned HTTP 200, so the earlier
-CiliumNode 409 sequence did not recur. Target hostpath CSI setup then failed;
-the three CoreDNS pods were `Running` but `0/1` Ready, while most other target
-pods, including CSI, were `Unknown` with no IP. The failure bundle lacked
-CoreDNS descriptions and logs, so the cause is not established. Upstream
-forward import failed when applying
-`CertificateRequest/migration-test-1`: the cert-manager admission webhook was
-unreachable and returned HTTP 500. Both lanes recovered their source service
-and retained the protected export. Neither reached target workload/storage
-assertions, reverse migration, or semantic parity. No regular build or full
-e2e gate ran. Logs: `/tmp/nodemigrate-36216429427-k3s.log` and
+Branch-runtime migration [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
+used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility
+and combined-runtime builds and the five-node Docker preflight passed; both
+migration lanes failed during forward import. K3s accepted the CiliumNode
+update with HTTP 200, but importing `CertificateRequest/migration-test-1`
+failed because the cert-manager admission webhook was unreachable (HTTP 500).
+The CoreDNS and Cilium pod diagnostics were collected after nodemigrate restored
+the source services; they are post-rollback source state, not target state, and
+cannot explain the webhook failure. A target-state watcher now samples CoreDNS,
+Cilium, cert-manager pods, and webhook endpoints while the forward migration
+is running, but its runtime validation is pending. Both lanes restored source
+service and retained protected exports.
+Neither reached target workload/storage assertions, reverse migration, or
+semantic parity. No regular build or full e2e gate ran. Logs:
+`/tmp/nodemigrate-36217850294-k3s.log` and
+`/tmp/nodemigrate-36217850294-kubernetes.log`.
+
+Previous branch-runtime migration [36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427)
+used head SHA `5a2a2630dc70ca27b5d0ed642a11319547f50869`. Both scoped builds
+and the Docker preflight passed. K3s source assertions, forward transfer, and
+target API readiness passed; Cilium agent, Envoy, and operator reached `1/1`,
+and the CiliumNode update returned HTTP 200. Target hostpath CSI setup failed
+with three CoreDNS pods `Running` but `0/1` Ready and most other target pods
+`Unknown` with no IP. CoreDNS descriptions and logs were not captured. Upstream
+failed importing the same CertificateRequest through the unreachable
+cert-manager webhook. Both lanes restored source service and retained the
+protected export. Neither reached workload/storage checks, reverse migration,
+or parity. Logs: `/tmp/nodemigrate-36216429427-k3s.log` and
 `/tmp/nodemigrate-36216429427-kubernetes.log`.
 
 Branch-runtime migration [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
@@ -470,6 +482,9 @@ establish no differences across the full migrated state.
 
 | Date | SHA | Check | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-26 | `d7b65846f55f24e75fd56ca54d107f5bad8b5511` | K3s+Cilium and upstream+Cilium branch-runtime migration | Both nodemigrate/combined-runtime builds and the five-node Docker preflight passed. Both forward migrations failed on `CertificateRequest/migration-test-1` because the cert-manager webhook was unreachable (HTTP 500). K3s CiliumNode update returned HTTP 200. The failure bundle's CoreDNS/Cilium pod state was collected after rollback and describes restored source state, not the target. No workload, reverse-migration, or parity checkpoint passed. | [Run 36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294); logs `/tmp/nodemigrate-36217850294-{k3s,kubernetes}.log` |
+| Worktree after `d7b65846` | — | Forward-migration target diagnostics | Added a watcher to sample target CoreDNS/Cilium/cert-manager pods, logs, and webhook endpoints while nodemigrate is running, before rollback stops the target services. `bash -n` and `git diff --check` passed; migration runtime validation is pending. | Dedicated migration workflow pending |
+| 2026-09-26 | `5a2a2630dc70ca27b5d0ed642a11319547f50869` | K3s+Cilium and upstream+Cilium branch-runtime migration | Both scoped builds and Docker preflight passed. K3s reached target API readiness, but hostpath CSI setup failed with three CoreDNS pods `Running` but `0/1` Ready and other target pods `Unknown`; no CoreDNS logs were captured. Upstream import failed at the cert-manager webhook. Source recovery passed; target workload checks, reverse migration, and parity did not run. | [Run 36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427); logs `/tmp/nodemigrate-36216429427-{k3s,kubernetes}.log` |
 | 2026-09-25 | `d739633a15a330565339b7028e9339e73326b207` | K3s+Cilium and upstream+Cilium branch-runtime lanes | K3s source assertions and forward API import passed (48 CRDs); destination API became ready. Target Envoy failed with `errno=98`, CNI remained uninitialized, and CSI setup failed. Upstream import hit the unavailable cert-manager webhook; source rollback and protected export passed. Neither lane reached target workload parity or reverse migration. | [Run 36121960626](https://github.com/centerionware/not-k8s/actions/runs/36121960626); logs `/tmp/nodemigrate-36121960626/` |
 | 2026-09-25 | `217bf87275f1abbacdcb1f6e587b5914f72f3f92` | Expanded fixture and required resource inventory | Fixture now covers binary ConfigMaps/Secrets, RBAC allow/deny using real service-account credentials, Job/CronJob, all-node DaemonSet, CSI-backed StatefulSet claim template, Helm release state/follow-up, and Gateway API routing. Broader inventory includes all API discovery kinds and listed Kubernetes resources. Focused shell/snapshot checks passed; runtime result pending. | Dedicated migration workflow pending |
 | 2026-09-25 | `217bf87275f1abbacdcb1f6e587b5914f72f3f92` | Branch-runtime migration and five-node Docker preflight | Nodemigrate and combined runtime builds passed, and Docker isolation preflight passed. Both source migration lanes failed in their `Run migration` steps; completed job metadata does not report the failing operation. GitHub API connectivity failed during log retrieval, so the first failing assertion and whether the expanded workload checks ran are unknown. | [Run 36124385324](https://github.com/centerionware/not-k8s/actions/runs/36124385324); artifact logs not yet retrieved |
