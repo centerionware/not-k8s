@@ -9,6 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Diagnostic migration run [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283)
+used SHA `b4ae3a95b89abc037ffe3d27449aad72c4eedf40`. Its five-node Docker
+preflight and both builds passed; both K3s+Cilium and upstream
+Kubernetes+Cilium lanes reached the same StatefulSet rollout timeout. The new
+failure output showed `StatefulSet.metadata.generation` and
+`status.observedGeneration` were both null, while the StatefulSet controller
+had populated replicas and revision fields. The user-facing rollout command
+therefore waited indefinitely for a generation that the API server never
+assigned. Root cause: the nodeapiserver create-on-apply path used for migration
+imports set creation time and UID but omitted server-owned generation 1;
+ordinary POST creation already stamped it. The branch now applies the same
+generation initialization to create-on-apply and has a focused regression.
+Quick-check and runtime verification are pending. Logs:
+`/tmp/nodemigrate-36236810283/`.
+
 Run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
 used branch SHA `d177f2c664e2b661da65d43275002bf79cf71b65`. The focused
 nodeapiserver quick-check [36235417698](https://github.com/centerionware/not-k8s/actions/runs/36235417698),
@@ -20,8 +35,8 @@ Pod, CA-trust, and CSI-readiness checks. Both then timed out in
 checkpoint: the rollout command waited for the StatefulSet controller to
 observe the imported spec generation. At failure the ordinal Pod was Pending.
 The saved log does not include the StatefulSet's generation and
-`status.observedGeneration`, so it does not establish whether status
-reconciliation, API persistence, or the Pod/PVC path is the cause. No target
+`status.observedGeneration`; the follow-up diagnostic run established that
+both were null. No target
 semantic checkpoint, return migration, parity comparison, or full round trip
 passed. Logs: `/tmp/nodemigrate-36235423620/`.
 

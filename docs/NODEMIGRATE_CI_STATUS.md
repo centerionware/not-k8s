@@ -15,6 +15,15 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Diagnostic run [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283)
+used SHA `b4ae3a95b89abc037ffe3d27449aad72c4eedf40`. The five-node preflight
+and both builds passed; both source lanes failed at the StatefulSet rollout
+wait. New failure diagnostics showed `metadata.generation` and
+`status.observedGeneration` were null. The root cause is create-on-apply in
+`nodeapiserver` omitting server-assigned generation 1 for imported objects.
+The fix and focused regression are now in the worktree; scoped quick-check
+and migration rerun are pending. Logs: `/tmp/nodemigrate-36236810283/`.
+
 Dedicated migration run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
 used SHA `d177f2c664e2b661da65d43275002bf79cf71b65`. Docker isolation and
 both builds passed; focused nodeapiserver quick-check

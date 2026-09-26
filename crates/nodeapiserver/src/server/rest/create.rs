@@ -238,7 +238,7 @@ pub async fn create_with_options_and_manager(
     // which left every other resource's `PodCondition.observedGeneration`
     // (and any other consumer keying off generation) with nothing to
     // observe.
-    set_metadata_field(&mut object, "generation", Value::Number(1.into()));
+    set_initial_generation(&mut object);
     if let Some(ns) = namespace {
         set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
     }

@@ -110,6 +110,7 @@ pub async fn apply_prepare(
             "uid",
             Value::String(uuid::Uuid::new_v4().to_string()),
         );
+        set_initial_generation(&mut object);
         // The object's identity comes from the URL, same as every other
         // verb here (`persist_update` forces `namespace` from the URL
         // the same unconditional way) -- not from whatever `config`'s

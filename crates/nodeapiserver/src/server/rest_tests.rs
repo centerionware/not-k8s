@@ -528,6 +528,13 @@ mod tests {
     }
 
     #[test]
+    fn create_on_apply_stamps_server_owned_generation_one() {
+        let mut obj = json!({"metadata": {"name": "migration-stateful", "generation": 42}});
+        set_initial_generation(&mut obj);
+        assert_eq!(obj["metadata"]["generation"], 1);
+    }
+
+    #[test]
     fn set_metadata_field_preserves_existing_metadata_fields() {
         let mut obj = json!({"metadata": {"name": "web-1"}});
         set_metadata_field(&mut obj, "uid", Value::String("abc".to_string()));
