@@ -11,8 +11,10 @@ Running but not Ready; Cilium reported 42/44 controllers healthy, 85 modules
 OK, and 1/1 node reachable. Source inspection found nodelet ignored the
 probes' `httpGet.host: 127.0.0.1` and configured headers, despite the Cilium
 health server binding to loopback. This explains the observed agent readiness
-and operator liveness failures. The fix and focused request tests are in the
-worktree; quick-check and migration rerun are pending. Upstream again failed the
+and operator liveness failures. The fix passed nodelet quick-check
+[36214612947](https://github.com/centerionware/not-k8s/actions/runs/36214612947).
+Migration rerun [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
+is active; runtime effect is unverified. Upstream again failed the
 CertificateRequest webhook request with HTTP 500. Rollback and export
 retention passed in both lanes. Logs:
 `/tmp/nodemigrate-36212326763-k3s.log` and

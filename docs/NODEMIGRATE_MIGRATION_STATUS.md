@@ -22,7 +22,10 @@ ignored the probes' `httpGet.host: 127.0.0.1` and configured headers, instead
 connecting to the Pod IP; the Cilium health server bound to loopback. The
 operator's repeated liveness failures and agent readiness failure are
 consistent with this confirmed probe defect. The fix and focused request tests
-are in the worktree; quick-check and migration rerun are pending. Upstream again rolled back
+passed nodelet quick-check [36214612947](https://github.com/centerionware/not-k8s/actions/runs/36214612947).
+Migration rerun [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
+is active; the five-node Docker preflight passed and both lane builds are
+running. Upstream again rolled back
 after the cert-manager webhook could not be reached for
 `CertificateRequest/migration-test-1` and the API returned HTTP 500. Source
 recovery and protected-export retention passed in both lanes. Neither lane

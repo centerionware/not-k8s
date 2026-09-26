@@ -35,6 +35,25 @@ and full e2e were not run. Logs:
 `/tmp/nodemigrate-36212326763-k3s.log` and
 `/tmp/nodemigrate-36212326763-kubernetes.log`.
 
+## HTTP probe fix validation
+
+The first validation of the HTTP probe fix used SHA `9c683295`. Focused
+nodelet quick-check [36214053691](https://github.com/centerionware/not-k8s/actions/runs/36214053691)
+and both branch-runtime builds in migration run
+[36214053395](https://github.com/centerionware/not-k8s/actions/runs/36214053395)
+failed to compile: the generated HTTP header field shape and a borrowed host
+value were handled incorrectly. The Docker preflight in the migration run
+passed; neither migration ran. A follow-up at SHA `bec61b9e` corrected those
+types, but nodelet quick-check [36214473328](https://github.com/centerionware/not-k8s/actions/runs/36214473328)
+found the header list is optional, not a nested vector. That was corrected at
+SHA `70d1a049`; nodelet quick-check
+[36214612947](https://github.com/centerionware/not-k8s/actions/runs/36214612947)
+passed. Migration runtime validation is running at the same SHA in
+[36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875):
+the five-node Docker preflight passed and both lane builds are in progress.
+No result for either migration path is available yet. General build and e2e
+gates remain unrun.
+
 Branch-runtime migration [run 36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237)
 used diagnostic SHA `0bc658e76b58f4f29ce2d69c310826fab8fe9ea9`. Both scoped
 nodemigrate/runtime builds passed, as did the five-node Docker preflight; both
