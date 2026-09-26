@@ -4,6 +4,24 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Migration run [36238216668](https://github.com/centerionware/not-k8s/actions/runs/36238216668)
+confirms the generation fix: both targets reported StatefulSet
+`generation=1`/`observedGeneration=1`. It exposes a separate unresolved storage
+failure in both lanes. The StatefulSet pod was Pending with
+`FailedScheduling: 0/1 nodes are available: 1 node(s) had volume node affinity
+conflict`; its StatefulSet PVC showed `Pending` and capacity `0` even though
+the target's PV/PVC table displayed `Bound`. The hostpath CSI plugin and its
+socat pod were Running, and the separate CSI readiness PVC bound successfully.
+The target Node included `kubernetes.io/hostname=runnervmtr4k5` and
+`topology.hostpath.csi/node=runnervmtr4k5`, but this run did not capture the
+StatefulSet PV's full spec, so we cannot tell whether its required affinity
+matches those labels or whether scheduler/binder state is inconsistent. The
+integration harness now captures the bound PV YAML and target Node labels on
+failure. Track as unresolved across nodemigrate PV recovery, scheduler volume
+binding, and nodecontroller PV/PVC status until the next run establishes the
+owning component. No fix or round trip is verified. Logs:
+`/tmp/nodemigrate-36238216668/`.
+
 Run [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283)
 root-caused the shared StatefulSet rollout timeout. Both lanes showed
 `metadata.generation=null` and `status.observedGeneration=null`; the stateful

@@ -366,6 +366,14 @@ diagnostics() {
                 -n migration-apps || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pvc state-migration-stateful-0 \
                 -n migration-apps || true
+            stateful_volume="$(KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pvc state-migration-stateful-0 \
+                -n migration-apps -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+            if [[ -n "$stateful_volume" ]]; then
+                echo "StatefulSet PersistentVolume spec: $stateful_volume"
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pv "$stateful_volume" -o yaml || true
+            fi
+            echo "Target node labels relevant to PersistentVolume topology:"
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o custom-columns='NAME:.metadata.name,LABELS:.metadata.labels' || true
             for pod in migration-seed migration-standalone; do
                 KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n migration-apps "$pod" || true
             done

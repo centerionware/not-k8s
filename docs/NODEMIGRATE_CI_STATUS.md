@@ -15,6 +15,24 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Migration run [36238216668](https://github.com/centerionware/not-k8s/actions/runs/36238216668)
+used SHA `0254815476d1deefdb7c6465800675cceb51d1b4`. The five-node Docker
+preflight and both standalone nodemigrate/branch-runtime builds passed. Both
+source fixtures passed, then both lanes reached the nodestore target and passed
+API CA, Node Ready, Cilium, DaemonSet, Deployment, Gateway, standalone Pod, and
+CSI readiness PVC checks. The earlier generation failure is resolved at
+runtime: the imported StatefulSet reported `generation=1` and
+`observedGeneration=1`. Both lanes then failed the StatefulSet readiness wait.
+At failure, `migration-stateful-0` was Pending and reported
+`0/1 nodes are available: 1 node(s) had volume node affinity conflict`; its
+PVC was reported Bound in the table but `kubectl describe pvc` showed Pending
+with capacity `0`. Hostpath CSI pods were Running. This narrows the current
+failure to migrated PV topology/binding or node scheduling; the exact PV
+`nodeAffinity` and target Node label comparison was not captured, so component
+ownership and root cause remain unconfirmed. The harness now emits the bound
+PV YAML and target Node labels on failures. No semantic parity checkpoint,
+return migration, or round trip passed. Logs: `/tmp/nodemigrate-36238216668/`.
+
 Diagnostic run [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283)
 used SHA `b4ae3a95b89abc037ffe3d27449aad72c4eedf40`. The five-node preflight
 and both builds passed; both source lanes failed at the StatefulSet rollout
@@ -22,7 +40,9 @@ wait. New failure diagnostics showed `metadata.generation` and
 `status.observedGeneration` were null. The root cause is create-on-apply in
 `nodeapiserver` omitting server-assigned generation 1 for imported objects.
 The fix and focused regression are now in the worktree; scoped quick-check
-and migration rerun are pending. Logs: `/tmp/nodemigrate-36236810283/`.
+passed at [36238216478](https://github.com/centerionware/not-k8s/actions/runs/36238216478).
+The migration rerun above confirms generation initialization and exposes the
+next independent storage-topology failure. Logs: `/tmp/nodemigrate-36236810283/`.
 
 Dedicated migration run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
 used SHA `d177f2c664e2b661da65d43275002bf79cf71b65`. Docker isolation and

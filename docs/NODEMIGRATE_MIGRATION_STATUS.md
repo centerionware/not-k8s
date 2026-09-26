@@ -9,6 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36238216668](https://github.com/centerionware/not-k8s/actions/runs/36238216668)
+used SHA `0254815476d1deefdb7c6465800675cceb51d1b4`. Docker preflight and
+both runtime builds passed, as did both source-stage fixtures and the nodestore
+target's Node, Cilium, Gateway, DaemonSet, Deployment, standalone Pod, CA, and
+CSI readiness checks. The generation regression is resolved: target StatefulSet
+generation and observedGeneration were both 1. The run then failed in both
+lanes because the StatefulSet pod stayed Pending; its scheduler event says the
+only Node had a volume node affinity conflict. The PVC/PV table displayed
+Bound, but describing the claim showed Pending with zero capacity. The target
+Node had its expected hostpath topology label, but this run did not log the
+PV's full affinity, so the mismatch is not yet located. Harness diagnostics
+now include PV YAML and target Node labels. No target semantic checkpoint,
+return migration, or data parity passed. Logs:
+`/tmp/nodemigrate-36238216668/`.
+
 Diagnostic migration run [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283)
 used SHA `b4ae3a95b89abc037ffe3d27449aad72c4eedf40`. Its five-node Docker
 preflight and both builds passed; both K3s+Cilium and upstream
@@ -21,7 +36,9 @@ assigned. Root cause: the nodeapiserver create-on-apply path used for migration
 imports set creation time and UID but omitted server-owned generation 1;
 ordinary POST creation already stamped it. The branch now applies the same
 generation initialization to create-on-apply and has a focused regression.
-Quick-check and runtime verification are pending. Logs:
+Focused quick-check [36238216478](https://github.com/centerionware/not-k8s/actions/runs/36238216478)
+passed, and the migration rerun above confirms target generation is populated.
+The separate storage failure remains open. Logs:
 `/tmp/nodemigrate-36236810283/`.
 
 Run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
