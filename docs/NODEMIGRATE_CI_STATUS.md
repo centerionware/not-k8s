@@ -86,11 +86,20 @@ kubeadm. The `findmnt` query returned two mounts at `/sys/fs/bpf`: a private
 tmpfs and a shared bpffs. The bpffs entry itself was shared; the single-value
 assertion incorrectly treated both rows as one value. This disproves the
 earlier guess that the mountinfo check merely found a lower private mount
-record, but Cilium's later private-mount error remains unexplained. The
-assertion now filters by filesystem type `bpf`; the next Docker-only run will
-show whether Cilium sees that shared mount. Log:
+record. The assertion was corrected to filter by filesystem type `bpf`.
 `/tmp/nodemigrate-36276058940-job.log` and artifact
 `/tmp/nodemigrate-36276058940-artifact/nodemigrate-docker-preflight.log`.
+
+Docker-only run [36276280017](https://github.com/centerionware/not-k8s/actions/runs/36276280017)
+at SHA `06ff3d3f9c9b936c74af6be636904ad90a6ce694` passed that assertion and
+reached Cilium, but the same containerd error remained. Containerd validates
+mount propagation by looking up the requested mount path, so the duplicate
+exact-path entries may cause it to select the private tmpfs instead of the
+shared bpffs. The worktree removes Docker's `/sys/fs/bpf` tmpfs so bpffs is
+mounted directly at that path. This cause is an inference from the captured
+mount table and matching error; the change needs a Docker-only rerun. Job log:
+`/tmp/nodemigrate-36276280017-job.log`; artifact:
+`/tmp/nodemigrate-36276280017-artifact/nodemigrate-docker-preflight-36276280017/nodemigrate-docker-preflight.log`.
 
 Earlier Docker-only attempts are archived at these logs:
 `/tmp/nodemigrate-36272360238-job.log` and

@@ -67,7 +67,6 @@ for node in "${NODES[@]}"; do
         --cgroupns=private \
         --tmpfs /run:rw,nosuid,nodev,mode=0755 \
         --tmpfs /run/lock:rw,nosuid,nodev,mode=0755 \
-        --tmpfs /sys/fs/bpf \
         --volume /boot:/boot:ro \
         --volume /lib/modules:/lib/modules:ro \
         --volume "$volume:/var/lib/nodemigrate-volume" \
