@@ -9,6 +9,25 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated migration run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
+used runtime SHA `b093021677321124e8b8d318898819d90b71d927`. The five-node
+Docker preflight, utility/runtime builds, and utility checks passed. K3s
+forward migration and destination API readiness passed, but target hostPath
+CSI setup failed before the target workload checkpoint; reverse migration and
+parity did not run. During forward migration, the API Service endpoint was
+ready at `127.0.0.1:6443`, but `nodeproxy` stayed inactive. Upstream import
+failed applying `CertificateRequest/migration-test-1` because the cert-manager
+webhook returned HTTP 500 with no webhook endpoints; `nodeproxy` was also
+inactive there. Rollback restored the upstream API and retained the protected
+export. Since the fixture sets Cilium `kubeProxyReplacement=false`, inactive
+nodeproxy is a plausible shared routing issue, not a proven cause. The run
+did not capture nodeproxy's startup journal.
+
+Logs: `/tmp/nodemigrate-36222183166/nodemigrate-k3s-36222183166/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-36222183166/nodemigrate-kubernetes-36222183166/nodemigrate-kubernetes.log`.
+The manual dispatch skipped static validation. Commit `588e5f61751f29eefa56caec146d14e1df775c87`
+adds nodeproxy status and journal diagnostics; runtime confirmation is pending.
+
 Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
 used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The five-node
 Docker preflight and both standalone utility/combined-runtime builds passed.

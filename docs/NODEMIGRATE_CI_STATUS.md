@@ -15,33 +15,30 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
-used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The five-node
-Docker preflight, both standalone utility builds, and both combined-runtime
-builds passed. Both migration jobs failed before target workload validation.
-In K3s, forward migration returned success and the target API passed readiness,
-but the migration fixture failed while setting up hostPath CSI; it never
-reached its target checkpoint or reverse migration. The initial target
-snapshot showed the Cilium agent Ready, while Envoy and CoreDNS were Running
-but not Ready. Failure-time diagnostics later showed Cilium agent, Envoy, and
-operator at `1/1`, while CoreDNS remained `0/1 Running`. Cert-manager Pods had
-no phase/container status/IP and `cert-manager-webhook` had no endpoints.
-This does not establish whether CoreDNS/API sync, nodelet reconciliation, or
-another dependency caused the CSI and add-on failures. In upstream Kubernetes,
-import failed on
-`CertificateRequest/migration-test-1` after the target webhook request failed;
-the target webhook Service and EndpointSlice had no endpoints while cert-manager
-Pods had no phase/container status/IP. Rollback restored the source API and
-retained its protected export. Neither lane reached workload/storage parity,
-reverse migration, or a returned-source comparison.
+Dedicated migration run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
+used runtime SHA `b093021677321124e8b8d318898819d90b71d927` (the workflow
+checked out that SHA before the following diagnostics-only commit). The
+five-node Docker preflight, nodemigrate and combined-runtime builds, nodemigrate
+tests, release packaging check, and shell/snapshot checks passed. Both
+migration lanes failed before target workload validation. K3s forward migration
+and target API readiness passed, but hostPath CSI setup failed. During the
+forward snapshots, `default/kubernetes` resolved to `10.43.0.1` with a ready
+endpoint at `127.0.0.1:6443`; `nodeproxy` was installed but inactive. Target
+Cilium/CSI and application checkpoints did not complete, so reverse migration
+and parity were not tested. Upstream import failed applying
+`CertificateRequest/migration-test-1` with HTTP 500 after the cert-manager
+webhook request failed; `nodeproxy` was also inactive and the webhook had no
+endpoints. Rollback restored the source API and retained the protected export.
+The fixture configures Cilium with kube-proxy replacement disabled, making the
+inactive proxy a relevant lead, but this artifact lacks its startup journal and
+does not prove it caused either lane's failure.
 
-The normalized watcher fix is validated: it recorded 10 K3s and 9 upstream
-state snapshots, including state changes and bounded periodic samples, instead
-of the near-continuous AGE-driven captures from run 36219234465. Logs were
-saved at `/tmp/nodemigrate-36220533297-k3s.log` and
-`/tmp/nodemigrate-36220533297-kubernetes.log`. This manual dispatch skipped
-static validation; `bash -n` and `git diff --check` had been run on the watcher
-change. No general build gate or full e2e was dispatched.
+Logs: `/tmp/nodemigrate-36222183166/nodemigrate-k3s-36222183166/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-36222183166/nodemigrate-kubernetes-36222183166/nodemigrate-kubernetes.log`.
+The manual dispatch skipped its `validate` job. No regular build or full e2e
+was dispatched. Commit `588e5f61751f29eefa56caec146d14e1df775c87` adds
+`systemctl status` and `journalctl` capture for nodeproxy; its migration rerun
+is pending.
 
 Branch-runtime migration [run 36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility

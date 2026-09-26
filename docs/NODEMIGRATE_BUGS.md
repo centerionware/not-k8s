@@ -2,6 +2,24 @@
 
 Last updated: 2026-09-26
 
+## Latest diagnostic update
+
+Dedicated migration run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
+used runtime SHA `b093021677321124e8b8d318898819d90b71d927`. Builds,
+five-node preflight, utility checks, and workflow shell/snapshot checks passed.
+K3s reached target API readiness, but target hostPath CSI setup failed before
+workload or return-migration assertions. Upstream import failed on
+`CertificateRequest/migration-test-1` with HTTP 500 from the unavailable
+cert-manager webhook; source recovery and protected-export retention passed.
+Both target snapshots reported `nodeproxy` inactive, while the fixture's
+Cilium configuration disables kube-proxy replacement. This is a shared
+service-routing lead, not yet a confirmed defect or cause. Run 36222183166 did
+not capture nodeproxy's journal. Commit
+`588e5f61751f29eefa56caec146d14e1df775c87` adds service status and journal
+capture for the next migration attempt. Neither lane reached workload parity,
+reverse migration, or returned-source checks. Logs are under
+`/tmp/nodemigrate-36222183166/`.
+
 Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
 used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The Docker
 preflight and both utility/runtime builds passed; both migration lanes failed.
