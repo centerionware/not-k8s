@@ -15,28 +15,24 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Branch-runtime migration [run 36209180657](https://github.com/centerionware/not-k8s/actions/runs/36209180657)
-used SHA `64f43b5fba6ce05f0eb1d76477af28d7a766cf74`. The focused `nodelet`
-quick-check passed in [36209180653](https://github.com/centerionware/not-k8s/actions/runs/36209180653).
-The nodemigrate and combined-runtime builds passed in both lanes, and the
-five-node Docker isolation preflight passed. Both `Run migration` steps failed.
-K3s initially installed hostpath CSI and bound both fixture PVCs. After
-cutover, the Cilium agent completed all six init containers and the node was
-Ready, but the CSI redeployment could not become ready: its old
-`csi-hostpath-socat-0` and `csi-hostpathplugin-0` Pods retained the source
-`/var/lib/kubelet` host paths and a deletion timestamp for over five minutes,
-with no Pod IP or container status. The target manifests had already been
-configured for `/var/lib/nodelet`. Nodelet was still repeatedly reconciling
-Cilium "while CoreDNS is gated" at 02:00:39Z and had no teardown record for
-either ordinary CSI Pod. The startup gate was not processing these terminating
-Pods. A fix now starts local Pod teardown during the gate; its focused
-quick-check and runtime effect are pending. Target workload,
-reverse-migration, and parity checks did not run. Upstream again failed restoring
-`CertificateRequest/migration-test-1` because its cert-manager webhook was
-unreachable; rollback restored the source API and retained the protected
-export. The ordinary build gate and general e2e were not run. Logs:
-`/tmp/nodemigrate-36209180657-k3s.log` and
-`/tmp/nodemigrate-36209180657-kubernetes.log`.
+Branch-runtime migration [run 36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237)
+used diagnostic SHA `0bc658e76b58f4f29ce2d69c310826fab8fe9ea9`. Both scoped
+nodemigrate/runtime builds passed, as did the five-node Docker preflight; both
+`Run migration` steps failed. K3s again completed all six Cilium init
+containers but remained inside `wait_for_coredns()` through the hostpath CSI
+timeout. At 02:35:39Z nodelet was still reconciling Cilium "while CoreDNS is
+gated"; it had not accepted a normal Pod watch event for the terminating CSI
+Pods. This confirms the gate left their teardown pending, rather than a CSI
+installation failure. The gate now tears down local terminating Pods; its
+focused nodelet check passed at fix SHA `f5efb03a` in
+[36211663128](https://github.com/centerionware/not-k8s/actions/runs/36211663128),
+but the runtime effect has not yet been tested. Upstream again failed to
+restore `CertificateRequest/migration-test-1` because cert-manager's webhook
+was unreachable; source rollback restored the API and retained the protected
+export. Target workload, reverse-migration, and parity checks did not run in
+either lane. The general build gate/full e2e were not run. Logs:
+`/tmp/nodemigrate-36211105237-k3s.log` and
+`/tmp/nodemigrate-36211105237-kubernetes.log`.
 
 Branch-runtime migration [run 36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
 used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. Both scoped runtime
@@ -496,6 +492,7 @@ No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-26 | `0bc658e7` | Branch-runtime K3s + Cilium and upstream + Cilium | Scoped nodemigrate/runtime builds and five-node Docker preflight passed. K3s completed all six Cilium init containers but its nodelet remained inside the CoreDNS gate and left the CSI Pods terminating until hostpath setup failed. Upstream CertificateRequest restore again failed at webhook admission; rollback restored source and retained export. Neither lane reached workload, reverse, or parity checks. | [Run 36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237); logs `/tmp/nodemigrate-36211105237-{k3s,kubernetes}.log` |
 | 2026-09-26 | `f5efb03a` | Targeted quick-check: `nodelet` | Passed unit tests, including the new startup-gate predicate regression for local and remote terminating Pods. | [Run 36211663128](https://github.com/centerionware/not-k8s/actions/runs/36211663128) |
 
 | 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Targeted quick-check: `nodelet` | Passed unit tests for nested read-only managed-volume mountpoint preparation and external-volume non-mutation. | [Run 36093508613](https://github.com/centerionware/not-k8s/actions/runs/36093508613) |

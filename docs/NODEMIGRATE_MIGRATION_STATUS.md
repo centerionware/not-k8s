@@ -9,28 +9,23 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Branch-runtime migration [36209180657](https://github.com/centerionware/not-k8s/actions/runs/36209180657)
-used SHA `64f43b5fba6ce05f0eb1d76477af28d7a766cf74`; the focused nodelet
-quick-check passed in [36209180653](https://github.com/centerionware/not-k8s/actions/runs/36209180653).
-The scoped nodemigrate and combined-runtime builds passed, as did five-node
-Docker isolation preflight. The K3s source fixture initially installed
-hostpath CSI and successfully bound both PVCs. After cutover, all six Cilium
-init containers completed and the node became Ready. Hostpath CSI was then
-reapplied with `/var/lib/nodelet` paths, but its previous Pods remained in
-`Terminating` with their source `/var/lib/kubelet` paths for more than five
-minutes. They had no Pod IP or container status, and the nodelet journal did
-not record teardown/retry for either Pod. The nodelet journal shows it was still inside `wait_for_coredns()` at the
-failure and had not processed the ordinary terminating CSI Pods. The startup
-gate now starts teardown for locally assigned terminating Pods while it waits.
-The local-versus-remote startup-gate regression passed focused nodelet
-quick-check [36211663128](https://github.com/centerionware/not-k8s/actions/runs/36211663128);
-runtime verification is pending. The CSI gate failed
-before workload, reverse, or parity checks. Upstream again failed CertificateRequest restoration because
-the target cert-manager webhook was unreachable; rollback restored the source
-API and retained the protected export. Neither lane reached workload checks,
-reverse migration, or semantic parity. The regular build gate and full e2e were
-not run. Logs: `/tmp/nodemigrate-36209180657-k3s.log` and
-`/tmp/nodemigrate-36209180657-kubernetes.log`.
+Branch-runtime migration [36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237)
+used diagnostic SHA `0bc658e76b58f4f29ce2d69c310826fab8fe9ea9`. Both scoped
+builds and five-node Docker preflight passed. In K3s, all six Cilium init
+containers completed, but the nodelet stayed in `wait_for_coredns()` through
+the hostpath CSI timeout. Its journal still showed Cilium being reconciled
+"while CoreDNS is gated" at 02:35:39Z and showed no terminating-Pod watch
+acceptance. This confirms the gate was not processing the CSI Pods' pending
+deletions. A fix now starts teardown for locally assigned terminating Pods
+during the gate; its local-versus-remote regression passed focused nodelet
+quick-check [36211663128](https://github.com/centerionware/not-k8s/actions/runs/36211663128).
+Runtime verification is pending. Upstream again failed CertificateRequest
+restoration because the target cert-manager webhook was unreachable; rollback
+restored the source API and retained the protected export. Neither lane
+reached workload checks, reverse migration, or semantic parity. The regular
+build gate and full e2e were not run. Logs:
+`/tmp/nodemigrate-36211105237-k3s.log` and
+`/tmp/nodemigrate-36211105237-kubernetes.log`.
 
 Branch-runtime migration [36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
 used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. K3s source checks and
