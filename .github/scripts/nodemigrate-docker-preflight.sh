@@ -196,9 +196,14 @@ EOF
         echo "$HOSTNAME: configuring and restarting containerd"
         mkdir -p /etc/containerd
         containerd config default >/etc/containerd/config.toml
-        sed -i "s/snapshotter = \"overlayfs\"/snapshotter = \"native\"/" /etc/containerd/config.toml
+        sed -i "/snapshotter =/s/overlayfs/native/" /etc/containerd/config.toml
         sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
-        grep -n "snapshotter = \"native\"" /etc/containerd/config.toml
+        if ! grep -Eq "snapshotter =.*native" /etc/containerd/config.toml; then
+            grep -n "snapshotter =" /etc/containerd/config.toml || true
+            echo "FAIL: containerd config did not select the native snapshotter" >&2
+            exit 1
+        fi
+        grep -n "snapshotter =.*native" /etc/containerd/config.toml
         systemctl restart containerd
         echo "$HOSTNAME: enabling kubelet and checking Kubernetes tools"
         systemctl enable kubelet
