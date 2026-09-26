@@ -1095,6 +1095,12 @@ impl PodController {
                 if self.observe_watch_pod(&pod) {
                     let key = key_parts(&pod).map(|(namespace, name)| pod_key(&namespace, &name));
                     if pod.metadata.deletion_timestamp.is_some() {
+                        info!(
+                            pod = %key.as_deref().unwrap_or_default(),
+                            uid = %pod.metadata.uid.as_deref().unwrap_or_default(),
+                            resource_version = %pod.metadata.resource_version.as_deref().unwrap_or_default(),
+                            "received terminating Pod watch event"
+                        );
                         if let Some(key) = key {
                             self.cancel_reconcile(&key);
                         }

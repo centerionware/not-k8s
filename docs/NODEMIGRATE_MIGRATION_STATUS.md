@@ -9,23 +9,25 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Branch-runtime migration [36207264515](https://github.com/centerionware/not-k8s/actions/runs/36207264515)
-used SHA `0e7cf32a3246703ecec5b0d328fbd84867a1e405`. The nodecontroller
-quick-check passed in [36207090965](https://github.com/centerionware/not-k8s/actions/runs/36207090965),
-and the migration builds and Docker preflight passed. The ResourceQuota
-feedback loop is fixed: the K3s audit log has no `migration-quota/status`
-PATCHes, and observed quota Range counts fell from thousands per 30 seconds
-to 14–276 for K3s and 32–310 upstream. Migration remains blocked by target
-Cilium. In K3s, `mount-bpf-fs` emitted start and stop events with Pod metadata
-and logged a successful bpffs mount, but no next init container started and
-the Pod remained at `Init:3/6`; the task was no longer live. Upstream
-CertificateRequest restoration failed because cert-manager's webhook could
-not be reached while target CNI was unavailable. Upstream rollback restored
-the source API and retained its protected export; the K3s log does not record
-a completed rollback check. Neither lane reached workload checks, reverse
-migration, or parity. Jobs: K3s `108306285020`, upstream `108306284807`.
-Logs: `/tmp/nodemigrate-36207264515-k3s.log` and
-`/tmp/nodemigrate-36207264515-kubernetes.log`.
+Branch-runtime migration [36209180657](https://github.com/centerionware/not-k8s/actions/runs/36209180657)
+used SHA `64f43b5fba6ce05f0eb1d76477af28d7a766cf74`; the focused nodelet
+quick-check passed in [36209180653](https://github.com/centerionware/not-k8s/actions/runs/36209180653).
+The scoped nodemigrate and combined-runtime builds passed, as did five-node
+Docker isolation preflight. The K3s source fixture initially installed
+hostpath CSI and successfully bound both PVCs. After cutover, all six Cilium
+init containers completed and the node became Ready. Hostpath CSI was then
+reapplied with `/var/lib/nodelet` paths, but its previous Pods remained in
+`Terminating` with their source `/var/lib/kubelet` paths for more than five
+minutes. They had no Pod IP or container status, and the nodelet journal did
+not record teardown/retry for either Pod. The precise watch/teardown cause is
+unconfirmed; a targeted nodelet log now records accepted terminating-Pod watch
+events for the next run. The CSI gate failed before workload, reverse, or
+parity checks. Upstream again failed CertificateRequest restoration because
+the target cert-manager webhook was unreachable; rollback restored the source
+API and retained the protected export. Neither lane reached workload checks,
+reverse migration, or semantic parity. The regular build gate and full e2e were
+not run. Logs: `/tmp/nodemigrate-36209180657-k3s.log` and
+`/tmp/nodemigrate-36209180657-kubernetes.log`.
 
 Branch-runtime migration [36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
 used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. K3s source checks and
