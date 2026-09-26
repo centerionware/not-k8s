@@ -203,6 +203,12 @@ confirmed the 15 GiB runner had 3 GiB of unused swap, which was disabled; host
 module loading, sysctl setup, and all five isolation checks passed. Setup then
 failed writing `/etc/containerd/config.toml` because the directory was absent.
 The probe now creates `/etc/containerd` before generating its configuration.
+The rerun [36270640042](https://github.com/centerionware/not-k8s/actions/runs/36270640042)
+passed host swap setup, containerd configuration, and reached `kubeadm init`,
+which failed its SystemVerification check because `modprobe` was absent from
+the node image. The image now restores `kmod` and mounts the runner's
+`/lib/modules` read-only into each node so kubeadm can inspect the shared host
+kernel. Cluster and Cilium setup remain unverified.
 
 ## Earlier branch-runtime attempt
 
