@@ -198,12 +198,32 @@ EOF
         containerd config default >/etc/containerd/config.toml
         sed -i "/snapshotter =/s/overlayfs/native/" /etc/containerd/config.toml
         sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
+        cat >>/etc/containerd/config.toml <<EOF
+
+[[plugins."io.containerd.transfer.v1.local".unpack_config]]
+platform = "linux/amd64"
+snapshotter = "native"
+EOF
         if ! grep -Eq "snapshotter =.*native" /etc/containerd/config.toml; then
             grep -n "snapshotter =" /etc/containerd/config.toml || true
             echo "FAIL: containerd config did not select the native snapshotter" >&2
             exit 1
         fi
         grep -n "snapshotter =.*native" /etc/containerd/config.toml
+        grep -A2 '^\[\[plugins\."io\.containerd\.transfer\.v1\.local"\.unpack_config\]\]' \
+            /etc/containerd/config.toml
+        grep -A2 '^\[\[plugins\."io\.containerd\.transfer\.v1\.local"\.unpack_config\]\]' \
+            /etc/containerd/config.toml \
+            | grep -q 'platform = "linux/amd64"' || {
+                echo "FAIL: containerd native snapshotter unpack platform is missing" >&2
+                exit 1
+            }
+        grep -A2 '^\[\[plugins\."io\.containerd\.transfer\.v1\.local"\.unpack_config\]\]' \
+            /etc/containerd/config.toml \
+            | grep -q 'snapshotter = "native"' || {
+                echo "FAIL: containerd native snapshotter unpack mapping is missing" >&2
+                exit 1
+            }
         systemctl restart containerd
         echo "$HOSTNAME: enabling kubelet and checking Kubernetes tools"
         systemctl enable kubelet

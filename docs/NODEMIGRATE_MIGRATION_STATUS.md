@@ -32,7 +32,7 @@ return import after five minutes: Certificate, CertificateRequest, and
 ClusterIssuer writes timed out reaching `10.97.233.241:443`; one
 PersistentVolume write returned 404. The request path was not captured, and
 the cause of both failures is unconfirmed. No returned-source checkpoint or
-parity passed. The K3s lane remains in progress. New failure capture watches
+parity passed. The K3s lane was later cancelled before completion. New failure capture watches
 the return target and probes the webhook ClusterIP and ready EndpointSlice
 addresses; restore errors now include their API request path. Focused
 nodemigrate tests [36263787654](https://github.com/centerionware/not-k8s/actions/runs/36263787654)
@@ -42,8 +42,8 @@ passed at `434c9acb`. The `nodemigrate` quick-check
 [36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
 passed at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
 [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
-completed its upstream lane with the failure above; its K3s lane is still
-running. Round-trip parity remains unverified.
+completed its upstream lane with the failure above; its K3s lane was later
+cancelled while still running. Round-trip parity remains unverified.
 
 The migration fixture now snapshots every deployed Helm release at each
 source, nodestore, and returned-source checkpoint. It records release name,

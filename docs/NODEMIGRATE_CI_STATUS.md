@@ -13,6 +13,28 @@ coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
 release-backed regression baseline, not a claim that its runtime contains the
 new fixes.
 
+## Most recent evidence
+
+The Docker-only attempt [36271904146](https://github.com/centerionware/not-k8s/actions/runs/36271904146)
+used SHA `9b458e57836039745fee90bb34d0a0ceeb44ec4a`. The image build and
+five-container isolation checks passed. kubeadm then failed image pulls on all
+five nodes. The captured logs show containerd `2.2.1` warning
+`Unpack configuration not supported, skipping` for `linux/amd64` with
+`snapshotter=native`, followed by `no unpack platforms defined`. The workflow
+skipped both migration lanes by design. The harness now appends and asserts a
+containerd Transfer API `unpack_config` mapping for `linux/amd64` and the
+native snapshotter. Shell syntax and focused config-pattern checks passed
+locally; the corrected Docker-only rerun is pending. Log:
+`/tmp/nodemigrate-36271904146-job.log`.
+
+Migration run [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7` is now terminal. The
+upstream lane failed during return import after cert-manager webhook timeouts
+and a PV 404; K3s was cancelled at 20:50 UTC while its migration step was still
+running. Neither lane proved a full round trip. The five-node preflight in
+that run passed only the earlier container-isolation checks. No regular
+build or full e2e gate was run.
+
 ## Latest branch-runtime result
 
 Migration run [36258945785](https://github.com/centerionware/not-k8s/actions/runs/36258945785)
@@ -37,7 +59,7 @@ TypeMeta from PVC templates. The upstream lane passed the nodestore target
 checkpoint, then failed on the return import after five minutes: three
 cert-manager resources timed out reaching the webhook ClusterIP, and one PV
 restore returned HTTP 404. The PV request path was not present in that run's
-error, so its cause remains unconfirmed. The K3s lane is still running.
+error, so its cause remains unconfirmed. The K3s lane was later cancelled before completion.
 Commits `058fafa8` and `434c9acb` add return-leg service diagnostics and include
 the destination API request path in restore errors. Shell syntax, jq probe
 selection, and `git diff --check` passed locally. Focused nodemigrate crate
@@ -55,8 +77,8 @@ The `nodemigrate` quick-check
 passed at `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
 [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
 ran at `8c79470de60f288fc113db7b7b8c45da048b6ad7`; upstream failed as
-described above and K3s remains in progress. No regular full build or full e2e
-gate was dispatched.
+described above and K3s was later cancelled before completion. No regular
+full build or full e2e gate was dispatched.
 
 The migration fixture now compares deployed Helm release records at each
 checkpoint: release identity, chart/app version, revision, and digests of
@@ -90,8 +112,9 @@ Commit `428286d9` updates the eviction assertion to accept Kubernetes' normal
 `TooManyRequests` status spelling as well as HTTP 429. Local shell/helper
 checks and migration workflow validation
 [36266303223](https://github.com/centerionware/not-k8s/actions/runs/36266303223)
-passed. Run `36260417450` still reports its K3s migration step in progress at
-2026-09-26 19:31 UTC.
+passed. At 2026-09-26 19:31 UTC, run `36260417450` still reported its K3s
+migration step in progress; GitHub later marked that step cancelled at 20:50
+UTC, as recorded above.
 
 Commit `c3be42bc` changes the import retry classifier so 404s for built-in
 resources fail immediately, while source-CRD custom resources retain bounded

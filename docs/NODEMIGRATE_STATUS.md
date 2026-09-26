@@ -16,9 +16,9 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450) used the branch runtime. Upstream passed source and nodestore checkpoints but failed on return import: three cert-manager resources timed out at the webhook and one PV write returned 404. Its K3s lane is still running. No round-trip parity passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450) used the branch runtime. Upstream passed source and nodestore checkpoints but failed on return import: three cert-manager resources timed out at the webhook and one PV write returned 404. The K3s lane was later cancelled before completion. No round-trip parity passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation preflight | The original node-isolation probe passed in run `36077448685`. Run `36271304303` captured nested OverlayFS mount failures in static pods. Runs `36271561812` and `36271711545` exposed snapshotter edit/assertion issues before containerd restart. The current command updates snapshotter lines regardless of TOML quote style and prints them on assertion failure; cluster/Cilium checks remain pending. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation preflight | The original node-isolation probe passed in run `36077448685`. The five-node kubeadm/Cilium probe remains incomplete: Docker nested OverlayFS prevented static pods from mounting; after switching to the native snapshotter, run [36271904146](https://github.com/centerionware/not-k8s/actions/runs/36271904146) showed containerd 2.2.1 also needs an explicit native-snapshotter image unpack mapping. That mapping is now added to the worktree; rerun pending. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
@@ -284,8 +284,9 @@ separate living documents below.
 
 ## Next actions
 
-1. Let run `36260417450` finish and inspect its K3s artifact; do not dispatch a
-   duplicate while its K3s lane is live.
+1. Verify the updated five-node kubeadm/Cilium preflight with the explicit
+   containerd native-snapshotter unpack mapping; investigate the next failing
+   setup stage from its captured logs.
 2. Run the dedicated migration workflow at the rollback/diagnostic branch head,
    then use its return watcher and rollback assertions to resolve the webhook
    path, PV request path, and source recovery behavior.
