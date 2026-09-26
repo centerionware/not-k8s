@@ -27,11 +27,22 @@ Diagnostic branch-runtime rerun
 completed with both migration steps failed after their scoped builds passed;
 Docker preflight passed. GitHub job metadata confirms the failing step was
 `Run migration` in both lanes (K3s ran 21m18s; upstream 16m03s). The operation
-that failed and the diagnostic evidence remain unclassified because the lane
-logs/artifacts have not yet been retrievable. This run does not verify any
-target, return, or parity checkpoint.
-Logs from the preceding completed run remain at
-`/tmp/nodemigrate-36195385046/{k3s,kubernetes}/`.
+is now classified from the captured logs. In K3s, Cilium's `mount-bpf-fs`
+container logged that bpffs was mounted, then CRI no longer had a live task;
+the Pod stayed at `Init:3/6`, and CoreDNS sandbox setup later failed when
+`cilium-cni` returned `signal: killed`. Independently, the target
+ResourceQuota controller entered a status-write loop: 6,376–8,366
+`resourcequotas` range calls per 30 seconds and 1,167 PATCH audit records for
+`migration-quota/status` in about 1.2 seconds. The fixture's quota includes
+`requests.storage`, which this controller does not calculate; comparing the
+whole `status.used` map to its partial result made the merge PATCH repeat
+forever. Upstream showed the same quota range storm and failed
+CertificateRequest import because the cert-manager webhook was unreachable
+after CNI failed. This confirms the quota defect but does not yet prove it
+caused the Cilium task or CNI process to be killed. Both lanes restored the
+source and retained protected exports. Neither lane reached a target, return,
+or parity checkpoint. Logs: `/tmp/nodemigrate-361979-k3s.log` and
+`/tmp/nodemigrate-361979-kubernetes.log`.
 
 Branch-runtime migration [36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836)
 used SHA `c70f53023a4a48c04b0d7b85d4dda3b6388a2b50`. Both scoped runtime and

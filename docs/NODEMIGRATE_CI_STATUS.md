@@ -34,9 +34,15 @@ passed on the same SHA. Branch-runtime rerun [36197970992](https://github.com/ce
 completed at SHA `9974e76329349d33205aa53c824e3b2fb864f6e7`: both scoped builds
 and Docker preflight passed, but both `Run migration` steps failed (K3s after
 21m18s, upstream after 16m03s). GitHub job metadata confirms those step
-failures; repeated log/artifact requests have returned API connection errors,
-so the failing migration operation and whether the Cilium diagnostics were
-reached remain unclassified. Focused `nodelet` quick-check
+failures. Captured K3s diagnostics show Cilium remained at `Init:3/6` after
+`mount-bpf-fs` logged a successful bpffs mount but CRI had no live task; a
+later CoreDNS sandbox setup failed when `cilium-cni` returned `signal:
+killed`. Both lanes also had a confirmed ResourceQuota status-write loop from
+comparing unsupported `requests.storage` usage against the controller's
+partial `pods`/`services` map. The fix is in progress; no destination
+workload, reverse migration, or parity checkpoint passed. Logs:
+`/tmp/nodemigrate-361979-k3s.log` and
+`/tmp/nodemigrate-361979-kubernetes.log`. Focused `nodelet` quick-check
 [36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777)
 passed on SHA `9974e763`.
 
