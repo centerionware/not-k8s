@@ -9,6 +9,24 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427)
+used head SHA `5a2a2630dc70ca27b5d0ed642a11319547f50869`. Both scoped
+nodemigrate/combined-runtime builds and the five-node Docker preflight passed;
+both migration lanes failed. K3s source assertions, forward transfer, and
+target API readiness passed. The target Cilium agent, Envoy, and operator were
+`1/1 Running`, and a CiliumNode update returned HTTP 200, so the earlier
+CiliumNode 409 sequence did not recur. Target hostpath CSI setup then failed;
+the three CoreDNS pods were `Running` but `0/1` Ready, while most other target
+pods, including CSI, were `Unknown` with no IP. The failure bundle lacked
+CoreDNS descriptions and logs, so the cause is not established. Upstream
+forward import failed when applying
+`CertificateRequest/migration-test-1`: the cert-manager admission webhook was
+unreachable and returned HTTP 500. Both lanes recovered their source service
+and retained the protected export. Neither reached target workload/storage
+assertions, reverse migration, or semantic parity. No regular build or full
+e2e gate ran. Logs: `/tmp/nodemigrate-36216429427-k3s.log` and
+`/tmp/nodemigrate-36216429427-kubernetes.log`.
+
 Branch-runtime migration [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
 used runtime SHA `70d1a049` (workflow checkout also contained docs-only
 commit `ef20bbc2`). Both utility/runtime builds and the five-node Docker

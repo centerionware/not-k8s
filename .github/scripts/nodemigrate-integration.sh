@@ -197,6 +197,13 @@ diagnostics() {
                 --all-containers --tail=500 || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system deployment/cilium-operator \
                 --all-containers --tail=100 || true
+            echo "CoreDNS target readiness and diagnostics:"
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods -n kube-system \
+                -l k8s-app=kube-dns -o wide || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pods -n kube-system \
+                -l k8s-app=kube-dns || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system \
+                -l k8s-app=kube-dns --all-containers --tail=200 || true
             capture_cilium_agent_logs
             capture_cilium_init_container_diagnostics
         fi

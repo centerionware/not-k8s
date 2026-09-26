@@ -15,6 +15,25 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Branch-runtime migration [run 36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427)
+used head SHA `5a2a2630dc70ca27b5d0ed642a11319547f50869`. The five-node
+Docker preflight and scoped nodemigrate/combined-runtime builds passed in both
+lanes; both migration steps failed. In K3s, source checks and forward object
+transfer reached target API readiness. Cilium agent, Envoy, and operator were
+all `1/1 Running`; the observed `CiliumNode/runnervmtr4k5` update returned
+HTTP 200, so the earlier sequence of ten HTTP 409 updates did not recur in
+this run. Target hostpath CSI setup then failed. At failure, the three target
+CoreDNS pods were `Running` but `0/1` Ready; most other target pods, including
+the CSI pods, were `Unknown` with no IP. CoreDNS pod descriptions and logs were
+not captured, so the readiness failure's cause is unknown. In the upstream
+lane, import of `CertificateRequest/migration-test-1` returned HTTP 500 because
+the `webhook.cert-manager.io` admission endpoint could not be reached. Both
+lanes recovered their source service and retained the protected export. Neither
+reached target workload/storage checks, reverse migration, or parity. The
+general build gate and full e2e were not run. Logs:
+`/tmp/nodemigrate-36216429427-k3s.log` and
+`/tmp/nodemigrate-36216429427-kubernetes.log`.
+
 Branch-runtime migration [run 36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
 used runtime SHA `70d1a049` (workflow checkout included the later docs-only
 commit `ef20bbc2`). Both scoped utility/runtime builds and the five-node Docker
@@ -35,11 +54,12 @@ The general build gate and full e2e were not run. Logs:
 `/tmp/nodemigrate-36214776875-k3s.log` and
 `/tmp/nodemigrate-36214776875-kubernetes.log`.
 
-The K3s failure artifact did not retain the API journal lines from the CiliumNode
-conflict window: its fixed 1,000-line tail began around 03:46:22Z, while Cilium
-failed at 03:44:16–03:44:26Z under heavy audit traffic. The integration harness
-now captures CiliumNode API journal entries from each migration's start; this
-diagnostic change still needs a migration rerun.
+The K3s failure artifact in run 36214776875 did not retain the API journal
+lines from the CiliumNode conflict window: its fixed 1,000-line tail began
+around 03:46:22Z, while Cilium failed at 03:44:16–03:44:26Z under heavy audit
+traffic. The harness now captures matching CiliumNode API journal entries from
+each migration's start. Run 36216429427 exercised this capture and observed a
+successful HTTP 200 update, but did not reproduce the earlier conflict.
 
 Branch-runtime migration [run 36212326763](https://github.com/centerionware/not-k8s/actions/runs/36212326763)
 used SHA `b2c4f8824faf2c490aa13bf61f0a7c4509a27d05`. Both scoped utility and
