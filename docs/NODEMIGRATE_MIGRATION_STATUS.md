@@ -9,27 +9,28 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Dedicated migration run [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465)
-used runtime SHA `daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`. The five-node
-Docker preflight, standalone utility builds, and combined-runtime builds passed.
-The K3s forward migration returned success and destination API readiness
-passed, but target hostPath CSI installation failed before the target workload
-checkpoint. The watcher observed Cilium/Envoy `0/1 Running`, CoreDNS `0/1
-Unknown`, and cert-manager Pods `0/1 Unknown` during bring-up. The upstream
-lane failed importing `CertificateRequest/migration-test-1` after four
-attempts to call cert-manager's admission URL failed; its target Cilium/Envoy
-were `1/1`, CoreDNS was `0/1 Running`, and cert-manager Pods were `Unknown`
-without Pod IPs. The upstream source API/service recovered and its protected
-export remained available. Neither lane reached a target workload/storage
-checkpoint, reverse migration, or semantic parity.
+Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
+used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The five-node
+Docker preflight and both standalone utility/combined-runtime builds passed.
+K3s forward migration and destination API readiness passed, but target
+hostPath CSI setup failed; the target workload checkpoint and return migration
+did not run. The initial target snapshot showed the Cilium agent Ready, with
+Envoy and CoreDNS running but not Ready. Failure-time diagnostics later showed
+Cilium agent, Envoy, and operator `1/1`, while CoreDNS remained `0/1 Running`.
+Cert-manager Pods had no phase/container status/IP and the webhook Service had
+no endpoints. Upstream import failed applying
+`CertificateRequest/migration-test-1`; its target cert-manager Pods likewise
+had no phase/container status/IP, and its webhook Service and EndpointSlice
+had no endpoints. The upstream source API recovered and the protected export
+was retained. Neither lane reached workload/storage checks, reverse migration,
+or semantic parity. These snapshots establish the target-time symptoms, not
+their root cause.
 
-The initial watcher captured target-time state but its `kubectl -o wide`
-snapshot included a changing AGE column, causing a diagnostic bundle nearly
-every two seconds. Branch head `35161a3f` replaces it with normalized stable
-fields and a 30-second sample interval. Only `bash -n` and `git diff --check`
-have been run for this watcher correction; dedicated runtime validation is
-pending. Logs: `/tmp/nodemigrate-36219234465-k3s.log` and
-`/tmp/nodemigrate-36219234465-kubernetes.log`. No general build gate or full
+The normalized watcher captured 10 K3s and 9 upstream snapshots, including
+state changes and bounded periodic samples. This validates the diagnostic
+capture correction and avoids the AGE-driven log flood from the previous run.
+Logs: `/tmp/nodemigrate-36220533297-k3s.log` and
+`/tmp/nodemigrate-36220533297-kubernetes.log`. No general build gate or full
 e2e ran.
 
 Branch-runtime migration [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
