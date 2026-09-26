@@ -374,6 +374,11 @@ diagnostics() {
             fi
             echo "Target node labels relevant to PersistentVolume topology:"
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o custom-columns='NAME:.metadata.name,LABELS:.metadata.labels' || true
+            echo "Hostpath CSI driver logs:"
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n default csi-hostpathplugin-0 \
+                --all-containers --tail=500 || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n default csi-hostpath-socat-0 \
+                --all-containers --tail=200 || true
             for pod in migration-seed migration-standalone; do
                 KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n migration-apps "$pod" || true
             done
@@ -411,8 +416,15 @@ diagnostics() {
                 --no-pager -o cat 2>/dev/null \
                 | grep -Ei 'ciliumnode|/apis/cilium\.io/v2/ciliumnodes' || true
         fi
-        journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver -u nodecontroller \
-            -u kube-apiserver --no-pager -n 250 || true
+        journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
+            -u nodecontroller -u nodescheduler -u nodelet -u kube-apiserver \
+            --no-pager -n 500 || true
+        if [[ -n "$MIGRATION_STARTED_AT" ]]; then
+            echo "Nodelet volume/runtime logs since migration start ($MIGRATION_STARTED_AT):"
+            journalctl -b -u nodelet --since "$MIGRATION_STARTED_AT" --no-pager -n 1500 || true
+            echo "Scheduler volume-binding logs since migration start ($MIGRATION_STARTED_AT):"
+            journalctl -b -u nodescheduler --since "$MIGRATION_STARTED_AT" --no-pager -n 1000 || true
+        fi
         echo "Target API server diagnostics:"
         systemctl status nodeapiserver --no-pager || true
         journalctl -b -u nodeapiserver --no-pager -n 1000 || true
