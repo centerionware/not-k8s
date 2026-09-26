@@ -77,6 +77,10 @@ passed at `2ee43f2a`. The active runtime run predates this addition; dedicated
 PDB behavior verification remains pending. At 2026-09-26 19:24 UTC, that run's
 K3s lane was still in progress.
 
+The fixture now also exercises Deployment `/scale` at each checkpoint (two
+available replicas, then back to one). Local shell syntax and helper checks
+pass; validation and runtime checks for this latest change are pending.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

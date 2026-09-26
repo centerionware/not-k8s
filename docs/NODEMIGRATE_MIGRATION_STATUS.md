@@ -72,6 +72,11 @@ checks. The PDB behavior itself has not yet run on a real cluster; the active
 K3s migration job predates this fixture addition and remained in progress at
 2026-09-26 19:24 UTC.
 
+The same checkpoint now exercises the Deployment `/scale` subresource by
+scaling nginx to two available replicas and back to one, waiting for each
+controller reconciliation. Local shell syntax and helper checks pass; PR
+validation and runtime evidence for this latest addition are pending.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores

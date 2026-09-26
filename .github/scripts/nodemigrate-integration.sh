@@ -1813,6 +1813,16 @@ YAML
     }
     kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl scale -n migration-apps deployment/migration-nginx --replicas=2
+    kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl get deployment migration-nginx -n migration-apps -o json | jq -e '
+      .spec.replicas == 2 and (.status.availableReplicas // 0) == 2
+    ' >/dev/null || {
+        echo "Deployment /scale did not reconcile two available replicas at stage $stage" >&2
+        return 1
+    }
+    kubectl scale -n migration-apps deployment/migration-nginx --replicas=1
+    kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
     kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
     wait_for_httproute_condition migration-apps migration-nginx Accepted
