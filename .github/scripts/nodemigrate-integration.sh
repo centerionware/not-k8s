@@ -347,6 +347,25 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe nodes || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods,pvc,pv -A -o wide || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get statefulset migration-stateful \
+                -n migration-apps -o json | jq '{
+                  metadata: {generation: .metadata.generation},
+                  spec: {replicas: .spec.replicas, updateStrategy: .spec.updateStrategy},
+                  status: {
+                    observedGeneration: .status.observedGeneration,
+                    replicas: .status.replicas,
+                    readyReplicas: .status.readyReplicas,
+                    updatedReplicas: .status.updatedReplicas,
+                    currentRevision: .status.currentRevision,
+                    updateRevision: .status.updateRevision
+                  }
+                }' || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe statefulset migration-stateful \
+                -n migration-apps || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod migration-stateful-0 \
+                -n migration-apps || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pvc state-migration-stateful-0 \
+                -n migration-apps || true
             for pod in migration-seed migration-standalone; do
                 KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n migration-apps "$pod" || true
             done
@@ -384,7 +403,7 @@ diagnostics() {
                 --no-pager -o cat 2>/dev/null \
                 | grep -Ei 'ciliumnode|/apis/cilium\.io/v2/ciliumnodes' || true
         fi
-        journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
+        journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver -u nodecontroller \
             -u kube-apiserver --no-pager -n 250 || true
         echo "Target API server diagnostics:"
         systemctl status nodeapiserver --no-pager || true

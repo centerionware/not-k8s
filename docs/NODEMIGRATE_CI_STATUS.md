@@ -13,6 +13,20 @@ coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
 release-backed regression baseline, not a claim that its runtime contains the
 new fixes.
 
+## Latest branch-runtime attempt
+
+Dedicated migration run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
+used SHA `d177f2c664e2b661da65d43275002bf79cf71b65`. Docker isolation and
+both builds passed; focused nodeapiserver quick-check
+[36235417698](https://github.com/centerionware/not-k8s/actions/runs/36235417698)
+passed. In both K3s+Cilium and upstream Kubernetes+Cilium, migration reached
+the destination API and passed the Gateway, Cilium, node, deployment,
+standalone Pod, CA-trust, and CSI-readiness checks. Both lanes timed out at
+StatefulSet rollout observation before semantic checkpoint, reverse
+migration, or parity. Saved logs: `/tmp/nodemigrate-36235423620/`.
+Generation/status and PVC/pod diagnostics have now been added to the harness;
+their next run is pending. No standard full build or full e2e was dispatched.
+
 ## Latest release-backed result
 
 Release-backed migration [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539)

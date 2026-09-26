@@ -4,6 +4,19 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Migration run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
+on SHA `d177f2c664e2b661da65d43275002bf79cf71b65` confirms the prior
+GatewayClass WATCH-revision fix: both source lanes passed GatewayClass
+Accepted and Gateway Programmed. Both then timed out waiting for
+`StatefulSet/migration-stateful` to observe its spec generation; its ordinal
+Pod was Pending at failure. Component ownership and cause are not confirmed.
+The current logs omit both `.metadata.generation` and
+`.status.observedGeneration`, so this is tracked as an unresolved runtime
+failure, not yet a confirmed component bug. The harness now captures those
+fields, the StatefulSet/Pod/PVC descriptions, and nodecontroller journal output
+for the next attempt. No fix or full round trip is verified. Logs:
+`/tmp/nodemigrate-36235423620/`.
+
 The repeated GatewayClass 409 in [run 36234240173](https://github.com/centerionware/not-k8s/actions/runs/36234240173)
 is now root-caused. For streaming-list WATCH, the handler created synthetic
 initial ADDED events with the collection snapshot revision instead of each

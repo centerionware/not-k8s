@@ -9,6 +9,30 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Run [36235423620](https://github.com/centerionware/not-k8s/actions/runs/36235423620)
+used branch SHA `d177f2c664e2b661da65d43275002bf79cf71b65`. The focused
+nodeapiserver quick-check [36235417698](https://github.com/centerionware/not-k8s/actions/runs/36235417698),
+Docker five-node preflight, and both runtime builds passed. Both K3s+Cilium
+and upstream Kubernetes+Cilium migrations reached the destination and passed
+Node, Cilium, fixture DaemonSet, Deployment, GatewayClass/Gateway, standalone
+Pod, CA-trust, and CSI-readiness checks. Both then timed out in
+`kubectl rollout status statefulset/migration-stateful`, before the semantic
+checkpoint: the rollout command waited for the StatefulSet controller to
+observe the imported spec generation. At failure the ordinal Pod was Pending.
+The saved log does not include the StatefulSet's generation and
+`status.observedGeneration`, so it does not establish whether status
+reconciliation, API persistence, or the Pod/PVC path is the cause. No target
+semantic checkpoint, return migration, parity comparison, or full round trip
+passed. Logs: `/tmp/nodemigrate-36235423620/`.
+
+The harness now emits the StatefulSet generation/status, update strategy,
+StatefulSet and Pod descriptions, and claim details on failure, and captures
+the nodecontroller journal. This is diagnostic instrumentation; runtime
+validation is pending. The added evidence should distinguish a controller
+status gap from a Pending workload or volume issue.
+
+Earlier GatewayClass diagnosis and history follow.
+
 Follow-up run [36234240173](https://github.com/centerionware/not-k8s/actions/runs/36234240173)
 used SHA `0a17cf9cb2e7d935afcb06e9653490aa76b1c912`. Focused nodeapiserver
 quick-check [36234234075](https://github.com/centerionware/not-k8s/actions/runs/36234234075),
