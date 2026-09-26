@@ -15,24 +15,25 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
-Migration run [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356)
-used SHA `3f9808fc22af4206dc447bd5665f38c2ad06d3c2`. Both utility/runtime builds
-and Docker five-node preflight passed. Both source fixtures passed and target
-API readiness was reached. In both lanes the target workload checkpoint then
-timed out: hostpath CSI rejected `NodeStageVolume` with `FailedPrecondition`
-because the same volume was already staged at kubelet's path. No target
-workload parity, reverse migration, returned-source check, or full round trip
-passed. Logs: `/tmp/nodemigrate-36243049356/artifacts/`.
+Migration run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
+used SHA `4014685a8c66fca8f8fe2353048ec8d039c76654`. Both nodemigrate/runtime
+builds, Docker five-node preflight, source fixtures, and CSI catalog checks
+passed. In both K3s+Cilium and upstream Kubernetes+Cilium lanes, nodelet then
+successfully reused the source kubelet CSI stage path; `NodeStageVolume` and
+`NodePublishVolume` succeeded. The run failed at the CronJob assertion because
+the generated Job selector was absent: `kubectl logs job/...` matched six Pods
+and selected a Cilium daemon Pod rather than the completed CronJob Pod. This
+is a nodeapiserver Job-create defaulting bug, now fixed in the worktree for
+POST and create-on-apply paths with focused regressions. The migration run did
+not reach semantic target parity or reverse migration. Logs:
+`/tmp/nodemigrate-36245509026/artifacts/`.
 
-Quick-check [36245508890](https://github.com/centerionware/not-k8s/actions/runs/36245508890)
-compiled the changed crates and passed 74 of 75 nodemigrate tests; the new
-active-stage root test caught an off-by-three slice that returned
-`/srv/kubelet` instead of `/srv/kubelet/plugins/kubernetes.io/csi`. The source
-path assembly is corrected in the follow-up worktree. Migration run
-[36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
-is still active on the earlier SHA; its five-node Docker preflight passed.
-The hostpath provider's persistent `/csi-data-dir` change cleared the earlier
-missing-volume-catalog error. No build.yml or full e2e gate was run.
+Quick-check [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
+passed at SHA `fc2e5082fb845378b39b44b53994a2b248d74fb4`, including
+`nodelet`, `nodebootstrap`, and `nodemigrate`. This verifies the CSI staging
+path change. Quick-check for the current nodeapiserver Job selector fix and a
+new end-to-end migration attempt remain pending. No regular `build.yml` or
+full e2e gate was run.
 
 Follow-up migration setup now mounts hostpath CSI's `/csi-data-dir` from
 node-local persistent storage before provisioning fixture claims. This keeps

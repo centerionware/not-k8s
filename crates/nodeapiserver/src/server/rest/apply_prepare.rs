@@ -119,6 +119,9 @@ pub async fn apply_prepare(
         if let Some(ns) = namespace {
             set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
         }
+        if group == "batch" && version == "v1" && resolved.kind == "Job" {
+            crate::scheme::defaulting::default_job_selector(&mut object);
+        }
         let rebuilt = crate::patch::managed_fields::rebuild_versioned_managed_fields(
             &[],
             &applied.managers,

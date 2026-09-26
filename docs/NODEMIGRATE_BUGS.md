@@ -4,25 +4,20 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
-Migration run [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356)
-passed source fixtures and reached the target workload checkpoint in both
-K3s+Cilium and upstream Kubernetes+Cilium lanes. The earlier hostpath CSI
-`NotFound` was cleared by preserving `/csi-data-dir` across the in-place
-driver restart. Both lanes then failed because nodelet called
-`NodeStageVolume` with `/var/lib/nodelet/csi/<driver>/<raw-volume-handle>/globalmount`,
-while the active CSI provider already had the volume staged at kubelet's
-`/var/lib/kubelet/plugins/kubernetes.io/csi/<driver>/<sha256-volume-handle>/globalmount`.
-This confirms a nodelet CSI staging-path compatibility bug. The worktree now
-uses kubelet's hashed path layout, detects the active staging root from the
-host mount table (with an explicit override when no stage is mounted), passes
-that root through nodemigrate into the nodelet service, and updates the test
-CSI Pod to see the retained mount. Quick-check [36245508890](https://github.com/centerionware/not-k8s/actions/runs/36245508890)
-compiled the changed crates but found the new mount-root parser returned the
-parent kubelet directory instead of the CSI plugin directory. That slice
-construction is corrected in the follow-up worktree; migration run
-[36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
-is still running. No passing component check or general CSI provider transfer
-is claimed. Logs: `/tmp/nodemigrate-36243049356/artifacts/`.
+Migration run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
+on `4014685a` progressed beyond the earlier CSI failures: both lanes logged
+successful `NodeStageVolume` at the already staged kubelet path and successful
+`NodePublishVolume`. It then exposed a separate nodeapiserver Job defaulting
+bug: generated Job Pods lacked the upstream selector labels, so
+`kubectl logs job/migration-cron-check-nodestore` selected unrelated Pods and
+the fixture failed its CronJob check. A focused fix is now in the worktree:
+generate the UID-based Job selector and standard template labels for both POST
+create and create-on-apply, after URL identity and UID are set. Unit regressions
+cover generated labels and manual selectors. Quick-check
+[36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
+passed the CSI-path changes at `fc2e5082`; the Job fix has not yet been checked
+in CI. No target parity, reverse migration, or full round trip passed. Logs:
+`/tmp/nodemigrate-36245509026/artifacts/`.
 
 Follow-up to [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151):
 the upstream hostpath CSI driver keeps volume state and payload under
@@ -361,7 +356,8 @@ neither lane reached a target checkpoint or round trip. Logs:
 
 | Bug | Owning component(s) | Fix in this branch | Focused evidence / state |
 | --- | --- | --- | --- |
-| During migration, nodelet requests a second stage path for a volume that kubelet already staged. Nodelet's old path used the raw volume handle under `/var/lib/nodelet/csi`; kubelet uses the SHA-256 handle under `/var/lib/kubelet/plugins/kubernetes.io/csi`. The CSI provider returns `FailedPrecondition: already staged`, leaving workloads Pending. | `nodelet` CSI staging and `nodebootstrap` migration service configuration | Use kubelet-compatible driver/hash/globalmount layout, detect the active source root from mount state, pass it into the generated nodelet service, and expose the preserved staging mount to the replacement CSI Pod. Validate an explicit root against active stages. | Confirmed in both lanes of [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356). Fix is in the worktree; focused quick-check and migration validation are pending. Logs: `/tmp/nodemigrate-36243049356/artifacts/`. |
+| During migration, nodelet requests a second stage path for a volume that kubelet already staged. Nodelet's old path used the raw volume handle under `/var/lib/nodelet/csi`; kubelet uses the SHA-256 handle under `/var/lib/kubelet/plugins/kubernetes.io/csi`. The CSI provider returns `FailedPrecondition: already staged`, leaving workloads Pending. | `nodelet` CSI staging and `nodebootstrap` migration service configuration | Use kubelet-compatible driver/hash/globalmount layout, detect the active source root from mount state, pass it into the generated nodelet service, and expose the preserved staging mount to the replacement CSI Pod. Validate an explicit root against active stages. | Confirmed in [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356). Implemented in `4014685a` and `fc2e5082`; quick-check [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553) passed. Migration run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026) then confirmed `NodeStageVolume` and `NodePublishVolume` succeeded in both lanes. Cross-provider or different-node CSI data transfer remains unverified. Logs: `/tmp/nodemigrate-36245509026/artifacts/`. |
+| Newly created batch/v1 Jobs do not receive Kubernetes-generated selector labels. The Job controller still created a Pod, but `kubectl logs job/...` matched unrelated Pods and the migration fixture failed its CronJob check. | `nodeapiserver` Job create defaulting for POST and create-on-apply | After assigning request identity and UID, generate the upstream legacy and prefixed Job/template labels plus the UID-based `spec.selector.matchLabels`; preserve manual selectors. Add focused unit coverage and exercise both create paths. | Confirmed in both lanes of [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026): the CronJob Pod completed, while Job log selection found six unrelated Pods. Fix and tests are in the current worktree; CI verification pending. |
 | Import preserved CSI PV metadata and source `volumeHandle`, but the destination CSI driver has no matching provider volume state. `NodeStageVolume` repeatedly returns `NotFound`, so PVC-backed workloads remain Pending; hostPath/local path snapshots do not cover CSI volumes. | `nodemigrate` API transfer and persistent-volume migration; CSI provider lifecycle in the migration fixture | The fixture now backs hostpath CSI `/csi-data-dir` with node-local persistent storage so the provider's volume state and payload survive an in-place driver restart. Still implement or verify provider data movement for replacement onto a different node and for other CSI providers; compare payload at all migration checkpoints. | Confirmed in both lanes of [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151): target hostpath CSI returned `volume id ... does not exist in the volumes list`; source/target PV handles were identical and target node affinity matched. Fixture update is in the branch; `bash -n`/`git diff --check` pass and migration rerun is pending. Logs: `/tmp/nodemigrate-36241224151/`. |
 | Server-side apply created imported StatefulSets without `metadata.generation`. `nodecontroller` consequently wrote `status.observedGeneration=null`, and `kubectl rollout status` waited forever for a generation that did not exist. | `nodeapiserver` create-on-apply path | Reuse server-owned generation-1 initialization for create-on-apply and ordinary POST; add a focused regression that verifies client-supplied generation is replaced. | Confirmed in both lanes of [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283): the StatefulSet had generation and observedGeneration null while replica/revision status was populated. Fix and test are in the worktree; nodeapiserver quick-check and migration rerun are pending. |
 | The target-state watcher compared `kubectl -o wide` output, including AGE. Normal age increments made every poll look like a state transition and flooded the migration log with repeated pod, log, and event snapshots. | `.github/scripts/nodemigrate-integration.sh` diagnostics | Compare stable normalized pod phase/conditions/container readiness/restarts/IP/node and cert-manager endpoint state. Keep a bounded 30-second diagnostic sample for logs even when state is unchanged. | Confirmed by the many snapshots only seconds apart in both lanes of [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465), including timestamps that advanced while readiness did not. The correction at `35161a3f`, included in run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297), emitted 10 K3s and 9 upstream snapshots and captured target-time pod and endpoint state; `bash -n` and `git diff --check` passed. This validates bounded diagnostic capture, not the root cause of either migration failure. |

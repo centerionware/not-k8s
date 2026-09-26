@@ -229,6 +229,9 @@ pub async fn create_with_options_and_manager(
         "uid",
         Value::String(uuid::Uuid::new_v4().to_string()),
     );
+    if group == "batch" && version == "v1" && kind == "Job" {
+        defaulting::default_job_selector(&mut object);
+    }
     // Real upstream's `rest.BeforeCreate` stamps every object's
     // `metadata.generation` to 1 unconditionally, regardless of resource
     // type — not just ones this crate happens to bump later (`scale.rs`,

@@ -9,23 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Run [36243049356](https://github.com/centerionware/not-k8s/actions/runs/36243049356)
-cleared the hostpath provider's lost-volume-catalog failure after the fixture
-persisted `/csi-data-dir` across the CSI Pod restart. Both lanes then reached
-target API readiness and failed when nodelet requested CSI staging at a second
-path: its raw-handle `/var/lib/nodelet/csi/...` path differed from the source
-kubelet's SHA-256 `/var/lib/kubelet/plugins/kubernetes.io/csi/.../globalmount`
-path. The worktree now makes nodelet use kubelet-compatible hashed paths,
-passes the source root through migration bootstrap and the nodelet service,
-and mounts that preserved path into the target CSI test Pod. Quick-check
-[36245508890](https://github.com/centerionware/not-k8s/actions/runs/36245508890)
-compiled the code and reported 74/75 nodemigrate tests; the new mount-root
-detector test found it returned `/srv/kubelet` rather than the full CSI plugin
-root. The slice is corrected in the follow-up worktree. Migration run
-[36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
-is still running on the earlier SHA, so the fix remains unverified. No target semantic parity,
-reverse migration, or round trip passed. Logs:
-`/tmp/nodemigrate-36243049356/artifacts/`.
+Run [36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
+used SHA `4014685a8c66fca8f8fe2353048ec8d039c76654`. Both K3s+Cilium and
+upstream Kubernetes+Cilium lanes passed source fixture checks, retained the
+hostpath CSI volume catalog, and successfully completed `NodeStageVolume` and
+`NodePublishVolume` at the source kubelet staging path. The target workload
+checkpoint then failed at the CronJob assertion: the generated Job Pod
+completed, but the API server had not generated the Job selector, so
+`kubectl logs job/...` selected six Pods and chose an unrelated daemon Pod.
+This identifies a separate nodeapiserver Job defaulting bug. A worktree fix
+generates the upstream UID selector and template labels for POST and
+create-on-apply after assigning URL identity and UID; focused tests cover
+automatic labels and manual selectors. That fix has not yet passed CI. There
+was no target semantic parity, reverse migration, or complete round trip.
+Logs: `/tmp/nodemigrate-36245509026/artifacts/`.
+
+Quick-check [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
+passed at SHA `fc2e5082fb845378b39b44b53994a2b248d74fb4` for `nodelet`,
+`nodebootstrap`, and `nodemigrate`, verifying the CSI staging-path fix. The
+earlier mount-root parser failure from quick-check 36245508890 is corrected.
+The next focused check must include `nodeapiserver`, followed by another
+dedicated migration run. No regular build or full e2e gate was run.
 
 The current test harness now configures hostpath CSI `/csi-data-dir` on
 node-local persistent storage before fixture volumes are provisioned. The
