@@ -1,6 +1,6 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
 
 This is the living CI record for the scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
@@ -33,8 +33,9 @@ Focused `nodeapiserver` quick-check [36195027134](https://github.com/centerionwa
 passed on the same SHA. Branch-runtime rerun [36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992)
 completed at SHA `9974e76329349d33205aa53c824e3b2fb864f6e7`: both scoped builds
 and Docker preflight passed, but both `Run migration` steps failed (K3s after
-21m18s, upstream after 16m03s). Lane artifacts exist; their logs have not yet
-been captured, so the failure stages and whether the Cilium diagnostics were
+21m18s, upstream after 16m03s). GitHub job metadata confirms those step
+failures; repeated log/artifact requests have returned API connection errors,
+so the failing migration operation and whether the Cilium diagnostics were
 reached remain unclassified. Focused `nodelet` quick-check
 [36197970777](https://github.com/centerionware/not-k8s/actions/runs/36197970777)
 passed on SHA `9974e763`.

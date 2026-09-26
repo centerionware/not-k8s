@@ -1,6 +1,6 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
 
 This is the living implementation status record for the full scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
@@ -25,9 +25,11 @@ Direct CoreDNS-gate reconcile and CRI init-state diagnostics were added in
 Diagnostic branch-runtime rerun
 [36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992)
 completed with both migration steps failed after their scoped builds passed;
-Docker preflight passed. K3s ran 21m18s and upstream 16m03s. The failure stage
-and captured diagnostic evidence remain unclassified pending artifact-log
-review. This run does not verify any target, return, or parity checkpoint.
+Docker preflight passed. GitHub job metadata confirms the failing step was
+`Run migration` in both lanes (K3s ran 21m18s; upstream 16m03s). The operation
+that failed and the diagnostic evidence remain unclassified because the lane
+logs/artifacts have not yet been retrievable. This run does not verify any
+target, return, or parity checkpoint.
 Logs from the preceding completed run remain at
 `/tmp/nodemigrate-36195385046/{k3s,kubernetes}/`.
 
