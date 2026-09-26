@@ -27,6 +27,7 @@ select(
         $managed_by != "endpointslicemirroring-controller.k8s.io")
   ))
 | select((.kind != "Lease") or (.metadata.namespace != "kube-node-lease"))
+| select((.kind != "ConfigMap") or (.metadata.name != "kube-root-ca.crt"))
 | select(controller_regenerated_pod | not)
 | select((.kind != "Secret") or (.type != "kubernetes.io/service-account-token"))
 | del(.status, .metadata.uid, .metadata.creationTimestamp,

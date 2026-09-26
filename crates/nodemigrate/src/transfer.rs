@@ -1640,6 +1640,14 @@ fn skip_object(object: &Value) -> bool {
     if skip_regenerated_endpoint(object, kind) {
         return true;
     }
+    // This per-namespace bundle is published from the destination cluster CA.
+    // Copying the source value makes in-cluster clients reject the target API
+    // certificate after cutover; the destination root-CA publisher recreates it.
+    if kind == "ConfigMap"
+        && object.pointer("/metadata/name").and_then(Value::as_str) == Some("kube-root-ca.crt")
+    {
+        return true;
+    }
     // Kubelets renew these node-heartbeat Leases continuously; the target
     // kubelet must create a fresh Lease for its newly registered Node. Other
     // Leases can carry application or add-on state and are migrated.
@@ -2045,6 +2053,25 @@ current-context: test
             "apiVersion": "metrics.k8s.io/v1beta1",
             "kind": "PodMetrics",
             "metadata": {"name": "pod-a", "namespace": "apps"}
+        })));
+    }
+
+    #[test]
+    fn migration_export_regenerates_namespace_root_ca_configmaps() {
+        let object = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": "kube-root-ca.crt", "namespace": "apps"},
+            "data": {"ca.crt": "source-cluster-ca"}
+        });
+        assert!(skip_object(&object));
+        assert!(sanitize(object).is_none());
+
+        assert!(!skip_object(&serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": "application-settings", "namespace": "apps"},
+            "data": {"setting": "preserved"}
         })));
     }
 

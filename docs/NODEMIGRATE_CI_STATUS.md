@@ -15,30 +15,37 @@ new fixes.
 
 ## Latest branch-runtime result
 
-Dedicated migration run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
-used runtime SHA `b093021677321124e8b8d318898819d90b71d927` (the workflow
-checked out that SHA before the following diagnostics-only commit). The
-five-node Docker preflight, nodemigrate and combined-runtime builds, nodemigrate
-tests, release packaging check, and shell/snapshot checks passed. Both
-migration lanes failed before target workload validation. K3s forward migration
-and target API readiness passed, but hostPath CSI setup failed. During the
-forward snapshots, `default/kubernetes` resolved to `10.43.0.1` with a ready
-endpoint at `127.0.0.1:6443`; `nodeproxy` was installed but inactive. Target
-Cilium/CSI and application checkpoints did not complete, so reverse migration
-and parity were not tested. Upstream import failed applying
-`CertificateRequest/migration-test-1` with HTTP 500 after the cert-manager
-webhook request failed; `nodeproxy` was also inactive and the webhook had no
-endpoints. Rollback restored the source API and retained the protected export.
-The fixture configures Cilium with kube-proxy replacement disabled, making the
-inactive proxy a relevant lead, but this artifact lacks its startup journal and
-does not prove it caused either lane's failure.
+Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
+used SHA `9e8701291e2cd8f821f53e1e43d0bc306fd2f035`. The five-node Docker
+preflight and both utility/combined-runtime builds passed. K3s reached target
+API readiness, then hostPath CSI setup failed. Upstream import failed on
+`CertificateRequest/migration-test-1` with HTTP 500; its source API recovered
+and its protected export remained. Both lanes' nodeproxy journals show a
+successful start and `service proxy watching Services + EndpointSlices`; the
+inactive unit status was collected only after rollback stopped the service.
+K3s Cilium and Traefik controllers repeatedly failed TLS verification to the
+target API Service with `x509: certificate signed by unknown authority`. This
+is consistent with stale source `kube-root-ca.crt` ConfigMaps being imported,
+but the run did not record the namespace bundle contents. Neither lane reached
+target workload/storage parity, reverse migration, or returned-source checks.
 
-Logs: `/tmp/nodemigrate-36222183166/nodemigrate-k3s-36222183166/nodemigrate-k3s.log`
-and `/tmp/nodemigrate-36222183166/nodemigrate-kubernetes-36222183166/nodemigrate-kubernetes.log`.
-The manual dispatch skipped its `validate` job. No regular build or full e2e
-was dispatched. Commit `588e5f61751f29eefa56caec146d14e1df775c87` adds
-`systemctl status` and `journalctl` capture for nodeproxy; its migration rerun
-is pending.
+Logs: `/tmp/nodemigrate-36223445443/nodemigrate-k3s-36223445443/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-36223445443/nodemigrate-kubernetes-36223445443/nodemigrate-kubernetes.log`.
+The manual dispatch skipped static validation. The follow-up change in this
+branch adds CA-bundle snapshots, excludes the destination-managed root CA
+ConfigMap from export, and checks every namespace bundle against the active API
+CA; focused runtime verification is pending. No general build or full e2e was
+dispatched.
+
+Previous branch-runtime run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
+used runtime SHA `b093021677321124e8b8d318898819d90b71d927`. The five-node
+preflight, utility/runtime builds, utility checks, and shell/snapshot checks
+passed. Both lanes failed before target workload validation: K3s forward
+migration/API readiness passed but hostPath CSI setup failed; upstream failed
+the same CertificateRequest import and recovered its source API while
+retaining the protected export. At least the early forward snapshots showed
+nodeproxy inactive, but the artifact lacked its journal; that alone did not
+establish a routing cause. Logs are under `/tmp/nodemigrate-36222183166/`.
 
 Branch-runtime migration [run 36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility

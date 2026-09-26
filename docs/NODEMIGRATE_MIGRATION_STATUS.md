@@ -9,24 +9,32 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Dedicated migration run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
-used runtime SHA `b093021677321124e8b8d318898819d90b71d927`. The five-node
-Docker preflight, utility/runtime builds, and utility checks passed. K3s
-forward migration and destination API readiness passed, but target hostPath
-CSI setup failed before the target workload checkpoint; reverse migration and
-parity did not run. During forward migration, the API Service endpoint was
-ready at `127.0.0.1:6443`, but `nodeproxy` stayed inactive. Upstream import
-failed applying `CertificateRequest/migration-test-1` because the cert-manager
-webhook returned HTTP 500 with no webhook endpoints; `nodeproxy` was also
-inactive there. Rollback restored the upstream API and retained the protected
-export. Since the fixture sets Cilium `kubeProxyReplacement=false`, inactive
-nodeproxy is a plausible shared routing issue, not a proven cause. The run
-did not capture nodeproxy's startup journal.
+Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
+used SHA `9e8701291e2cd8f821f53e1e43d0bc306fd2f035`. The five-node Docker
+preflight and both utility/combined-runtime builds passed. K3s reached target
+API readiness, but target hostPath CSI setup failed before target workload or
+reverse-migration checks. Upstream import failed on
+`CertificateRequest/migration-test-1` with HTTP 500; its source API recovered
+and the protected export remained. Nodeproxy started and watched Services and
+EndpointSlices in both lanes; its inactive status was captured after rollback
+stopped it. K3s Cilium and Traefik logs show repeated TLS failures to the
+target API Service with `x509: certificate signed by unknown authority`. The
+source ConfigMap export currently includes `kube-root-ca.crt`, so a stale
+service-account trust bundle is a likely cause; per-namespace CA data was not
+captured in this run. The migration exporter and snapshot filter now classify
+that destination-managed bundle for regeneration, and the fixture checks each
+namespace against the active API CA. Target and return behavior remain
+unverified pending the next run.
 
-Logs: `/tmp/nodemigrate-36222183166/nodemigrate-k3s-36222183166/nodemigrate-k3s.log`
-and `/tmp/nodemigrate-36222183166/nodemigrate-kubernetes-36222183166/nodemigrate-kubernetes.log`.
-The manual dispatch skipped static validation. Commit `588e5f61751f29eefa56caec146d14e1df775c87`
-adds nodeproxy status and journal diagnostics; runtime confirmation is pending.
+Logs: `/tmp/nodemigrate-36223445443/nodemigrate-k3s-36223445443/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-36223445443/nodemigrate-kubernetes-36223445443/nodemigrate-kubernetes.log`.
+The manual dispatch skipped static validation. No regular build or full e2e
+ran.
+
+Previous attempt [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
+used runtime SHA `b093021677321124e8b8d318898819d90b71d927`; the proxy journal
+was not captured there and the inactive status alone did not establish a
+routing failure. Its logs are under `/tmp/nodemigrate-36222183166/`.
 
 Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
 used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The five-node
@@ -403,7 +411,7 @@ tests; they do not replace or narrow any existing coverage.
 
 | Resource group | Required migration and behavior checks | Current fixture status |
 | --- | --- | --- |
-| Configuration and identity | Namespaces, ConfigMaps (including binary data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings, ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses; verify identity/data and allowed plus denied requests using real service-account credentials. | The fixture includes text/binary ConfigMaps, an immutable ConfigMap mounted into and read by a standalone Pod, a Secret consumed through Pod environment, namespaced and cluster-scoped RBAC, and real-token Jobs for allowed ConfigMap/Node reads and denied Secret reads. ResourceQuota, LimitRange, PriorityClass, immutable state, and mounted data are asserted at each stage. Static checks pass for the additive immutable ConfigMap and user-CRD fixture; runtime validation is pending. Additional RBAC/quota behavior cases and round-trip verification remain pending. |
+| Configuration and identity | Namespaces, ConfigMaps (including binary data), Secrets, ServiceAccounts, Roles, ClusterRoles, RoleBindings, ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses; verify identity/data and allowed plus denied requests using real service-account credentials. | The fixture includes text/binary ConfigMaps, an immutable ConfigMap mounted into and read by a standalone Pod, a Secret consumed through Pod environment, namespaced and cluster-scoped RBAC, and real-token Jobs for allowed ConfigMap/Node reads and denied Secret reads. ResourceQuota, LimitRange, PriorityClass, immutable state, and mounted data are asserted at each stage. `kube-root-ca.crt` is classified as destination-managed trust state: export skips the source bundle, and the fixture now checks every namespace bundle against the active API CA. Static validation passed; runtime validation is pending. Additional RBAC/quota behavior cases and round-trip verification remain pending. |
 | Workload controllers | Deployments, ReplicaSets, StatefulSets and `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and standalone Pods; verify selectors, templates, rollout/revision history, replica/readiness counts, job execution, schedule, and unique application data at each checkpoint. | The fixture includes an nginx Deployment, a StatefulSet backed by a CSI claim template with a seeded payload, an all-node DaemonSet, a completed Job, a manually triggered CronJob, and a standalone data-seed Pod. Both source lanes passed source checks and invoked nodemigrate in run 36142617576. Runs 36211105237 and 36212326763 still fail before target workload assertions; returned-source checks and parity remain unverified. |
 | Helm-managed applications | Helm charts/releases and release records (name, namespace, chart/version, values, revision, manifest), plus all chart-managed resources; verify `helm list`, release inspection, workload health, and a safe follow-up Helm operation after each cutover. | Traefik, cert-manager, and Cilium are installed by Helm. Source-stage checks inspected values, manifests, history, and version-pinned server-side dry-run upgrades of Traefik and Cilium in both lanes of run 36140783446. Post-migration release state and follow-up operations remain unverified. |
 | Service networking and ingress | Services, user-managed Endpoints and EndpointSlices, controller-generated endpoints, IngressClasses and Ingresses, NetworkPolicies, and Gateway API `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `TLSRoute`, and `UDPRoute` where supported; verify DNS, service reachability, policy allow/deny, HTTP/TLS routing, and certificate use. | The fixture now creates a selectorless Service with user-managed Endpoints and EndpointSlice objects and checks their state at every checkpoint; generic source/target/return fingerprints cover them too. The exporter skips only recognized Kubernetes-generated endpoint records and preserves custom-managed ones. Source route probes passed in run 36142617576, but target and return behavior remain blocked before workload checks. The Cilium NetworkPolicy fixture probes both allowed and denied service access; broader route protocols and endpoint traffic behavior remain pending. |

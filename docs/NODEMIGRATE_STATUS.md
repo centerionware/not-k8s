@@ -1,6 +1,6 @@
 # nodemigrate status dashboard
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
 
 This dashboard tracks the full nodemigrate goal in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Detailed status is kept in the
@@ -12,16 +12,27 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Each must preserve identity/data/state and behavior through K3s → not-k8s → K3s and upstream Kubernetes → not-k8s → upstream Kubernetes; most target, return, and full round-trip assertions remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Confirmed defects remain tracked by owner. Run 36195385046 showed Cilium's `mount-bpf-fs` stop event had Pod metadata and CRI later showed successful exit, while API status remained Running; it did not reproduce CiliumNode 409s. Diagnostics passed nodelet check 36197970777, but both migration lanes failed in rerun 36197970992 and artifact diagnosis is pending. The kind-wide omission of user-managed Endpoints, EndpointSlices, and application Leases is fixed at SHA `d4f3c4a0`; focused nodemigrate tests pass, runtime verification is pending. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Run 36223445443 shows target Cilium/Traefik API watches failing TLS with `x509: certificate signed by unknown authority`. The proxy started and remained active until rollback; the source root CA ConfigMaps are currently included in export, making stale projected trust a likely cause. The branch now skips the destination-managed `kube-root-ca.crt` ConfigMaps, captures per-namespace CA match state, and checks all namespace bundles at each stage. Runtime confirmation is pending. The kind-wide omission of user-managed Endpoints, EndpointSlices, and application Leases is fixed at SHA `d4f3c4a0`; focused nodemigrate tests pass, runtime verification is pending. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest completed branch-runtime run [36197970992](https://github.com/centerionware/not-k8s/actions/runs/36197970992) passed both scoped builds and Docker isolation, but both migration steps failed. Artifact logs are not yet reviewed, so failure stages and diagnostic outcomes are pending. Neither lane has passed an evidenced target, return, or parity checkpoint. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest completed run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443) passed scoped builds and Docker isolation, but K3s failed at hostPath CSI and upstream failed CertificateRequest import. The artifact confirms TLS trust failures against the target API Service; neither lane reached a target workload, return, or parity checkpoint. The root CA regeneration fix is awaiting targeted CI and migration validation. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed in run `36077448685`: five systemd containers have independent namespaces, machine IDs, CRI/BPF capability, writable persistent volumes, peer connectivity, and stop/restart isolation. This is infrastructure evidence, not proof of Kubernetes control-plane, Cilium datapath, or migration parity. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
+  passed the five-node Docker isolation preflight and both utility/combined
+  runtime builds. K3s reached target API readiness but failed at hostPath CSI;
+  upstream failed importing `CertificateRequest/migration-test-1` and restored
+  its source. Target Cilium/Traefik logs show API Service TLS trust failures.
+  Nodeproxy started successfully, so its post-rollback inactive status was not
+  causal evidence. The branch now regenerates destination `kube-root-ca.crt`
+  bundles and checks them against the active API CA; targeted CI/runtime
+  verification is pending. No target workload, reverse migration, or parity
+  checkpoint passed. See [CI status](NODEMIGRATE_CI_STATUS.md).
 
 - At SHA `f9e4b31139a30fb7a453161e4dc2295983fcef8f`, the nodemigrate crate
   tests and quick-check for `nodeapiserver,nodecontroller,nodebootstrap` passed

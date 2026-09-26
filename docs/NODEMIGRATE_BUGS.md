@@ -4,21 +4,22 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
-Dedicated migration run [36222183166](https://github.com/centerionware/not-k8s/actions/runs/36222183166)
-used runtime SHA `b093021677321124e8b8d318898819d90b71d927`. Builds,
-five-node preflight, utility checks, and workflow shell/snapshot checks passed.
-K3s reached target API readiness, but target hostPath CSI setup failed before
-workload or return-migration assertions. Upstream import failed on
-`CertificateRequest/migration-test-1` with HTTP 500 from the unavailable
-cert-manager webhook; source recovery and protected-export retention passed.
-Both target snapshots reported `nodeproxy` inactive, while the fixture's
-Cilium configuration disables kube-proxy replacement. This is a shared
-service-routing lead, not yet a confirmed defect or cause. Run 36222183166 did
-not capture nodeproxy's journal. Commit
-`588e5f61751f29eefa56caec146d14e1df775c87` adds service status and journal
-capture for the next migration attempt. Neither lane reached workload parity,
-reverse migration, or returned-source checks. Logs are under
-`/tmp/nodemigrate-36222183166/`.
+Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
+used SHA `9e8701291e2cd8f821f53e1e43d0bc306fd2f035`. Builds and five-node
+preflight passed; both migration lanes failed before workload parity or
+reverse migration. Nodeproxy journals show it started and watched Services and
+EndpointSlices; the inactive status was recorded after rollback stopped it.
+K3s Cilium and Traefik controllers repeatedly reported TLS verification errors
+(`x509: certificate signed by unknown authority`) while reaching the target
+API Service. Nodemigrate currently exports the source `kube-root-ca.crt`
+ConfigMaps, which can leave Pods trusting the source CA after target bootstrap.
+This is a strong cause candidate, but the run did not capture the ConfigMap
+data to directly confirm the mismatch. The current fix regenerates this
+destination-managed ConfigMap and the fixture checks all namespace bundles
+against the active API CA. Runtime confirmation is pending. Upstream still
+failed its CertificateRequest import with HTTP 500, then recovered its source
+and retained its protected export. Logs are under
+`/tmp/nodemigrate-36223445443/`.
 
 Dedicated migration run [36220533297](https://github.com/centerionware/not-k8s/actions/runs/36220533297)
 used branch head `ed851766d59ac3b424c1f28e89808c5d7415ad92`. The Docker
