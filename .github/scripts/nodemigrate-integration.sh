@@ -337,6 +337,9 @@ diagnostics() {
         journalctl -b -u nodeapiserver --no-pager -n 1000 || true
         systemctl status nodestore --no-pager || true
         journalctl -b -u nodestore --no-pager -n 1000 || true
+        echo "Target nodeproxy diagnostics:"
+        systemctl status nodeproxy --no-pager || true
+        journalctl -b -u nodeproxy --no-pager -n 1000 || true
     fi
     exit "$status"
 }
@@ -520,6 +523,9 @@ install_hostpath_driver() {
         echo "Hostpath CSI setup failed; collecting nodelet and pod teardown diagnostics" >&2
         systemctl status nodelet --no-pager >&2 || true
         journalctl -u nodelet -b --no-pager -n 1000 >&2 || true
+        echo "Nodeproxy service diagnostics:" >&2
+        systemctl status nodeproxy --no-pager >&2 || true
+        journalctl -u nodeproxy -b --no-pager -n 1000 >&2 || true
         echo "Cilium Envoy socket directory contents:" >&2
         find /var/run/cilium/envoy/sockets -maxdepth 2 -ls >&2 || true
         echo "Unix socket listeners:" >&2
