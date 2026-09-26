@@ -9,23 +9,28 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Run [36250505911](https://github.com/centerionware/not-k8s/actions/runs/36250505911)
-used SHA `4d28a58886be2ced6f2c22626c4b370d8aa4bef3`. Both K3s+Cilium and
-upstream Kubernetes+Cilium lanes passed the source checks and target checks
-through PVC binding and storage data reads: the `migration-data-check` Pod
-reached `Succeeded` with both static hostPath and CSI claims. This confirms the
-nodelet hostPath/local PV resolver and the migrated-PVC binder fixes at the
-target data path. Both then failed the Ingress/Gateway probes because
-`nodeapiserver` rejected valid SPDY port-forward requests that omit the
-optional query port list. No return migration or semantic parity checkpoint
-passed. Logs and artifacts:
-`/tmp/nodemigrate-36250505911-artifacts/nodemigrate-{k3s,kubernetes}-36250505911/`.
+Migration run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
+used SHA `16c90a9721dd1f0bbcdc1a11723d7438d173b49f`. Both K3s+Cilium and
+upstream Kubernetes+Cilium lanes passed source checks, reached target
+verification, and verified static hostPath and CSI data reads. Query-free SPDY
+port-forwarding now works: the Gateway probe returned nginx's HTTP 200 page.
+The separate Ingress probe returned HTTP 404 in both lanes. Target
+`kubectl describe ingress` showed class `traefik` but no rules; raw Ingress and
+IngressClass JSON was not captured, so whether the spec was lost during import
+or the controller ignored it is unconfirmed. Neither lane completed its
+target checkpoint, returned to the source, or compared full parity. Focused
+`nodeapiserver` quick-check [36251889485](https://github.com/centerionware/not-k8s/actions/runs/36251889485)
+passed. Logs:
+`/tmp/nodemigrate-36251890971-artifacts/nodemigrate-{k3s,kubernetes}-36251890971/`.
 
-Focused `nodelet` quick-check [36250504453](https://github.com/centerionware/not-k8s/actions/runs/36250504453)
-passed at the same SHA. The nodeapiserver port-forward compatibility fix and
-focused regression are in progress; next checks are its `nodeapiserver`
-quick-check and the dedicated migration workflow. No regular build or full e2e
-gate was run.
+Harness commit `19e1cae6` adds an exact Ingress rule and IngressClass
+controller assertion at each stage and emits those two safe JSON specs on
+failure. The shell syntax/whitespace checks passed, and PR validation
+[36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
+passed. Dedicated branch-runtime migration run
+[36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
+is in progress at this SHA; its stage results are pending. No regular
+`build.yml` or full e2e gate was run.
 
 Earlier `nodeapiserver` quick-check
 [36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)

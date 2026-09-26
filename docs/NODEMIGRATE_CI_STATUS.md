@@ -15,6 +15,27 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
+used SHA `16c90a9721dd1f0bbcdc1a11723d7438d173b49f`. Both lanes passed the
+source checks and target static hostPath/CSI data reads. The `nodeapiserver`
+SPDY port-forward fix is effective in runtime: both Gateway probes returned
+the nginx HTTP 200 page. Both Ingress probes returned HTTP 404; `describe`
+showed an IngressClass but no host rules. The cause is not established because
+raw source/target Ingress JSON and the IngressClass controller were not
+captured. No target checkpoint, return migration, or parity comparison passed.
+Focused `nodeapiserver` check [36251889485](https://github.com/centerionware/not-k8s/actions/runs/36251889485)
+passed. Logs:
+`/tmp/nodemigrate-36251890971-artifacts/nodemigrate-{k3s,kubernetes}-36251890971/`.
+
+Commit `19e1cae6` adds exact Ingress spec and class-controller checks at all
+three checkpoints plus failure-time JSON diagnostics. Static shell syntax and
+diff checks passed; PR validation
+[36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
+passed. Dedicated branch-runtime migration run
+[36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
+is in progress; this is a harness diagnostic run, not component-fix evidence.
+No general build or e2e gate was run.
+
 Migration run [36250505911](https://github.com/centerionware/not-k8s/actions/runs/36250505911)
 used SHA `4d28a58886be2ced6f2c22626c4b370d8aa4bef3`. Docker five-node
 preflight and both utility/runtime builds passed. Both K3s+Cilium and upstream
