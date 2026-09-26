@@ -69,6 +69,11 @@ verification remains pending. At 2026-09-26 19:21 UTC, its upstream lane had
 failed and its K3s lane remained in progress. No regular build or full e2e was
 run; the migration jobs were skipped on the pull-request validation event.
 
+The newest fixture change adds a PDB-protected nginx eviction check at all
+three checkpoints and includes the PDB in durable-state comparison. Local
+shell syntax and existing helper checks pass; the change still needs PR
+workflow validation and a dedicated runtime migration run.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

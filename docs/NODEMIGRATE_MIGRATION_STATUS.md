@@ -61,6 +61,13 @@ passed. The dedicated migration runtime jobs were skipped on the pull-request
 validation event; no new runtime migration was started while the earlier K3s
 lane remained active.
 
+The fixture now also carries a `policy/v1` PodDisruptionBudget for its nginx
+Deployment, checks the healthy/disruptions-allowed status at every checkpoint,
+and attempts the Pod eviction subresource. The expected result is HTTP 429 while
+the sole replica is healthy; the Pod must remain Ready. The PDB is included in
+the durable application snapshot. Shell and existing targeted fixture checks
+pass locally; this addition has not yet run in CI or on a real cluster.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores

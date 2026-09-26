@@ -1309,6 +1309,17 @@ spec:
         ports:
         - containerPort: 80
 ---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: migration-nginx
+  namespace: migration-apps
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: migration-nginx
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -1742,6 +1753,53 @@ verify_stage() {
         echo "nodemigrate changed user Node labels, annotations, or taints at stage $stage" >&2
         return 1
     }
+    local nginx_pod eviction_response pdb_deadline
+    pdb_deadline=$((SECONDS + 120))
+    while (( SECONDS < pdb_deadline )); do
+        if kubectl get poddisruptionbudget migration-nginx -n migration-apps -o json 2>/dev/null | jq -e '
+          .spec.minAvailable == 1 and
+          .spec.selector.matchLabels.app == "migration-nginx" and
+          (.status.currentHealthy // 0) >= 1 and
+          (.status.desiredHealthy // 0) == 1 and
+          (.status.disruptionsAllowed // 0) == 0
+        ' >/dev/null; then
+            break
+        fi
+        sleep 2
+    done
+    kubectl get poddisruptionbudget migration-nginx -n migration-apps -o json | jq -e '
+      .spec.minAvailable == 1 and
+      .spec.selector.matchLabels.app == "migration-nginx" and
+      (.status.currentHealthy // 0) >= 1 and
+      (.status.desiredHealthy // 0) == 1 and
+      (.status.disruptionsAllowed // 0) == 0
+    ' >/dev/null || {
+        echo "PodDisruptionBudget did not protect its healthy nginx pod at stage $stage" >&2
+        kubectl describe poddisruptionbudget migration-nginx -n migration-apps >&2 || true
+        return 1
+    }
+    nginx_pod="$(kubectl get pods -n migration-apps -l app=migration-nginx -o json \
+        | jq -r '[.items[] | select(.status.phase == "Running") | .metadata.name][0] // empty')"
+    [[ -n "$nginx_pod" ]] || {
+        echo "No running nginx pod is available for the eviction subresource check at stage $stage" >&2
+        return 1
+    }
+    if eviction_response="$(kubectl create --raw "/api/v1/namespaces/migration-apps/pods/$nginx_pod/eviction" -f - 2>&1 <<YAML
+apiVersion: policy/v1
+kind: Eviction
+metadata:
+  name: $nginx_pod
+  namespace: migration-apps
+YAML
+)"; then
+        echo "Pod eviction unexpectedly succeeded despite minAvailable=1 at stage $stage" >&2
+        return 1
+    fi
+    grep -Eiq 'too many requests|429' <<< "$eviction_response" || {
+        echo "Eviction did not fail with the PDB-protected 429 response at stage $stage: $eviction_response" >&2
+        return 1
+    }
+    kubectl wait -n migration-apps --for=condition=Ready "pod/$nginx_pod" --timeout=2m
     kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
     verify_system_addon_rollouts
     kubectl rollout status -n migration-apps daemonset/migration-daemon --timeout=5m
@@ -2072,7 +2130,7 @@ capture_semantic_checkpoint() {
       }] | sort_by(.name)
     ' > "$stage_dir/nodes.json"
 
-    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,service,ingress,pvc -n migration-apps -o json \
+    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,poddisruptionbudget,service,ingress,pvc -n migration-apps -o json \
       | jq -S -f "$ROOT/.github/scripts/nodemigrate-application-snapshot.jq" > "$stage_dir/application.json"
     kubectl get pv -o json \
       | jq -S '[.items[] | select(.spec.claimRef.namespace == "migration-apps") | {
