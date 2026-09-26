@@ -1795,7 +1795,7 @@ YAML
         echo "Pod eviction unexpectedly succeeded despite minAvailable=1 at stage $stage" >&2
         return 1
     fi
-    grep -Eiq 'too many requests|429' <<< "$eviction_response" || {
+    grep -Eiq 'too[[:space:]]*many[[:space:]]*requests|429' <<< "$eviction_response" || {
         echo "Eviction did not fail with the PDB-protected 429 response at stage $stage: $eviction_response" >&2
         return 1
     }
