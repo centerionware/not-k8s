@@ -116,11 +116,41 @@ watch_target_forward_state() {
             && KUBECONFIG="$kubeconfig" kubectl --request-timeout=2s \
                 get --raw=/readyz >/dev/null 2>&1; then
             snapshot="$(
+                echo 'system pods:'
                 KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
-                    -l 'k8s-app in (cilium,cilium-envoy,kube-dns)' -o wide 2>&1 || true
-                KUBECONFIG="$kubeconfig" kubectl get pods -n cert-manager -o wide 2>&1 || true
+                    -l 'k8s-app in (cilium,cilium-envoy,kube-dns)' -o json 2>&1 \
+                    | jq -cS '[.items[]? | {
+                        name: .metadata.name,
+                        phase: .status.phase,
+                        conditions: [.status.conditions[]? | {type, status, reason, message}],
+                        containers: [.status.containerStatuses[]? | {name, ready, restartCount, state}],
+                        initContainers: [.status.initContainerStatuses[]? | {name, ready, restartCount, state}],
+                        podIP: .status.podIP,
+                        nodeName: .spec.nodeName
+                    }]' || true
+                echo 'cert-manager pods:'
+                KUBECONFIG="$kubeconfig" kubectl get pods -n cert-manager -o json 2>&1 \
+                    | jq -cS '[.items[]? | {
+                        name: .metadata.name,
+                        phase: .status.phase,
+                        conditions: [.status.conditions[]? | {type, status, reason, message}],
+                        containers: [.status.containerStatuses[]? | {name, ready, restartCount, state}],
+                        podIP: .status.podIP,
+                        nodeName: .spec.nodeName
+                    }]' || true
+                echo 'cert-manager services and endpoints:'
                 KUBECONFIG="$kubeconfig" kubectl get services,endpoints,endpointslices \
-                    -n cert-manager -o wide 2>&1 || true
+                    -n cert-manager -o json 2>&1 \
+                    | jq -cS '[.items[]? | {
+                        kind,
+                        name: .metadata.name,
+                        clusterIP: .spec.clusterIP,
+                        selector: .spec.selector,
+                        servicePorts: .spec.ports,
+                        endpointPorts: .ports,
+                        subsets,
+                        endpoints: [.endpoints[]? | {addresses, conditions}]
+                    }]' || true
             )"
             now="$(date +%s)"
             if [[ "$snapshot" != "$previous_snapshot" || $((now - last_capture)) -ge 30 ]]; then
@@ -144,7 +174,7 @@ watch_target_forward_state() {
                 last_capture="$now"
             fi
         fi
-        sleep 2
+        sleep 5
     done
 }
 
