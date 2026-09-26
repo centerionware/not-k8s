@@ -195,9 +195,11 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<SourceCi
         runtime_endpoint = %endpoint,
         "stopping source pod sandboxes before cutover"
     );
+    let mut stop_failures = Vec::new();
     for id in &ready {
-        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
-            .with_context(|| format!("stopping source pod sandbox {id}"))?;
+        if let Err(error) = checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id]) {
+            stop_failures.push((id.clone(), format!("{error:#}")));
+        }
     }
     let output = command(
         "crictl",
@@ -212,6 +214,10 @@ pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<SourceCi
     let containers: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("parsing CRI container list")?;
     let running = running_sandbox_ids(&containers);
+    ensure_failed_stops_are_inactive(&stop_failures, &running)?;
+    for (id, error) in stop_failures {
+        tracing::warn!(sandbox_id = %id, error = %error, "source sandbox stop failed but CRI confirms it has no running containers");
+    }
     let cilium_host_containers = cilium_host_container_ids(&containers);
     if !cilium_host_containers.is_empty() || !cilium_pod_uids.is_empty() {
         eprintln!(
@@ -635,6 +641,19 @@ fn running_sandbox_ids(containers: &serde_json::Value) -> std::collections::Hash
                 .map(str::to_string)
         })
         .collect()
+}
+
+fn ensure_failed_stops_are_inactive(
+    failures: &[(String, String)],
+    running: &std::collections::HashSet<String>,
+) -> Result<()> {
+    for (id, error) in failures {
+        ensure!(
+            !running.contains(id),
+            "stopping source pod sandbox {id} failed while its container is still running: {error}"
+        );
+    }
+    Ok(())
 }
 
 fn cleanup_stale_cilium_envoy_sockets(installation: &Installation) -> Result<usize> {
@@ -1135,8 +1154,8 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cilium_host_container_ids, running_sandbox_ids, source_pod_sandbox_ids,
-        static_pod_sandbox_ids, SourceCiliumIdentity,
+        cilium_host_container_ids, ensure_failed_stops_are_inactive, running_sandbox_ids,
+        source_pod_sandbox_ids, static_pod_sandbox_ids, SourceCiliumIdentity,
     };
 
     const SOURCE_CONTAINER_ID: &str =
@@ -1235,6 +1254,19 @@ mod tests {
             running_sandbox_ids(&containers),
             ["running".to_string()].into_iter().collect()
         );
+    }
+
+    #[test]
+    fn tolerates_stop_failure_only_when_cri_confirms_no_running_container() {
+        let failures = vec![("stopped".to_string(), "deadline exceeded".to_string())];
+        assert!(
+            ensure_failed_stops_are_inactive(&failures, &std::collections::HashSet::new()).is_ok()
+        );
+
+        let running = ["stopped".to_string()].into_iter().collect();
+        let error = ensure_failed_stops_are_inactive(&failures, &running).unwrap_err();
+        assert!(error.to_string().contains("still running"));
+        assert!(error.to_string().contains("deadline exceeded"));
     }
 
     #[test]

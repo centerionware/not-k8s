@@ -1506,7 +1506,7 @@ verify_stage() {
         echo "DaemonSet migration-daemon is not ready on every node at stage $stage: expected=$expected_daemon_nodes/$expected_daemon_nodes actual=$actual_daemon_nodes" >&2
         return 1
     }
-    kubectl get crd ciliumendpoints.cilium.io
+    kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
     kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
@@ -1566,7 +1566,7 @@ verify_stage() {
         echo "nodemigrate changed immutable ConfigMap state at stage $stage" >&2
         return 1
     }
-    kubectl get crd migrationrecords.migration.nodemigrate.io -o json | jq -e '
+    kubectl get customresourcedefinitions.apiextensions.k8s.io migrationrecords.migration.nodemigrate.io -o json | jq -e '
         ([.spec.versions[] | select(.served == true) | .name] | sort) == ["v1", "v1alpha1"] and
         ([.status.conditions[]? | select(.type == "Established" and .status == "True")] | length) == 1
     ' >/dev/null || {
@@ -1845,7 +1845,7 @@ capture_semantic_checkpoint() {
         updated: .status.updatedNumberScheduled
       }
     ' > "$stage_dir/cilium.json"
-    kubectl get crd ciliumendpoints.cilium.io certificates.cert-manager.io \
+    kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io certificates.cert-manager.io \
       clusterissuers.cert-manager.io -o json \
       | jq -S '[.items[] | {
           name: .metadata.name,

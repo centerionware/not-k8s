@@ -4,6 +4,17 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Branch runtime [36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729)
+at SHA `df31d039178266efb513eb265781f10aa498eeb2` passed its Docker preflight
+and scoped builds. K3s reached nodemigrate with 582 captured objects, then
+`crictl stopp` returned `DeadlineExceeded`; source rollback and export
+retention passed. Upstream migration completed and the destination API became
+ready, but the harness failed at `kubectl get crd` because the not-k8s API does
+not advertise that kubectl shortcut. Neither lane completed a round trip.
+The branch now verifies the full API resource name and checks CRI's running
+container list before deciding whether a failed stop is safe to tolerate.
+Both fixes await focused CI and runtime validation.
+
 Branch-runtime migration [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
 at SHA `294a6c64` provides new target-time evidence. In the K3s lane, the
 mounted CA fingerprint read from the live Cilium Pod exactly matched the
@@ -257,10 +268,13 @@ neither lane reached a target checkpoint or round trip. Logs:
 | The Docker BPF probe did not compile because its global symbol was named `license`, which clang's BPF assembler rejected as a duplicate symbol. | `.github/nodemigrate/bpf-probe.c` (migration CI harness) | Use the conventional `LICENSE` symbol name while retaining the required ELF `license` section. | Confirmed in run `36075750885`; the renamed source compiled and loaded successfully in Docker-only run `36077448685`. |
 | The five-node image resolved Ubuntu's `bpftool` wrapper, which searched for tools matching the runner's Azure kernel version and failed because that versioned binary was absent in the container. | `.github/nodemigrate/five-node.Dockerfile` (migration CI harness) | Install the generic versioned Linux tools package and point `/usr/local/bin/bpftool` directly at the packaged executable, avoiding the host-kernel-version wrapper lookup. | Confirmed in run `36077006621`; a first path assumption failed image build in `36077228915`. The widened package search then built and successfully ran the BPF load/show checks in Docker-only run `36077448685`. |
 
+| Stopping a ready K3s source pod sandbox can time out with CRI `DeadlineExceeded` and abort before cutover, even when containerd subsequently reports no running containers for that sandbox. | `nodemigrate` CRI cutover | Check the CRI container list after stop attempts. Tolerate an individual stop error only when that sandbox has no running containers; retain rollback if any failed-stop sandbox is still running. Add a focused decision test. | Confirmed in K3s lane of [run 36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729). The guarded behavior and unit regression are in the branch; targeted nodemigrate CI and runtime rerun are pending. |
+
 ## Test infrastructure issue
 
 | Issue | Owner | State |
 | --- | --- | --- |
+| Post-migration verification used kubectl's `crd` shortcut, which is not advertised by the destination API; the upstream lane therefore failed before the semantic checkpoint even though forward migration and API readiness completed. | `.github/scripts/nodemigrate-integration.sh` | Replaced `get crd` with `get customresourcedefinitions.apiextensions.k8s.io` in stage checks and checkpoint capture. Confirmed as the failure in [run 36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729); rerun pending. |
 | The source-stage CA assertion decoded kubeconfig PEM into shell command substitution, which strips trailing newlines and falsely reported all namespace bundles mismatched in both lanes. | `.github/scripts/nodemigrate-integration.sh` migration fixture | Compare exact CA bytes by base64-encoding ConfigMap data and comparing it with kubeconfig `certificate-authority-data`. Fixed and exercised successfully in both source stages and repeated target snapshots in [run 36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144). |
 | Both source lanes timed out waiting for `Gateway/migration-traefik` to become Programmed before nodemigrate started. `GatewayClass` was Accepted, Cilium and CSI were healthy, and Traefik was Running at failure capture; the harness had not captured Gateway status or Traefik logs. | `.github/scripts/nodemigrate-integration.sh` (migration fixture) | Added a Traefik rollout barrier before creating Gateway API fixtures and added Gateway/HTTPRoute status plus Traefik logs to failure diagnostics at SHA `404d68f7b3aa6dc04192e2061e48f563ae2d5589`. This tests a possible setup-order cause without claiming it is confirmed. Runtime rerun pending. Reproduced in [run 36124385324](https://github.com/centerionware/not-k8s/actions/runs/36124385324); full logs: `/tmp/nodemigrate-36124385324/`. |
 | The K3s fixture attempted to resolve the source node InternalIP immediately after `k3s` started. The API was reachable before the first Node object registered, so JSONPath indexed an empty list and the lane exited before Cilium installation. | `.github/scripts/nodemigrate-integration.sh` (migration CI harness) | Wait up to three minutes for the first registered node InternalIP before configuring Cilium; this does not wait for Node Ready because the Cilium CNI must make it Ready. | Reproduced in [run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991). The bounded wait passed in [run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808): K3s registered its first node, source Cilium and workloads passed, and forward migration completed. Target Cilium readiness remains blocked by the separate nodelet mount-order issue. |

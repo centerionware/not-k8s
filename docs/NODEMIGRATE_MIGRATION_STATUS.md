@@ -9,6 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated run [36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729)
+used branch SHA `df31d039178266efb513eb265781f10aa498eeb2`. K3s source checks
+passed and nodemigrate captured 582 objects, but `crictl stopp` timed out on a
+source sandbox before destination readiness. Source rollback and protected
+export retention passed. The upstream lane captured 564 objects/55 CRDs,
+reported migration complete, and passed destination API readiness; Cilium and
+the migration DaemonSet rolled out. Stage verification then failed because
+the API does not expose kubectl's `crd` shortcut. The harness now queries
+CRDs through the canonical API resource name. A utility change also allows a
+stop command error only when the subsequent CRI listing proves the sandbox has
+no running containers; otherwise it aborts and recovers the source. Both
+changes await targeted validation. The external-CNI EndpointSlice value,
+remaining workload assertions, reverse migration, and state parity remain
+unverified. Logs: `/tmp/nodemigrate-36231779729/`.
+
 Dedicated migration run [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
 used branch head SHA `294a6c64`. Both utility and combined-runtime builds and
 the five-node Docker isolation preflight passed. K3s accepted all 59 CRDs and

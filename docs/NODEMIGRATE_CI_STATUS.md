@@ -52,6 +52,25 @@ The general full build and full e2e gates were not dispatched.
 
 ## Latest branch-runtime result
 
+Dedicated migration run [36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729)
+used head SHA `df31d039178266efb513eb265781f10aa498eeb2`. Docker five-node
+preflight and both nodemigrate/combined-runtime builds passed. In the K3s
+lane, nodemigrate captured 582 objects and retained its protected export, but
+`crictl stopp` on a source sandbox returned `DeadlineExceeded`; migration
+aborted before destination API readiness, and source recovery passed. In the
+upstream lane, nodemigrate captured 564 objects/55 CRDs, reported migration
+complete, and the destination API passed readiness. Cilium and the migration
+DaemonSet rolled out, then `verify_stage` stopped because the target API does
+not advertise the kubectl `crd` shortcut (`the server doesn't have a resource
+type "crd"`). The verifier now uses the canonical
+`customresourcedefinitions.apiextensions.k8s.io` resource name. This was a
+harness failure after forward migration, not a completed stage checkpoint;
+reverse migration, parity, and the external-CNI API endpoint value remain
+unverified. The branch now also tolerates a failed sandbox stop only when the
+subsequent CRI container listing confirms that sandbox has no running
+containers; focused nodemigrate CI and a runtime rerun are pending. Artifacts
+were downloaded once to `/tmp/nodemigrate-36231779729/`.
+
 Dedicated migration run [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
 used head SHA `294a6c64`. The Docker five-node preflight and both standalone
 utility/combined-runtime builds passed. K3s accepted all 59 CRDs and reached
