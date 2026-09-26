@@ -54,7 +54,12 @@ inspected Helm state and ran server-side dry-run upgrades but did not compare
 release records across stages. Shell syntax, snapshot-filter checks, diff
 validation, and a stubbed Helm snapshot check passed locally. Runtime
 verification is pending; run `36260417450` predates this assertion and remains
-in progress for K3s as of 2026-09-26 19:15 UTC.
+in progress for K3s as of 2026-09-26 19:21 UTC. On the latest PR SHA
+`32e8ccb2`, migration workflow validation [36265673005](https://github.com/centerionware/not-k8s/actions/runs/36265673005)
+and focused `nodemigrate` crate tests [36265672968](https://github.com/centerionware/not-k8s/actions/runs/36265672968)
+passed. The dedicated migration runtime jobs were skipped on the pull-request
+validation event; no new runtime migration was started while the earlier K3s
+lane remained active.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now

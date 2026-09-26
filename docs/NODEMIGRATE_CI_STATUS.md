@@ -61,9 +61,13 @@ gate was dispatched.
 The migration fixture now compares deployed Helm release records at each
 checkpoint: release identity, chart/app version, revision, and digests of
 computed values and rendered manifests. Local shell syntax, snapshot-filter,
-diff, and stubbed Helm capture checks passed. The active migration run above
-predates this addition; runtime verification remains pending. At 2026-09-26
-19:15 UTC, its upstream lane had failed and its K3s lane remained in progress.
+diff, and stubbed Helm capture checks passed. On PR SHA `32e8ccb2`, migration
+workflow validation [36265673005](https://github.com/centerionware/not-k8s/actions/runs/36265673005)
+and focused `nodemigrate` crate tests [36265672968](https://github.com/centerionware/not-k8s/actions/runs/36265672968)
+passed. The active migration run above predates this addition; runtime
+verification remains pending. At 2026-09-26 19:21 UTC, its upstream lane had
+failed and its K3s lane remained in progress. No regular build or full e2e was
+run; the migration jobs were skipped on the pull-request validation event.
 
 ## Earlier branch-runtime attempt
 
