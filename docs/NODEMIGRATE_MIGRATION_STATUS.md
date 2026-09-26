@@ -125,7 +125,12 @@ snapshot-normalization, Helm-state checks, and `git diff --check` passed at
 passed at branch head `e0d2247e1f75786282dd8e485a7d231d480f2018` in
 [36267765013](https://github.com/centerionware/not-k8s/actions/runs/36267765013).
 Runtime evidence is pending. The still-running K3s job is from an earlier SHA
-and cannot exercise this change.
+and cannot exercise this change. Focused `nodemigrate` crate tests passed at
+the same branch head in
+[36267764895](https://github.com/centerionware/not-k8s/actions/runs/36267764895).
+The release-packaging policy validation
+[36267765074](https://github.com/centerionware/not-k8s/actions/runs/36267765074)
+also passed without publishing a release.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now

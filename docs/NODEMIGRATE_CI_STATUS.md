@@ -131,6 +131,12 @@ for branch head `e0d2247e1f75786282dd8e485a7d231d480f2018` passed in
 [36267765013](https://github.com/centerionware/not-k8s/actions/runs/36267765013).
 A runtime run with this stronger comparison is pending. The active older run
 `36260417450` remains on its previously recorded SHA and is not duplicated.
+Focused `nodemigrate` crate tests and the release-packaging policy check also
+passed at branch head `e0d2247e1f75786282dd8e485a7d231d480f2018` in
+[36267764895](https://github.com/centerionware/not-k8s/actions/runs/36267764895)
+and [36267765074](https://github.com/centerionware/not-k8s/actions/runs/36267765074),
+respectively. The latter checked release policy only; no release was
+published.
 
 ## Earlier branch-runtime attempt
 
