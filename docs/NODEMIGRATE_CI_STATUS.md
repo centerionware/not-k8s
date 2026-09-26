@@ -103,6 +103,14 @@ and migration workflow validation
 passed. The root cause and successful runtime recovery remain unverified; the
 older K3s lane was still active at 2026-09-26 19:40 UTC.
 
+The fixture now captures `kubectl api-resources --verbs=list -o name` at all
+three checkpoints and requires the target and returned source to retain every
+source-discovered listable resource, even when it has no objects. It prints
+the exact inventory and missing resource names on failure. Local shell syntax,
+snapshot, Helm, and API inventory checks passed; PR workflow validation and a
+runtime migration containing this assertion are pending. The old K3s lane was
+still active at 2026-09-26 19:44 UTC.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

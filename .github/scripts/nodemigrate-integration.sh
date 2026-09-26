@@ -2120,7 +2120,9 @@ capture_semantic_checkpoint() {
     mkdir -p "$stage_dir"
     chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
 
-    capture_migratable_api_objects "$stage_dir/migratable-objects.jsonl"
+    capture_migratable_api_objects \
+        "$stage_dir/migratable-objects.jsonl" \
+        "$stage_dir/api-resources.txt"
 
     # Keep only stable, user-visible state. API-assigned UIDs, resource
     # versions, managed fields, and status timestamps naturally change during
@@ -2216,8 +2218,10 @@ capture_semantic_checkpoint() {
 
 capture_migratable_api_objects() {
     local output="$1"
+    local resource_inventory="$2"
     local resources resource list_json object_json normalized identity digest
-    resources="$(kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u)"
+    kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u > "$resource_inventory"
+    resources="$(cat "$resource_inventory")"
     [[ -n "$resources" ]] || {
         echo "Kubernetes API discovery returned no listable resources" >&2
         return 1
@@ -2237,6 +2241,25 @@ capture_migratable_api_objects() {
         done < <(jq -c '.items[]' <<< "$list_json")
     done <<< "$resources"
     LC_ALL=C sort -o "$output" "$output"
+    echo "Captured $(wc -l < "$resource_inventory" | tr -d ' ') listable API resources at stage=${resource_inventory%/api-resources.txt}:"
+    cat "$resource_inventory"
+}
+
+assert_discovered_api_resources_preserved() {
+    local expected="$1"
+    local actual="$2"
+    local stage="$3"
+    local missing
+    missing="$(mktemp)"
+    comm -23 "$expected" "$actual" > "$missing"
+    if [[ -s "$missing" ]]; then
+        echo "Source-discovered listable API resources are missing at stage=$stage:" >&2
+        cat "$missing" >&2
+        rm -f "$missing"
+        return 1
+    fi
+    rm -f "$missing"
+    echo "PASS: all $(wc -l < "$expected" | tr -d ' ') source-discovered listable API resources remain exposed at stage=$stage"
 }
 
 canonicalize_api_list() {
@@ -2261,6 +2284,8 @@ canonicalize_api_object() {
 assert_round_trip_unchanged() {
     local initial="$CHECKPOINT_DIR/source"
     local returned="$CHECKPOINT_DIR/returned"
+    assert_discovered_api_resources_preserved \
+        "$initial/api-resources.txt" "$returned/api-resources.txt" returned
     if ! cmp -s "$initial/semantic-state.json" "$returned/semantic-state.json"; then
         echo "Returned Kubernetes semantic state differs from the source checkpoint" >&2
         diff -u "$initial/semantic-state.json" "$returned/semantic-state.json" || true
@@ -2294,6 +2319,9 @@ assert_migratable_api_objects_retained() {
     local before_ids="$CHECKPOINT_DIR/$1/migratable-object-identities.txt"
     local after_ids="$CHECKPOINT_DIR/$2/migratable-object-identities.txt"
     local missing_ids="$CHECKPOINT_DIR/$2/missing-source-object-identities.txt"
+    assert_discovered_api_resources_preserved \
+        "$CHECKPOINT_DIR/$1/api-resources.txt" \
+        "$CHECKPOINT_DIR/$2/api-resources.txt" "$2"
     jq -cS '.identity' "$before" | LC_ALL=C sort -u > "$before_ids"
     jq -cS '.identity' "$after" | LC_ALL=C sort -u > "$after_ids"
     comm -23 "$before_ids" "$after_ids" > "$missing_ids"

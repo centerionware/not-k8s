@@ -20,6 +20,7 @@ on:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
       - '.github/scripts/check_nodemigrate_helm_snapshot.sh'
+      - '.github/scripts/check_nodemigrate_api_inventory.sh'
       - '.github/scripts/nodemigrate-docker-preflight.sh'
       - '.github/scripts/nodemigrate-snapshot-normalize.jq'
       - '.github/scripts/nodemigrate-application-snapshot.jq'
@@ -59,6 +60,9 @@ jobs:
 
       - name: Check Helm state
         run: bash .github/scripts/check_nodemigrate_helm_snapshot.sh
+
+      - name: Check API inventory
+        run: bash .github/scripts/check_nodemigrate_api_inventory.sh
 
   docker-preflight:
     if: github.event_name == 'workflow_dispatch'

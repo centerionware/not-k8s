@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+temporary_directory="$(mktemp -d)"
+trap 'rm -rf "$temporary_directory"' EXIT
+
+cat > "$temporary_directory/expected.txt" <<'RESOURCES'
+deployments.apps
+widgets.example.io
+RESOURCES
+cat > "$temporary_directory/actual.txt" <<'RESOURCES'
+deployments.apps
+nodes
+widgets.example.io
+RESOURCES
+
+NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_discovered_api_resources_preserved "$2/expected.txt" "$2/actual.txt" target
+' _ "$ROOT" "$temporary_directory"
+
+cat > "$temporary_directory/missing.txt" <<'RESOURCES'
+deployments.apps
+RESOURCES
+if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_discovered_api_resources_preserved "$2/expected.txt" "$2/missing.txt" target
+' _ "$ROOT" "$temporary_directory" 2>&1)"; then
+    echo "API inventory comparison accepted a missing source resource" >&2
+    exit 1
+fi
+grep -Fqx 'widgets.example.io' <<< "$output" || {
+    echo "API inventory comparison did not identify the missing source resource" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+
+echo "nodemigrate API inventory checks passed"

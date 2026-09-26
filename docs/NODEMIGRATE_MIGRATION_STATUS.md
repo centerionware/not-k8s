@@ -96,6 +96,15 @@ passed. The behavior still needs runtime verification; it should expose the PV
 request path promptly without claiming the PV migration itself is fixed. The
 older K3s lane remained active at 2026-09-26 19:40 UTC.
 
+The fixture now records the canonical listable API resource inventory at each
+source, nodestore, and returned-source checkpoint, including resource kinds
+with no current objects. It fails if either destination omits a resource the
+source exposed, in addition to checking identities for all populated durable
+resources. Local shell syntax, snapshot normalization, Helm-state, and API
+inventory checks pass. PR workflow validation and runtime execution of this
+inventory assertion are pending; run `36260417450` still had K3s in progress at
+2026-09-26 19:44 UTC.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores
