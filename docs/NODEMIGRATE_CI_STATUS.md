@@ -15,6 +15,15 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Follow-up migration setup now mounts hostpath CSI's `/csi-data-dir` from
+node-local persistent storage before provisioning fixture claims. This keeps
+the provider's own volume catalog and payload available when the source CSI
+StatefulSet stops and the target recreates it during the in-place runtime
+change. The fixture verifies actual static and CSI payload reads at source,
+target, and return checkpoints; runtime validation of this setup is pending.
+It does not verify provider-state transfer to a different physical node or
+other CSI drivers.
+
 Migration run [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
 used SHA `606f46f624007dfd6215be26b97e54817fe020af`. Docker preflight, both
 runtime builds, both source fixtures, and the target's Node/Cilium/Gateway/

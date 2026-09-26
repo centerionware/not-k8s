@@ -644,6 +644,43 @@ install_hostpath_driver() {
     fi
     kill "$cilium_log_watcher_pid" 2>/dev/null || true
     wait "$cilium_log_watcher_pid" 2>/dev/null || true
+
+    # The upstream hostpath CSI driver keeps both its volume catalog and
+    # volume payloads under /csi-data-dir. Its default pod-local backing is
+    # lost when the source distribution stops the CSI StatefulSet, so a
+    # re-created target driver cannot stage the imported source handles. Keep
+    # this test provider's state on the node disk, which remains present while
+    # nodemigrate replaces the runtime on that node.
+    local plugin_json state_volume state_volume_index state_patch
+    plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+    state_volume="$(jq -r '
+        [.spec.template.spec.containers[] | select(.name == "hostpath")
+         | .volumeMounts[] | select(.mountPath == "/csi-data-dir") | .name][0] // empty
+    ' <<<"$plugin_json")"
+    [[ -n "$state_volume" ]] || {
+        echo "hostpath CSI driver has no /csi-data-dir volume mount" >&2
+        return 1
+    }
+    state_volume_index="$(jq -r --arg name "$state_volume" '
+        [.spec.template.spec.volumes | to_entries[] | select(.value.name == $name) | .key][0] // empty
+    ' <<<"$plugin_json")"
+    [[ "$state_volume_index" =~ ^[0-9]+$ ]] || {
+        echo "hostpath CSI /csi-data-dir volume is not declared in the StatefulSet" >&2
+        return 1
+    }
+    state_patch="$(jq -cn \
+        --argjson index "$state_volume_index" \
+        --arg name "$state_volume" \
+        '[{op:"replace",path:("/spec/template/spec/volumes/" + ($index|tostring)),value:{name:$name,hostPath:{path:"/var/lib/nodemigrate-csi-hostpath-data",type:"DirectoryOrCreate"}}}]')"
+    kubectl patch statefulset csi-hostpathplugin -n default --type=json -p "$state_patch"
+    kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
+    kubectl get statefulset csi-hostpathplugin -n default -o json | jq -e \
+        --arg name "$state_volume" \
+        '.spec.template.spec.volumes[] | select(.name == $name)
+         | .hostPath.path == "/var/lib/nodemigrate-csi-hostpath-data"' >/dev/null || {
+            echo "hostpath CSI state directory is not backed by the node disk" >&2
+            return 1
+        }
     kubectl get storageclass csi-hostpath-sc
 }
 

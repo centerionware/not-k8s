@@ -9,6 +9,15 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+The current test harness now configures hostpath CSI `/csi-data-dir` on
+node-local persistent storage before fixture volumes are provisioned. The
+driver's volume catalog and payload should therefore survive its Pod restart
+across the in-place source/target runtime transition. Existing checkpoint
+probes already read both static hostPath and dynamic CSI payload markers.
+`bash -n` and `git diff --check` pass; the migration rerun is pending. This
+does not prove CSI state movement to a different physical node or support for
+other provider mechanisms.
+
 Branch migration [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
 used SHA `606f46f624007dfd6215be26b97e54817fe020af`. Both builds, Docker
 preflight, source fixtures, and destination readiness checks through CSI
