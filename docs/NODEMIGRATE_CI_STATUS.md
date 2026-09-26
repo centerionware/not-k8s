@@ -169,8 +169,15 @@ verifies API readiness through a surviving control plane before restoring the
 fifth Node. The job timeout is 60 minutes for this cluster setup. This checks
 whether Docker models the topology and control-plane failure needed by the
 multi-node migration gate; it does not run nodemigrate or prove migration
-parity. `bash -n` and `git diff --check` pass locally. Docker image build and
-cluster simulation CI are pending.
+parity. `bash -n` and `git diff --check` pass locally. The Docker-only attempt
+[36269422051](https://github.com/centerionware/not-k8s/actions/runs/36269422051)
+at SHA `e49d4b602e5a5d2d87b1d2a6c8150148eaa2542a` failed in `Build node image`
+after about 21 seconds, before the kubeadm probe. `docker_only=true` skipped the
+migration job. The job log showed `curl: (77)` because
+`/etc/ssl/certs/ca-certificates.crt` was missing while fetching the Kubernetes
+signing key; GPG then reported no valid key data. The image now installs
+`ca-certificates` explicitly. No cluster or migration behavior was tested by
+that run; the Docker-only rerun is pending.
 
 ## Earlier branch-runtime attempt
 

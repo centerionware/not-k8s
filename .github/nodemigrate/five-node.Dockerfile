@@ -9,6 +9,7 @@ RUN apt-get update \
         containernetworking-plugins \
         conntrack \
         containerd \
+        ca-certificates \
         curl \
         ethtool \
         gpg \
