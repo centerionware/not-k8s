@@ -27,13 +27,18 @@ Focused `nodeapiserver` check [36251889485](https://github.com/centerionware/not
 passed. Logs:
 `/tmp/nodemigrate-36251890971-artifacts/nodemigrate-{k3s,kubernetes}-36251890971/`.
 
-Commit `19e1cae6` adds exact Ingress spec and class-controller checks at all
-three checkpoints plus failure-time JSON diagnostics. Static shell syntax and
-diff checks passed; PR validation
-[36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
-passed. Dedicated branch-runtime migration run
+Harness commit `19e1cae6` added Ingress spec diagnostics; the assertion was
+initially only called after source fixture installation. Run
 [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
-is in progress; this is a harness diagnostic run, not component-fix evidence.
+finished with both migration jobs failing at target Ingress routing after
+successful utility/runtime builds and Docker preflight. Retrieved logs show
+the target Ingress has its host but has lost the embedded `http.paths` backend;
+the IngressClass controller is correct. This confirms a nodeapiserver
+protobuf-codec defect. A fix for embedded `IngressRuleValue`, a codec
+round-trip regression, and moving the assertion into every `verify_stage` are
+in progress. `nodeapiserver` quick-check and a migration rerun are pending.
+Logs:
+`/tmp/nodemigrate-36253413938-artifacts/nodemigrate-{k3s,kubernetes}-36253413938/`.
 No general build or e2e gate was run.
 
 Migration run [36250505911](https://github.com/centerionware/not-k8s/actions/runs/36250505911)

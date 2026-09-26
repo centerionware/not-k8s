@@ -56,6 +56,9 @@ pub fn encode_message(message: &str, value: &Value) -> Result<Vec<u8>> {
 /// `EphemeralContainer.ephemeralContainerCommon` fields have the same
 /// flattened JSON shape, as do the core/v1 `LocalObjectReference` fields
 /// in config-map and secret sources/selectors. Found live:
+/// `networking.k8s.io/v1.IngressRule` also embeds `IngressRuleValue`,
+/// flattening its `http` backend into the rule JSON while the protobuf
+/// message retains an `ingressRuleValue` wrapper.
 /// `ValidatingAdmissionPolicy`'s own
 /// `spec.matchConstraints.resourceRules[]` round-tripped through a real
 /// `nodestore` as entirely empty objects (every field but
@@ -120,6 +123,15 @@ fn is_inline_embedded_field(message: &str, json_name: &str) -> bool {
             | (
                 "io.k8s.api.core.v1.SecretVolumeSource",
                 "localObjectReference"
+            )
+            | ("io.k8s.api.networking.v1.IngressRule", "ingressRuleValue")
+            | (
+                "io.k8s.api.networking.v1beta1.IngressRule",
+                "ingressRuleValue"
+            )
+            | (
+                "io.k8s.api.extensions.v1beta1.IngressRule",
+                "ingressRuleValue"
             )
             | ("io.k8s.api.core.v1.Probe", "handler")
     )

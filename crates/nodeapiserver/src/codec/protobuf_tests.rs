@@ -75,6 +75,39 @@ mod tests {
         assert_eq!(decoded, value);
     }
 
+    /// `IngressRule` embeds `IngressRuleValue` in Go, so its JSON shape
+    /// exposes `http` directly while the protobuf message has a nested
+    /// `ingressRuleValue` field. Dropping that embedded field silently
+    /// removes every host rule's paths and backend from persisted Ingresses.
+    #[test]
+    fn ingress_rules_round_trip_http_paths_and_backends() {
+        let message = "io.k8s.api.networking.v1.Ingress";
+        let value = json!({
+            "metadata": {"name": "migration-nginx", "namespace": "migration-apps"},
+            "spec": {
+                "ingressClassName": "traefik",
+                "rules": [{
+                    "host": "migration.test",
+                    "http": {
+                        "paths": [{
+                            "path": "/",
+                            "pathType": "Prefix",
+                            "backend": {
+                                "service": {
+                                    "name": "migration-nginx",
+                                    "port": {"number": 80}
+                                }
+                            }
+                        }]
+                    }
+                }]
+            }
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
     #[test]
     fn a_simple_object_meta_round_trips() {
         let message = "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta";

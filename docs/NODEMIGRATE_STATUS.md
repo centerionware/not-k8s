@@ -12,29 +12,28 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Each must preserve identity/data/state and behavior through K3s → not-k8s → K3s and upstream Kubernetes → not-k8s → upstream Kubernetes; most target, return, and full round-trip assertions remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Job selector defaulting, migrated PVC bind-status recovery, CSI staging paths, hostPath/local PV mounting, and query-free SPDY port-forwarding have focused evidence. Run 36251890971 confirmed the port-forward fix reaches nginx through Gateway API in both lanes. The separate Ingress route returns 404; its missing target rules are not yet confirmed from raw API JSON. No return migration or parity checkpoint passed. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Job selector defaulting, migrated PVC bind-status recovery, CSI staging paths, hostPath/local PV mounting, and query-free SPDY port-forwarding have focused evidence. Run 36253413938 confirmed that `nodeapiserver` persisted Ingress rules without their embedded HTTP paths in both lanes. The protobuf codec fix and regression are in progress; focused and migration reruns are pending. No return migration or parity checkpoint passed. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest completed branch-runtime run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971) passed target static+CSI data reads and Gateway HTTP 200 in both lanes; Ingress returned 404. Harness commit `19e1cae6` adds raw Ingress/Class diagnostics and exact spec checks. Diagnostic rerun [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938) is in progress. No returned-source, parity, or round-trip checkpoint passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest run [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938) passed builds/preflight and confirmed target Ingress HTTP paths were lost by nodeapiserver in both lanes. The protobuf fix/regression and all-stage assertions are in progress; focused and migration reruns are pending. No returned-source, parity, or round-trip checkpoint passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed in run `36077448685`: five systemd containers have independent namespaces, machine IDs, CRI/BPF capability, writable persistent volumes, peer connectivity, and stop/restart isolation. This is infrastructure evidence, not proof of Kubernetes control-plane, Cilium datapath, or migration parity. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
 
-- Migration [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
-  at SHA `16c90a9721dd1f0bbcdc1a11723d7438d173b49f` confirmed that target
-  query-free SPDY port-forwarding works: Gateway probes reached nginx with
-  HTTP 200 in both lanes. Ingress probes returned HTTP 404; target `describe`
-  showed class `traefik` but no rules. The cause is unconfirmed without raw
-  source/target JSON. Commit `19e1cae6` adds per-stage Ingress spec/Class
-  assertions and failure diagnostics. PR syntax validation passed in
-  [36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752),
-  and the migration diagnostic run
-  [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
-  is in progress. No target parity checkpoint, return migration, or round trip
-  has passed.
+- Migration [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
+  at SHA `19e1cae66e57ed9abf02625d8ec9ba877f30e651` passed Docker isolation
+  and both utility/runtime builds, then failed target Ingress probes in both
+  lanes. Retrieved raw target JSON proves the host rule survived but its
+  embedded HTTP paths/backend were lost; `IngressClass.spec.controller` was
+  correct. This confirms a `nodeapiserver` protobuf-codec bug. The preceding
+  run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
+  showed query-free SPDY port-forwarding works through Gateway API (HTTP 200).
+  A codec fix/regression and moving the exact spec assertion to every stage
+  are in progress. No target semantic checkpoint, return migration, or round
+  trip has passed.
 
 - Branch-runtime migration [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
   used head SHA `294a6c64`. Docker five-node preflight and both utility and

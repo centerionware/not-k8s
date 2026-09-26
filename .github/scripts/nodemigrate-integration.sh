@@ -1518,7 +1518,6 @@ YAML
     kubectl wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl delete pod -n migration-apps migration-seed --wait=true
-    verify_ingress_spec "$stage"
 }
 
 wait_for_httproute_condition() {
@@ -1587,6 +1586,7 @@ verify_stage() {
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
+    verify_ingress_spec "$stage"
     local expected_ca_b64 expected_namespace_count deadline trust_bundles
     expected_ca_b64="$(kubectl config view --raw --flatten --minify -o json \
         | jq -r '.clusters[0].cluster["certificate-authority-data"] // empty')"

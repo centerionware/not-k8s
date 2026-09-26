@@ -23,14 +23,24 @@ target checkpoint, returned to the source, or compared full parity. Focused
 passed. Logs:
 `/tmp/nodemigrate-36251890971-artifacts/nodemigrate-{k3s,kubernetes}-36251890971/`.
 
-Harness commit `19e1cae6` adds an exact Ingress rule and IngressClass
-controller assertion at each stage and emits those two safe JSON specs on
-failure. The shell syntax/whitespace checks passed, and PR validation
-[36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
-passed. Dedicated branch-runtime migration run
-[36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
-is in progress at this SHA; its stage results are pending. No regular
-`build.yml` or full e2e gate was run.
+Harness commit `19e1cae6` added an exact Ingress rule and IngressClass
+controller check, but the first placement only exercised the source fixture.
+Run [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
+at that SHA passed source checks, then failed both target lanes at Ingress
+routing. Its saved target JSON proves `spec.rules[].host` survived while the
+embedded `http.paths` backend was dropped; the IngressClass controller was
+correct. This confirms nodeapiserver's protobuf storage codec lost the
+Go-embedded `IngressRuleValue` field. The codec fix and a v1 codec regression
+are now in the worktree, and the Ingress rule assertion is moved into
+`verify_stage` so it runs at source, target, and return checkpoints. Focused
+`nodeapiserver` quick-check and a migration rerun are pending. The Docker
+preflight and both runtime builds passed in 36253413938, but no target
+semantic checkpoint, return migration, or parity comparison passed. Logs:
+`/tmp/nodemigrate-36253413938-artifacts/nodemigrate-{k3s,kubernetes}-36253413938/`.
+
+PR validation [36253405752](https://github.com/centerionware/not-k8s/actions/runs/36253405752)
+passed for the earlier harness-only commit. No regular `build.yml` or full
+e2e gate was run.
 
 Earlier `nodeapiserver` quick-check
 [36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)
