@@ -37,6 +37,9 @@ docker image inspect "$IMAGE" >/dev/null || fail "node image $IMAGE is unavailab
 echo "Docker host memory and swap before kubelet setup"
 free -h
 swapon --show
+kernel_config="/boot/config-$(uname -r)"
+[[ -r "$kernel_config" ]] || fail "Docker host kernel config is unavailable at $kernel_config"
+echo "Using Docker host kernel config $kernel_config"
 sudo swapoff -a
 if awk 'NR > 1 { active=1 } END { exit !active }' /proc/swaps; then
     cat /proc/swaps
@@ -65,6 +68,7 @@ for node in "${NODES[@]}"; do
         --tmpfs /run:rw,nosuid,nodev,mode=0755 \
         --tmpfs /run/lock:rw,nosuid,nodev,mode=0755 \
         --tmpfs /sys/fs/bpf \
+        --volume /boot:/boot:ro \
         --volume /lib/modules:/lib/modules:ro \
         --volume "$volume:/var/lib/nodemigrate-volume" \
         "$IMAGE" >/dev/null

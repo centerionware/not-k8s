@@ -207,8 +207,10 @@ The rerun [36270640042](https://github.com/centerionware/not-k8s/actions/runs/36
 passed host swap setup, containerd configuration, and reached `kubeadm init`,
 which failed its SystemVerification check because `modprobe` was absent from
 the node image. The image now restores `kmod` and mounts the runner's
-`/lib/modules` read-only into each node so kubeadm can inspect the shared host
-kernel. Cluster and Cilium setup remain unverified.
+`/lib/modules` read-only into each node. The runner does not provide the
+`configs` module for its kernel, so the script now requires and mounts the
+matching `/boot/config-$(uname -r)` read-only for kubeadm's kernel-config
+inspection. Cluster and Cilium setup remain unverified.
 
 ## Earlier branch-runtime attempt
 
