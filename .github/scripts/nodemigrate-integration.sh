@@ -2262,6 +2262,38 @@ assert_discovered_api_resources_preserved() {
     echo "PASS: all $(wc -l < "$expected" | tr -d ' ') source-discovered listable API resources remain exposed at stage=$stage"
 }
 
+assert_migratable_api_objects_unchanged() {
+    local before="$1"
+    local after="$2"
+    local source_stage="$3"
+    local target_stage="$4"
+    if ! python3 - "$before" "$after" <<'PY'
+import json
+import sys
+import difflib
+
+def records(path):
+    with open(path, encoding="utf-8") as source:
+        return sorted(
+            json.dumps([row["identity"], row["sha256"]], sort_keys=True)
+            for row in map(json.loads, source)
+        )
+
+before = records(sys.argv[1])
+after = records(sys.argv[2])
+if before != after:
+    sys.stderr.writelines(difflib.unified_diff(
+        before, after, fromfile="source API objects", tofile="target API objects", lineterm="\n"
+    ))
+    sys.exit(1)
+PY
+    then
+        echo "Normalized source API object data changed between stages $source_stage and $target_stage:" >&2
+        return 1
+    fi
+    echo "PASS: normalized source API object data is unchanged between stages $source_stage and $target_stage"
+}
+
 canonicalize_api_list() {
     jq -S '[.items[] | {
       apiVersion, kind, name: .metadata.name,
@@ -2330,11 +2362,12 @@ assert_migratable_api_objects_retained() {
         cat "$missing_ids" >&2
         return 1
     fi
+    assert_migratable_api_objects_unchanged "$before" "$after" "$1" "$2"
 
-    # These fixture resources have stable, explicit durable-state snapshots;
-    # compare them directly. The global inventory intentionally checks source
-    # identity retention, since API defaulting, node replacement, controllers,
-    # and Cilium create or update legitimate destination runtime state.
+    # These fixture resources also have direct semantic snapshots and
+    # behavioral probes. The general inventory compares normalized source
+    # object data; it does not include status, server-owned metadata, or the
+    # runtime-only objects filtered by the snapshot normalizer.
     for snapshot in application.json certificate.json issuer.json required-crds.json storageclass.json \
         certificate-secret.sha256 user-configmap-data.sha256 user-binary-configmap-data.sha256 \
         user-immutable-configmap.sha256 user-secret-data.sha256 helm-releases.jsonl; do

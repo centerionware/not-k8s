@@ -120,6 +120,16 @@ migration` step remained `in_progress` at 2026-09-26 19:51 UTC. This run
 predates the API inventory assertion and cannot verify it. No regular build or
 full e2e gate was dispatched.
 
+The API inventory assertion now compares normalized object hashes as well as
+resource and object identities on the source-to-nodestore leg; round-trip
+semantic-state comparison already checks those hashes. This makes target-side
+spec/data changes fail the migration fixture, with a diff of affected object
+identities. Local shell syntax, API inventory positive/negative cases,
+snapshot-normalization, Helm-state checks, and `git diff --check` passed at
+`fe46b9aaead160f5a232f841198f78316ddd9cdb`. PR validation and a runtime run
+with this stronger comparison are pending. The active older run
+`36260417450` remains on its previously recorded SHA and is not duplicated.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

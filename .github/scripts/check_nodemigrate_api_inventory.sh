@@ -36,4 +36,29 @@ grep -Fqx 'widgets.example.io' <<< "$output" || {
     exit 1
 }
 
+cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"same"}
+OBJECTS
+cp "$temporary_directory/source-objects.jsonl" "$temporary_directory/target-objects.jsonl"
+NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source target
+' _ "$ROOT" "$temporary_directory"
+
+cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"changed"}
+OBJECTS
+if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source target
+' _ "$ROOT" "$temporary_directory" 2>&1)"; then
+    echo "API object comparison accepted a changed normalized resource" >&2
+    exit 1
+fi
+grep -Fq '"Deployment"' <<< "$output" || {
+    echo "API object comparison did not identify the changed resource" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+
 echo "nodemigrate API inventory checks passed"

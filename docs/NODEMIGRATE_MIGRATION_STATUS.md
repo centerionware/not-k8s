@@ -114,6 +114,17 @@ failed after return-import webhook timeouts and a PV 404, while its K3s
 predates this inventory assertion, so runtime verification of it remains
 pending. The PV failure path/root cause and K3s lane outcome remain unverified.
 
+The source-to-nodestore comparison now checks normalized data hashes for every
+retained API object in addition to ensuring all object identities remain
+present. Round-trip semantic state already compared these hashes. This expands
+the forward-leg assertion beyond identity-only retention; explicit fixture
+resources continue to receive dedicated durable-state and behavioral checks.
+Local shell syntax, API inventory positive/negative cases,
+snapshot-normalization, Helm-state checks, and `git diff --check` passed at
+`fe46b9aaead160f5a232f841198f78316ddd9cdb`. PR validation and runtime evidence
+are pending. The still-running K3s job is from an earlier SHA and cannot
+exercise this change.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores
