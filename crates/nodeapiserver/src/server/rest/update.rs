@@ -486,6 +486,14 @@ pub async fn update_status_with_manager(
                 current_resource_version = existing_kv.mod_revision,
                 "CiliumNode status update rejected a stale resourceVersion"
             );
+        } else if group == "gateway.networking.k8s.io" && resource == "gatewayclasses" {
+            tracing::warn!(
+                name,
+                subresource = "status",
+                submitted_resource_version = submitted_rv,
+                current_resource_version = existing_kv.mod_revision,
+                "GatewayClass status update rejected a stale resourceVersion"
+            );
         }
         return Ok(UpdateOutcome::Conflict);
     }

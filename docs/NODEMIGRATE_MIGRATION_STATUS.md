@@ -9,6 +9,20 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated run [36232994720](https://github.com/centerionware/not-k8s/actions/runs/36232994720)
+at SHA `56f27d13d05af278706f280f69c29f3d8d1bd195` passed the Docker
+preflight, scoped builds, and focused nodemigrate checks [36232987555](https://github.com/centerionware/not-k8s/actions/runs/36232987555).
+Both source fixtures and forward migrations completed to destination API
+readiness. In K3s, target Node, Cilium, fixture DaemonSet, nginx Deployment,
+namespace CA, and CSI PVC readiness checks passed. Both lanes then failed
+waiting for GatewayClass Accepted: Traefik's status PUTs received repeated
+409 responses, leaving the condition Unknown. The `crd` shortcut failure and
+K3s sandbox-stop timeout from the preceding run did not recur. Target semantic
+checkpoints, ingress/Gateway behavior, return migration, and parity remain
+unverified. A scoped nodeapiserver warning now records submitted/current
+resourceVersions for this conflict; focused CI and a runtime rerun are pending.
+Logs: `/tmp/nodemigrate-36232994720/`.
+
 Dedicated run [36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729)
 used branch SHA `df31d039178266efb513eb265781f10aa498eeb2`. K3s source checks
 passed and nodemigrate captured 582 objects, but `crictl stopp` timed out on a

@@ -52,6 +52,26 @@ The general full build and full e2e gates were not dispatched.
 
 ## Latest branch-runtime result
 
+Dedicated migration run [36232994720](https://github.com/centerionware/not-k8s/actions/runs/36232994720)
+used head SHA `56f27d13d05af278706f280f69c29f3d8d1bd195` with
+`runtime_source=branch`. Focused nodemigrate checks passed separately in
+[36232987555](https://github.com/centerionware/not-k8s/actions/runs/36232987555);
+the five-node Docker preflight and both nodemigrate/combined-runtime builds
+also passed. Both source fixtures passed and both forward migrations reported
+destination API readiness. The canonical CRD resource query worked. In K3s,
+target Node readiness, Cilium rollout, fixture DaemonSet, nginx Deployment,
+namespace CA checks, and CSI readiness PVC binding passed. Both lanes then
+timed out waiting for `GatewayClass/migration-traefik` Accepted. Traefik's
+Gateway API controller repeatedly received HTTP 409 from destination
+`/gatewayclasses/migration-traefik/status`, leaving its condition
+`Accepted=Unknown` / `Waiting for controller`. This appears in both CNI lanes;
+the precise stale-versus-current resourceVersion values were not logged, so
+the conflict cause is unconfirmed. The nodeapiserver status path now logs
+those two values for GatewayClass conflicts; focused nodeapiserver CI and a
+runtime rerun are pending. The sandbox-stop timeout did not recur.
+No semantic checkpoint completed, and no return migration, parity comparison,
+or merge gate passed. Full lane logs: `/tmp/nodemigrate-36232994720/`.
+
 Dedicated migration run [36231779729](https://github.com/centerionware/not-k8s/actions/runs/36231779729)
 used head SHA `df31d039178266efb513eb265781f10aa498eeb2`. Docker five-node
 preflight and both nodemigrate/combined-runtime builds passed. In the K3s
