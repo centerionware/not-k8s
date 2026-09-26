@@ -34,6 +34,9 @@ fail() {
 
 docker info >/dev/null || fail "Docker daemon is not available"
 docker image inspect "$IMAGE" >/dev/null || fail "node image $IMAGE is unavailable"
+echo "Loading kernel modules on the Docker host for privileged node containers"
+sudo modprobe overlay
+sudo modprobe br_netfilter
 docker network create --driver bridge "$NETWORK" >/dev/null
 
 echo "Creating five privileged systemd node containers on Docker network $NETWORK"
@@ -164,8 +167,6 @@ echo "Configuring kubeadm and containerd on five isolated nodes"
 for node in "${NODES[@]}"; do
     container="$(node_container "$node")"
     docker exec "$container" bash -ec '
-        modprobe overlay
-        modprobe br_netfilter
         cat >/etc/modules-load.d/kubernetes.conf <<EOF
 overlay
 br_netfilter

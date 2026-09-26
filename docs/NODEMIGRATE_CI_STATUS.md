@@ -180,8 +180,11 @@ signing key; GPG then reported no valid key data. The image now installs
 that run; the Docker-only rerun at SHA `4c5af2adb01fb876409462f3054de1f38923f8e8`
 fixed the image build and passed five-container systemd, namespace, CRI, BPF,
 storage, and peer-network checks. It then failed because `modprobe` was absent
-while configuring kubeadm prerequisites. The image now also installs `kmod`;
-the next Docker-only preflight is pending. No kubeadm cluster or Cilium result
+while configuring kubeadm prerequisites. Adding `kmod` exposed that the
+container does not include modules for the runner's `6.17.0-1022-azure` kernel.
+The script now loads `overlay` and `br_netfilter` on the Docker host before
+starting privileged containers; the redundant container `kmod` dependency was
+removed. The Docker-only rerun is pending. No kubeadm cluster or Cilium result
 has passed yet.
 
 ## Earlier branch-runtime attempt
