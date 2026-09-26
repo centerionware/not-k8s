@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = "0.22"
 libc = "0.2"
 kube = { workspace = true }
 k8s-openapi = { workspace = true }

@@ -15,6 +15,22 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
+used SHA `edd697e94e009b7d3796de13b2ed68c076255625`. Both standalone utility
+and combined-runtime builds passed, as did the five-node Docker preflight.
+Both lanes passed `verify_stage source`, and repeated target snapshots showed
+every namespace `kube-root-ca.crt` matching the destination admin kubeconfig
+CA. Both then failed during forward import of
+`CertificateRequest/migration-test-1` because cert-manager's webhook was
+unreachable (HTTP 500). K3s Cilium and Traefik still logged
+`x509: certificate signed by unknown authority` to the target API Service;
+the ConfigMap check therefore does not prove the CA mounted inside already
+started Pods is current. Rollback restored both source APIs and retained both
+protected exports. No target workload/storage checkpoint, reverse migration,
+or parity check passed. The current branch adds a namespace/CA readiness
+barrier before importing workload controllers; this fix still needs focused
+CI and a migration rerun. Logs are in `/tmp/nodemigrate-36226000144/`.
+
 Dedicated migration run [36224872002](https://github.com/centerionware/not-k8s/actions/runs/36224872002)
 used SHA `cf1b984a9427165401ec1fa8df386cc950539845`. Both utility and
 combined-runtime builds and the five-node Docker preflight passed, but both
@@ -22,8 +38,9 @@ lanes stopped at `verify_stage source` before `nodemigrate` was invoked. The
 new fixture assertion reported namespace CA mismatches because it decoded PEM
 into shell command substitution, which strips trailing newlines. This run
 provides no runtime evidence for the exporter change. The comparison now uses
-the exact base64 CA bytes from kubeconfig and ConfigMap data; the corrected
-check and migration behavior await a rerun. Focused nodemigrate tests passed
+the exact base64 CA bytes from kubeconfig and ConfigMap data; run 36226000144
+later passed the source-stage check and repeatedly confirmed target ConfigMap
+matches, while Cilium/Traefik trust and webhook failures remained. Focused nodemigrate tests passed
 on the same SHA in [run 36224841930](https://github.com/centerionware/not-k8s/actions/runs/36224841930).
 No general build or full e2e was dispatched.
 

@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Context, Result};
+use base64::Engine;
 use kube::{
     api::{
         Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, PostParams, Preconditions,
@@ -19,6 +20,8 @@ use kube::{
     discovery::{verbs, ApiResource, Discovery},
     Client,
 };
+use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -569,11 +572,84 @@ impl KubeApi {
 
     pub fn import(&self, export: &Export) -> Result<()> {
         let (runtime, client) = self.connected()?;
+        let destination_ca = kubeconfig_root_ca(&self.kubeconfig)?;
+        let mut namespace_objects = Vec::new();
+        let mut namespace_names = Vec::new();
+        let mut pending = Vec::new();
+        for object in export.objects.clone() {
+            let value: Value = serde_json::from_slice(
+                &fs::read(&object.path)
+                    .with_context(|| format!("reading {}", object.path.display()))?,
+            )
+            .context("decoding protected migration object")?;
+            if value.get("kind").and_then(Value::as_str) == Some("Namespace") {
+                let name = value
+                    .pointer("/metadata/name")
+                    .and_then(Value::as_str)
+                    .context("exported Namespace has no metadata.name")?;
+                namespace_names.push(name.to_owned());
+                namespace_objects.push(object);
+            } else {
+                pending.push(object);
+            }
+        }
         runtime.block_on(async {
-            let mut pending = export.objects.clone();
             let mut last_error = String::new();
             let mut uid_map = HashMap::new();
             let mut source_crd_apis = BTreeSet::new();
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering destination APIs before namespace import")?;
+            let mut namespace_failures = Vec::new();
+            for exported in namespace_objects {
+                let value: Value = serde_json::from_slice(
+                    &fs::read(&exported.path)
+                        .with_context(|| format!("reading {}", exported.path.display()))?,
+                )
+                .context("decoding protected Namespace")?;
+                let mut namespace = value.clone();
+                if let Some(metadata) = namespace
+                    .pointer_mut("/metadata")
+                    .and_then(Value::as_object_mut)
+                {
+                    metadata.remove("ownerReferences");
+                }
+                match apply_object(&client, &discovery, &namespace).await {
+                    Ok(applied) => {
+                        if let (Some(source_uid), Some(destination_uid)) =
+                            (exported.source_uid, applied.metadata.uid)
+                        {
+                            uid_map.insert(source_uid, destination_uid);
+                        }
+                    }
+                    Err(error) => namespace_failures.push(format!(
+                        "{}: {error:#}",
+                        namespace.pointer("/metadata/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unnamed>")
+                    )),
+                }
+            }
+            if !namespace_failures.is_empty() {
+                bail!(
+                    "could not prepare source namespaces before resource import; export retained at {}: {}",
+                    export.dir.display(),
+                    namespace_failures.join("; ")
+                );
+            }
+            ensure_namespace_ca_bundles(
+                &client,
+                &destination_ca,
+                &namespace_names,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "preparing destination CA bundles before importing workloads; export retained at {}",
+                    export.dir.display()
+                )
+            })?;
             for attempt in 0..5 {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
@@ -697,6 +773,132 @@ impl KubeApi {
             Ok(())
         })
     }
+}
+
+fn kubeconfig_root_ca(kubeconfig_path: &Path) -> Result<String> {
+    let kubeconfig = Kubeconfig::read_from(kubeconfig_path)
+        .with_context(|| format!("reading destination kubeconfig {}", kubeconfig_path.display()))?;
+    let context_name = kubeconfig
+        .current_context
+        .as_deref()
+        .context("destination kubeconfig has no current-context")?;
+    let context = kubeconfig
+        .contexts
+        .iter()
+        .find(|context| context.name == context_name)
+        .and_then(|context| context.context.as_ref())
+        .context("destination kubeconfig current-context is missing")?;
+    let cluster = kubeconfig
+        .clusters
+        .iter()
+        .find(|cluster| cluster.name == context.cluster)
+        .and_then(|cluster| cluster.cluster.as_ref())
+        .context("destination kubeconfig current cluster is missing")?;
+    let ca = if let Some(data) = &cluster.certificate_authority_data {
+        base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .context("decoding destination certificate-authority-data")?
+    } else if let Some(path) = &cluster.certificate_authority {
+        let path = PathBuf::from(path);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            kubeconfig_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(path)
+        };
+        fs::read(&path)
+            .with_context(|| format!("reading destination CA file {}", path.display()))?
+    } else {
+        bail!("destination kubeconfig has no certificate authority data or file");
+    };
+    String::from_utf8(ca).context("destination CA data is not UTF-8 PEM")
+}
+
+async fn ensure_namespace_ca_bundles(
+    client: &Client,
+    expected_ca: &str,
+    expected_namespaces: &[String],
+) -> Result<()> {
+    let mut namespaces = expected_namespaces.to_vec();
+    namespaces.sort();
+    namespaces.dedup();
+    for namespace in namespaces {
+        let configmaps: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
+        let mut ready = false;
+        for attempt in 0..5 {
+            if let Some(configmap) = configmaps
+                .get_opt("kube-root-ca.crt")
+                .await
+                .with_context(|| format!("reading {namespace}/kube-root-ca.crt"))?
+            {
+                if namespace_ca_bundle_matches(&configmap, expected_ca) {
+                    ready = true;
+                    break;
+                }
+                let patch = serde_json::json!({"data": {"ca.crt": expected_ca}});
+                match configmaps
+                    .patch(
+                        "kube-root-ca.crt",
+                        &PatchParams::default(),
+                        &Patch::Merge(&patch),
+                    )
+                    .await
+                {
+                    Ok(configmap) if namespace_ca_bundle_matches(&configmap, expected_ca) => {
+                        ready = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(kube::Error::Api(response)) if response.code == 404 || response.code == 409 => {}
+                    Err(error) => return Err(error).with_context(|| {
+                        format!("updating {namespace}/kube-root-ca.crt")
+                    }),
+                }
+            } else {
+                let configmap = ConfigMap {
+                    metadata: ObjectMeta {
+                        name: Some("kube-root-ca.crt".to_string()),
+                        namespace: Some(namespace.clone()),
+                        ..Default::default()
+                    },
+                    data: Some(BTreeMap::from([(
+                        "ca.crt".to_string(),
+                        expected_ca.to_string(),
+                    )])),
+                    ..Default::default()
+                };
+                match configmaps.create(&PostParams::default(), &configmap).await {
+                    Ok(configmap) if namespace_ca_bundle_matches(&configmap, expected_ca) => {
+                        ready = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(kube::Error::Api(response)) if response.code == 404 || response.code == 409 => {}
+                    Err(error) => return Err(error).with_context(|| {
+                        format!("creating {namespace}/kube-root-ca.crt")
+                    }),
+                }
+            }
+            if attempt < 4 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+        ensure!(
+            ready,
+            "destination kube-root-ca.crt in namespace {namespace} did not match its admin kubeconfig CA after retries"
+        );
+    }
+    Ok(())
+}
+
+fn namespace_ca_bundle_matches(configmap: &ConfigMap, expected_ca: &str) -> bool {
+    configmap
+        .data
+        .as_ref()
+        .and_then(|data| data.get("ca.crt"))
+        .is_some_and(|ca| ca == expected_ca)
 }
 
 #[derive(Debug)]
@@ -1640,9 +1842,10 @@ fn skip_object(object: &Value) -> bool {
     if skip_regenerated_endpoint(object, kind) {
         return true;
     }
-    // This per-namespace bundle is published from the destination cluster CA.
+    // This per-namespace bundle is derived from the destination cluster CA.
     // Copying the source value makes in-cluster clients reject the target API
-    // certificate after cutover; the destination root-CA publisher recreates it.
+    // certificate after cutover; import seeds the destination value before
+    // applying workload controllers.
     if kind == "ConfigMap"
         && object.pointer("/metadata/name").and_then(Value::as_str) == Some("kube-root-ca.crt")
     {
@@ -1815,14 +2018,53 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         custom_resource_gvks, node_scheduling_patch, object_type_label, persistent_host_paths,
-        preserve_discovered_type_meta, restore_cni_path_backups, same_group_kind, sanitize,
-        skip_object, snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest,
-        ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        kubeconfig_root_ca, namespace_ca_bundle_matches, preserve_discovered_type_meta,
+        restore_cni_path_backups, same_group_kind, sanitize, skip_object, snapshot_k3s_cni_paths,
+        summarize_import_failures, write_export_manifest, ApiResource, Export, ExportedObject,
+        KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn namespace_ca_bundle_must_match_destination_ca_exactly() {
+        let mut configmap = k8s_openapi::api::core::v1::ConfigMap::default();
+        configmap.data = Some(BTreeMap::from([(
+            "ca.crt".to_string(),
+            "-----BEGIN CERTIFICATE-----\ncurrent\n-----END CERTIFICATE-----\n".to_string(),
+        )]));
+        assert!(namespace_ca_bundle_matches(
+            &configmap,
+            "-----BEGIN CERTIFICATE-----\ncurrent\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!namespace_ca_bundle_matches(
+            &configmap,
+            "-----BEGIN CERTIFICATE-----\nold\n-----END CERTIFICATE-----\n"
+        ));
+        configmap.data = None;
+        assert!(!namespace_ca_bundle_matches(&configmap, "current"));
+    }
+
+    #[test]
+    fn destination_ca_is_read_from_the_selected_kubeconfig_cluster() {
+        use base64::Engine;
+
+        let directory = tempfile::tempdir().expect("temporary kubeconfig directory");
+        let kubeconfig_path = directory.path().join("admin.conf");
+        let expected = "-----BEGIN CERTIFICATE-----\ncluster-ca\n-----END CERTIFICATE-----\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(expected);
+        fs::write(
+            &kubeconfig_path,
+            format!(
+                "apiVersion: v1\nkind: Config\ncurrent-context: target\nclusters:\n- name: target\n  cluster:\n    server: https://127.0.0.1:6443\n    certificate-authority-data: {encoded}\ncontexts:\n- name: target\n  context:\n    cluster: target\n    user: admin\nusers:\n- name: admin\n  user: {{}}\n"
+            ),
+        )
+        .expect("write kubeconfig");
+
+        assert_eq!(kubeconfig_root_ca(&kubeconfig_path).unwrap(), expected);
+    }
 
     #[test]
     fn compatible_api_version_requires_the_same_group_and_kind() {

@@ -4,12 +4,27 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
+validated the corrected byte comparison: both source-stage checks passed, and
+target snapshots repeatedly showed every namespace root CA ConfigMap matching
+the destination kubeconfig. The original runtime symptom remained: K3s Cilium
+and Traefik rejected the target API certificate, and both lanes failed
+`CertificateRequest/migration-test-1` admission because the cert-manager
+webhook was unreachable. Source rollback and protected-export retention
+passed. This proves the ConfigMap contents alone do not establish what CA a
+running Pod loaded. A likely lifecycle race is that workload controllers are
+applied before the root CA publisher has populated the destination namespace;
+the importer now stages Namespace creation and creates or corrects matching
+destination CA bundles before applying remaining resources. This fix is pending focused CI and a
+runtime rerun; no root cause is claimed yet.
+
 Migration run [36224872002](https://github.com/centerionware/not-k8s/actions/runs/36224872002)
 stopped both lanes at the source-stage CA fixture assertion, before invoking
 `nodemigrate`. The assertion compared decoded PEM via shell command
 substitution, which strips trailing newlines and likely caused the false
-mismatches. The fixture now compares base64-encoded bytes; the corrected
-assertion and root-CA export fix still need a migration rerun. This is a
+mismatches. The fixture now compares base64-encoded bytes and passed at source
+and target stages in [run 36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144).
+This is a
 confirmed test-harness defect, not evidence that migration or target CA
 regeneration failed. Focused nodemigrate tests passed on SHA `cf1b984a` in
 [run 36224841930](https://github.com/centerionware/not-k8s/actions/runs/36224841930).
@@ -192,7 +207,7 @@ neither lane reached a target checkpoint or round trip. Logs:
 
 | Issue | Owner | State |
 | --- | --- | --- |
-| The source-stage CA assertion decoded kubeconfig PEM into shell command substitution, which strips trailing newlines and falsely reported all namespace bundles mismatched in both lanes. The failure happened before nodemigrate ran. | `.github/scripts/nodemigrate-integration.sh` migration fixture | Compare the exact CA bytes by base64-encoding ConfigMap data and comparing it with kubeconfig `certificate-authority-data`. Fixed in the current worktree; confirmed as a harness failure in [run 36224872002](https://github.com/centerionware/not-k8s/actions/runs/36224872002). Corrected assertion and migration runtime behavior await rerun. |
+| The source-stage CA assertion decoded kubeconfig PEM into shell command substitution, which strips trailing newlines and falsely reported all namespace bundles mismatched in both lanes. | `.github/scripts/nodemigrate-integration.sh` migration fixture | Compare exact CA bytes by base64-encoding ConfigMap data and comparing it with kubeconfig `certificate-authority-data`. Fixed and exercised successfully in both source stages and repeated target snapshots in [run 36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144). |
 | Both source lanes timed out waiting for `Gateway/migration-traefik` to become Programmed before nodemigrate started. `GatewayClass` was Accepted, Cilium and CSI were healthy, and Traefik was Running at failure capture; the harness had not captured Gateway status or Traefik logs. | `.github/scripts/nodemigrate-integration.sh` (migration fixture) | Added a Traefik rollout barrier before creating Gateway API fixtures and added Gateway/HTTPRoute status plus Traefik logs to failure diagnostics at SHA `404d68f7b3aa6dc04192e2061e48f563ae2d5589`. This tests a possible setup-order cause without claiming it is confirmed. Runtime rerun pending. Reproduced in [run 36124385324](https://github.com/centerionware/not-k8s/actions/runs/36124385324); full logs: `/tmp/nodemigrate-36124385324/`. |
 | The K3s fixture attempted to resolve the source node InternalIP immediately after `k3s` started. The API was reachable before the first Node object registered, so JSONPath indexed an empty list and the lane exited before Cilium installation. | `.github/scripts/nodemigrate-integration.sh` (migration CI harness) | Wait up to three minutes for the first registered node InternalIP before configuring Cilium; this does not wait for Node Ready because the Cilium CNI must make it Ready. | Reproduced in [run 36086342991](https://github.com/centerionware/not-k8s/actions/runs/36086342991). The bounded wait passed in [run 36088034808](https://github.com/centerionware/not-k8s/actions/runs/36088034808): K3s registered its first node, source Cilium and workloads passed, and forward migration completed. Target Cilium readiness remains blocked by the separate nodelet mount-order issue. |
 | After forward migration, the hostpath CSI StatefulSet Pods `csi-hostpath-socat-0` and `csi-hostpathplugin-0` remained `Terminating` for over five minutes, preventing post-cutover storage checks and reverse migration. | `nodelet` | The pod deletion events could not be handled while the CoreDNS gate prevented the regular Pod watch from starting. Reconcile local host-network bootstrap Pods during the gate so Cilium can initialize networking, CoreDNS can become ready, and normal teardown/reconciliation can proceed. | Run [36082829012](https://github.com/centerionware/not-k8s/actions/runs/36082829012) first reproduced this in both source lanes. Fix SHA `c94e109c9b49c778c5dae50bccf880a58a4d6e23` passed nodelet quick-check but migration rerun [36084558323](https://github.com/centerionware/not-k8s/actions/runs/36084558323) still failed: host-network Cilium Pods began starting, but CNI remained unready due to the read-only mountpoint failure above. CSI cleanup and all later verification remain blocked pending that runtime fix. Failure diagnostics now include `crictl pods/ps`, Cilium Pod YAML, nodelet journal, and cluster events. |

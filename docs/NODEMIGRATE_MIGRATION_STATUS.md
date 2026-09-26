@@ -9,6 +9,23 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
+used SHA `edd697e94e009b7d3796de13b2ed68c076255625`. Both builds and the
+five-node isolation preflight passed. Both source-stage CA checks passed, and
+target snapshots repeatedly reported all namespace CA ConfigMaps matching the
+destination kubeconfig. The migrations nevertheless failed applying
+`CertificateRequest/migration-test-1` because the cert-manager webhook was
+unreachable (HTTP 500); target Cilium and Traefik continued to reject the API
+certificate with `x509: certificate signed by unknown authority`. Both source
+APIs recovered and protected exports remained. No target workload/storage,
+reverse-migration, or parity checkpoint passed. This shows that regenerating
+the ConfigMap is insufficient if dependent Pods start before the publisher
+has populated the projected CA source, or if their mounted CA remains stale.
+The current fix applies source Namespaces first and ensures each destination
+root CA ConfigMap matches the destination kubeconfig before applying any
+other resources. This implementation has not yet passed focused CI or runtime
+validation.
+
 Dedicated migration run [36224872002](https://github.com/centerionware/not-k8s/actions/runs/36224872002)
 used SHA `cf1b984a9427165401ec1fa8df386cc950539845`. Both source fixtures
 completed setup, but the new `verify_stage source` CA assertion reported all
@@ -19,9 +36,10 @@ was not independently established. Crucially, this assertion failed before
 `nodemigrate` ran and says nothing about the exporter change or destination
 trust. The assertion now compares base64-encoded CA bytes without newline
 normalization. Focused nodemigrate tests passed at this SHA in
-[run 36224841930](https://github.com/centerionware/not-k8s/actions/runs/36224841930);
-runtime validation remains pending. Both migration lanes, target stages, and
-round trips remain unverified.
+[run 36224841930](https://github.com/centerionware/not-k8s/actions/runs/36224841930).
+The next run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
+passed this comparison at source and target stages, then exposed continued
+in-Pod API trust failures. No round trip passed.
 
 Dedicated migration run [36223445443](https://github.com/centerionware/not-k8s/actions/runs/36223445443)
 used SHA `9e8701291e2cd8f821f53e1e43d0bc306fd2f035`. The five-node Docker
