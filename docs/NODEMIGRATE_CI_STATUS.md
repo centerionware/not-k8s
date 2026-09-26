@@ -15,6 +15,25 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Branch-runtime migration [run 36207264515](https://github.com/centerionware/not-k8s/actions/runs/36207264515)
+used SHA `0e7cf32a3246703ecec5b0d328fbd84867a1e405`. The scoped
+`nodecontroller` quick-check [36207090965](https://github.com/centerionware/not-k8s/actions/runs/36207090965)
+passed, and both migration builds plus Docker preflight passed. The
+ResourceQuota retry storm is resolved: audit logs contained zero
+`migration-quota/status` PATCHes, with only 14–276 K3s and 32–310 upstream
+ResourceQuota range calls per observed 30-second window. Both `Run migration`
+steps still failed. K3s Cilium's `mount-bpf-fs` start and stop events both
+resolved with Pod metadata; its task exited after logging that bpffs was
+mounted, but the Pod stayed at `Init:3/6` and the following init container
+did not start. The upstream lane failed restoring
+`CertificateRequest/migration-test-1` because the cert-manager webhook was
+unreachable while target CNI was unavailable. Upstream source rollback and
+protected-export retention passed; the K3s log does not record a completed
+rollback check. Neither lane reached target workloads, reverse migration, or
+parity. Run jobs: K3s `108306285020`, upstream `108306284807`. Logs:
+`/tmp/nodemigrate-36207264515-k3s.log` and
+`/tmp/nodemigrate-36207264515-kubernetes.log`.
+
 Branch-runtime migration [run 36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
 used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. Both scoped runtime
 builds and the five-node Docker isolation preflight passed. K3s source checks

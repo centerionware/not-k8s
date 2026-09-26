@@ -9,6 +9,24 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36207264515](https://github.com/centerionware/not-k8s/actions/runs/36207264515)
+used SHA `0e7cf32a3246703ecec5b0d328fbd84867a1e405`. The nodecontroller
+quick-check passed in [36207090965](https://github.com/centerionware/not-k8s/actions/runs/36207090965),
+and the migration builds and Docker preflight passed. The ResourceQuota
+feedback loop is fixed: the K3s audit log has no `migration-quota/status`
+PATCHes, and observed quota Range counts fell from thousands per 30 seconds
+to 14–276 for K3s and 32–310 upstream. Migration remains blocked by target
+Cilium. In K3s, `mount-bpf-fs` emitted start and stop events with Pod metadata
+and logged a successful bpffs mount, but no next init container started and
+the Pod remained at `Init:3/6`; the task was no longer live. Upstream
+CertificateRequest restoration failed because cert-manager's webhook could
+not be reached while target CNI was unavailable. Upstream rollback restored
+the source API and retained its protected export; the K3s log does not record
+a completed rollback check. Neither lane reached workload checks, reverse
+migration, or parity. Jobs: K3s `108306285020`, upstream `108306284807`.
+Logs: `/tmp/nodemigrate-36207264515-k3s.log` and
+`/tmp/nodemigrate-36207264515-kubernetes.log`.
+
 Branch-runtime migration [36195385046](https://github.com/centerionware/not-k8s/actions/runs/36195385046)
 used SHA `6037e67e1f4e0a9d8d365d5ce8653c572c29ed72`. K3s source checks and
 all 59 CRD imports passed, followed by destination API readiness. Cilium's
