@@ -2,6 +2,13 @@
 
 Last updated: 2026-09-26
 
+Dedicated migration run [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465)
+is in progress at SHA `daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`. The
+five-node Docker preflight and both utility builds passed; both combined
+runtime builds are still running, so no runtime or migration finding is
+available yet. Its watcher implementation predates the periodic-sampling
+adjustment at branch head `86a3d88e`, which is pending migration validation.
+
 Latest branch-runtime migration [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. K3s accepted its
 CiliumNode update with HTTP 200, but both migration lanes failed importing

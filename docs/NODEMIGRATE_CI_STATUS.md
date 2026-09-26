@@ -15,6 +15,15 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Dedicated migration run [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465)
+is in progress at runtime SHA `daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`.
+The five-node Docker preflight and both standalone nodemigrate builds passed;
+both lanes are still building the combined runtime, so no migration result is
+available yet. This run contains the initial target-state watcher, before the
+later periodic-sampling improvement at branch SHA `86a3d88e`. No general build
+gate or full e2e was dispatched. Update this entry with each lane's final
+result and saved logs when the run completes.
+
 Branch-runtime migration [run 36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility
 and combined-runtime builds passed in both lanes, as did the five-node Docker

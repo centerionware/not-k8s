@@ -9,6 +9,17 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated migration run [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465)
+is currently building the branch runtime at SHA
+`daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`. The Docker five-node preflight
+and both standalone nodemigrate builds passed; both runtime builds remain in
+progress. This SHA includes the first forward target-state watcher. A follow-up
+diagnostic improvement at branch head `86a3d88e` makes the watcher sample at
+least every 30 seconds even if Pod and webhook endpoint snapshots do not
+change; that improvement has only passed shell syntax and whitespace checks
+and needs its own dedicated migration run. No target, reverse-migration, or
+parity result is available from run 36219234465 yet.
+
 Branch-runtime migration [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility
 and combined-runtime builds and the five-node Docker preflight passed; both
