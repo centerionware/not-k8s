@@ -125,14 +125,14 @@ for index in "${!NODES[@]}"; do
             exit 1
         }
         mount --make-rshared /sys/fs/bpf || {
-            echo "FAIL: making this node's private bpffs mount shared is unavailable" >&2
+            echo "FAIL: making the private node bpffs mount shared is unavailable" >&2
             exit 1
         }
         mountinfo_line="$(grep " /sys/fs/bpf " /proc/self/mountinfo)"
         case "$mountinfo_line" in
             *" shared:"*) ;;
             *)
-                echo "FAIL: this node's bpffs mount is not shared for nested Cilium Pods" >&2
+                echo "FAIL: node bpffs is not shared for nested Cilium Pods" >&2
                 printf "%s\n" "$mountinfo_line" >&2
                 exit 1
                 ;;

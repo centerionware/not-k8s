@@ -61,6 +61,14 @@ on the `/sys/fs/bpf` mountinfo line instead. `bash -n`, `sh -ec` fixture, and
 `git diff --check` pass; another Docker-only run is pending. Log:
 `/tmp/nodemigrate-36274669206-job.log`.
 
+Docker-only run [36274819916](https://github.com/centerionware/not-k8s/actions/runs/36274819916)
+at SHA `610a1f050937e69d7e5ee9db1c8414f1ab49405c` reached node isolation but
+the inner `sh -ec` body again closed early because an apostrophe in the
+diagnostic text broke the outer single-quoted argument; the runner then
+expanded `$mountinfo_line` under `set -u`. The diagnostic wording now avoids
+apostrophes. Shell syntax and mountinfo fixture checks pass; a new Docker-only
+run is pending. Log: `/tmp/nodemigrate-36274819916-job.log`.
+
 Another Docker-only run is pending. Logs:
 `/tmp/nodemigrate-36272360238-job.log` and
 `/tmp/nodemigrate-36272577668-job.log`.
