@@ -121,9 +121,11 @@ the forward-leg assertion beyond identity-only retention; explicit fixture
 resources continue to receive dedicated durable-state and behavioral checks.
 Local shell syntax, API inventory positive/negative cases,
 snapshot-normalization, Helm-state checks, and `git diff --check` passed at
-`cccbc4afbd712ba9bdad6be783d86b4c3f983719`. PR validation and runtime evidence
-are pending. The still-running K3s job is from an earlier SHA and cannot
-exercise this change.
+`cccbc4afbd712ba9bdad6be783d86b4c3f983719`. Migration workflow validation
+passed at branch head `e0d2247e1f75786282dd8e485a7d231d480f2018` in
+[36267765013](https://github.com/centerionware/not-k8s/actions/runs/36267765013).
+Runtime evidence is pending. The still-running K3s job is from an earlier SHA
+and cannot exercise this change.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now

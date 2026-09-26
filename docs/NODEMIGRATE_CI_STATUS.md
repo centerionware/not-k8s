@@ -127,7 +127,9 @@ spec/data changes fail the migration fixture, with a diff of affected object
 identities. Local shell syntax, API inventory positive/negative cases,
 snapshot-normalization, Helm-state checks, and `git diff --check` passed at
 `cccbc4afbd712ba9bdad6be783d86b4c3f983719`. PR validation and a runtime run
-with this stronger comparison are pending. The active older run
+for branch head `e0d2247e1f75786282dd8e485a7d231d480f2018` passed in
+[36267765013](https://github.com/centerionware/not-k8s/actions/runs/36267765013).
+A runtime run with this stronger comparison is pending. The active older run
 `36260417450` remains on its previously recorded SHA and is not duplicated.
 
 ## Earlier branch-runtime attempt
