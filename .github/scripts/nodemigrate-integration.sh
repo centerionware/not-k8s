@@ -1518,6 +1518,7 @@ YAML
     kubectl wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl delete pod -n migration-apps migration-seed --wait=true
+    verify_ingress_spec "$stage"
 }
 
 wait_for_httproute_condition() {
@@ -1538,6 +1539,33 @@ wait_for_httproute_condition() {
     kubectl get httproute "$route" -n "$namespace" -o yaml >&2 || true
     echo "HTTPRoute $namespace/$route did not reach condition $condition=True" >&2
     return 1
+}
+
+verify_ingress_spec() {
+    local stage="${1:?missing Ingress verification stage}"
+    local ingress_json ingress_class_json
+    ingress_json="$(kubectl get ingress migration-nginx -n migration-apps -o json)"
+    ingress_class_json="$(kubectl get ingressclass traefik -o json)"
+    jq -e '
+      .spec.ingressClassName == "traefik" and
+      ([.spec.rules[]? | select(.host == "migration.test") | .http.paths[]? |
+        select(.path == "/" and .pathType == "Prefix" and
+          .backend.service.name == "migration-nginx" and
+          .backend.service.port.number == 80)] | length == 1)
+    ' <<<"$ingress_json" >/dev/null || {
+        echo "Ingress migration-nginx lost its expected class, host rule, path, or backend at stage $stage" >&2
+        jq '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace}, spec}' \
+            <<<"$ingress_json" >&2 || true
+        return 1
+    }
+    jq -e '.spec.controller == "traefik.io/ingress-controller"' \
+        <<<"$ingress_class_json" >/dev/null || {
+        echo "IngressClass traefik has an unexpected controller at stage $stage" >&2
+        jq '{apiVersion, kind, metadata: {name: .metadata.name, annotations: .metadata.annotations}, spec}' \
+            <<<"$ingress_class_json" >&2 || true
+        return 1
+    }
+    echo "PASS Ingress spec and IngressClass controller at stage=$stage"
 }
 
 record_fixture_storage_specs() {
@@ -1910,6 +1938,10 @@ YAML
         printf 'Gateway probe HTTP status: %s; response body: %.500s\n' "$gateway_response_status" "$gateway_response_body" >&2
         kubectl get svc,endpoints,endpointslices -n traefik -o wide >&2 || true
         kubectl get svc,endpoints,endpointslices -n migration-apps -o wide >&2 || true
+        kubectl get ingress migration-nginx -n migration-apps -o json \
+            | jq '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace}, spec}' >&2 || true
+        kubectl get ingressclass traefik -o json \
+            | jq '{apiVersion, kind, metadata: {name: .metadata.name, annotations: .metadata.annotations}, spec}' >&2 || true
         kubectl describe ingress migration-nginx -n migration-apps >&2 || true
         kubectl describe httproute migration-nginx -n migration-apps >&2 || true
         kubectl logs deploy/traefik -n traefik --tail=100 >&2 || true
