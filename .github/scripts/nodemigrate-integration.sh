@@ -2125,15 +2125,35 @@ assert_round_trip_unchanged() {
     echo "PASS: returned semantic state, text and binary ConfigMaps, Secret digests, certificate secret, and PVC data match the source checkpoint"
 }
 
-assert_migratable_api_state_unchanged() {
+assert_migratable_api_objects_retained() {
     local before="$CHECKPOINT_DIR/$1/migratable-objects.jsonl"
     local after="$CHECKPOINT_DIR/$2/migratable-objects.jsonl"
-    if ! cmp -s "$before" "$after"; then
-        echo "Migratable Kubernetes API objects differ between stages $1 and $2" >&2
-        diff -u "$before" "$after" || true
+    local before_ids="$CHECKPOINT_DIR/$1/migratable-object-identities.txt"
+    local after_ids="$CHECKPOINT_DIR/$2/migratable-object-identities.txt"
+    local missing_ids="$CHECKPOINT_DIR/$2/missing-source-object-identities.txt"
+    jq -cS '.identity' "$before" | LC_ALL=C sort -u > "$before_ids"
+    jq -cS '.identity' "$after" | LC_ALL=C sort -u > "$after_ids"
+    comm -23 "$before_ids" "$after_ids" > "$missing_ids"
+    if [[ -s "$missing_ids" ]]; then
+        echo "Source Kubernetes API objects are missing at stage $2" >&2
+        cat "$missing_ids" >&2
         return 1
     fi
-    echo "PASS: all migratable Kubernetes API object fingerprints match between $1 and $2"
+
+    # These fixture resources have stable, explicit durable-state snapshots;
+    # compare them directly. The global inventory intentionally checks source
+    # identity retention, since API defaulting, node replacement, controllers,
+    # and Cilium create or update legitimate destination runtime state.
+    for snapshot in application.json certificate.json issuer.json required-crds.json storageclass.json \
+        certificate-secret.sha256 user-configmap-data.sha256 user-binary-configmap-data.sha256 \
+        user-immutable-configmap.sha256 user-secret-data.sha256; do
+        if ! cmp -s "$CHECKPOINT_DIR/$1/$snapshot" "$CHECKPOINT_DIR/$2/$snapshot"; then
+            echo "Durable migration fixture state differs between stages $1 and $2: $snapshot" >&2
+            diff -u "$CHECKPOINT_DIR/$1/$snapshot" "$CHECKPOINT_DIR/$2/$snapshot" || true
+            return 1
+        fi
+    done
+    echo "PASS: all source API object identities and durable fixture state were retained at stage $2"
 }
 
 main() {
@@ -2206,7 +2226,7 @@ main() {
     export KUBECONFIG="$nodestore_kubeconfig"
     KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet true
     verify_stage nodestore "$nodestore_kubeconfig"
-    assert_migratable_api_state_unchanged source nodestore
+    assert_migratable_api_objects_retained source nodestore
 
     MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
     echo "Migrating nodestore -> $SOURCE_DIST"

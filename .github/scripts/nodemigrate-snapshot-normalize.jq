@@ -13,7 +13,10 @@ def default_kubernetes_service_endpoint:
 select(
   .kind as $kind
   | (["ComponentStatus", "Event",
-      "Node", "NodeMetrics", "PodMetrics", "VolumeAttachment"]
+      "Node", "NodeMetrics", "PodMetrics", "VolumeAttachment",
+      # Cilium recreates these per-node/per-Pod runtime identities from the
+      # current CNI and Pod state. They are not durable migration payload.
+      "CiliumEndpoint", "CiliumIdentity"]
       | index($kind)) == null
 )
 | select((.kind != "Endpoints") or (
