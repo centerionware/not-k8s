@@ -17,8 +17,13 @@ path: its raw-handle `/var/lib/nodelet/csi/...` path differed from the source
 kubelet's SHA-256 `/var/lib/kubelet/plugins/kubernetes.io/csi/.../globalmount`
 path. The worktree now makes nodelet use kubelet-compatible hashed paths,
 passes the source root through migration bootstrap and the nodelet service,
-and mounts that preserved path into the target CSI test Pod. Focused CI and a
-rerun are pending, so the fix is not yet verified. No target semantic parity,
+and mounts that preserved path into the target CSI test Pod. Quick-check
+[36245508890](https://github.com/centerionware/not-k8s/actions/runs/36245508890)
+compiled the code and reported 74/75 nodemigrate tests; the new mount-root
+detector test found it returned `/srv/kubelet` rather than the full CSI plugin
+root. The slice is corrected in the follow-up worktree. Migration run
+[36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
+is still running on the earlier SHA, so the fix remains unverified. No target semantic parity,
 reverse migration, or round trip passed. Logs:
 `/tmp/nodemigrate-36243049356/artifacts/`.
 

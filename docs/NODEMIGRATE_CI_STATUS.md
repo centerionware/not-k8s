@@ -24,12 +24,15 @@ because the same volume was already staged at kubelet's path. No target
 workload parity, reverse migration, returned-source check, or full round trip
 passed. Logs: `/tmp/nodemigrate-36243049356/artifacts/`.
 
-The worktree fixes nodelet's path layout to use kubelet's hashed globalmount
-convention, carries the source stage root through nodemigrate into the
-nodelet service, and mounts that preserved path into the replacement CSI test
-Pod. The hostpath provider's persistent `/csi-data-dir` change cleared its
-earlier missing-volume-catalog error. Focused component quick-check and a
-migration rerun are pending. No build.yml or full e2e gate was run.
+Quick-check [36245508890](https://github.com/centerionware/not-k8s/actions/runs/36245508890)
+compiled the changed crates and passed 74 of 75 nodemigrate tests; the new
+active-stage root test caught an off-by-three slice that returned
+`/srv/kubelet` instead of `/srv/kubelet/plugins/kubernetes.io/csi`. The source
+path assembly is corrected in the follow-up worktree. Migration run
+[36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
+is still active on the earlier SHA; its five-node Docker preflight passed.
+The hostpath provider's persistent `/csi-data-dir` change cleared the earlier
+missing-volume-catalog error. No build.yml or full e2e gate was run.
 
 Follow-up migration setup now mounts hostpath CSI's `/csi-data-dir` from
 node-local persistent storage before provisioning fixture claims. This keeps

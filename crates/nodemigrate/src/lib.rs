@@ -1241,7 +1241,7 @@ fn detect_csi_staging_root(mountinfo: &str) -> Result<Option<PathBuf>> {
                 continue;
             }
             let mut root = PathBuf::from("/");
-            for component in &components[1..index] {
+            for component in &components[1..index + 3] {
                 root.push(component);
             }
             if let Some(previous) = &detected {

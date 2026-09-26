@@ -16,9 +16,13 @@ This confirms a nodelet CSI staging-path compatibility bug. The worktree now
 uses kubelet's hashed path layout, detects the active staging root from the
 host mount table (with an explicit override when no stage is mounted), passes
 that root through nodemigrate into the nodelet service, and updates the test
-CSI Pod to see the retained mount. Focused quick-check and migration rerun are
-pending; this does not yet prove the fix or general CSI provider transfer.
-Logs: `/tmp/nodemigrate-36243049356/artifacts/`.
+CSI Pod to see the retained mount. Quick-check [36245508890](https://github.com/centerionware/not-k8s/actions/runs/36245508890)
+compiled the changed crates but found the new mount-root parser returned the
+parent kubelet directory instead of the CSI plugin directory. That slice
+construction is corrected in the follow-up worktree; migration run
+[36245509026](https://github.com/centerionware/not-k8s/actions/runs/36245509026)
+is still running. No passing component check or general CSI provider transfer
+is claimed. Logs: `/tmp/nodemigrate-36243049356/artifacts/`.
 
 Follow-up to [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151):
 the upstream hostpath CSI driver keeps volume state and payload under
