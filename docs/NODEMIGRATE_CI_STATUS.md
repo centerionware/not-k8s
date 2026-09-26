@@ -71,8 +71,11 @@ run; the migration jobs were skipped on the pull-request validation event.
 
 The newest fixture change adds a PDB-protected nginx eviction check at all
 three checkpoints and includes the PDB in durable-state comparison. Local
-shell syntax and existing helper checks pass; the change still needs PR
-workflow validation and a dedicated runtime migration run.
+shell syntax and helper checks passed, and PR workflow validation
+[36265900635](https://github.com/centerionware/not-k8s/actions/runs/36265900635)
+passed at `2ee43f2a`. The active runtime run predates this addition; dedicated
+PDB behavior verification remains pending. At 2026-09-26 19:24 UTC, that run's
+K3s lane was still in progress.
 
 ## Earlier branch-runtime attempt
 

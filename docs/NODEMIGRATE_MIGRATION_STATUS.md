@@ -66,7 +66,11 @@ Deployment, checks the healthy/disruptions-allowed status at every checkpoint,
 and attempts the Pod eviction subresource. The expected result is HTTP 429 while
 the sole replica is healthy; the Pod must remain Ready. The PDB is included in
 the durable application snapshot. Shell and existing targeted fixture checks
-pass locally; this addition has not yet run in CI or on a real cluster.
+pass locally. PR workflow validation [36265900635](https://github.com/centerionware/not-k8s/actions/runs/36265900635)
+passed at `2ee43f2a`, including shell syntax and the snapshot/Helm helper
+checks. The PDB behavior itself has not yet run on a real cluster; the active
+K3s migration job predates this fixture addition and remained in progress at
+2026-09-26 19:24 UTC.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
