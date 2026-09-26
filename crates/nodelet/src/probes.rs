@@ -151,8 +151,9 @@ pub fn probe_check(probe: &Probe, container: &Container) -> ProbeCheck {
         let https = http.scheme.as_deref() == Some("HTTPS");
         let headers = http
             .http_headers
+            .as_deref()
+            .unwrap_or_default()
             .iter()
-            .flatten()
             .map(|header| (header.name.clone(), header.value.clone()))
             .collect();
         ProbeCheck::Http { path, port, https, host: http.host.clone(), headers }
