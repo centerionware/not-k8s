@@ -28,6 +28,13 @@ ClusterIssuer requests timed out reaching the webhook ClusterIP, and a PV
 request returned HTTP 404 despite the advertised resource. Neither error's
 root cause is confirmed. The protected export remains retained, but no
 returned-source checkpoint or round-trip parity passed. K3s is still running.
+The saved upstream artifact identifies the affected PV as
+`pvc-af0446fa-fa48-4e2b-86ca-7d98bb3843ce`; its NotFound status has no group,
+kind, or causes, and this SHA predates the request-path diagnostic, so the
+failed route cannot be reconstructed from that response. The return error also
+reported nodestore remained stopped. The later reverse-cutover rollback fix
+addresses this recovery state but has not yet been exercised by a runtime
+migration.
 Commits `058fafa8` and `434c9acb` add return-target webhook/endpoint probes and
 the destination API path to restore errors. Focused nodemigrate tests
 [36263787654](https://github.com/centerionware/not-k8s/actions/runs/36263787654)
