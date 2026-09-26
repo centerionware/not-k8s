@@ -34,6 +34,10 @@ fail() {
 
 docker info >/dev/null || fail "Docker daemon is not available"
 docker image inspect "$IMAGE" >/dev/null || fail "node image $IMAGE is unavailable"
+if awk 'NR > 1 { active=1 } END { exit !active }' /proc/swaps; then
+    cat /proc/swaps
+    fail "Docker host has active swap; kubelet simulation requires swap to be disabled on the host"
+fi
 echo "Loading kernel modules on the Docker host for privileged node containers"
 sudo modprobe overlay
 sudo modprobe br_netfilter
@@ -175,12 +179,10 @@ EOF
         cat >/etc/sysctl.d/99-kubernetes.conf <<EOF
 net.bridge.bridge-nf-call-iptables=1
 net.bridge.bridge-nf-call-ip6tables=1
-net.ipv4.ip_forward=1
+        net.ipv4.ip_forward=1
 EOF
         echo "$HOSTNAME: applying sysctls"
         sysctl --system
-        echo "$HOSTNAME: disabling swap"
-        swapoff -a
         echo "$HOSTNAME: configuring and restarting containerd"
         containerd config default >/etc/containerd/config.toml
         sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml

@@ -189,9 +189,12 @@ has passed yet.
 The rerun [36270087374](https://github.com/centerionware/not-k8s/actions/runs/36270087374)
 at SHA `2f35443e3b5b6e141aa03b47bf5e0fc041fe0d0d` successfully loaded the host
 modules and repeated all five container isolation checks, then exited 32 while
-configuring kubeadm prerequisites. The script had suppressed `sysctl --system`
-output, so the failing command is unknown. The current harness adds per-step
-markers and exposes sysctl output for the next targeted rerun.
+configuring kubeadm prerequisites. The next diagnostic run
+[36270240134](https://github.com/centerionware/not-k8s/actions/runs/36270240134)
+showed that `sysctl --system` completed and `swapoff -a` returned 32 inside
+`cp-1`. Since all privileged containers share the runner kernel and swap, the
+harness now checks runner swap once and does not try to disable it from inside a
+container. No kubeadm or Cilium checks have passed yet.
 
 ## Earlier branch-runtime attempt
 
