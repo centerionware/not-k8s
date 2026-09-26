@@ -45,6 +45,17 @@ passed at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migrati
 completed its upstream lane with the failure above; its K3s lane is still
 running. Round-trip parity remains unverified.
 
+The migration fixture now snapshots every deployed Helm release at each
+source, nodestore, and returned-source checkpoint. It records release name,
+namespace, chart and app version, revision, and SHA-256 digests for computed
+values and rendered manifest; source-to-target and full round-trip assertions
+compare those records. This closes a test-evidence gap where the fixture
+inspected Helm state and ran server-side dry-run upgrades but did not compare
+release records across stages. Shell syntax, snapshot-filter checks, diff
+validation, and a stubbed Helm snapshot check passed locally. Runtime
+verification is pending; run `36260417450` predates this assertion and remains
+in progress for K3s as of 2026-09-26 19:15 UTC.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores

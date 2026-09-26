@@ -58,6 +58,13 @@ ran at `8c79470de60f288fc113db7b7b8c45da048b6ad7`; upstream failed as
 described above and K3s remains in progress. No regular full build or full e2e
 gate was dispatched.
 
+The migration fixture now compares deployed Helm release records at each
+checkpoint: release identity, chart/app version, revision, and digests of
+computed values and rendered manifests. Local shell syntax, snapshot-filter,
+diff, and stubbed Helm capture checks passed. The active migration run above
+predates this addition; runtime verification remains pending. At 2026-09-26
+19:15 UTC, its upstream lane had failed and its K3s lane remained in progress.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

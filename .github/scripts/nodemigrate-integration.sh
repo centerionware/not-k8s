@@ -1622,6 +1622,36 @@ verify_system_addon_rollouts() {
     done
 }
 
+capture_helm_release_state() {
+    local output="${1:?missing Helm state output path}"
+    local releases_json release name namespace chart app_version revision status
+    local values_digest manifest_digest
+    releases_json="$(helm list --all-namespaces --output json)"
+    : > "$output"
+    while IFS=$'\t' read -r name namespace chart app_version revision status; do
+        [[ -n "$name" && -n "$namespace" ]] || continue
+        values_digest="$(helm get values "$name" -n "$namespace" --all -o json \
+            | jq -S -c . | sha256sum | awk '{print $1}')"
+        manifest_digest="$(helm get manifest "$name" -n "$namespace" \
+            | sha256sum | awk '{print $1}')"
+        jq -cS -n \
+            --arg name "$name" \
+            --arg namespace "$namespace" \
+            --arg chart "$chart" \
+            --arg appVersion "$app_version" \
+            --arg revision "$revision" \
+            --arg status "$status" \
+            --arg valuesSha256 "$values_digest" \
+            --arg manifestSha256 "$manifest_digest" \
+            '{name:$name, namespace:$namespace, chart:$chart,
+              appVersion:$appVersion, revision:$revision, status:$status,
+              valuesSha256:$valuesSha256, manifestSha256:$manifestSha256}' \
+            >> "$output"
+    done < <(jq -r '.[] | [.name, .namespace, .chart, .app_version,
+        (.revision | tostring), .status] | @tsv' <<< "$releases_json")
+    LC_ALL=C sort -o "$output" "$output"
+}
+
 record_fixture_storage_specs() {
     local stage="$1" claim pvc_json pv_name
     for claim in state-migration-stateful-0 migration-csi-pvc migration-static-pvc; do
@@ -1638,6 +1668,9 @@ record_fixture_storage_specs() {
 
 verify_stage() {
     local stage="$1"
+    local stage_dir="$CHECKPOINT_DIR/$stage"
+    mkdir -p "$stage_dir"
+    chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
@@ -2008,6 +2041,7 @@ YAML
     trap - RETURN
     kubectl get deploy,svc,ingress,certificate,pv,pvc -A -o wide
     record_fixture_storage_specs "$stage"
+    capture_helm_release_state "$stage_dir/helm-releases.jsonl"
     capture_semantic_checkpoint "$stage"
     echo "PASS stage=$stage"
 }
@@ -2178,6 +2212,11 @@ assert_round_trip_unchanged() {
             return 1
         fi
     done
+    if ! cmp -s "$initial/helm-releases.jsonl" "$returned/helm-releases.jsonl"; then
+        echo "Helm release identity, chart version, revision, values, or manifest changed during the migration round trip" >&2
+        diff -u "$initial/helm-releases.jsonl" "$returned/helm-releases.jsonl" || true
+        return 1
+    fi
     echo "PASS: returned semantic state, text and binary ConfigMaps, Secret digests, certificate secret, and PVC data match the source checkpoint"
 }
 
@@ -2202,7 +2241,7 @@ assert_migratable_api_objects_retained() {
     # and Cilium create or update legitimate destination runtime state.
     for snapshot in application.json certificate.json issuer.json required-crds.json storageclass.json \
         certificate-secret.sha256 user-configmap-data.sha256 user-binary-configmap-data.sha256 \
-        user-immutable-configmap.sha256 user-secret-data.sha256; do
+        user-immutable-configmap.sha256 user-secret-data.sha256 helm-releases.jsonl; do
         if ! cmp -s "$CHECKPOINT_DIR/$1/$snapshot" "$CHECKPOINT_DIR/$2/$snapshot"; then
             echo "Durable migration fixture state differs between stages $1 and $2: $snapshot" >&2
             diff -u "$CHECKPOINT_DIR/$1/$snapshot" "$CHECKPOINT_DIR/$2/$snapshot" || true
