@@ -30,10 +30,10 @@ fn http_get_resolves_named_port_against_container_ports() {
             port: IntOrString::String("http".to_string()),
             path: Some("/healthz".to_string()),
             host: Some("127.0.0.1".to_string()),
-            http_headers: vec![k8s_openapi::api::core::v1::HTTPHeader {
+            http_headers: vec![vec![k8s_openapi::api::core::v1::HTTPHeader {
                 name: "brief".to_string(),
                 value: "true".to_string(),
-            }],
+            }]],
             scheme: Some("HTTPS".to_string()),
             ..Default::default()
         }),

@@ -149,7 +149,12 @@ pub fn probe_check(probe: &Probe, container: &Container) -> ProbeCheck {
         let port = resolve_port(&http.port, container);
         let path = http.path.clone().unwrap_or_else(|| "/".to_string());
         let https = http.scheme.as_deref() == Some("HTTPS");
-        let headers = http.http_headers.iter().map(|header| (header.name.clone(), header.value.clone())).collect();
+        let headers = http
+            .http_headers
+            .iter()
+            .flatten()
+            .map(|header| (header.name.clone(), header.value.clone()))
+            .collect();
         ProbeCheck::Http { path, port, https, host: http.host.clone(), headers }
     } else if let Some(tcp) = &probe.tcp_socket {
         ProbeCheck::Tcp { port: resolve_port(&tcp.port, container) }
@@ -246,7 +251,7 @@ async fn check_http(host: &str, port: u16, path: &str, headers: &[(String, Strin
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("host"))
             .map(|(_, value)| value.as_str())
-            .unwrap_or(host);
+            .unwrap_or(host.as_str());
         let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\n");
         for (name, value) in headers.iter().filter(|(name, _)| !name.eq_ignore_ascii_case("host")) {
             req.push_str(name);
