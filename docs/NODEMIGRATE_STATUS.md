@@ -12,16 +12,35 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Each must preserve identity/data/state and behavior through K3s → not-k8s → K3s and upstream Kubernetes → not-k8s → upstream Kubernetes; most target, return, and full round-trip assertions remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Release-backed run 36228920539 showed the K3s target had no nodes available to schedule pods during migration; cert-manager had no endpoints and the Cilium/cert-manager mounted-CA probe could not exec because nodelet's port 10250 refused connections. This does not establish a CA mismatch. v0.8.0 also rejected three Gateway API CRDs for missing CEL `matches`; upstream CertificateRequest and CSR imports returned HTTP 500. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Branch run 36229667964 confirms the K3s Cilium mounted CA fingerprint matched the destination API CA and Cilium reached 1/1, but CoreDNS remained 0/1 and the nodelet CoreDNS gate kept ordinary Pods from reconciling. Upstream CertificateRequest import still failed because the webhook had no endpoints. v0.8.0 baseline findings are recorded separately below. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed run [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539) fetched v0.8.0, passed both utility builds and Docker isolation, then failed forward import in both lanes. K3s target had no schedulable Node, so Cilium/cert-manager pods and webhook endpoints did not come up; mounted-CA probe was blocked by nodelet port 10250 refusing connections. Upstream also failed CertificateRequest and CSR imports (HTTP 500) and Gateway API CRDs (unsupported CEL `matches`). Both sources recovered and exports were retained; no target parity or reverse migration passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest branch-runtime run [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964) passed Docker preflight and scoped builds. K3s accepted all 59 CRDs, reached a Ready target Node, and Cilium/Envoy/operator were 1/1; its mounted CA fingerprint exactly matched the target API CA. CoreDNS stayed Running but 0/1, pausing ordinary nodelet Pod reconciliation; CSI setup failed. Upstream accepted all 55 CRDs but failed CertificateRequest admission because the cert-manager webhook had no endpoints. Both sources recovered and retained protected exports. No target parity or reverse migration passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed in run `36077448685`: five systemd containers have independent namespaces, machine IDs, CRI/BPF capability, writable persistent volumes, peer connectivity, and stop/restart isolation. This is infrastructure evidence, not proof of Kubernetes control-plane, Cilium datapath, or migration parity. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Branch-runtime migration [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
+  used head SHA `294a6c64`. Docker five-node preflight and both utility and
+  combined-runtime builds passed. K3s accepted all 59 CRDs and reached target
+  API readiness; the Node reported Ready, and Cilium agent, Envoy, and operator
+  reached `1/1`. The mounted service-account CA fingerprint read from the live
+  Cilium agent exactly matched the destination API CA fingerprint. CoreDNS
+  Pods remained `Running` but `0/1 Ready`; nodelet logs show ordinary Pod
+  reconciliation remained paused behind its CoreDNS readiness gate, and
+  hostpath CSI setup failed. Upstream accepted all 55 CRDs, then failed
+  importing `CertificateRequest/migration-test-1` because the cert-manager
+  webhook Service had no endpoints. Both source services recovered and
+  protected exports were retained. Neither lane reached workload/storage
+  parity, return migration, or a round trip. This branch run changes the
+  current diagnosis: the measured K3s Cilium CA was correct; the reason
+  CoreDNS stayed unready remains unproven. CoreDNS logs say its Kubernetes
+  plugin was waiting for API synchronization and the ready plugin was not
+  ready, without exposing the failed request's underlying error. Logs are under
+  `/tmp/nodemigrate-36229667964/`.
 
 - Release-backed migration [36228920539](https://github.com/centerionware/not-k8s/actions/runs/36228920539)
   at SHA `f86fad5622d48582c24531df4b88368096d632d9` fetched `v0.8.0`; utility

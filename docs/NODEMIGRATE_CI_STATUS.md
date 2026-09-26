@@ -52,6 +52,26 @@ The general full build and full e2e gates were not dispatched.
 
 ## Latest branch-runtime result
 
+Dedicated migration run [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
+used head SHA `294a6c64`. The Docker five-node preflight and both standalone
+utility/combined-runtime builds passed. K3s accepted all 59 CRDs and reached
+destination API readiness. The target Node reported Ready; Cilium agent,
+Envoy, and operator reached `1/1`. The live Cilium Pod's mounted
+service-account CA fingerprint exactly matched the destination API CA
+fingerprint. CoreDNS remained `Running` but `0/1 Ready`; nodelet journal output
+shows ordinary Pod reconciliation paused behind the CoreDNS readiness gate,
+and CoreDNS logs say its Kubernetes plugin was waiting for API synchronization
+while the ready plugin remained unready. The logs do not expose the failed
+request's underlying network or authorization error. Hostpath CSI setup failed.
+Upstream accepted all 55 CRDs but failed
+CertificateRequest import because the destination cert-manager webhook
+Service had no endpoints. Both sources recovered and retained protected
+exports. No workload/storage parity, reverse migration, or full round trip
+passed. This proves branch-runtime K3s Cilium trust for the sampled live Pod;
+it does not explain CoreDNS readiness or prove the full Cilium setup. Logs:
+`/tmp/nodemigrate-36229667964/nodemigrate-k3s.log` and
+`/tmp/nodemigrate-36229667964/nodemigrate-kubernetes.log`.
+
 Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
 used SHA `edd697e94e009b7d3796de13b2ed68c076255625`. Both standalone utility
 and combined-runtime builds passed, as did the five-node Docker preflight.

@@ -9,6 +9,26 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Dedicated migration run [36229667964](https://github.com/centerionware/not-k8s/actions/runs/36229667964)
+used branch head SHA `294a6c64`. Both utility and combined-runtime builds and
+the five-node Docker isolation preflight passed. K3s accepted all 59 CRDs and
+reached destination API readiness with a Ready Node. Cilium agent, Envoy, and
+operator were `1/1`; the sampled live Cilium Pod's mounted service-account CA
+fingerprint matched the destination API CA exactly. The remaining K3s failure
+was later in workload readiness: CoreDNS Pods stayed `Running` but `0/1`, and
+nodelet's journal showed it kept ordinary Pod reconciliation paused behind
+the CoreDNS gate. Hostpath CSI setup consequently failed before storage or
+workload assertions. CoreDNS logs report the Kubernetes plugin waiting for
+API synchronization and the ready plugin remaining unready, but do not show
+the underlying request error. Upstream accepted all 55 CRDs but CertificateRequest
+admission failed because the cert-manager webhook Service had no endpoints.
+Both lanes restored their source services and retained protected exports.
+Neither reached target parity, return migration, or a full round trip. This
+updates the earlier CA hypothesis: the measured K3s Cilium Pod trusted the
+destination CA, but other CNI behavior and CoreDNS remain unverified. Logs:
+`/tmp/nodemigrate-36229667964/nodemigrate-k3s.log` and
+`/tmp/nodemigrate-36229667964/nodemigrate-kubernetes.log`.
+
 Dedicated migration run [36226000144](https://github.com/centerionware/not-k8s/actions/runs/36226000144)
 used SHA `edd697e94e009b7d3796de13b2ed68c076255625`. Both builds and the
 five-node isolation preflight passed. Both source-stage CA checks passed, and
