@@ -86,6 +86,13 @@ and focused `nodemigrate` tests
 passed at `28d04774`. Runtime verification remains pending because the active
 K3s migration run predates this fixture change.
 
+Commit `428286d9` updates the eviction assertion to accept Kubernetes' normal
+`TooManyRequests` status spelling as well as HTTP 429. Local shell/helper
+checks and migration workflow validation
+[36266303223](https://github.com/centerionware/not-k8s/actions/runs/36266303223)
+passed. Run `36260417450` still reports its K3s migration step in progress at
+2026-09-26 19:31 UTC.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

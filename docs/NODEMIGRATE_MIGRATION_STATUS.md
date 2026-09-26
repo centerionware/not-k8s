@@ -82,6 +82,11 @@ and focused `nodemigrate` tests
 passed. The older K3s runtime job still predates this change and remained
 active at 2026-09-26 19:27 UTC.
 
+The eviction response assertion also accepts Kubernetes' `TooManyRequests`
+status spelling; migration workflow validation
+[36266303223](https://github.com/centerionware/not-k8s/actions/runs/36266303223)
+passed at `428286d9`. The older K3s job remained active at 2026-09-26 19:31 UTC.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores
