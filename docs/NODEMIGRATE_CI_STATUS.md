@@ -33,8 +33,13 @@ The current worktree adds bounded retries for transient API/webhook and
 transport failures, with permanent API rejections failing immediately. It
 also gives the application fixture a dedicated semantic normalizer that
 excludes only the generated namespace root CA ConfigMap and removes optional
-TypeMeta from PVC templates. Targeted script checks and branch-runtime rerun
-are pending. No regular full build or full e2e gate was dispatched.
+TypeMeta from PVC templates. Focused shell, jq, and formatting checks passed.
+The `nodemigrate` quick-check
+[36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
+passed at `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
+[36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+is running at the same SHA. No regular full build or full e2e gate was
+dispatched.
 
 ## Earlier branch-runtime attempt
 

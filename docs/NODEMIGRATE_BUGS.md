@@ -18,8 +18,12 @@ optional nested PVC-template TypeMeta as durable differences. The CA contents
 are independently verified against the active API CA. A dedicated application
 snapshot filter now excludes only that regenerated root CA ConfigMap and
 removes only optional `apiVersion`/`kind` from PVC templates. Normalizer checks
-pass locally; the full migration rerun is pending. Neither lane completed the
-reverse migration or round-trip parity.
+pass locally, and targeted `nodemigrate` quick-check
+[36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
+passed at `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Full migration rerun
+[36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+is running. Neither lane has yet reported reverse migration or round-trip
+parity.
 
 ## Latest diagnostic update
 

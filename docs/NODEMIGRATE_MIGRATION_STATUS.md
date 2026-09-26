@@ -25,8 +25,12 @@ The current worktree extends retry handling to a bounded five minutes for
 transient API/webhook and transport failures, while permanent rejections fail
 without waiting. The application snapshot now omits only the generated
 namespace root CA ConfigMap and ignores optional `apiVersion`/`kind` fields in
-StatefulSet PVC templates. Focused script checks and a branch-runtime rerun
-remain pending.
+StatefulSet PVC templates. Focused shell, jq, and formatting checks passed,
+as did the `nodemigrate` quick-check
+[36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
+at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
+[36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+is still running on that SHA. Round-trip parity remains unverified.
 
 ## Earlier integration attempt
 
