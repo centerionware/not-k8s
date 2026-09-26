@@ -107,9 +107,18 @@ The fixture now captures `kubectl api-resources --verbs=list -o name` at all
 three checkpoints and requires the target and returned source to retain every
 source-discovered listable resource, even when it has no objects. It prints
 the exact inventory and missing resource names on failure. Local shell syntax,
-snapshot, Helm, and API inventory checks passed; PR workflow validation and a
-runtime migration containing this assertion are pending. The old K3s lane was
-still active at 2026-09-26 19:44 UTC.
+snapshot, Helm, and API inventory checks passed. On PR head
+`a211413a5034dbbf342caa07e1ee739f4f239b05`, migration workflow validation
+[36267290452](https://github.com/centerionware/not-k8s/actions/runs/36267290452)
+and focused `nodemigrate` tests
+[36267290457](https://github.com/centerionware/not-k8s/actions/runs/36267290457)
+passed. Runtime verification is pending: the older dedicated migration run
+[36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+used SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`; its upstream lane failed
+after the return import webhook timeouts and PV 404, while its K3s `Run
+migration` step remained `in_progress` at 2026-09-26 19:51 UTC. This run
+predates the API inventory assertion and cannot verify it. No regular build or
+full e2e gate was dispatched.
 
 ## Earlier branch-runtime attempt
 

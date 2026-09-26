@@ -101,9 +101,18 @@ source, nodestore, and returned-source checkpoint, including resource kinds
 with no current objects. It fails if either destination omits a resource the
 source exposed, in addition to checking identities for all populated durable
 resources. Local shell syntax, snapshot normalization, Helm-state, and API
-inventory checks pass. PR workflow validation and runtime execution of this
-inventory assertion are pending; run `36260417450` still had K3s in progress at
-2026-09-26 19:44 UTC.
+inventory checks pass. On PR head
+`a211413a5034dbbf342caa07e1ee739f4f239b05`, migration workflow validation
+[36267290452](https://github.com/centerionware/not-k8s/actions/runs/36267290452)
+and focused `nodemigrate` tests
+[36267290457](https://github.com/centerionware/not-k8s/actions/runs/36267290457)
+passed. Neither is runtime migration evidence. Run
+[36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+used older SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`: its upstream lane
+failed after return-import webhook timeouts and a PV 404, while its K3s
+`Run migration` step remained `in_progress` at 2026-09-26 19:51 UTC. That run
+predates this inventory assertion, so runtime verification of it remains
+pending. The PV failure path/root cause and K3s lane outcome remain unverified.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
