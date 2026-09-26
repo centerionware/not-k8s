@@ -3,11 +3,26 @@
 Last updated: 2026-09-26
 
 Dedicated migration run [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465)
-is in progress at SHA `daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`. The
-five-node Docker preflight and both utility builds passed; both combined
-runtime builds are still running, so no runtime or migration finding is
-available yet. Its watcher implementation predates the periodic-sampling
-adjustment at branch head `86a3d88e`, which is pending migration validation.
+used SHA `daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`; the five-node Docker
+preflight and both utility/runtime builds passed, but both migration lanes
+failed before target workload validation. K3s reached destination API
+readiness, then the harness failed during target hostPath CSI installation.
+The target watcher saw Cilium/Envoy `0/1 Running`, CoreDNS `0/1 Unknown`, and
+cert-manager Pods `0/1 Unknown`. Upstream failed applying
+`CertificateRequest/migration-test-1` because requests to the cert-manager
+admission URL failed four times; target Cilium/Envoy were `1/1`, CoreDNS was
+`0/1 Running`, and cert-manager Pods were `Unknown` without IPs. The source
+service/API was restored and its protected export retained. Neither lane
+reached target workload, reverse-migration, or parity checks. Logs:
+`/tmp/nodemigrate-36219234465-k3s.log` and
+`/tmp/nodemigrate-36219234465-kubernetes.log`.
+
+Run 36219234465 also exposed a harness diagnostics defect: `kubectl -o wide`
+includes AGE, so the watcher treated normal age increments as state changes
+and emitted repeated snapshots/log bundles. Branch head `35161a3f` uses
+normalized stable pod and endpoint state with a 30-second diagnostic interval.
+The script passes `bash -n` and `git diff --check`; runtime validation remains
+pending.
 
 Latest branch-runtime migration [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. K3s accepted its
@@ -111,6 +126,7 @@ neither lane reached a target checkpoint or round trip. Logs:
 
 | Bug | Owning component(s) | Fix in this branch | Focused evidence / state |
 | --- | --- | --- | --- |
+| The target-state watcher compared `kubectl -o wide` output, including AGE. Normal age increments made every poll look like a state transition and flooded the migration log with repeated pod, log, and event snapshots. | `.github/scripts/nodemigrate-integration.sh` diagnostics | Compare stable normalized pod phase/conditions/container readiness/restarts/IP/node and cert-manager endpoint state. Keep a bounded 30-second diagnostic sample for logs even when state is unchanged. | Confirmed by the many snapshots only seconds apart in both lanes of [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465), including timestamps that advanced while readiness did not. Fix at `35161a3f` passes shell syntax and whitespace checks; a dedicated migration run must confirm bounded capture and useful failure diagnostics. |
 | The ResourceQuota controller compared all `status.used` entries with a map containing only its supported `pods`/`services` keys. If admission supplied `requests.storage`, merge-patching the partial map preserved that unsupported entry, so every ResourceQuota watch update triggered another unchanged status PATCH. The migration fixture produced 6,376–8,366 quota range calls per 30 seconds and over 1,100 quota status PATCHes in about 1.2 seconds. | `nodecontroller` ResourceQuota controller | Compare only the entries this controller owns. Merge-patch its supported entries and clear stale owned keys with explicit nulls, leaving unsupported quota usage intact. Add regression coverage for `requests.storage` and stale supported keys. | Fix at SHA `0e7cf32a` passed focused `nodecontroller` quick-check [36207090965](https://github.com/centerionware/not-k8s/actions/runs/36207090965). Branch-runtime migration [36207264515](https://github.com/centerionware/not-k8s/actions/runs/36207264515) then observed zero `migration-quota/status` PATCHes and only 14–276 K3s / 32–310 upstream ResourceQuota Range calls per 30-second window, versus thousands before. |
 | API export omitted every `Endpoints`, `EndpointSlice`, and `Lease` object by kind. This silently lost user-managed external service endpoints and application coordination Leases along with Kubernetes-generated records. | `nodemigrate` API export and semantic snapshot filter | Skip only known controller-generated Endpoints/EndpointSlices, the built-in `default/kubernetes` service endpoints, and kubelet heartbeat Leases in `kube-node-lease`. Preserve other user/add-on-managed endpoint records and Leases. Add fixture objects and assert them at source, target, and return checkpoints. | Rust unit tests passed in focused nodemigrate CI [36199446770](https://github.com/centerionware/not-k8s/actions/runs/36199446770) at SHA `d4f3c4a0`; migration-workflow static validation passed in [36199446771](https://github.com/centerionware/not-k8s/actions/runs/36199446771). Local `bash -n`, snapshot-filter check, and `git diff --check` also pass. Runtime migration validation remains pending. The built-in EndpointSlice ownership labels follow Kubernetes' documented controller ownership convention: [EndpointSlice KEP](https://github.com/kubernetes/enhancements/blob/master/keps/sig-network/0752-endpointslices/README.md). |
 | Cilium's agent exhausted ten retries updating its own `CiliumNode` on the destination; each update received HTTP 409 “object has been modified” and the agent exited before CNI readiness. This failure is intermittent and its conflict path remains unconfirmed. | `nodeapiserver` conflict handling or concurrent `CiliumNode` writers; exact writer and request path remain unconfirmed. | Preserve Kubernetes resourceVersion preconditions and storage CAS. Use captured API diagnostics to determine whether conflicts come from stale submitted resourceVersions or storage CAS losses before changing write semantics. | Reproduced in K3s runs [36189354168](https://github.com/centerionware/not-k8s/actions/runs/36189354168), [36192756836](https://github.com/centerionware/not-k8s/actions/runs/36192756836), and [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875). The expanded harness capture observed HTTP 200 updates in runs [36216429427](https://github.com/centerionware/not-k8s/actions/runs/36216429427) and [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294); the 409 did not recur. This is non-reproduction, not a fix or proof of the conflict cause. |

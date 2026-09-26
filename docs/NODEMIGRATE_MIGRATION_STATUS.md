@@ -10,15 +10,27 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration attempt
 
 Dedicated migration run [36219234465](https://github.com/centerionware/not-k8s/actions/runs/36219234465)
-is currently building the branch runtime at SHA
-`daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`. The Docker five-node preflight
-and both standalone nodemigrate builds passed; both runtime builds remain in
-progress. This SHA includes the first forward target-state watcher. A follow-up
-diagnostic improvement at branch head `86a3d88e` makes the watcher sample at
-least every 30 seconds even if Pod and webhook endpoint snapshots do not
-change; that improvement has only passed shell syntax and whitespace checks
-and needs its own dedicated migration run. No target, reverse-migration, or
-parity result is available from run 36219234465 yet.
+used runtime SHA `daf3c9bbe4a87eb0a3d5ec7ed6e408920ddf85bb`. The five-node
+Docker preflight, standalone utility builds, and combined-runtime builds passed.
+The K3s forward migration returned success and destination API readiness
+passed, but target hostPath CSI installation failed before the target workload
+checkpoint. The watcher observed Cilium/Envoy `0/1 Running`, CoreDNS `0/1
+Unknown`, and cert-manager Pods `0/1 Unknown` during bring-up. The upstream
+lane failed importing `CertificateRequest/migration-test-1` after four
+attempts to call cert-manager's admission URL failed; its target Cilium/Envoy
+were `1/1`, CoreDNS was `0/1 Running`, and cert-manager Pods were `Unknown`
+without Pod IPs. The upstream source API/service recovered and its protected
+export remained available. Neither lane reached a target workload/storage
+checkpoint, reverse migration, or semantic parity.
+
+The initial watcher captured target-time state but its `kubectl -o wide`
+snapshot included a changing AGE column, causing a diagnostic bundle nearly
+every two seconds. Branch head `35161a3f` replaces it with normalized stable
+fields and a 30-second sample interval. Only `bash -n` and `git diff --check`
+have been run for this watcher correction; dedicated runtime validation is
+pending. Logs: `/tmp/nodemigrate-36219234465-k3s.log` and
+`/tmp/nodemigrate-36219234465-kubernetes.log`. No general build gate or full
+e2e ran.
 
 Branch-runtime migration [36217850294](https://github.com/centerionware/not-k8s/actions/runs/36217850294)
 used head SHA `d7b65846f55f24e75fd56ca54d107f5bad8b5511`. Both scoped utility
