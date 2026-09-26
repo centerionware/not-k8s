@@ -4,6 +4,25 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Migration run [36258945785](https://github.com/centerionware/not-k8s/actions/runs/36258945785)
+identified a timing defect in `nodemigrate` import retry policy: in the
+K3s+Cilium lane, an otherwise accepted CertificateRequest was retried only
+five times at three-second intervals while cert-manager's webhook was still
+starting. The current branch work retries transient API/webhook and transport
+failures for up to five minutes, immediately surfaces permanent rejections,
+and adds a focused classifier test. Script and runtime validation are pending.
+
+The same run reached the upstream target checkpoint but the fixture comparator
+treated destination-generated `kube-root-ca.crt` annotation metadata and
+optional nested PVC-template TypeMeta as durable differences. The CA contents
+are independently verified against the active API CA. A dedicated application
+snapshot filter now excludes only that regenerated root CA ConfigMap and
+removes only optional `apiVersion`/`kind` from PVC templates. Normalizer checks
+pass locally; the full migration rerun is pending. Neither lane completed the
+reverse migration or round-trip parity.
+
+## Latest diagnostic update
+
 Migration run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
 used SHA `16c90a9721dd1f0bbcdc1a11723d7438d173b49f`. The new SPDY
 port-forward handling was confirmed in both target lanes: both Gateway probes

@@ -12,6 +12,8 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
+use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{
         Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, PostParams, Preconditions,
@@ -20,8 +22,6 @@ use kube::{
     discovery::{verbs, ApiResource, Discovery},
     Client,
 };
-use k8s_openapi::api::core::v1::ConfigMap;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -44,6 +44,9 @@ const SKIP_KINDS: &[&str] = &[
     "PodMetrics",
     "VolumeAttachment",
 ];
+
+const IMPORT_RETRY_ATTEMPTS: u32 = 60;
+const IMPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct KubeApi {
     kubeconfig: PathBuf,
@@ -650,7 +653,8 @@ impl KubeApi {
                     export.dir.display()
                 )
             })?;
-            for attempt in 0..5 {
+            let mut permanent_failures = Vec::new();
+            for attempt in 0..IMPORT_RETRY_ATTEMPTS {
                 let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
                 let mut failures = Vec::new();
@@ -689,8 +693,13 @@ impl KubeApi {
                             if is_crd {
                                 crd_failed += 1;
                             }
-                            failures.push((object_type_label(&initial), format!("{error:#}")));
-                            retry.push(object);
+                            let failure = (object_type_label(&initial), format!("{error:#}"));
+                            failures.push(failure.clone());
+                            if retryable_import_error(&error) {
+                                retry.push(object);
+                            } else {
+                                permanent_failures.push(failure);
+                            }
                         }
                     }
                 }
@@ -729,8 +738,24 @@ impl KubeApi {
                         );
                     }
                 }
-                if pending.is_empty() { break; }
-                if attempt < 4 { tokio::time::sleep(std::time::Duration::from_secs(3)).await; }
+                if pending.is_empty() {
+                    break;
+                }
+                if attempt + 1 < IMPORT_RETRY_ATTEMPTS {
+                    eprintln!(
+                        "nodemigrate: {}/{} objects are waiting on destination readiness; retry {}/{} in {} seconds",
+                        pending.len(),
+                        pending.len() + permanent_failures.len(),
+                        attempt + 1,
+                        IMPORT_RETRY_ATTEMPTS - 1,
+                        IMPORT_RETRY_DELAY.as_secs()
+                    );
+                    tokio::time::sleep(IMPORT_RETRY_DELAY).await;
+                }
+            }
+            if !permanent_failures.is_empty() {
+                let summary = summarize_import_failures(&permanent_failures);
+                bail!("{} Kubernetes objects had permanent destination errors and {} remained transiently unavailable; export retained at {}. Permanent failures: {}. Last-attempt failures: {}", permanent_failures.len(), pending.len(), export.dir.display(), summary, last_error)
             }
             if !pending.is_empty() {
                 bail!("{} Kubernetes objects could not be restored; export retained at {}. Last-attempt failures: {}", pending.len(), export.dir.display(), last_error)
@@ -776,8 +801,12 @@ impl KubeApi {
 }
 
 fn kubeconfig_root_ca(kubeconfig_path: &Path) -> Result<String> {
-    let kubeconfig = Kubeconfig::read_from(kubeconfig_path)
-        .with_context(|| format!("reading destination kubeconfig {}", kubeconfig_path.display()))?;
+    let kubeconfig = Kubeconfig::read_from(kubeconfig_path).with_context(|| {
+        format!(
+            "reading destination kubeconfig {}",
+            kubeconfig_path.display()
+        )
+    })?;
     let context_name = kubeconfig
         .current_context
         .as_deref()
@@ -851,10 +880,12 @@ async fn ensure_namespace_ca_bundles(
                         break;
                     }
                     Ok(_) => {}
-                    Err(kube::Error::Api(response)) if response.code == 404 || response.code == 409 => {}
-                    Err(error) => return Err(error).with_context(|| {
-                        format!("updating {namespace}/kube-root-ca.crt")
-                    }),
+                    Err(kube::Error::Api(response))
+                        if response.code == 404 || response.code == 409 => {}
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("updating {namespace}/kube-root-ca.crt"))
+                    }
                 }
             } else {
                 let configmap = ConfigMap {
@@ -875,10 +906,12 @@ async fn ensure_namespace_ca_bundles(
                         break;
                     }
                     Ok(_) => {}
-                    Err(kube::Error::Api(response)) if response.code == 404 || response.code == 409 => {}
-                    Err(error) => return Err(error).with_context(|| {
-                        format!("creating {namespace}/kube-root-ca.crt")
-                    }),
+                    Err(kube::Error::Api(response))
+                        if response.code == 404 || response.code == 409 => {}
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("creating {namespace}/kube-root-ca.crt"))
+                    }
                 }
             }
             if attempt < 4 {
@@ -1792,6 +1825,21 @@ fn summarize_import_failures(failures: &[(String, String)]) -> String {
         .join("; ")
 }
 
+fn retryable_import_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if let Some(kube_error) = cause.downcast_ref::<kube::Error>() {
+            return match kube_error {
+                kube::Error::Api(status) => {
+                    matches!(status.code, 404 | 408 | 409 | 429 | 500 | 502 | 503 | 504)
+                }
+                kube::Error::HyperError(_) | kube::Error::Service(_) => true,
+                _ => false,
+            };
+        }
+        cause.to_string().contains("destination does not expose ")
+    })
+}
+
 fn skip_kind(kind: &str) -> bool {
     SKIP_KINDS.contains(&kind)
 }
@@ -1805,7 +1853,10 @@ fn label_value<'a>(object: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn is_default_kubernetes_service_endpoint(object: &Value) -> bool {
-    object.pointer("/metadata/namespace").and_then(Value::as_str) == Some("default")
+    object
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str)
+        == Some("default")
         && (object.pointer("/metadata/name").and_then(Value::as_str) == Some("kubernetes")
             || label_value(object, "kubernetes.io/service-name") == Some("kubernetes"))
 }
@@ -1855,7 +1906,9 @@ fn skip_object(object: &Value) -> bool {
     // kubelet must create a fresh Lease for its newly registered Node. Other
     // Leases can carry application or add-on state and are migrated.
     if kind == "Lease"
-        && object.pointer("/metadata/namespace").and_then(Value::as_str)
+        && object
+            .pointer("/metadata/namespace")
+            .and_then(Value::as_str)
             == Some("kube-node-lease")
     {
         return true;
@@ -2017,11 +2070,11 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        custom_resource_gvks, node_scheduling_patch, object_type_label, persistent_host_paths,
-        kubeconfig_root_ca, namespace_ca_bundle_matches, preserve_discovered_type_meta,
-        restore_cni_path_backups, same_group_kind, sanitize, skip_object, snapshot_k3s_cni_paths,
-        summarize_import_failures, write_export_manifest, ApiResource, Export, ExportedObject,
-        KubeApi, NodeSchedulingState,
+        custom_resource_gvks, kubeconfig_root_ca, namespace_ca_bundle_matches,
+        node_scheduling_patch, object_type_label, persistent_host_paths,
+        preserve_discovered_type_meta, restore_cni_path_backups, retryable_import_error,
+        same_group_kind, sanitize, skip_object, snapshot_k3s_cni_paths, summarize_import_failures,
+        write_export_manifest, ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -2156,6 +2209,38 @@ mod tests {
             })),
             "cilium.io/v2/CiliumEndpoint"
         );
+    }
+
+    #[test]
+    fn import_retries_transient_api_errors_but_not_permanent_rejections() {
+        let unavailable: kube::core::Status = serde_json::from_value(serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "admission webhook unavailable",
+            "reason": "InternalError",
+            "code": 500
+        }))
+        .unwrap();
+        let invalid: kube::core::Status = serde_json::from_value(serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "invalid object",
+            "reason": "Invalid",
+            "code": 422
+        }))
+        .unwrap();
+
+        assert!(retryable_import_error(&anyhow::Error::new(
+            kube::Error::Api(Box::new(unavailable,))
+        )));
+        assert!(!retryable_import_error(&anyhow::Error::new(
+            kube::Error::Api(Box::new(invalid,))
+        )));
+        assert!(retryable_import_error(&anyhow::anyhow!(
+            "destination does not expose example.io/v1/Widget"
+        )));
     }
 
     #[test]

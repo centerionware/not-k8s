@@ -7,7 +7,28 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
-## Latest integration attempt
+## Latest integration result
+
+Run [36258945785](https://github.com/centerionware/not-k8s/actions/runs/36258945785)
+used branch SHA `bb6d20a99d31c6e015dee5bf65d1188ff3bf7e43`. Both migration
+utility and combined runtime builds passed after the Docker five-node
+preflight. K3s+Cilium failed while importing one CertificateRequest because
+the cert-manager admission webhook was not yet reachable; the importer had
+only five retries at three-second intervals. Its source rollback and
+protected export retention passed. Upstream Kubernetes+Cilium completed
+forward migration and target checks, then failed only the fixture semantic
+snapshot on destination-generated root CA annotation metadata and optional
+PVC-template TypeMeta. The separate active-API-CA content assertion passed.
+Neither lane ran the return migration, so bidirectional parity is unverified.
+
+The current worktree extends retry handling to a bounded five minutes for
+transient API/webhook and transport failures, while permanent rejections fail
+without waiting. The application snapshot now omits only the generated
+namespace root CA ConfigMap and ignores optional `apiVersion`/`kind` fields in
+StatefulSet PVC templates. Focused script checks and a branch-runtime rerun
+remain pending.
+
+## Earlier integration attempt
 
 Migration run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
 used SHA `16c90a9721dd1f0bbcdc1a11723d7438d173b49f`. Both K3s+Cilium and

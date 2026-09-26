@@ -3,10 +3,26 @@ set -Eeuo pipefail
 
 ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 FILTER="$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq"
+APPLICATION_FILTER="$ROOT/.github/scripts/nodemigrate-application-snapshot.jq"
 command -v jq >/dev/null 2>&1 || {
     echo "jq is required to check migration snapshot normalization" >&2
     exit 2
 }
+
+source_application="$(jq -cn '{items:[
+  {apiVersion:"v1",kind:"ConfigMap",metadata:{name:"kube-root-ca.crt",namespace:"migration-apps",annotations:{"kubernetes.io/description":"source CA"}},data:{"ca.crt":"source-ca"}},
+  {apiVersion:"apps/v1",kind:"StatefulSet",metadata:{name:"database",namespace:"migration-apps"},spec:{volumeClaimTemplates:[{apiVersion:"v1",kind:"PersistentVolumeClaim",metadata:{name:"data"},spec:{accessModes:["ReadWriteOnce"],resources:{requests:{storage:"1Gi"}}}}]}}
+]}')"
+target_application="$(jq -cn '{items:[
+  {apiVersion:"v1",kind:"ConfigMap",metadata:{name:"kube-root-ca.crt",namespace:"migration-apps",annotations:{"kubernetes.io/description":"target CA"}},data:{"ca.crt":"target-ca"}},
+  {apiVersion:"apps/v1",kind:"StatefulSet",metadata:{name:"database",namespace:"migration-apps"},spec:{volumeClaimTemplates:[{metadata:{name:"data"},spec:{accessModes:["ReadWriteOnce"],resources:{requests:{storage:"1Gi"}}}}]}}
+]}')"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_application")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_application")" ]] || {
+    echo "generated CA metadata or optional PVC template type metadata changed the semantic fixture snapshot" >&2
+    exit 1
+}
+jq -e 'all(.[]; .kind != "ConfigMap" or .name != "kube-root-ca.crt") and .[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == "1Gi"' \
+    <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_application")" >/dev/null
 
 before="$(jq -cn '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"settings",namespace:"apps",uid:"source-uid",resourceVersion:"4",generation:1,creationTimestamp:"2026-01-01T00:00:00Z",annotations:{"nodemigrate.io/source-uid":"user-value"},ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"parent",uid:"parent-source-uid"}]},data:{marker:"preserved"},status:{ignored:true}}')"
 after="$(jq -cn '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"settings",namespace:"apps",uid:"target-uid",resourceVersion:"19",generation:3,creationTimestamp:"2026-01-02T00:00:00Z",annotations:{"nodemigrate.io/source-uid":"user-value"},ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"parent",uid:"parent-target-uid"}]},data:{marker:"preserved"},status:{ignored:false}}')"

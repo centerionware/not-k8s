@@ -21,6 +21,7 @@ on:
       - '.github/scripts/nodemigrate-integration.sh'
       - '.github/scripts/nodemigrate-docker-preflight.sh'
       - '.github/scripts/nodemigrate-snapshot-normalize.jq'
+      - '.github/scripts/nodemigrate-application-snapshot.jq'
       - '.github/scripts/check_nodemigrate_snapshot_filter.sh'
       - '.github/nodemigrate/**'
       - '.github/workflows/nodemigrate-integration.yml'

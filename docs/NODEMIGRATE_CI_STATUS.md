@@ -13,7 +13,30 @@ coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
 release-backed regression baseline, not a claim that its runtime contains the
 new fixes.
 
-## Latest branch-runtime attempt
+## Latest branch-runtime result
+
+Migration run [36258945785](https://github.com/centerionware/not-k8s/actions/runs/36258945785)
+used SHA `bb6d20a99d31c6e015dee5bf65d1188ff3bf7e43`, with the branch runtime.
+Docker five-node preflight and both `nodemigrate` and combined-runtime builds
+passed. In K3s+Cilium, import failed on a CertificateRequest while the
+destination cert-manager webhook was still unavailable; the importer's five
+three-second retries expired before Cilium/cert-manager startup completed.
+Source rollback and protected export retention passed. In upstream
+Kubernetes+Cilium, forward import and the target stage completed, then the
+semantic fixture comparison rejected two representation changes: generated
+`kube-root-ca.crt` annotation metadata (its CA bundle is checked separately
+against the active API CA) and optional `apiVersion`/`kind` fields in nested
+StatefulSet PVC templates. No reverse migration ran in either lane. Artifacts:
+`/tmp/nodemigrate-36258945785-artifacts/nodemigrate-{k3s,kubernetes}-36258945785/`.
+
+The current worktree adds bounded retries for transient API/webhook and
+transport failures, with permanent API rejections failing immediately. It
+also gives the application fixture a dedicated semantic normalizer that
+excludes only the generated namespace root CA ConfigMap and removes optional
+TypeMeta from PVC templates. Targeted script checks and branch-runtime rerun
+are pending. No regular full build or full e2e gate was dispatched.
+
+## Earlier branch-runtime attempt
 
 The rerun after identity normalization,
 [36257337049](https://github.com/centerionware/not-k8s/actions/runs/36257337049),
