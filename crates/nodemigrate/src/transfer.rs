@@ -695,7 +695,11 @@ impl KubeApi {
                             }
                             let failure = (object_type_label(&initial), format!("{error:#}"));
                             failures.push(failure.clone());
-                            if retryable_import_error(&error) {
+                            // A not-found response can be a CRD establishment race only for an
+                            // API declared by the source. Built-in resources must fail fast so
+                            // a broken destination route is not retried for the full timeout.
+                            let retry_not_found = is_source_custom_resource(&initial, &source_crd_apis);
+                            if retryable_import_error(&error, retry_not_found) {
                                 retry.push(object);
                             } else {
                                 permanent_failures.push(failure);
@@ -1670,7 +1674,10 @@ async fn apply_object(
         format!("/apis/{}/{}", resource.group, resource.version)
     };
     let api_path = if let Some(namespace) = object.metadata.namespace.as_deref() {
-        format!("{api_root}/namespaces/{namespace}/{}/{name}", resource.plural)
+        format!(
+            "{api_root}/namespaces/{namespace}/{}/{name}",
+            resource.plural
+        )
     } else {
         format!("{api_root}/{}/{name}", resource.plural)
     };
@@ -1835,18 +1842,35 @@ fn summarize_import_failures(failures: &[(String, String)]) -> String {
         .join("; ")
 }
 
-fn retryable_import_error(error: &anyhow::Error) -> bool {
+fn is_source_custom_resource(
+    object: &Value,
+    source_crd_apis: &BTreeSet<(String, String, String)>,
+) -> bool {
+    let Some(api_version) = object.get("apiVersion").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some((group, version)) = api_version.split_once('/') else {
+        return false;
+    };
+    let Some(kind) = object.get("kind").and_then(Value::as_str) else {
+        return false;
+    };
+    source_crd_apis.contains(&(group.to_string(), version.to_string(), kind.to_string()))
+}
+
+fn retryable_import_error(error: &anyhow::Error, retry_not_found: bool) -> bool {
     error.chain().any(|cause| {
         if let Some(kube_error) = cause.downcast_ref::<kube::Error>() {
             return match kube_error {
                 kube::Error::Api(status) => {
-                    matches!(status.code, 404 | 408 | 409 | 429 | 500 | 502 | 503 | 504)
+                    (status.code == 404 && retry_not_found)
+                        || matches!(status.code, 408 | 409 | 429 | 500 | 502 | 503 | 504)
                 }
                 kube::Error::HyperError(_) | kube::Error::Service(_) => true,
                 _ => false,
             };
         }
-        cause.to_string().contains("destination does not expose ")
+        retry_not_found && cause.to_string().contains("destination does not expose ")
     })
 }
 
@@ -2080,11 +2104,12 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        custom_resource_gvks, kubeconfig_root_ca, namespace_ca_bundle_matches,
-        node_scheduling_patch, object_type_label, persistent_host_paths,
-        preserve_discovered_type_meta, restore_cni_path_backups, retryable_import_error,
-        same_group_kind, sanitize, skip_object, snapshot_k3s_cni_paths, summarize_import_failures,
-        write_export_manifest, ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
+        namespace_ca_bundle_matches, node_scheduling_patch, object_type_label,
+        persistent_host_paths, preserve_discovered_type_meta, restore_cni_path_backups,
+        retryable_import_error, same_group_kind, sanitize, skip_object, snapshot_k3s_cni_paths,
+        summarize_import_failures, write_export_manifest, ApiResource, Export, ExportedObject,
+        KubeApi, NodeSchedulingState,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -2187,6 +2212,31 @@ mod tests {
     }
 
     #[test]
+    fn custom_resource_retry_classification_uses_source_crd_versions() {
+        let apis = custom_resource_gvks(&serde_json::json!({
+            "kind": "CustomResourceDefinition",
+            "spec": {
+                "group": "widgets.example.com",
+                "names": {"kind": "Widget"},
+                "versions": [{"name": "v1", "served": true}]
+            }
+        }));
+
+        assert!(is_source_custom_resource(
+            &serde_json::json!({"apiVersion":"widgets.example.com/v1","kind":"Widget"}),
+            &apis
+        ));
+        assert!(!is_source_custom_resource(
+            &serde_json::json!({"apiVersion":"v1","kind":"PersistentVolume"}),
+            &apis
+        ));
+        assert!(!is_source_custom_resource(
+            &serde_json::json!({"apiVersion":"widgets.example.com/v2","kind":"Widget"}),
+            &apis
+        ));
+    }
+
+    #[test]
     fn import_failure_summary_groups_missing_destination_apis() {
         let failures = vec![
             (
@@ -2241,16 +2291,40 @@ mod tests {
             "code": 422
         }))
         .unwrap();
+        let not_found: kube::core::Status = serde_json::from_value(serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "the server could not find the requested resource",
+            "reason": "NotFound",
+            "code": 404
+        }))
+        .unwrap();
 
-        assert!(retryable_import_error(&anyhow::Error::new(
-            kube::Error::Api(Box::new(unavailable,))
-        )));
-        assert!(!retryable_import_error(&anyhow::Error::new(
-            kube::Error::Api(Box::new(invalid,))
-        )));
-        assert!(retryable_import_error(&anyhow::anyhow!(
-            "destination does not expose example.io/v1/Widget"
-        )));
+        assert!(retryable_import_error(
+            &anyhow::Error::new(kube::Error::Api(Box::new(unavailable,))),
+            false
+        ));
+        assert!(!retryable_import_error(
+            &anyhow::Error::new(kube::Error::Api(Box::new(invalid,))),
+            false
+        ));
+        assert!(!retryable_import_error(
+            &anyhow::Error::new(kube::Error::Api(Box::new(not_found.clone(),))),
+            false
+        ));
+        assert!(retryable_import_error(
+            &anyhow::Error::new(kube::Error::Api(Box::new(not_found,))),
+            true
+        ));
+        assert!(!retryable_import_error(
+            &anyhow::anyhow!("destination does not expose apps/v1/Deployment"),
+            false
+        ));
+        assert!(retryable_import_error(
+            &anyhow::anyhow!("destination does not expose example.io/v1/Widget"),
+            true
+        ));
     }
 
     #[test]
