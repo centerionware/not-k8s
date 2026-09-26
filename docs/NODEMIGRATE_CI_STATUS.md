@@ -15,6 +15,22 @@ new fixes.
 
 ## Most recent evidence
 
+The Docker-only preflight [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637)
+passed at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3` in 5m06s. It created
+five isolated Docker nodes with distinct network/mount namespaces, machine
+IDs, BPF pins, and persistent volumes; formed a kubeadm cluster with three
+control planes and two workers; installed Cilium 1.20.2; verified all five
+Nodes Ready; stopped cp-1 and verified the remaining control plane kept the
+API available; restarted cp-1 and verified all Nodes recovered. This validates
+the five-node Kubernetes/Cilium simulation only. Migration was not run in this
+Docker-only invocation. Log: `/tmp/nodemigrate-36278826637-job.log`; artifact:
+`/tmp/nodemigrate-36278826637-artifact/nodemigrate-docker-preflight-36278826637/nodemigrate-docker-preflight.log`.
+
+The latest regular runtime release is `v0.8.0` (published 2026-09-08). The
+next authorized integration run uses the workflow's default `runtime_source=release`
+to test the migration utility against that release; this run's result is
+pending.
+
 The Docker-only attempt [36271904146](https://github.com/centerionware/not-k8s/actions/runs/36271904146)
 used SHA `9b458e57836039745fee90bb34d0a0ceeb44ec4a`. The image build and
 five-container isolation checks passed. kubeadm then failed image pulls on all
