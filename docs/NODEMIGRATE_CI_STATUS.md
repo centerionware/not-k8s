@@ -41,12 +41,17 @@ nested-shell fixture pass. Docker-only run
 at SHA `896bea4f2f55db1c7824aa23d9f6d2ce656df5e4` then passed the unpack
 mapping and all five node-container checks. kubeadm initialized cp-1, joined
 cp-2/cp-3 as stacked-etcd control planes, and joined worker-1/worker-2.
-Installing Cilium `1.20.2` with Helm timed out after ten minutes. No Cilium
-readiness, API survival under control-plane loss, restart recovery, or
-migration check passed. The next harness change captures all Nodes, Pods,
-events, Cilium agent/operator descriptions and logs, and containerd/kubelet
-state when Cilium setup fails. Runtime diagnosis and rerun are pending. Logs:
-`/tmp/nodemigrate-36272793413-job.log`.
+Installing Cilium `1.20.2` with Helm timed out after ten minutes because its
+agents and Envoy could not start: containerd reported `/sys/fs/bpf` was neither
+a shared nor slave mount for nested Cilium Pods. The timeout was secondary to
+the Docker node's private bpffs mount propagation. The diagnostics added in
+`1f46f848` captured the kubelet/containerd error. The harness now marks each
+node's private bpffs mount recursively shared inside that node's own mount
+namespace and asserts its mountinfo propagation flag before starting kubeadm.
+This fix and the Cilium rerun remain unverified. No Cilium readiness, API
+survival under control-plane loss, restart recovery, or migration check passed.
+Log: `/tmp/nodemigrate-36273723872-job.log` and artifact
+`/tmp/nodemigrate-36273723872-artifact/nodemigrate-docker-preflight.log`.
 
 Another Docker-only run is pending. Logs:
 `/tmp/nodemigrate-36272360238-job.log` and
