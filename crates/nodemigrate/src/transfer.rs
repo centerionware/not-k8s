@@ -1670,9 +1670,9 @@ async fn apply_object(
         format!("/apis/{}/{}", resource.group, resource.version)
     };
     let api_path = if let Some(namespace) = object.metadata.namespace.as_deref() {
-        format!("{api_root}/namespaces/{namespace}/{}/{name}", resource.resource)
+        format!("{api_root}/namespaces/{namespace}/{}/{name}", resource.plural)
     } else {
-        format!("{api_root}/{}/{name}", resource.resource)
+        format!("{api_root}/{}/{name}", resource.plural)
     };
     if kind == "CustomResourceDefinition" {
         match api.create(&PostParams::default(), &object).await {
