@@ -45,6 +45,18 @@ passed at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migrati
 completed its upstream lane with the failure above; its K3s lane is still
 running. Round-trip parity remains unverified.
 
+Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
+before reporting an API/readiness/node-replacement failure, nodemigrate now
+stops the partial retained target, restores local PV payloads, and restores
+the prior nodestore service stack. If the target cannot be safely stopped,
+nodestore remains stopped and the error reports the recovery location. Unit
+tests cover teardown ordering and source restoration behavior; focused
+nodemigrate tests [36264669564](https://github.com/centerionware/not-k8s/actions/runs/36264669564)
+and migration-workflow validation
+[36264669587](https://github.com/centerionware/not-k8s/actions/runs/36264669587)
+passed at `3f7c8873`. Runtime verification of recovery API/fixture state is
+pending. The existing run `36260417450` predates this fix.
+
 ## Earlier integration attempt
 
 Migration run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)

@@ -44,6 +44,12 @@ selection, and `git diff --check` passed locally. Focused nodemigrate crate
 tests passed in [36263787654](https://github.com/centerionware/not-k8s/actions/runs/36263787654)
 at `434c9acb`; migration-workflow validation passed in
 [36263787652](https://github.com/centerionware/not-k8s/actions/runs/36263787652).
+Commit `3f7c8873` adds reverse-cutover rollback and checks recovered nodestore
+state in the integration harness. Focused nodemigrate tests
+[36264669564](https://github.com/centerionware/not-k8s/actions/runs/36264669564)
+and migration-workflow validation
+[36264669587](https://github.com/centerionware/not-k8s/actions/runs/36264669587)
+passed at that SHA; runtime migration verification is pending.
 The `nodemigrate` quick-check
 [36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
 passed at `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
