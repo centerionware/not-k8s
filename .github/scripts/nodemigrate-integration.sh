@@ -151,6 +151,23 @@ watch_target_forward_state() {
                         subsets,
                         endpoints: [.endpoints[]? | {addresses, conditions}]
                     }]' || true
+                echo 'kubernetes API service:'
+                KUBECONFIG="$kubeconfig" kubectl get service kubernetes \
+                    -n default -o json 2>&1 \
+                    | jq -cS '{clusterIP: .spec.clusterIP, clusterIPs: .spec.clusterIPs, ports: .spec.ports}' || true
+                echo 'kubernetes API endpoints:'
+                KUBECONFIG="$kubeconfig" kubectl get endpoints kubernetes \
+                    -n default -o json 2>&1 \
+                    | jq -cS '[.subsets[]? | {addresses, notReadyAddresses, ports}]' || true
+                KUBECONFIG="$kubeconfig" kubectl get endpointslices \
+                    -n default -l kubernetes.io/service-name=kubernetes -o json 2>&1 \
+                    | jq -cS '[.items[]? | {
+                        name: .metadata.name,
+                        ports,
+                        endpoints: [.endpoints[]? | {addresses, conditions, nodeName, targetRef}]
+                    }]' || true
+                echo 'nodeproxy service state:'
+                systemctl is-active nodeproxy 2>&1 || true
             )"
             now="$(date +%s)"
             if [[ "$snapshot" != "$previous_snapshot" || $((now - last_capture)) -ge 30 ]]; then
