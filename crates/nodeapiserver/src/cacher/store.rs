@@ -49,6 +49,24 @@ pub struct CacheEntry {
     pub mod_revision: i64,
 }
 
+/// Build the synthetic ADDED events for a streaming-list WATCH snapshot.
+/// Each object carries its own modification revision, while the collection
+/// snapshot revision is sent separately on the initial-events-end bookmark.
+/// Stamping every object with the snapshot revision makes a later Update
+/// submit a resourceVersion newer than that object's stored mod_revision.
+pub fn initial_list_events(entries: Vec<(Vec<u8>, CacheEntry)>, prefix: &[u8]) -> Vec<WatchEvent> {
+    entries
+        .into_iter()
+        .filter(|(key, _)| key.starts_with(prefix))
+        .map(|(key, entry)| WatchEvent {
+            kind: EventKind::Added,
+            key,
+            value: entry.value,
+            revision: entry.mod_revision,
+        })
+        .collect()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The requested `start_revision` is older than anything this cache
@@ -437,6 +455,27 @@ mod tests {
         assert_eq!(rev, 5);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].0, b"a");
+    }
+
+    #[test]
+    fn streaming_list_initial_events_use_each_objects_mod_revision() {
+        let entries = vec![
+            (
+                b"/registry/gatewayclasses/traefik".to_vec(),
+                entry("first", 1049),
+            ),
+            (
+                b"/registry/gatewayclasses/migration-traefik".to_vec(),
+                entry("second", 1050),
+            ),
+            (b"/registry/gateways/other".to_vec(), entry("outside", 1382)),
+        ];
+
+        let events = initial_list_events(entries, b"/registry/gatewayclasses/");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].revision, 1049);
+        assert_eq!(events[1].revision, 1050);
+        assert!(events.iter().all(|event| event.kind == EventKind::Added));
     }
 
     #[test]

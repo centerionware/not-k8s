@@ -128,16 +128,7 @@ macro_rules! handle_watch {
             let initial_events = if watch_options.send_initial_events {
                 let (entries, revision) = cache.list();
                 let prefix = crate::$storage::keys::list_prefix(&$info.api_group, &$info.resource, Some(&$info.namespace)).into_bytes();
-                let events = entries
-                    .into_iter()
-                    .filter(|(key, _)| key.starts_with(&prefix))
-                    .map(|(key, entry)| crate::cacher::store::WatchEvent {
-                        kind: crate::cacher::store::EventKind::Added,
-                        key,
-                        value: entry.value,
-                        revision,
-                    })
-                    .collect();
+                let events = crate::cacher::store::initial_list_events(entries, &prefix);
                 Some((events, revision))
             } else {
                 None

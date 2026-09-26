@@ -52,6 +52,21 @@ The general full build and full e2e gates were not dispatched.
 
 ## Latest branch-runtime result
 
+The follow-up [run 36234240173](https://github.com/centerionware/not-k8s/actions/runs/36234240173)
+used SHA `0a17cf9cb2e7d935afcb06e9653490aa76b1c912`. Focused
+nodeapiserver quick-check [36234234075](https://github.com/centerionware/not-k8s/actions/runs/36234234075),
+the Docker preflight, and both scoped builds passed. Both migrations again
+reached destination API readiness, then timed out at GatewayClass Accepted.
+The new diagnostic showed the cause: streaming-list initial ADDED events
+assigned the collection snapshot revision to each object's `resourceVersion`.
+Traefik submitted `1382` for K3s `migration-traefik` while the stored object's
+mod_revision was `1049`; upstream submitted `891` while stored mod_revision
+was `889`. The status handler correctly rejected these as stale/future
+resourceVersions. The branch now constructs each initial event with its own
+object mod_revision and leaves the snapshot revision on the completion
+bookmark. A focused regression is added; nodeapiserver quick-check and the
+runtime rerun for this fix are pending. Logs: `/tmp/nodemigrate-36234240173/`.
+
 Dedicated migration run [36232994720](https://github.com/centerionware/not-k8s/actions/runs/36232994720)
 used head SHA `56f27d13d05af278706f280f69c29f3d8d1bd195` with
 `runtime_source=branch`. Focused nodemigrate checks passed separately in
@@ -65,10 +80,9 @@ timed out waiting for `GatewayClass/migration-traefik` Accepted. Traefik's
 Gateway API controller repeatedly received HTTP 409 from destination
 `/gatewayclasses/migration-traefik/status`, leaving its condition
 `Accepted=Unknown` / `Waiting for controller`. This appears in both CNI lanes;
-the precise stale-versus-current resourceVersion values were not logged, so
-the conflict cause is unconfirmed. The nodeapiserver status path now logs
-those two values for GatewayClass conflicts; focused nodeapiserver CI and a
-runtime rerun are pending. The sandbox-stop timeout did not recur.
+the precise stale-versus-current resourceVersion values were not logged in
+that run. Follow-up diagnostics in run 36234240173 exposed the incorrect
+snapshot revision described above. The sandbox-stop timeout did not recur.
 No semantic checkpoint completed, and no return migration, parity comparison,
 or merge gate passed. Full lane logs: `/tmp/nodemigrate-36232994720/`.
 

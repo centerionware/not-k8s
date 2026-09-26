@@ -9,6 +9,20 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Follow-up run [36234240173](https://github.com/centerionware/not-k8s/actions/runs/36234240173)
+used SHA `0a17cf9cb2e7d935afcb06e9653490aa76b1c912`. Focused nodeapiserver
+quick-check [36234234075](https://github.com/centerionware/not-k8s/actions/runs/36234234075),
+the Docker preflight, and both scoped builds passed. Both source lanes
+completed forward migration and destination API readiness, then failed the
+GatewayClass Accepted wait again. Diagnostics proved streaming-list initial
+WATCH events were stamping each object's resourceVersion with the collection
+snapshot revision. Traefik submitted RV `1382` for an object stored at `1049`
+on K3s and `891` for one stored at `889` upstream; those stale/future writes
+were correctly rejected with 409. The branch now uses each object's own
+mod_revision for initial ADDED events and keeps the collection RV for the
+completion bookmark, with a focused regression. Validation is pending. Logs:
+`/tmp/nodemigrate-36234240173/`.
+
 Dedicated run [36232994720](https://github.com/centerionware/not-k8s/actions/runs/36232994720)
 at SHA `56f27d13d05af278706f280f69c29f3d8d1bd195` passed the Docker
 preflight, scoped builds, and focused nodemigrate checks [36232987555](https://github.com/centerionware/not-k8s/actions/runs/36232987555).
