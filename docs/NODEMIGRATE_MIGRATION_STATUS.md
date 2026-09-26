@@ -136,9 +136,11 @@ Each checkpoint now exercises StatefulSet claim-template reconciliation by
 scaling from ordinal 0 to ordinals 0 and 1, verifying both claims bind and
 ordinal 1 can persist data, then scaling back and cleaning up the temporary
 ordinal 1 claim/PV. It checks that ordinal 0 retains the same PVC UID and
-payload. This complements the existing per-checkpoint Deployment `/scale`
-check. Local shell syntax and fixture-helper checks pass at
-`ead8e6f3284cf2dc2a4c7eb368bfd0b4a097995d`; PR validation and real-cluster
+payload. It also changes StatefulSet `minReadySeconds`, waits for
+`observedGeneration`, and restores the original setting. This complements the
+existing per-checkpoint Deployment `/scale` check. Local shell syntax and
+fixture-helper checks pass at
+`a936dc7e4b625ee67c49429f11a1c1778372d1c9`; PR validation and real-cluster
 verification are pending. The older live K3s lane does not include this test.
 
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:

@@ -142,9 +142,10 @@ The fixture now scales the StatefulSet from one ordinal to two and back at
 every source, nodestore, and returned-source checkpoint. It checks both Pods
 and template-created claims, writes unique data to ordinal 1, removes its
 temporary claim/PV after scale-down, and verifies ordinal 0 retains its PVC UID
-and payload. Local shell syntax, API inventory/object-hash checks,
+and payload. It also changes `minReadySeconds`, waits for StatefulSet
+`observedGeneration`, and restores the original setting. Local shell syntax, API inventory/object-hash checks,
 snapshot-normalization, Helm-state checks, and `git diff --check` passed at
-`ead8e6f3284cf2dc2a4c7eb368bfd0b4a097995d`. PR validation and cluster runtime
+`a936dc7e4b625ee67c49429f11a1c1778372d1c9`. PR validation and cluster runtime
 verification are pending; the active migration run is on an older SHA and
 cannot cover this addition.
 
