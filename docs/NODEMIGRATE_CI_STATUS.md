@@ -15,34 +15,25 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
-Migration run [36247102741](https://github.com/centerionware/not-k8s/actions/runs/36247102741)
-used SHA `bd3b4f8f4fae50af73fab88e01a4752f06e01640`. Docker five-node
+Migration run [36248706224](https://github.com/centerionware/not-k8s/actions/runs/36248706224)
+used SHA `b14185a1e484fca6d0b986bcf01219fe822ff149`. Docker five-node
 preflight, both nodemigrate builds, and both branch runtime builds passed.
 Both K3s+Cilium and upstream Kubernetes+Cilium lanes passed the CronJob
-selector/log check, RBAC Jobs, certificate readiness, Cilium/Gateway,
-Deployment, StatefulSet, DaemonSet, and standalone Pod checks. They failed
-when the target static PVC did not return to `Bound`; reverse migration and
-full semantic parity were not reached. The saved artifacts and job logs are
-under `/tmp/nodemigrate-36247102741-artifacts/` and
-`/tmp/nodemigrate-36247102741-{k3s,kubernetes}-job.log`.
+selector/log assertion, RBAC Jobs, certificate readiness, Cilium/Gateway,
+Deployment, StatefulSet, DaemonSet, standalone Pod, and static PVC binding.
+Both then timed out waiting for `Pod/migration-data-check` because nodelet did
+not mount the bound static `hostPath` PV. Return migration and full semantic
+parity were not reached. Artifacts and logs are under
+`/tmp/nodemigrate-36248706224-artifacts/` and
+`/tmp/nodemigrate-36248706224-{k3s,kubernetes}-job.log`.
 
-Focused nodeapiserver quick-check
-[36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)
-passed at the same SHA, verifying the Job selector implementation. Diagnosis
-found that migration removes PVC status but retains the source bind-completed
-annotation; nodecontroller then skipped the claim despite missing
-`status.phase=Bound`. A nodecontroller fix and regression test are now in the
-worktree. Its quick-check and the next migration run are pending. No regular
-`build.yml` or full e2e gate was run.
-
-Follow-up migration setup now mounts hostpath CSI's `/csi-data-dir` from
-node-local persistent storage before provisioning fixture claims. This keeps
-the provider's own volume catalog and payload available when the source CSI
-StatefulSet stops and the target recreates it during the in-place runtime
-change. The fixture verifies actual static and CSI payload reads at source,
-target, and return checkpoints; runtime validation of this setup is pending.
-It does not verify provider-state transfer to a different physical node or
-other CSI drivers.
+Focused `nodecontroller` quick-check
+[36248706148](https://github.com/centerionware/not-k8s/actions/runs/36248706148)
+passed at the same SHA; it verifies recovery of imported PVCs whose status was
+stripped while a bind marker remained. A nodelet fix for hostPath/local PV
+mounting is being prepared. Run its focused component quick-check and repeat
+the dedicated migration workflow after commit. No regular `build.yml` or full
+e2e gate was run.
 
 Migration run [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
 used SHA `606f46f624007dfd6215be26b97e54817fe020af`. Docker preflight, both

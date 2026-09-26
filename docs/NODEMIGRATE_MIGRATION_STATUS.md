@@ -9,35 +9,28 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
-Run [36247102741](https://github.com/centerionware/not-k8s/actions/runs/36247102741)
-used SHA `bd3b4f8f4fae50af73fab88e01a4752f06e01640`. Docker preflight and both
-utility/runtime builds passed. Both K3s+Cilium and upstream Kubernetes+Cilium
-lanes passed the CronJob Job selector/log assertion, RBAC Jobs, certificate
-readiness, and target checks through workload controllers and Gateway API.
-Both then timed out waiting for the imported static PVC to regain `Bound`
-status; no return migration or full parity passed. The exporter removes
-Kubernetes object status but keeps the source PVC's bind-completed annotation.
-The PV binder incorrectly skipped this incomplete claim. A fix now requires
-the PVC status phase to be Bound before the binder treats it as complete; its
-focused regression and migration retest are pending. Logs and artifacts:
-`/tmp/nodemigrate-36247102741-artifacts/` and
-`/tmp/nodemigrate-36247102741-{k3s,kubernetes}-job.log`.
+Run [36248706224](https://github.com/centerionware/not-k8s/actions/runs/36248706224)
+used SHA `b14185a1e484fca6d0b986bcf01219fe822ff149`. Both K3s+Cilium and
+upstream Kubernetes+Cilium lanes passed the CronJob selector/log assertion,
+RBAC Jobs, certificate readiness, Cilium/Gateway, Deployment, StatefulSet,
+DaemonSet, standalone Pod, and static PVC binding checks. Both then timed out
+waiting for `Pod/migration-data-check`: nodelet did not mount the bound static
+hostPath PV. The binder fix is confirmed; this new nodelet bug blocks static PV
+data verification. Neither lane reached return migration or semantic parity.
+Artifacts and logs: `/tmp/nodemigrate-36248706224-artifacts/` and
+`/tmp/nodemigrate-36248706224-{k3s,kubernetes}-job.log`.
 
-Quick-check [36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)
-passed `nodeapiserver` tests at the same SHA, verifying generated Job selectors
-for POST and create-on-apply. Earlier CSI staging-path quick-check
+Focused `nodecontroller` quick-check [36248706148](https://github.com/centerionware/not-k8s/actions/runs/36248706148)
+passed at that SHA. A nodelet change is in progress to mount bound hostPath
+and local PV sources directly; it includes focused source-extraction tests.
+The next allowed checks are a `nodelet` quick-check and the dedicated migration
+workflow. No regular build or full e2e gate was run.
+
+Earlier `nodeapiserver` quick-check
+[36247102622](https://github.com/centerionware/not-k8s/actions/runs/36247102622)
+passed the Job selector tests. CSI staging-path quick-check
 [36246005553](https://github.com/centerionware/not-k8s/actions/runs/36246005553)
-passed `nodelet`, `nodebootstrap`, and `nodemigrate`. No regular build or full
-e2e gate was run.
-
-The current test harness now configures hostpath CSI `/csi-data-dir` on
-node-local persistent storage before fixture volumes are provisioned. The
-driver's volume catalog and payload should therefore survive its Pod restart
-across the in-place source/target runtime transition. Existing checkpoint
-probes already read both static hostPath and dynamic CSI payload markers.
-`bash -n` and `git diff --check` pass; the migration rerun is pending. This
-does not prove CSI state movement to a different physical node or support for
-other provider mechanisms.
+passed `nodelet`, `nodebootstrap`, and `nodemigrate`.
 
 Branch migration [36241224151](https://github.com/centerionware/not-k8s/actions/runs/36241224151)
 used SHA `606f46f624007dfd6215be26b97e54817fe020af`. Both builds, Docker
