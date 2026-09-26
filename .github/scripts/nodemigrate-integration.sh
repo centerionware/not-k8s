@@ -1463,6 +1463,20 @@ wait_for_httproute_condition() {
     return 1
 }
 
+record_fixture_storage_specs() {
+    local stage="$1" claim pvc_json pv_name
+    for claim in state-migration-stateful-0 migration-csi-pvc migration-static-pvc; do
+        pvc_json="$(kubectl get pvc "$claim" -n migration-apps -o json 2>/dev/null)" || continue
+        echo "Storage fixture PVC spec at stage=$stage: migration-apps/$claim"
+        jq '{metadata: {name: .metadata.name, uid: .metadata.uid, ownerReferences: .metadata.ownerReferences}, spec: .spec, status: .status}' <<<"$pvc_json"
+        pv_name="$(jq -r '.spec.volumeName // empty' <<<"$pvc_json")"
+        if [[ -n "$pv_name" ]]; then
+            echo "Storage fixture PV spec at stage=$stage: $pv_name"
+            kubectl get pv "$pv_name" -o yaml || true
+        fi
+    done
+}
+
 verify_stage() {
     local stage="$1"
     CURRENT_KUBECONFIG="$2"
@@ -1828,6 +1842,7 @@ YAML
     kill "$port_forward_pid" "$gateway_port_forward_pid" 2>/dev/null || true
     trap - RETURN
     kubectl get deploy,svc,ingress,certificate,pv,pvc -A -o wide
+    record_fixture_storage_specs "$stage"
     capture_semantic_checkpoint "$stage"
     echo "PASS stage=$stage"
 }

@@ -15,6 +15,23 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+Migration run [36239708922](https://github.com/centerionware/not-k8s/actions/runs/36239708922)
+used SHA `64fdb6572639b53d51b5d0c8fc2ddeaac7dc09af`. Docker preflight and
+both nodemigrate/branch-runtime builds passed. Both source fixtures passed,
+and the target reached the same StatefulSet readiness failure after passing
+the Node, Cilium, Deployment, Gateway, standalone Pod, CA, and CSI-readiness
+checks. The generation fix remains confirmed (`generation=1`,
+`observedGeneration=1`). At failure, the StatefulSet pod was Pending with
+`waiting for CSI volume(s) to be mounted: state`; its claim/PV were Pending.
+The PV required `topology.hostpath.csi/node In [runnervmtr4k5]`, matching the
+target Node label exactly, so the earlier `FailedScheduling` affinity events
+do not explain the final CSI mount wait. This run predates nodelet/CSI log
+capture. The latest branch now records source and target fixture PV/PVC specs
+and captures nodelet, scheduler, and hostpath CSI logs on failures; a rerun is
+needed to localize the mount failure. No semantic checkpoint, return
+migration, or round trip passed. Saved artifacts:
+`/tmp/nodemigrate-36239708922/`.
+
 Migration run [36238216668](https://github.com/centerionware/not-k8s/actions/runs/36238216668)
 used SHA `0254815476d1deefdb7c6465800675cceb51d1b4`. The five-node Docker
 preflight and both standalone nodemigrate/branch-runtime builds passed. Both

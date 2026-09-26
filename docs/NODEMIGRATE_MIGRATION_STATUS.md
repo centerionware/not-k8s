@@ -9,6 +9,19 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch migration [36239708922](https://github.com/centerionware/not-k8s/actions/runs/36239708922)
+used SHA `64fdb6572639b53d51b5d0c8fc2ddeaac7dc09af`. Both runtime builds,
+the Docker preflight, both source fixtures, and target Node/Cilium/Gateway/
+Deployment/standalone Pod/CA/CSI-readiness checks passed. Both lanes confirmed
+the generation fix, then failed before the semantic checkpoint because the
+StatefulSet remained Pending on a CSI mount. Failure data shows the PV's node
+affinity exactly matches the target Node's hostpath topology label; the earlier
+scheduler conflict event therefore does not explain the final mount wait.
+This run did not record nodelet/CSI logs. The branch now records source and
+target PV/PVC specs and those logs for the next run. No target semantic
+checkpoint, reverse migration, or data parity passed. Artifacts:
+`/tmp/nodemigrate-36239708922/`.
+
 Branch-runtime migration [36238216668](https://github.com/centerionware/not-k8s/actions/runs/36238216668)
 used SHA `0254815476d1deefdb7c6465800675cceb51d1b4`. Docker preflight and
 both runtime builds passed, as did both source-stage fixtures and the nodestore

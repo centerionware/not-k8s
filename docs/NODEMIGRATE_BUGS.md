@@ -4,6 +4,20 @@ Last updated: 2026-09-26
 
 ## Latest diagnostic update
 
+Migration run [36239708922](https://github.com/centerionware/not-k8s/actions/runs/36239708922)
+reproduced the StatefulSet CSI mount stall in both source lanes. The target PV
+had required node affinity `topology.hostpath.csi/node In [runnervmtr4k5]`,
+and the target Node had the same label/value. The Pod's active status was
+`waiting for CSI volume(s) to be mounted: state`; the PVC and PV were Pending
+at failure. Earlier `FailedScheduling` events cited volume affinity conflict,
+but the final PV/Node data does not show a mismatch, so scheduler affinity is
+not a confirmed cause of the final stall. Run `36239708922` did not capture
+nodelet or hostpath CSI logs. The current harness captures those logs and the
+source/target fixture PV/PVC specs; the next run must identify the CSI call or
+state transition that remains pending before component ownership or a fix can
+be established. No full round trip is verified. Artifacts:
+`/tmp/nodemigrate-36239708922/`.
+
 Migration run [36238216668](https://github.com/centerionware/not-k8s/actions/runs/36238216668)
 confirms the generation fix: both targets reported StatefulSet
 `generation=1`/`observedGeneration=1`. It exposes a separate unresolved storage
@@ -12,14 +26,12 @@ failure in both lanes. The StatefulSet pod was Pending with
 conflict`; its StatefulSet PVC showed `Pending` and capacity `0` even though
 the target's PV/PVC table displayed `Bound`. The hostpath CSI plugin and its
 socat pod were Running, and the separate CSI readiness PVC bound successfully.
-The target Node included `kubernetes.io/hostname=runnervmtr4k5` and
-`topology.hostpath.csi/node=runnervmtr4k5`, but this run did not capture the
-StatefulSet PV's full spec, so we cannot tell whether its required affinity
-matches those labels or whether scheduler/binder state is inconsistent. The
-integration harness now captures the bound PV YAML and target Node labels on
-failure. Track as unresolved across nodemigrate PV recovery, scheduler volume
-binding, and nodecontroller PV/PVC status until the next run establishes the
-owning component. No fix or round trip is verified. Logs:
+The target Node included matching `kubernetes.io/hostname` and
+`topology.hostpath.csi/node` labels. The exact PV affinity was not captured in
+that run; run `36239708922` captured it and found an exact match. The
+integration harness was extended with PV YAML and target Node labels. The
+unresolved issue moved from suspected affinity mismatch to a CSI mount still
+pending at failure. No fix or round trip is verified. Logs:
 `/tmp/nodemigrate-36238216668/`.
 
 Run [36236810283](https://github.com/centerionware/not-k8s/actions/runs/36236810283)
