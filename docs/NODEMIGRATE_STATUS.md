@@ -10,18 +10,32 @@ separate living documents below.
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Each must preserve identity/data/state and behavior through K3s → not-k8s → K3s and upstream Kubernetes → not-k8s → upstream Kubernetes; most target, return, and full round-trip assertions remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Job selector defaulting, migrated PVC bind-status recovery, CSI staging paths, hostPath/local PV mounting, and query-free SPDY port-forwarding have focused evidence. Run 36253413938 confirmed that `nodeapiserver` persisted Ingress rules without their embedded HTTP paths in both lanes. Codec fix/regression passed `nodeapiserver` quick-check 36255128063; dedicated migration rerun 36255128061 is in progress. No return migration or parity checkpoint passed. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Focused fixes cover Job selectors, PVC bind recovery, CSI staging, local PV mounting, SPDY port-forwarding, Ingress persistence, and reverse-cutover recovery. The latest upstream lane passed source and nodestore checkpoints, then failed reverse import on cert-manager webhook timeouts and a PV 404. The rollback fix passed focused nodemigrate tests; its runtime recovery assertion remains pending. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest run [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938) passed builds/preflight and confirmed target Ingress HTTP paths were lost by nodeapiserver in both lanes. The protobuf fix/regression and all-stage assertions are in progress; focused and migration reruns are pending. No returned-source, parity, or round-trip checkpoint passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450) used the branch runtime. Upstream passed source and nodestore checkpoints but failed on return import: three cert-manager resources timed out at the webhook and one PV write returned 404. Its K3s lane is still running. No round-trip parity passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory gates remain not run: one-node K3s+Cilium round trip with no returned-state differences, and a 3-control-plane + 2-worker upstream round trip with joined replacement and no returned-state differences. Docker node isolation passed, but Kubernetes, Cilium datapath, and migration evidence for the five-node topology are still required. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed in run `36077448685`: five systemd containers have independent namespaces, machine IDs, CRI/BPF capability, writable persistent volumes, peer connectivity, and stop/restart isolation. This is infrastructure evidence, not proof of Kubernetes control-plane, Cilium datapath, or migration parity. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Branch-runtime migration [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
+  at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7` passed the upstream source
+  and nodestore target checkpoints, then failed reverse import after the
+  five-minute retry window. Certificate, CertificateRequest, and ClusterIssuer
+  writes timed out at the webhook ClusterIP; a PersistentVolume write returned
+  404. The upstream lane did not reach returned-source checks or parity; K3s is
+  still in progress. Commits `058fafa8` and `434c9acb` add return-leg webhook
+  probes and request-path diagnostics. Commit `3f7c8873` adds reverse-cutover
+  rollback; its focused nodemigrate tests and migration workflow validation
+  passed in [36264669564](https://github.com/centerionware/not-k8s/actions/runs/36264669564)
+  and [36264669587](https://github.com/centerionware/not-k8s/actions/runs/36264669587).
+  That older runtime run predates the rollback fix, so runtime recovery remains
+  unverified. No regular build or full e2e gate was run.
 
 - Migration [36253413938](https://github.com/centerionware/not-k8s/actions/runs/36253413938)
   at SHA `19e1cae66e57ed9abf02625d8ec9ba877f30e651` passed Docker isolation
@@ -270,10 +284,15 @@ separate living documents below.
 
 ## Next actions
 
-1. Keep both real-cluster lanes and the existing-cluster join/replacement case
-   marked unverified until their authorized runtime checks pass.
-2. Run the Docker capability preflight when migration-runtime execution is
-   authorized; if it passes, build the five-node kubeadm scenario and staged
-   control-plane coordinator.
-3. Track release readiness and publication separately; do not bump the shared
-   version for nodemigrate-only publication.
+1. Let run `36260417450` finish and inspect its K3s artifact; do not dispatch a
+   duplicate while its K3s lane is live.
+2. Run the dedicated migration workflow at the rollback/diagnostic branch head,
+   then use its return watcher and rollback assertions to resolve the webhook
+   path, PV request path, and source recovery behavior.
+3. Build the actual isolated five-node kubeadm migration and staged
+   control-plane coordinator. The Docker-only preflight does not exercise
+   Kubernetes membership or migration parity.
+4. Keep both merge gates and the existing-cluster join/replacement case
+   unverified until their authorized runtime checks pass. Track release
+   readiness separately and do not bump shared `VERSION` for standalone
+   nodemigrate publication.
