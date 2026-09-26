@@ -193,8 +193,11 @@ configuring kubeadm prerequisites. The next diagnostic run
 [36270240134](https://github.com/centerionware/not-k8s/actions/runs/36270240134)
 showed that `sysctl --system` completed and `swapoff -a` returned 32 inside
 `cp-1`. Since all privileged containers share the runner kernel and swap, the
-harness now checks runner swap once and does not try to disable it from inside a
-container. No kubeadm or Cilium checks have passed yet.
+harness now handles swap on the ephemeral GitHub runner before launching the
+containers. Run [36270390355](https://github.com/centerionware/not-k8s/actions/runs/36270390355)
+confirmed a 3 GiB `/swapfile` with zero used; the next run logs memory/swap,
+disables swap on the runner, and verifies it is off before kubelet setup. No
+kubeadm or Cilium checks have passed yet.
 
 ## Earlier branch-runtime attempt
 

@@ -34,10 +34,15 @@ fail() {
 
 docker info >/dev/null || fail "Docker daemon is not available"
 docker image inspect "$IMAGE" >/dev/null || fail "node image $IMAGE is unavailable"
+echo "Docker host memory and swap before kubelet setup"
+free -h
+swapon --show
+sudo swapoff -a
 if awk 'NR > 1 { active=1 } END { exit !active }' /proc/swaps; then
     cat /proc/swaps
-    fail "Docker host has active swap; kubelet simulation requires swap to be disabled on the host"
+    fail "Docker host swap is still active after swapoff"
 fi
+echo "Docker host swap is disabled for the kubelet simulation"
 echo "Loading kernel modules on the Docker host for privileged node containers"
 sudo modprobe overlay
 sudo modprobe br_netfilter
