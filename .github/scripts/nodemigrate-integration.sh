@@ -109,7 +109,7 @@ watch_target_forward_state() {
     local kubeconfig="${1:?missing target kubeconfig}"
     local stop_file="${2:?missing watcher stop file}"
     local output_file="${3:?missing watcher output file}"
-    local previous_snapshot="" snapshot
+    local previous_snapshot="" snapshot now last_capture=0
     : > "$output_file"
     while [[ ! -e "$stop_file" ]]; do
         if systemctl is-active --quiet nodeapiserver \
@@ -122,7 +122,8 @@ watch_target_forward_state() {
                 KUBECONFIG="$kubeconfig" kubectl get services,endpoints,endpointslices \
                     -n cert-manager -o wide 2>&1 || true
             )"
-            if [[ "$snapshot" != "$previous_snapshot" ]]; then
+            now="$(date +%s)"
+            if [[ "$snapshot" != "$previous_snapshot" || $((now - last_capture)) -ge 30 ]]; then
                 {
                     echo "Target cluster state at $(date -u +%FT%TZ):"
                     printf '%s\n' "$snapshot"
@@ -140,6 +141,7 @@ watch_target_forward_state() {
                         --sort-by=.lastTimestamp 2>&1 | tail -n 80 || true
                 } >> "$output_file"
                 previous_snapshot="$snapshot"
+                last_capture="$now"
             fi
         fi
         sleep 2
