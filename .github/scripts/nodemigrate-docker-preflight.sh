@@ -210,17 +210,19 @@ EOF
             exit 1
         fi
         grep -n "snapshotter =.*native" /etc/containerd/config.toml
-        grep -A2 '^\[\[plugins\."io\.containerd\.transfer\.v1\.local"\.unpack_config\]\]' \
-            /etc/containerd/config.toml
-        grep -A2 '^\[\[plugins\."io\.containerd\.transfer\.v1\.local"\.unpack_config\]\]' \
-            /etc/containerd/config.toml \
-            | grep -q 'platform = "linux/amd64"' || {
+        unpack_header='[[plugins."io.containerd.transfer.v1.local".unpack_config]]'
+        if ! grep -Fq "$unpack_header" /etc/containerd/config.toml; then
+            tail -n 16 /etc/containerd/config.toml
+            echo "FAIL: containerd native snapshotter unpack configuration is missing" >&2
+            exit 1
+        fi
+        unpack_config="$(grep -F -A2 "$unpack_header" /etc/containerd/config.toml)"
+        printf '%s\n' "$unpack_config"
+        grep -Fq 'platform = "linux/amd64"' <<<"$unpack_config" || {
                 echo "FAIL: containerd native snapshotter unpack platform is missing" >&2
                 exit 1
             }
-        grep -A2 '^\[\[plugins\."io\.containerd\.transfer\.v1\.local"\.unpack_config\]\]' \
-            /etc/containerd/config.toml \
-            | grep -q 'snapshotter = "native"' || {
+        grep -Fq 'snapshotter = "native"' <<<"$unpack_config" || {
                 echo "FAIL: containerd native snapshotter unpack mapping is missing" >&2
                 exit 1
             }

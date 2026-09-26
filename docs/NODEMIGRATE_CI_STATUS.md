@@ -27,6 +27,16 @@ native snapshotter. Shell syntax and focused config-pattern checks passed
 locally; the corrected Docker-only rerun is pending. Log:
 `/tmp/nodemigrate-36271904146-job.log`.
 
+Docker-only run [36272360238](https://github.com/centerionware/not-k8s/actions/runs/36272360238)
+at SHA `9c0f58fef4b8eceb38a53f929210bcaae70e73b2` passed the image build and
+all five containers' namespace, CRI, BPF, storage, and network checks. It then
+stopped before restarting containerd because the new regex assertion did not
+match the appended TOML table. The workflow skipped both migration lanes. The
+assertion now uses a literal table lookup and prints the matched mapping;
+shell syntax and a local literal-pattern check pass. Another Docker-only run is
+pending. Log: `/tmp/nodemigrate-36272360238-job.log` and artifact
+`/tmp/nodemigrate-36272360238-artifact/nodemigrate-docker-preflight.log`.
+
 Migration run [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
 at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7` is now terminal. The
 upstream lane failed during return import after cert-manager webhook timeouts
