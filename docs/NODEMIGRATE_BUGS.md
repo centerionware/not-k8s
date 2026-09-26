@@ -22,8 +22,18 @@ pass locally, and targeted `nodemigrate` quick-check
 [36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
 passed at `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Full migration rerun
 [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
-is running. Neither lane has yet reported reverse migration or round-trip
-parity.
+passed source and nodestore target checks in the upstream lane but failed the
+return import after five minutes: Certificate, CertificateRequest, and
+ClusterIssuer requests timed out reaching the webhook ClusterIP, and a PV
+request returned HTTP 404 despite the advertised resource. Neither error's
+root cause is confirmed. The protected export remains retained, but no
+returned-source checkpoint or round-trip parity passed. K3s is still running.
+Commits `058fafa8` and `434c9acb` add return-target webhook/endpoint probes and
+the destination API path to restore errors. Focused nodemigrate tests
+[36263787654](https://github.com/centerionware/not-k8s/actions/runs/36263787654)
+and migration-workflow validation
+[36263787652](https://github.com/centerionware/not-k8s/actions/runs/36263787652)
+passed at `434c9acb`; runtime validation of these diagnostics is pending.
 
 ## Latest diagnostic update
 

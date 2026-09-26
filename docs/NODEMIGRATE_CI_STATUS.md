@@ -29,17 +29,28 @@ against the active API CA) and optional `apiVersion`/`kind` fields in nested
 StatefulSet PVC templates. No reverse migration ran in either lane. Artifacts:
 `/tmp/nodemigrate-36258945785-artifacts/nodemigrate-{k3s,kubernetes}-36258945785/`.
 
-The current worktree adds bounded retries for transient API/webhook and
+The current branch adds bounded retries for transient API/webhook and
 transport failures, with permanent API rejections failing immediately. It
 also gives the application fixture a dedicated semantic normalizer that
 excludes only the generated namespace root CA ConfigMap and removes optional
-TypeMeta from PVC templates. Focused shell, jq, and formatting checks passed.
+TypeMeta from PVC templates. The upstream lane passed the nodestore target
+checkpoint, then failed on the return import after five minutes: three
+cert-manager resources timed out reaching the webhook ClusterIP, and one PV
+restore returned HTTP 404. The PV request path was not present in that run's
+error, so its cause remains unconfirmed. The K3s lane is still running.
+Commits `058fafa8` and `434c9acb` add return-leg service diagnostics and include
+the destination API request path in restore errors. Shell syntax, jq probe
+selection, and `git diff --check` passed locally. Focused nodemigrate crate
+tests passed in [36263787654](https://github.com/centerionware/not-k8s/actions/runs/36263787654)
+at `434c9acb`; migration-workflow validation passed in
+[36263787652](https://github.com/centerionware/not-k8s/actions/runs/36263787652).
 The `nodemigrate` quick-check
 [36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
 passed at `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
 [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
-is running at the same SHA. No regular full build or full e2e gate was
-dispatched.
+ran at `8c79470de60f288fc113db7b7b8c45da048b6ad7`; upstream failed as
+described above and K3s remains in progress. No regular full build or full e2e
+gate was dispatched.
 
 ## Earlier branch-runtime attempt
 

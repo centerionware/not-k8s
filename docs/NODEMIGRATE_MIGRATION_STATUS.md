@@ -21,16 +21,29 @@ snapshot on destination-generated root CA annotation metadata and optional
 PVC-template TypeMeta. The separate active-API-CA content assertion passed.
 Neither lane ran the return migration, so bidirectional parity is unverified.
 
-The current worktree extends retry handling to a bounded five minutes for
+The current branch extends retry handling to a bounded five minutes for
 transient API/webhook and transport failures, while permanent rejections fail
 without waiting. The application snapshot now omits only the generated
 namespace root CA ConfigMap and ignores optional `apiVersion`/`kind` fields in
-StatefulSet PVC templates. Focused shell, jq, and formatting checks passed,
-as did the `nodemigrate` quick-check
+StatefulSet PVC templates. In run
+[36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450),
+upstream Kubernetes passed source and nodestore target checks, then failed
+return import after five minutes: Certificate, CertificateRequest, and
+ClusterIssuer writes timed out reaching `10.97.233.241:443`; one
+PersistentVolume write returned 404. The request path was not captured, and
+the cause of both failures is unconfirmed. No returned-source checkpoint or
+parity passed. The K3s lane remains in progress. New failure capture watches
+the return target and probes the webhook ClusterIP and ready EndpointSlice
+addresses; restore errors now include their API request path. Focused
+nodemigrate tests [36263787654](https://github.com/centerionware/not-k8s/actions/runs/36263787654)
+and migration workflow validation
+[36263787652](https://github.com/centerionware/not-k8s/actions/runs/36263787652)
+passed at `434c9acb`. The `nodemigrate` quick-check
 [36260417435](https://github.com/centerionware/not-k8s/actions/runs/36260417435)
-at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
+passed at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7`. Branch-runtime migration
 [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
-is still running on that SHA. Round-trip parity remains unverified.
+completed its upstream lane with the failure above; its K3s lane is still
+running. Round-trip parity remains unverified.
 
 ## Earlier integration attempt
 
