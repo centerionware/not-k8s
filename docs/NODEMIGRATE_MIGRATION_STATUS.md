@@ -143,6 +143,19 @@ fixture-helper checks pass at
 `a936dc7e4b625ee67c49429f11a1c1778372d1c9`; PR validation and real-cluster
 verification are pending. The older live K3s lane does not include this test.
 
+Source export now logs every listable API resource, the number of objects
+selected for migration, and the counts/reasons for lifecycle-excluded objects
+or kinds. The skip reasons explain read-only status, destination
+re-registration or regeneration, refreshed metrics, CSI reattachment,
+destination CA bundles, controller-managed endpoints/Pods, heartbeat Leases,
+and service-account tokens. Tests cover the classifications. At SHA
+`39890702faf4815b022bd9419472e509b6f1076e`, the focused crate tests
+[36268585399](https://github.com/centerionware/not-k8s/actions/runs/36268585399)
+and migration workflow validation
+[36268585450](https://github.com/centerionware/not-k8s/actions/runs/36268585450)
+passed. The runtime log output has not yet been verified in migration; the
+active K3s lane uses an older SHA.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores
