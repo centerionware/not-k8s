@@ -57,6 +57,7 @@
 //! node-owned resources.
 
 pub mod node;
+pub mod impersonation;
 pub mod rbac;
 pub mod resolve;
 pub mod sar;

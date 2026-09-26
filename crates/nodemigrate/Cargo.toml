@@ -1,0 +1,27 @@
+[package]
+name = "nodemigrate"
+description = "Safe migration between Kubernetes distributions and nodestore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nodemigrate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+base64 = "0.22"
+libc = "0.2"
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+tracing = { workspace = true }
+tokio = { workspace = true }
+rustls = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

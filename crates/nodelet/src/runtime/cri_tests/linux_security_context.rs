@@ -3,7 +3,7 @@
 //! ignored completely — runAsUser, capabilities, privileged, readOnlyRootFilesystem,
 //! and seccomp all had no effect regardless of what the Pod spec said.
 use super::*;
-use k8s_openapi::api::core::v1::{Capabilities, SeccompProfile};
+use k8s_openapi::api::core::v1::{AppArmorProfile, Capabilities, SeccompProfile};
 
 #[test]
 fn nothing_set_anywhere_produces_all_defaults() {
@@ -129,6 +129,97 @@ fn seccomp_container_level_overrides_pod_level() {
 #[test]
 fn no_seccomp_profile_anywhere_leaves_it_unset() {
     assert_eq!(linux_security_context(None, None, NamespaceMode::Container, None).seccomp, None);
+}
+
+#[test]
+fn pod_level_apparmor_profile_is_applied_to_the_container() {
+    let psc = PodSecurityContext {
+        app_armor_profile: Some(AppArmorProfile {
+            type_: "Unconfined".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let sc = linux_security_context(Some(&psc), None, NamespaceMode::Container, None);
+    assert_eq!(
+        sc.apparmor,
+        Some(SecurityProfile {
+            profile_type: ProfileType::Unconfined as i32,
+            ..Default::default()
+        })
+    );
+}
+
+#[test]
+fn container_apparmor_profile_overrides_pod_profile() {
+    let psc = PodSecurityContext {
+        app_armor_profile: Some(AppArmorProfile {
+            type_: "Unconfined".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let csc = SecurityContext {
+        app_armor_profile: Some(AppArmorProfile {
+            type_: "RuntimeDefault".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let sc = linux_security_context(Some(&psc), Some(&csc), NamespaceMode::Container, None);
+    assert_eq!(
+        sc.apparmor,
+        Some(SecurityProfile {
+            profile_type: ProfileType::RuntimeDefault as i32,
+            ..Default::default()
+        })
+    );
+}
+
+#[test]
+fn localhost_apparmor_profile_keeps_the_profile_name() {
+    let csc = SecurityContext {
+        app_armor_profile: Some(AppArmorProfile {
+            type_: "Localhost".to_string(),
+            localhost_profile: Some("cilium-agent".to_string()),
+        }),
+        ..Default::default()
+    };
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container, None);
+    assert_eq!(
+        sc.apparmor,
+        Some(SecurityProfile {
+            profile_type: ProfileType::Localhost as i32,
+            localhost_ref: "cilium-agent".to_string(),
+        })
+    );
+}
+
+#[test]
+fn no_apparmor_profile_anywhere_leaves_it_unset() {
+    assert_eq!(
+        linux_security_context(None, None, NamespaceMode::Container, None).apparmor,
+        None
+    );
+}
+
+#[test]
+fn unknown_apparmor_profile_falls_back_to_runtime_default() {
+    let csc = SecurityContext {
+        app_armor_profile: Some(AppArmorProfile {
+            type_: "Unexpected".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let sc = linux_security_context(None, Some(&csc), NamespaceMode::Container, None);
+    assert_eq!(
+        sc.apparmor,
+        Some(SecurityProfile {
+            profile_type: ProfileType::RuntimeDefault as i32,
+            ..Default::default()
+        })
+    );
 }
 
 // --- supplementalGroupsPolicy (round 62) ---

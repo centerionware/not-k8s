@@ -646,10 +646,52 @@ impl PodController {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
         let params = ListParams::default().labels(COREDNS_SELECTOR);
         let seed_api: Api<Pod> = Api::namespaced(self.client.clone(), COREDNS_NAMESPACE);
+        let node_pods_api: Api<Pod> = Api::all(self.client.clone());
+        let node_pods_params =
+            ListParams::default().fields(&format!("spec.nodeName={}", self.node_name));
         let mut logged_wait = false;
 
         info!("waiting for CoreDNS to become ready before reconciling workloads");
         loop {
+            // External CNI agents such as Cilium need to start before CoreDNS
+            // can use the CNI datapath. Their DaemonSet Pods use hostNetwork,
+            // so reconcile those bootstrap Pods while ordinary workloads are
+            // still gated. This also lets host-network teardown events finish
+            // before the full Pod watch starts.
+            match tokio::time::timeout(
+                COREDNS_API_TIMEOUT,
+                node_pods_api.list(&node_pods_params),
+            )
+            .await
+            {
+                Ok(Ok(pods)) => {
+                    for pod in &pods {
+                        if is_local_terminating_pod(pod, &self.node_name) {
+                            self.spawn_teardown(pod.clone());
+                            continue;
+                        }
+                        if !is_local_host_network_pod(pod, &self.node_name) {
+                            continue;
+                        }
+                        if pod.metadata.namespace.as_deref() == Some(COREDNS_NAMESPACE)
+                            && pod.metadata.name.as_deref().is_some_and(|name| name.starts_with("cilium-"))
+                        {
+                            info!(
+                                pod = %pod.metadata.name.as_deref().unwrap_or_default(),
+                                uid = %pod.metadata.uid.as_deref().unwrap_or_default(),
+                                "reconciling Cilium bootstrap Pod while CoreDNS is gated"
+                            );
+                        }
+                        self.reconcile_with_timeout(pod.clone()).await;
+                    }
+                }
+                Ok(Err(error)) => warn!(?error, "failed to list host-network bootstrap Pods; retrying"),
+                Err(_) => warn!(
+                    timeout_secs = COREDNS_API_TIMEOUT.as_secs(),
+                    "timed out listing host-network bootstrap Pods; retrying"
+                ),
+            }
+
             // The bootstrapper creates this one disposable Pod specifically
             // to make the first CNI network namespace appear. Reconcile it
             // before checking CoreDNS: a slow or stuck readiness LIST must
@@ -699,7 +741,7 @@ impl PodController {
                 // The API's old status is not proof that the corresponding
                 // containerd task survived the restart. Establish the local
                 // runtime state and probe supervisor before judging readiness.
-                let mut runtime_status = match self.runtime.status(&namespace, &name).await {
+                let runtime_status = match self.runtime.status(&namespace, &name).await {
                     Ok(status) => status,
                     Err(error) => {
                         warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to inspect local CoreDNS runtime status; reconciling");
@@ -712,14 +754,16 @@ impl PodController {
                     status.pod_ip.is_none() || !probe_supervisor_running
                 });
                 if needs_reconcile {
-                    self.reconcile_with_timeout(pod.clone()).await;
-                    runtime_status = match self.runtime.status(&namespace, &name).await {
-                        Ok(status) => status,
-                        Err(error) => {
-                            warn!(pod = %format!("{namespace}/{name}"), ?error, "failed to re-read local CoreDNS runtime status");
-                            None
-                        }
-                    };
+                    // CNI is still starting while this gate is active. A local
+                    // CoreDNS reconcile can spend the full 30-second runtime
+                    // budget waiting for a sandbox that cannot start until
+                    // CNI is ready. Running those reconciles inline starves
+                    // the next host-network CNI-agent pass; with several
+                    // replicas, one loop can delay Cilium init-container
+                    // progress by minutes. Queue each key through the normal
+                    // bounded, coalescing worker pool and let this gate keep
+                    // checking CNI bootstrap and runtime readiness.
+                    self.enqueue_pod_reconcile(pod.clone());
                 }
 
                 if runtime_status
@@ -1055,6 +1099,12 @@ impl PodController {
                 if self.observe_watch_pod(&pod) {
                     let key = key_parts(&pod).map(|(namespace, name)| pod_key(&namespace, &name));
                     if pod.metadata.deletion_timestamp.is_some() {
+                        info!(
+                            pod = %key.as_deref().unwrap_or_default(),
+                            uid = %pod.metadata.uid.as_deref().unwrap_or_default(),
+                            resource_version = %pod.metadata.resource_version.as_deref().unwrap_or_default(),
+                            "received terminating Pod watch event"
+                        );
                         if let Some(key) = key {
                             self.cancel_reconcile(&key);
                         }
@@ -1187,6 +1237,21 @@ impl PodController {
         match self.runtime.ensure_pod(&pod).await {
             Ok(status) => {
                 debug!(target: "nk_watch_trace", pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), "runtime ensure completed; publishing status");
+                if ns == COREDNS_NAMESPACE && name.starts_with("cilium-") {
+                    let init_status = status
+                        .init_containers
+                        .iter()
+                        .map(|container| (&container.name, container.running, container.exit_code))
+                        .collect::<Vec<_>>();
+                    info!(
+                        pod = %format!("{ns}/{name}"),
+                        phase = status.phase.as_str(),
+                        initialized = status.initialized,
+                        message = ?status.message,
+                        init_containers = ?init_status,
+                        "Cilium Pod runtime reconciliation completed"
+                    );
+                }
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
@@ -1376,6 +1441,13 @@ impl PodController {
                 return; // a teardown for this pod is already in flight
             }
         }
+
+        info!(
+            pod = %format!("{ns}/{name}"),
+            uid = %uid.as_deref().unwrap_or_default(),
+            deletion_timestamp = ?pod.metadata.deletion_timestamp,
+            "starting Pod teardown"
+        );
 
         self.stop_probe_supervisor(&ns, &name);
 
@@ -2053,6 +2125,17 @@ fn key_parts(pod: &Pod) -> Option<(String, String)> {
     Some((ns, name))
 }
 
+fn is_local_host_network_pod(pod: &Pod, node_name: &str) -> bool {
+    pod.spec.as_ref().is_some_and(|spec| {
+        spec.node_name.as_deref() == Some(node_name) && spec.host_network.unwrap_or(false)
+    })
+}
+
+fn is_local_terminating_pod(pod: &Pod, node_name: &str) -> bool {
+    pod.metadata.deletion_timestamp.is_some()
+        && pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref()) == Some(node_name)
+}
+
 fn api_pod_is_ready(pod: &Pod) -> bool {
     let Some(status) = pod.status.as_ref() else { return false };
     status.phase.as_deref() == Some("Running")
@@ -2179,3 +2262,6 @@ mod tests_referenced_object_changed;
 #[cfg(test)]
 #[path = "pods_tests/pod_watch_order.rs"]
 mod tests_pod_watch_order;
+#[cfg(test)]
+#[path = "pods_tests/startup_gate.rs"]
+mod tests_startup_gate;

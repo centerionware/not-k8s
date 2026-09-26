@@ -385,7 +385,7 @@ pub(crate) fn build_mounts(
     envs: &[KeyValue],
     handler_supports_recursive_ro: bool,
 ) -> Vec<Mount> {
-    volume_mounts
+    let mut mounts = volume_mounts
         .iter()
         .filter_map(|vm| {
             let sub_path = match &vm.sub_path_expr {
@@ -436,7 +436,74 @@ pub(crate) fn build_mounts(
                 ResolvedVolume::Invalid(_) => None,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // Kubernetes does not assign meaning to volumeMount list order. Keep
+    // ancestors before descendants for deterministic CRI requests; nested
+    // targets beneath read-only managed volumes are prepared separately.
+    mounts.sort_by_key(|mount| std::path::Path::new(&mount.container_path).components().count());
+    mounts
+}
+
+/// Prepare nested bind-mount targets inside read-only volumes materialized
+/// under this Pod's private volume directory. OCI runtimes apply mounts in
+/// order; when a read-only parent volume is mounted first, a child target
+/// missing from that parent source cannot be created inside the container.
+/// Only mutate nodelet-owned volume sources, never arbitrary hostPath or CSI
+/// storage contents.
+pub(crate) fn prepare_managed_nested_mountpoints(mounts: &[Mount], managed_volume_root: &std::path::Path) -> anyhow::Result<()> {
+    use std::path::Component;
+
+    let has_nested_readonly_parent = mounts.iter().any(|parent| {
+        parent.readonly
+            && mounts.iter().any(|child| {
+                let parent_path = std::path::Path::new(&parent.container_path);
+                let child_path = std::path::Path::new(&child.container_path);
+                child_path.strip_prefix(parent_path).is_ok_and(|relative| !relative.as_os_str().is_empty())
+            })
+    });
+    if !has_nested_readonly_parent {
+        return Ok(());
+    }
+
+    let managed_root = std::fs::canonicalize(managed_volume_root).context("resolving nodelet-managed Pod volume root")?;
+    for parent in mounts.iter().filter(|mount| mount.readonly) {
+        let parent_container_path = std::path::Path::new(&parent.container_path);
+        let parent_source_path = std::path::Path::new(&parent.host_path);
+        if !parent_source_path.starts_with(managed_volume_root) {
+            continue;
+        }
+        let parent_source = std::fs::canonicalize(parent_source_path).context("resolving read-only parent volume source")?;
+        if !parent_source.starts_with(&managed_root) || !parent_source.is_dir() { continue; }
+
+        for child in mounts {
+            let child_container_path = std::path::Path::new(&child.container_path);
+            let Ok(relative) = child_container_path.strip_prefix(parent_container_path) else { continue };
+            if relative.as_os_str().is_empty() || !relative.components().all(|component| matches!(component, Component::Normal(_))) {
+                continue;
+            }
+            if !std::fs::metadata(&child.host_path).is_ok_and(|metadata| metadata.is_dir()) {
+                continue;
+            }
+
+            let mut target = parent_source.clone();
+            for component in relative.components() {
+                let Component::Normal(name) = component else { continue };
+                target.push(name);
+                match std::fs::symlink_metadata(&target) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        anyhow::bail!("nested volume mount target {} crosses a symlink in managed parent volume {}", relative.display(), parent_source.display());
+                    }
+                    Ok(metadata) if metadata.is_dir() => {}
+                    Ok(_) => anyhow::bail!("nested volume mount target {} conflicts with a file in managed parent volume {}", relative.display(), parent_source.display()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        std::fs::create_dir(&target).with_context(|| format!("creating nested mountpoint {} in nodelet-managed volume", target.display()))?;
+                    }
+                    Err(error) => return Err(error).with_context(|| format!("checking nested mountpoint {}", target.display())),
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build CRI `Device` entries for a container's `volumeDevices` (round

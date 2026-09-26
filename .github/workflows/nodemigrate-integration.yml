@@ -1,0 +1,155 @@
+name: Nodemigrate tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_only:
+        description: Run only the isolated five-node Docker preflight
+        required: false
+        type: boolean
+        default: false
+      runtime_source:
+        description: Runtime to test for the single-node migration lanes
+        required: false
+        type: choice
+        options:
+          - release
+          - branch
+        default: release
+  pull_request:
+    paths:
+      - '.github/scripts/nodemigrate-integration.sh'
+      - '.github/scripts/nodemigrate-docker-preflight.sh'
+      - '.github/scripts/nodemigrate-snapshot-normalize.jq'
+      - '.github/scripts/check_nodemigrate_snapshot_filter.sh'
+      - '.github/nodemigrate/**'
+      - '.github/workflows/nodemigrate-integration.yml'
+      - 'crates/nodemigrate/**'
+      - 'docs/NODEMIGRATE.md'
+      - 'docs/NODEMIGRATION_GOAL.md'
+      - 'docs/NODEMIGRATE_BUGS.md'
+      - 'docs/NODEMIGRATE_CI_STATUS.md'
+      - 'docs/NODEMIGRATE_MIGRATION_STATUS.md'
+      - 'docs/NODEMIGRATE_RELEASE_STATUS.md'
+      - 'docs/NODEMIGRATE_STATUS.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check shell syntax
+        run: |
+          bash -n .github/scripts/nodemigrate-integration.sh
+          bash -n .github/scripts/nodemigrate-docker-preflight.sh
+
+      - name: Check snapshot jq
+        run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
+
+  docker-preflight:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build node image
+        run: docker build --pull --file .github/nodemigrate/five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
+
+      - name: Probe five nodes
+        env:
+          NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
+          NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+        run: bash .github/scripts/nodemigrate-docker-preflight.sh
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-docker-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  migrate:
+    if: github.event_name == 'workflow_dispatch' && inputs.docker_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [k3s, kubernetes]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build nodemigrate
+        run: cargo build --release -p nodemigrate
+
+      - name: Build branch runtime
+        if: inputs.runtime_source == 'branch'
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch latest runtime
+        if: inputs.runtime_source != 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == x86_64 ]]
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          tag="$(jq -r '.tag_name' <<<"$release")"
+          version="${tag#v}"
+          [[ "$tag" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]]
+          asset="notk8s-${version}-linux-x86_64-release"
+          url="$(jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .browser_download_url' <<<"$release")"
+          digest="$(jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .digest' <<<"$release")"
+          [[ "$url" == https://github.com/* && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p target/release
+          curl --fail --location --retry 3 "$url" -o target/release/notk8s
+          printf '%s  %s\n' "${digest#sha256:}" target/release/notk8s | sha256sum --check --status
+          chmod 0755 target/release/notk8s
+          echo "Testing nodemigrate against regular release $tag ($asset)"
+          components="$(target/release/notk8s components)"
+          for required in nodebootstrap nodeapiserver nodestore nodelet; do
+            grep -Fqx "$required" <<<"$components" || {
+              echo "regular release $tag runtime is missing component $required" >&2
+              exit 1
+            }
+          done
+          printf '%s\n' "$components"
+
+      - name: Run migration
+        env:
+          NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG \
+            bash .github/scripts/nodemigrate-integration.sh
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-${{ matrix.source }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
+          if-no-files-found: warn
+          retention-days: 7

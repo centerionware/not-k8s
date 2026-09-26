@@ -412,6 +412,8 @@ impl CriRuntime {
                 ..Default::default()
             });
         }
+        prepare_managed_nested_mountpoints(&mounts, &PathBuf::from(VOLUME_ROOT).join(&id.uid).join("volumes"))
+            .context("preparing nested targets under read-only nodelet-managed volumes")?;
         let mut resources = linux_resources(container.resources.as_ref(), qos, self.node_memory_bytes, self.node_swap_bytes, self.memory_swap_limited);
         let limits = container.resources.as_ref().and_then(|r| r.limits.as_ref());
         let cpu_limit = limits.and_then(|m| m.get("cpu")).and_then(parse_cpu_millicores);
@@ -714,7 +716,13 @@ impl CriRuntime {
         // later reports as containerStatuses[].containerID, that's
         // definitive proof a different, stale container is what's
         // actually running (a duplicate/orphaned creation), not this one.
-        info!(container = %container.name, container_id = %created.container_id, "CreateContainer succeeded");
+        info!(
+            namespace = %id.namespace,
+            pod = %id.name,
+            container = %container.name,
+            container_id = %created.container_id,
+            "CreateContainer succeeded"
+        );
         let had_allocated_devices = !allocated_devices.is_empty();
         self.record_device_allocations(sandbox_id, &container.name, &crate::runtime::pod_key(&id.namespace, &id.name), allocated_devices);
 
@@ -722,6 +730,13 @@ impl CriRuntime {
             self.release_container_devices(sandbox_id, &container.name).await;
             return Err(e).context("starting container");
         }
+        info!(
+            namespace = %id.namespace,
+            pod = %id.name,
+            container = %container.name,
+            container_id = %created.container_id,
+            "StartContainer succeeded"
+        );
         // Device allocation changes the Pod status surface, but a successful
         // Create/StartContainer sequence is not guaranteed to emit a CRI
         // event. Notify only after the allocation checkpoint and the running
@@ -803,6 +818,30 @@ impl CriRuntime {
         let exited_v = ContainerState::ContainerExited as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
 
+        // Cilium is an external-CNI bootstrap dependency: if an init
+        // container exits but the Pod does not advance, every ordinary
+        // workload (including CoreDNS) can remain blocked behind it. Keep a
+        // concise inventory in normal CI logs so we can distinguish the CRI
+        // inventory from event delivery and Pod-status publication.
+        if id.namespace == "kube-system" && id.name.starts_with("cilium-") {
+            let observed = init_containers
+                .iter()
+                .map(|container| {
+                    let state = existing.iter().find(|candidate| {
+                        candidate.labels.get(CTR_NAME_LABEL).is_some_and(|name| name == &container.name)
+                            && candidate.labels.get(CTR_INIT_LABEL).is_some_and(|value| value == "true")
+                    });
+                    (container.name.as_str(), state.map(|container| container.state))
+                })
+                .collect::<Vec<_>>();
+            info!(
+                pod = %format!("{}/{}", id.namespace, id.name),
+                sandbox = %sandbox_id,
+                init_containers = ?observed,
+                "observed Cilium init-container CRI state"
+            );
+        }
+
         for container in init_containers {
             let existing_ctr = existing.iter().find(|c| {
                 c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
@@ -874,6 +913,15 @@ impl CriRuntime {
                     // (triggered by this very removal, via the CRI event
                     // stream) sees no existing container and creates a fresh one.
                     let c = existing_ctr.expect("Retry only reached when a container exists");
+                    warn!(
+                        namespace = %id.namespace,
+                        pod = %id.name,
+                        container = %container.name,
+                        container_id = %c.id,
+                        exit_code,
+                        restart_policy,
+                        "init container exited unsuccessfully; removing it before retry"
+                    );
                     self.bump_restart_count(sandbox_id, &container.name);
                     self.release_container_devices(sandbox_id, &container.name).await;
                     let mut rt = self.rt.clone();

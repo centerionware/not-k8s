@@ -40,7 +40,9 @@ require("releases/latest" in publisher,
         "standalone publication must read the latest regular release version")
 require('tag=nodemigrate-v$version' in publisher,
         "standalone publication must use its own tag at the regular release version")
-require('gh release create "$RELEASE_TAG" --target "$GITHUB_SHA"' in publisher,
+require('gh release create "$RELEASE_TAG" --latest=false' in publisher,
+        "standalone publication must not replace the latest regular release")
+require('gh release create "$RELEASE_TAG" --latest=false --target "$GITHUB_SHA"' in publisher,
         "standalone publication must target the migration build without advancing VERSION")
 require("Advance VERSION" not in publisher and "/contents/VERSION" not in publisher,
         "standalone publication must not mutate the shared VERSION branch")

@@ -161,6 +161,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     let cluster_dns = cfg.cluster_dns_ips().join(",");
     let cluster_domain = cfg.cluster_domain();
     let binary = bin.to_string_lossy().to_string();
+    let csi_staging_root = std::env::var("NODELET_CSI_STAGING_ROOT").ok();
     let mut env = vec![
         ("KUBECONFIG", kubeconfig.as_str()),
         ("NODELET_RUNTIME", runtime.as_str()),
@@ -175,6 +176,9 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     }
     if let Some(client_ca_file) = client_ca_file.as_deref() {
         env.push(("NODELET_CLIENT_CA_FILE", client_ca_file));
+    }
+    if let Some(csi_staging_root) = csi_staging_root.as_deref() {
+        env.push(("NODELET_CSI_STAGING_ROOT", csi_staging_root));
     }
     if let Some(bootstrap) = bootstrap_kubeconfig.as_deref() {
         env.push(("NODELET_BOOTSTRAP_KUBECONFIG", bootstrap));

@@ -371,9 +371,9 @@ pub(crate) fn supplemental_groups_policy_cri(policy: Option<&str>) -> v1::Supple
 /// Translate pod- and container-level `securityContext` into CRI's
 /// `LinuxContainerSecurityContext`. Container-level fields override pod-level
 /// ones wherever Kubernetes defines both (matches real kubelet semantics).
-/// Not translated yet (see docs/GAP_CLOSURE.md): AppArmor profile, SELinux
-/// options, and runAsNonRoot *verification* against the image's actual user
-/// (that needs image inspection, not just pass-through).
+/// SELinux options and runAsNonRoot *verification* against the image's actual
+/// user are not translated yet (the latter needs image inspection, not just
+/// pass-through).
 pub(crate) fn linux_security_context(
     pod_sc: Option<&PodSecurityContext>,
     container_sc: Option<&SecurityContext>,
@@ -398,6 +398,7 @@ pub(crate) fn linux_security_context(
         .and_then(|s| s.supplemental_groups.clone())
         .unwrap_or_default();
     let seccomp = seccomp_profile(pod_sc, container_sc);
+    let apparmor = apparmor_profile(pod_sc, container_sc);
     let (masked_paths, readonly_paths) = proc_mount_paths(container_sc.and_then(|s| s.proc_mount.as_deref()));
 
     LinuxContainerSecurityContext {
@@ -410,6 +411,7 @@ pub(crate) fn linux_security_context(
         supplemental_groups,
         supplemental_groups_policy: supplemental_groups_policy_cri(pod_sc.and_then(|s| s.supplemental_groups_policy.as_deref())) as i32,
         seccomp,
+        apparmor,
         // Round 123 (found live in CI): a container must join the exact
         // same user namespace `sandbox_config()` requested for the
         // sandbox, or it silently gets the default (host) one instead —
@@ -419,6 +421,34 @@ pub(crate) fn linux_security_context(
         readonly_paths,
         ..Default::default()
     }
+}
+
+
+/// Container-level `appArmorProfile` overrides the pod-level profile. Keep
+/// the runtime default for unknown values so malformed input cannot silently
+/// disable AppArmor confinement. API validation normally restricts the value
+/// to the three Kubernetes-defined profile types.
+pub(crate) fn apparmor_profile(
+    pod_sc: Option<&PodSecurityContext>,
+    container_sc: Option<&SecurityContext>,
+) -> Option<SecurityProfile> {
+    let profile = container_sc
+        .and_then(|s| s.app_armor_profile.as_ref())
+        .or_else(|| pod_sc.and_then(|s| s.app_armor_profile.as_ref()))?;
+    Some(match profile.type_.as_str() {
+        "Unconfined" => SecurityProfile {
+            profile_type: ProfileType::Unconfined as i32,
+            ..Default::default()
+        },
+        "Localhost" => SecurityProfile {
+            profile_type: ProfileType::Localhost as i32,
+            localhost_ref: profile.localhost_profile.clone().unwrap_or_default(),
+        },
+        _ => SecurityProfile {
+            profile_type: ProfileType::RuntimeDefault as i32,
+            ..Default::default()
+        },
+    })
 }
 
 
@@ -481,5 +511,3 @@ pub(crate) fn seccomp_profile(
         _ => SecurityProfile { profile_type: ProfileType::Unconfined as i32, ..Default::default() },
     })
 }
-
-

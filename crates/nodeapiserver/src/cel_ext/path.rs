@@ -7,25 +7,16 @@
 //! slice) consumes to answer "how big could this expression's value
 //! be" from the CRD's own schema.
 //!
-//! **Named, honest simplification**: real upstream also tracks paths
-//! through a comprehension's own iteration variable(s)
-//! (`pushIterKey`/`pushIterValue`/`pushIterSingle`), appending a real
-//! `@items`/`@keys`/`@values` path segment resolved from the *type* of
-//! the range being iterated (a list vs. a map). This crate has no CEL
-//! type-checker (`cel_ext`'s own module doc covers why), so
-//! [`comprehension_iter_path`] only handles the single-variable
-//! comprehension form (`list.all(x, ...)`/`.exists(x, ...)`/`.map(x,
-//! ...)`) and always treats the iteration variable as a list-shaped
-//! `@items` access — the overwhelmingly common real
-//! `x-kubernetes-validations` usage (iterating a `spec`-declared list).
-//! The two-variable form (`all(k, v, ...)`, real CEL's own map-iteration
-//! macro) isn't resolved to a path at all; a reference to either of its
-//! variables returns `None` from [`resolve_path`], the same honest
-//! "no bound available" outcome as any other genuinely unresolvable
-//! path — not a wrong answer, just an absent one.
+//! **Named, honest simplification**: [`comprehension_iter_path`] handles
+//! the single-variable comprehension form for list elements and map keys
+//! by resolving the range against the declared structural schema. The
+//! two-variable map form (`all(k, v, ...)`) is not yet resolved to paths
+//! for static costs; references to either iteration variable therefore
+//! have no schema-derived size estimate.
 
-use cel::common::ast::{ComprehensionExpr, Expr};
+use super::decl_type::{DeclType, Shape};
 use cel::IdedExpr;
+use cel::common::ast::{ComprehensionExpr, Expr};
 use std::collections::HashMap;
 
 /// A stack of variable-name -> path bindings, pushed on comprehension
@@ -109,15 +100,34 @@ pub fn with_binding<R>(scope: &mut Scope, var_name: &str, path: Vec<String>, f: 
     result
 }
 
-/// The single-variable comprehension form's own iteration-variable path
-/// (see this module's own doc comment for the real, named scope this is
-/// narrowed to): `comp.iter_range`'s own resolved path with a trailing
-/// `"@items"` segment, real upstream's own `pushIterSingle` — list-only,
-/// since without a type-checker this crate can't distinguish a list
-/// range from a map one the way real upstream's own `getType` does.
-pub fn comprehension_iter_path(comp: &ComprehensionExpr, scope: &Scope) -> Option<Vec<String>> {
+/// The single-variable comprehension form's iteration-variable path:
+/// resolve the range against its structural schema and append the matching
+/// list-element or map-key segment, mirroring upstream's `pushIterSingle`.
+pub fn comprehension_iter_path(
+    comp: &ComprehensionExpr,
+    scope: &Scope,
+    root: &DeclType,
+) -> Option<Vec<String>> {
     let mut path = resolve_path(&comp.iter_range, scope)?;
-    path.push("@items".to_string());
+    let mut current = root;
+    for segment in path.iter().skip(1) {
+        current = match (segment.as_str(), &current.shape) {
+            ("@items", Shape::List(element)) | ("@values", Shape::Map(element)) => element,
+            ("@keys", Shape::Map(_)) => return None,
+            (name, Shape::Object(fields)) => fields.get(name)?,
+            _ => return None,
+        };
+    }
+    path.push(
+        match &current.shape {
+            Shape::List(_) => "@items",
+            // Kubernetes CEL map rules commonly use the single-variable macro
+            // form to validate each key, including Gateway API annotations.
+            Shape::Map(_) => "@keys",
+            _ => return None,
+        }
+        .to_string(),
+    );
     Some(path)
 }
 
@@ -193,7 +203,50 @@ mod tests {
         // left wrapped in a `Call` the way a real function invocation
         // would be.
         let Expr::Comprehension(comp) = &expr.expr else { panic!("expected the .all() macro to desugar directly into a Comprehension, got {:?}", expr.expr) };
-        let path = comprehension_iter_path(comp, &Scope::new());
+        let root = super::super::decl_type::decl_type_for(&serde_json::json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "properties": {
+                        "items": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let path = comprehension_iter_path(comp, &Scope::new(), &root);
         assert_eq!(path, Some(vec!["self".to_string(), "spec".to_string(), "items".to_string(), "@items".to_string()]));
+    }
+
+    #[test]
+    fn single_variable_map_comprehension_tracks_keys() {
+        let expr = compile("self.spec.annotations.all(key, key.matches('a+'))");
+        let Expr::Comprehension(comp) = &expr.expr else { panic!("expected a CEL comprehension") };
+        let root = super::super::decl_type::decl_type_for(&serde_json::json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "properties": {
+                        "annotations": {
+                            "type": "object",
+                            "maxProperties": 16,
+                            "additionalProperties": {"type": "string", "maxLength": 4096}
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            comprehension_iter_path(comp, &Scope::new(), &root),
+            Some(vec![
+                "self".to_string(),
+                "spec".to_string(),
+                "annotations".to_string(),
+                "@keys".to_string()
+            ])
+        );
     }
 }

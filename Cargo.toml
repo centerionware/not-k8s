@@ -1,10 +1,19 @@
 [workspace]
 resolver = "2"
-# crates/notk8s is the combined single-binary packaging of the components
-# above — it links them, it isn't a component itself. Adding a new component
-# crate means adding it here *and* as an optional dependency of notk8s, so
-# both build layouts (split / combined) cover it.
-members = ["crates/nodelet", "crates/nodeproxy", "crates/nodescheduler", "crates/nodestore", "crates/nodecontroller", "crates/nodeapiserver", "crates/node-leaderelection", "crates/nodebootstrap", "crates/notk8s"]
+# `notk8s` packages runtime components. `nodemigrate` is a separate operator
+# utility: it is a workspace member, but must not be linked into `notk8s`.
+members = [
+    "crates/nodelet",
+    "crates/nodeproxy",
+    "crates/nodescheduler",
+    "crates/nodestore",
+    "crates/nodecontroller",
+    "crates/nodeapiserver",
+    "crates/node-leaderelection",
+    "crates/nodebootstrap",
+    "crates/notk8s",
+    "crates/nodemigrate",
+]
 
 [workspace.package]
 version = "0.1.0"

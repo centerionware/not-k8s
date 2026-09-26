@@ -852,6 +852,12 @@ impl pb::cluster_server::Cluster for EtcdApi {
             .node
             .read(|s| s.member(req.id))?
             .ok_or_else(|| Status::not_found("etcdserver: member not found"))?;
+        if !existing.is_learner {
+            return Err(Status::failed_precondition(format!(
+                "etcdserver: member {} is not a learner",
+                req.id
+            )));
+        }
 
         let mut change = raft::eraftpb::ConfChangeSingle::default();
         change.change_type = raft::eraftpb::ConfChangeType::AddNode;
@@ -859,7 +865,8 @@ impl pb::cluster_server::Cluster for EtcdApi {
         let mut cc = raft::eraftpb::ConfChangeV2::default();
         cc.mut_changes().push(change);
 
-        raft.propose_conf_change(
+        raft.promote_learner(
+            req.id,
             cc,
             &Command::SetMember(crate::command::Member { is_learner: false, ..existing }),
         )

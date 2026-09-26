@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
+FILTER="$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq"
+command -v jq >/dev/null 2>&1 || {
+    echo "jq is required to check migration snapshot normalization" >&2
+    exit 2
+}
+
+before="$(jq -cn '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"settings",namespace:"apps",uid:"source-uid",resourceVersion:"4",generation:1,creationTimestamp:"2026-01-01T00:00:00Z",annotations:{"nodemigrate.io/source-uid":"user-value"},ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"parent",uid:"parent-source-uid"}]},data:{marker:"preserved"},status:{ignored:true}}')"
+after="$(jq -cn '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"settings",namespace:"apps",uid:"target-uid",resourceVersion:"19",generation:3,creationTimestamp:"2026-01-02T00:00:00Z",annotations:{"nodemigrate.io/source-uid":"user-value"},ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"parent",uid:"parent-target-uid"}]},data:{marker:"preserved"},status:{ignored:false}}')"
+before_normalized="$(jq -cS -f "$FILTER" <<< "$before")"
+after_normalized="$(jq -cS -f "$FILTER" <<< "$after")"
+[[ "$before_normalized" == "$after_normalized" ]] || {
+    echo "source and destination identity changes did not normalize equally" >&2
+    exit 1
+}
+jq -e '.metadata.annotations["nodemigrate.io/source-uid"] == "user-value" and .data.marker == "preserved" and (.metadata.ownerReferences[0] | has("uid") | not)' \
+    <<< "$after_normalized" >/dev/null
+
+node_state="$(jq -cn '{items:[{metadata:{labels:{"operator.example/pool":"blue"},annotations:{"nodemigrate.io/source-uid":"operator-node-value"}},spec:{taints:[{key:"operator.example/dedicated",value:"migration",effect:"PreferNoSchedule"}]}}]}')"
+jq -e '
+  all(.items[];
+    .metadata.labels["operator.example/pool"] == "blue" and
+    .metadata.annotations["nodemigrate.io/source-uid"] == "operator-node-value" and
+    any(.spec.taints[]?; .key == "operator.example/dedicated" and .value == "migration" and .effect == "PreferNoSchedule")
+  )
+' <<< "$node_state" >/dev/null
+
+pv_before="$(jq -cn '{apiVersion:"v1",kind:"PersistentVolume",metadata:{name:"data"},spec:{claimRef:{namespace:"apps",name:"claim",uid:"claim-source-uid"}}}')"
+pv_after="$(jq -cn '{apiVersion:"v1",kind:"PersistentVolume",metadata:{name:"data"},spec:{claimRef:{namespace:"apps",name:"claim",uid:"claim-target-uid"}}}')"
+[[ "$(jq -cS -f "$FILTER" <<< "$pv_before")" == "$(jq -cS -f "$FILTER" <<< "$pv_after")" ]] || {
+    echo "claim reference identity changes did not normalize equally" >&2
+    exit 1
+}
+
+for transient in \
+    '{"apiVersion":"v1","kind":"Node","metadata":{"name":"node-a"}}' \
+    '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"NodeMetrics","metadata":{"name":"node-a"}}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"web","namespace":"apps","labels":{"endpoints.kubernetes.io/managed-by":"endpoint-controller"}}}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"kubernetes","namespace":"default"}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"web-abc","namespace":"apps","labels":{"endpointslice.kubernetes.io/managed-by":"endpointslice-controller.k8s.io"}}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"web-mirror-abc","namespace":"apps","labels":{"endpointslice.kubernetes.io/managed-by":"endpointslicemirroring-controller.k8s.io"}}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"kubernetes","namespace":"default","labels":{"kubernetes.io/service-name":"kubernetes"}}}' \
+    '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"node-a","namespace":"kube-node-lease"}}' \
+    '{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"kube-root-ca.crt","namespace":"apps"},"data":{"ca.crt":"source-ca"}}' \
+    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"apps","ownerReferences":[{"kind":"ReplicaSet","name":"web","uid":"source-uid","controller":true}]}}' \
+    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"mirror-pod","namespace":"kube-system","annotations":{"kubernetes.io/config.mirror":"mirror-uid"}}}' \
+    '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"PodMetrics","metadata":{"name":"pod-a","namespace":"apps"}}' \
+    '{"apiVersion":"cilium.io/v2","kind":"CiliumEndpoint","metadata":{"name":"pod-a","namespace":"apps"}}' \
+    '{"apiVersion":"cilium.io/v2","kind":"CiliumIdentity","metadata":{"name":"12345"}}' \
+    '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
+    [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
+        echo "transient object was included in the migratable snapshot" >&2
+        exit 1
+    }
+done
+
+for durable in \
+    '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"standalone","namespace":"apps"}}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"external-db","namespace":"migration-apps"},"subsets":[{"addresses":[{"ip":"192.0.2.20"}],"ports":[{"port":5432}]}]}' \
+    '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"custom-web","namespace":"apps","labels":{"endpoints.kubernetes.io/managed-by":"custom-endpoint-controller"}}}' \
+    '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"external-db-v4","namespace":"migration-apps","labels":{"kubernetes.io/service-name":"external-db","endpointslice.kubernetes.io/managed-by":"migration-operator"}},"addressType":"IPv4","endpoints":[{"addresses":["192.0.2.20"]}],"ports":[{"port":5432}]}' \
+    '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"migration-lock","namespace":"migration-apps"},"spec":{"holderIdentity":"migration-controller"}}' \
+    '{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a"},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}]}}' \
+    '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps"}}' \
+    '{"apiVersion":"apps/v1","kind":"ControllerRevision","metadata":{"name":"db-old","namespace":"apps"}}'; do
+    [[ -n "$(jq -cS -f "$FILTER" <<< "$durable")" ]] || {
+        echo "durable workload history was omitted from the migratable snapshot" >&2
+        exit 1
+    }
+done
+
+echo "migration snapshot normalization checks passed"

@@ -104,14 +104,33 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     let mut spec = ClusterPkiSpec::default();
     spec.cluster_domain = cfg.cluster_domain();
     spec.service_ip = cfg.service_ip()?;
-    spec.extra_sans.extend(cfg.service_ips()?.into_iter().skip(1).map(|ip| ip.to_string()));
-    if let Some(address) = &cfg.advertise_address {
-        spec.extra_sans.push(address.clone());
-    }
+    let advertise_address = cfg
+        .advertise_address
+        .clone()
+        .unwrap_or_else(crate::targets::upstream::detect_advertise_address);
+    spec.extra_sans.extend(apiserver_extra_sans(
+        &cfg.service_ips()?,
+        &advertise_address,
+    ));
     let cluster = generate(&spec)?;
     cluster.write_to_dir(&dir)?;
     tracing::info!(dir = %dir.display(), "wrote cluster PKI");
     Ok(())
+}
+
+fn apiserver_extra_sans(
+    service_ips: &[std::net::IpAddr],
+    advertise_address: &str,
+) -> Vec<String> {
+    let mut sans: Vec<String> = service_ips
+        .iter()
+        .skip(1)
+        .map(std::string::ToString::to_string)
+        .collect();
+    if !sans.iter().any(|san| san == advertise_address) {
+        sans.push(advertise_address.to_string());
+    }
+    sans
 }
 
 fn ensure_existing_pki_matches_domain(
@@ -501,6 +520,27 @@ mod tests {
             .expect("apiserver cert should have a SAN extension");
         assert!(san_ext.value.general_names.iter().any(|name| {
             matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == "kubernetes.default.svc.cluster.example")
+        }));
+    }
+
+    #[test]
+    fn apiserver_serving_certificate_includes_automatically_selected_node_address() {
+        let service_ips = ["10.43.0.1".parse().expect("service IP")];
+        let advertise_address = "10.1.1.125";
+        let spec = ClusterPkiSpec {
+            extra_sans: apiserver_extra_sans(&service_ips, advertise_address),
+            ..ClusterPkiSpec::default()
+        };
+        let pki = generate(&spec).expect("generate cluster PKI");
+        let der = pem::parse(&pki.apiserver_serving.cert_pem).expect("parse apiserver cert PEM");
+        let (_, cert) = x509_parser::parse_x509_certificate(der.contents()).expect("parse apiserver cert DER");
+        let san_ext = cert
+            .subject_alternative_name()
+            .expect("read apiserver SAN extension")
+            .expect("apiserver cert should have a SAN extension");
+        let expected_ip = [10_u8, 1, 1, 125];
+        assert!(san_ext.value.general_names.iter().any(|name| {
+            matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == expected_ip.as_slice())
         }));
     }
 

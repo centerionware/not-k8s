@@ -40,7 +40,7 @@ async fn http_check_succeeds_on_2xx_response() {
             let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
         }
     });
-    assert!(check_http("127.0.0.1", port, "/healthz", Duration::from_secs(1)).await);
+    assert!(check_http("127.0.0.1", port, "/healthz", &[], Duration::from_secs(1)).await);
 }
 
 #[tokio::test]
@@ -54,7 +54,7 @@ async fn http_check_fails_on_5xx_response() {
             let _ = sock.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n").await;
         }
     });
-    assert!(!check_http("127.0.0.1", port, "/healthz", Duration::from_secs(1)).await);
+    assert!(!check_http("127.0.0.1", port, "/healthz", &[], Duration::from_secs(1)).await);
 }
 
 #[tokio::test]
@@ -62,7 +62,25 @@ async fn http_check_fails_when_nothing_is_listening() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    assert!(!check_http("127.0.0.1", port, "/", Duration::from_millis(300)).await);
+    assert!(!check_http("127.0.0.1", port, "/", &[], Duration::from_millis(300)).await);
+}
+
+#[tokio::test]
+async fn http_check_sends_explicit_host_and_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let request = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 512];
+        let n = sock.read(&mut buf).await.unwrap();
+        sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    });
+    let headers = vec![("brief".to_string(), "true".to_string())];
+    assert!(check_http("127.0.0.1", port, "/healthz", &headers, Duration::from_secs(1)).await);
+    let request = request.await.unwrap();
+    assert!(request.starts_with("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n"));
+    assert!(request.contains("brief: true\r\n"));
 }
 
 // --- grpc (round 29) ---
