@@ -211,6 +211,12 @@ the node image. The image now restores `kmod` and mounts the runner's
 `configs` module for its kernel, so the script now requires and mounts the
 matching `/boot/config-$(uname -r)` read-only for kubeadm's kernel-config
 inspection. Cluster and Cilium setup remain unverified.
+Run [36271060218](https://github.com/centerionware/not-k8s/actions/runs/36271060218)
+confirmed kubeadm passed SystemVerification, generated the control-plane
+certificates/manifests, and started kubelet. It then timed out while waiting for
+the API server to create the bootstrap admin binding. The preflight now collects
+kubelet/containerd journals, CRI task/container state, and systemd-container
+logs on all five nodes before cleanup when `kubeadm init` fails.
 
 ## Earlier branch-runtime attempt
 

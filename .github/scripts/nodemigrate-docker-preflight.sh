@@ -208,13 +208,33 @@ done
 cp1="$(node_container cp-1)"
 cp1_ip="$(node_ip cp-1)"
 echo "Initializing upstream Kubernetes control plane cp-1 at $cp1_ip"
-docker exec "$cp1" kubeadm init \
+
+collect_node_diagnostics() {
+    local node container
+    for node in "${NODES[@]}"; do
+        container="$(node_container "$node")"
+        echo "Failure diagnostics for $node"
+        docker exec "$container" bash -c '
+            systemctl status --no-pager --full kubelet containerd || true
+            journalctl -u kubelet -u containerd -n 150 --no-pager || true
+            ctr -n k8s.io tasks ls || true
+            ctr -n k8s.io containers ls || true
+        ' || true
+        docker logs --tail 150 "$container" || true
+    done
+}
+
+if ! docker exec "$cp1" kubeadm init \
     --kubernetes-version "$(docker exec "$cp1" kubeadm version -o short)" \
     --control-plane-endpoint=cp-1:6443 \
     --apiserver-advertise-address="$cp1_ip" \
     --pod-network-cidr=10.244.0.0/16 \
     --cri-socket=unix:///run/containerd/containerd.sock \
-    --upload-certs
+    --upload-certs; then
+    echo "kubeadm init failed; collecting node diagnostics before cleanup"
+    collect_node_diagnostics
+    exit 1
+fi
 
 join_command="$(docker exec "$cp1" kubeadm token create --ttl 2h --print-join-command)"
 certificate_key="$(docker exec "$cp1" kubeadm init phase upload-certs --upload-certs \
