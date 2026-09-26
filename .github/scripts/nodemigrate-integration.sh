@@ -1567,6 +1567,26 @@ verify_ingress_spec() {
     echo "PASS Ingress spec and IngressClass controller at stage=$stage"
 }
 
+verify_system_addon_rollouts() {
+    local name
+    for name in coredns local-path-provisioner; do
+        if ! kubectl get deployment "$name" -n kube-system >/dev/null 2>&1; then
+            continue
+        fi
+        kubectl rollout status "deployment/$name" -n kube-system --timeout=5m
+        kubectl get replicasets -n kube-system -o json | jq -e --arg owner "$name" '
+          any(.items[];
+            any(.metadata.ownerReferences[]?;
+              .kind == "Deployment" and .name == $owner and .controller == true
+            )
+          )
+        ' >/dev/null || {
+            echo "system add-on Deployment $name has no current ReplicaSet" >&2
+            return 1
+        }
+    done
+}
+
 record_fixture_storage_specs() {
     local stage="$1" claim pvc_json pv_name
     for claim in state-migration-stateful-0 migration-csi-pvc migration-static-pvc; do
@@ -1655,6 +1675,7 @@ verify_stage() {
         return 1
     }
     kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
+    verify_system_addon_rollouts
     kubectl rollout status -n migration-apps daemonset/migration-daemon --timeout=5m
     local expected_daemon_nodes actual_daemon_nodes
     expected_daemon_nodes="$(kubectl get nodes -o json | jq '.items | length')"
@@ -2072,7 +2093,7 @@ capture_migratable_api_objects() {
             normalized="$(jq -cS -f "$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq" \
                 <<< "$object_json")"
             [[ -n "$normalized" ]] || continue
-            identity="$(jq -cS '{apiVersion, kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$normalized")"
+            identity="$(jq -cS '{apiGroup: ((.apiVersion | split("/")) | if length > 1 then .[0] else "" end), kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$normalized")"
             digest="$(printf '%s' "$normalized" | sha256sum | awk '{print $1}')"
             jq -cS -n --argjson identity "$identity" --arg digest "$digest" \
                 '{identity: $identity, sha256: $digest}' >> "$output"

@@ -50,6 +50,8 @@ for transient in \
     '{"apiVersion":"metrics.k8s.io/v1beta1","kind":"PodMetrics","metadata":{"name":"pod-a","namespace":"apps"}}' \
     '{"apiVersion":"cilium.io/v2","kind":"CiliumEndpoint","metadata":{"name":"pod-a","namespace":"apps"}}' \
     '{"apiVersion":"cilium.io/v2","kind":"CiliumIdentity","metadata":{"name":"12345"}}' \
+    '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"coredns-54bf7cdff9","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"coredns","controller":true}]}}' \
+    '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"local-path-provisioner-69879d7dd7","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"local-path-provisioner","controller":true}]}}' \
     '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
     [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
         echo "transient object was included in the migratable snapshot" >&2
@@ -64,6 +66,7 @@ for durable in \
     '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"external-db-v4","namespace":"migration-apps","labels":{"kubernetes.io/service-name":"external-db","endpointslice.kubernetes.io/managed-by":"migration-operator"}},"addressType":"IPv4","endpoints":[{"addresses":["192.0.2.20"]}],"ports":[{"port":5432}]}' \
     '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"migration-lock","namespace":"migration-apps"},"spec":{"holderIdentity":"migration-controller"}}' \
     '{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a"},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}]}}' \
+    '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"metrics-server-old","namespace":"kube-system"}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps"}}' \
     '{"apiVersion":"apps/v1","kind":"ControllerRevision","metadata":{"name":"db-old","namespace":"apps"}}'; do
     [[ -n "$(jq -cS -f "$FILTER" <<< "$durable")" ]] || {
@@ -71,5 +74,14 @@ for durable in \
         exit 1
     }
 done
+
+cluster_trust_bundle_v1='{"apiVersion":"certificates.k8s.io/v1","kind":"ClusterTrustBundle","metadata":{"name":"custom.example:bundle"},"spec":{"signerName":"custom.example/signer","trustBundle":"-----BEGIN CERTIFICATE-----\\nsource\\n-----END CERTIFICATE-----"}}'
+cluster_trust_bundle_beta='{"apiVersion":"certificates.k8s.io/v1beta1","kind":"ClusterTrustBundle","metadata":{"name":"custom.example:bundle"},"spec":{"signerName":"custom.example/signer","trustBundle":"-----BEGIN CERTIFICATE-----\\nsource\\n-----END CERTIFICATE-----"}}'
+ctb_v1_identity="$(jq -cS '{apiGroup: ((.apiVersion | split("/")) | if length > 1 then .[0] else "" end), kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$(jq -cS -f "$FILTER" <<< "$cluster_trust_bundle_v1")")"
+ctb_beta_identity="$(jq -cS '{apiGroup: ((.apiVersion | split("/")) | if length > 1 then .[0] else "" end), kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$(jq -cS -f "$FILTER" <<< "$cluster_trust_bundle_beta")")"
+[[ "$ctb_v1_identity" == "$ctb_beta_identity" ]] || {
+    echo "served API versions did not retain the same Kubernetes object identity" >&2
+    exit 1
+}
 
 echo "migration snapshot normalization checks passed"

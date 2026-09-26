@@ -4,6 +4,13 @@ def controller_regenerated_pod:
     any((.metadata.ownerReferences // [])[]?; .controller == true)
   );
 
+def regenerated_system_addon_replica_set:
+  .kind == "ReplicaSet" and .metadata.namespace == "kube-system" and
+  any((.metadata.ownerReferences // [])[]?;
+    .controller == true and .kind == "Deployment" and
+    (.name == "coredns" or .name == "local-path-provisioner")
+  );
+
 def default_kubernetes_service_endpoint:
   .metadata.namespace == "default" and (
     .metadata.name == "kubernetes" or
@@ -32,6 +39,7 @@ select(
 | select((.kind != "Lease") or (.metadata.namespace != "kube-node-lease"))
 | select((.kind != "ConfigMap") or (.metadata.name != "kube-root-ca.crt"))
 | select(controller_regenerated_pod | not)
+| select(regenerated_system_addon_replica_set | not)
 | select((.kind != "Secret") or (.type != "kubernetes.io/service-account-token"))
 | del(.status, .metadata.uid, .metadata.creationTimestamp,
       .metadata.deletionTimestamp, .metadata.deletionGracePeriodSeconds,

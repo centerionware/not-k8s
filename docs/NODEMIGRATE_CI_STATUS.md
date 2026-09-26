@@ -15,15 +15,32 @@ new fixes.
 
 ## Latest branch-runtime attempt
 
+The rerun after identity normalization,
+[36257337049](https://github.com/centerionware/not-k8s/actions/runs/36257337049),
+used SHA `7c5f2935146647c045f3f27d0d3dc9317ebfc9ed`. Docker preflight, both
+nodemigrate/combined-runtime builds, and both source and target (`nodestore`)
+stage checks passed. The retention assertion found two source K3s system
+add-on ReplicaSets (`kube-system/coredns-54bf7cdff9` and
+`kube-system/local-path-provisioner-69879d7dd7`) that the destination
+controllers replaced, plus a source ClusterTrustBundle that the destination
+serves through another version of the same API group/kind/object. The fixture's
+own Deployment and StatefulSet rollout-history checks passed at target. The
+next harness update compares Kubernetes identities by API group/kind/name
+(version conversion is not a new object) and classifies only these two
+controller-generated system add-on ReplicaSets as regenerated, while
+verifying each present Deployment is available and has a current ReplicaSet.
+Arbitrary ReplicaSets and fixture rollout history remain checked. CI rerun is
+pending. Artifacts:
+`/tmp/nodemigrate-36257337049-artifacts/`.
+
 Migration run [36257337049](https://github.com/centerionware/not-k8s/actions/runs/36257337049)
 uses SHA `7c5f2935146647c045f3f27d0d3dc9317ebfc9ed` and the branch runtime;
-the Docker preflight passed and both migration lanes are running. This rerun
-follows the prior branch-runtime run's successful target checks and parity
-assertion failure. The harness now checks that every durable source API
-object identity remains at the target, separately checks stable fixture state,
-and classifies CiliumEndpoint/CiliumIdentity as regenerated runtime state
-while retaining CiliumNode in the migratable inventory. A local snapshot
-normalizer check covers those classifications. No result is known yet.
+the Docker preflight passed and both migration lanes reached the target. The
+run failed at object identity retention as described above. The harness checks
+durable source API object identities and stable fixture state; it also
+classifies CiliumEndpoint/CiliumIdentity as regenerated runtime state while
+retaining CiliumNode in the migratable inventory. Local snapshot checks cover
+the classifications.
 
 Run [36256671367](https://github.com/centerionware/not-k8s/actions/runs/36256671367)
 used SHA `7c5f2935146647c045f3f27d0d3dc9317ebfc9ed` against the latest regular
