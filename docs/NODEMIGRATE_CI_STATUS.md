@@ -126,7 +126,7 @@ semantic-state comparison already checks those hashes. This makes target-side
 spec/data changes fail the migration fixture, with a diff of affected object
 identities. Local shell syntax, API inventory positive/negative cases,
 snapshot-normalization, Helm-state checks, and `git diff --check` passed at
-`fe46b9aaead160f5a232f841198f78316ddd9cdb`. PR validation and a runtime run
+`cccbc4afbd712ba9bdad6be783d86b4c3f983719`. PR validation and a runtime run
 with this stronger comparison are pending. The active older run
 `36260417450` remains on its previously recorded SHA and is not duplicated.
 

@@ -121,7 +121,7 @@ the forward-leg assertion beyond identity-only retention; explicit fixture
 resources continue to receive dedicated durable-state and behavioral checks.
 Local shell syntax, API inventory positive/negative cases,
 snapshot-normalization, Helm-state checks, and `git diff --check` passed at
-`fe46b9aaead160f5a232f841198f78316ddd9cdb`. PR validation and runtime evidence
+`cccbc4afbd712ba9bdad6be783d86b4c3f983719`. PR validation and runtime evidence
 are pending. The still-running K3s job is from an earlier SHA and cannot
 exercise this change.
 
