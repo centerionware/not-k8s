@@ -130,6 +130,13 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
 /// Remove kubeadm control-plane static-pod sandboxes after kubelet is stopped.
 /// Kubelet shutdown alone leaves those CRI containers bound to API/etcd ports.
 pub fn stop_upstream_static_pods(installation: &Installation) -> Result<()> {
+    stop_upstream_static_pods_inner(installation, true)
+}
+
+fn stop_upstream_static_pods_inner(
+    installation: &Installation,
+    require_static_pods: bool,
+) -> Result<()> {
     if installation.distribution != Distribution::Kubernetes
         || installation.role != NodeRole::ControlPlane
     {
@@ -154,7 +161,7 @@ pub fn stop_upstream_static_pods(installation: &Installation) -> Result<()> {
         serde_json::from_slice(&output.stdout).context("parsing CRI pod sandbox list")?;
     let ids = static_pod_sandbox_ids(&pods);
     ensure!(
-        !ids.is_empty(),
+        !require_static_pods || !ids.is_empty(),
         "no kubeadm control-plane static pod sandboxes were found after stopping kubelet"
     );
     tracing::info!(count = ids.len(), "stopping kubeadm static pod sandboxes");
@@ -165,6 +172,42 @@ pub fn stop_upstream_static_pods(installation: &Installation) -> Result<()> {
             .with_context(|| format!("removing source static pod sandbox {id}"))?;
     }
     wait_for_api_port_release()
+}
+
+/// Stop a partially started retained Kubernetes installation before restoring
+/// the prior nodestore stack after a failed reverse migration. The destination
+/// must be quiesced first so its API server, CNI, and workloads cannot conflict
+/// with the restored source services or mutate the recovery snapshot.
+pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> {
+    let manager = installation
+        .service_manager
+        .context("target service manager is unknown; cannot roll back the retained target")?;
+    ensure!(
+        matches!(installation.distribution, Distribution::K3s | Distribution::Kubernetes),
+        "reverse migration rollback requires a retained K3s or Kubernetes target"
+    );
+
+    let cilium_identity = if installation.distribution == Distribution::K3s {
+        stop_source_pod_sandboxes(installation)
+            .context("stopping retained K3s pod sandboxes before rollback")?
+    } else {
+        SourceCiliumIdentity::default()
+    };
+
+    stop_and_disable(manager, &installation.service_name)
+        .with_context(|| format!("stopping retained target service {}", installation.service_name))?;
+
+    let cilium_identity = if installation.distribution == Distribution::Kubernetes {
+        stop_upstream_static_pods_inner(installation, false)
+            .context("stopping retained kubeadm static pods during rollback")?;
+        stop_source_pod_sandboxes(installation)
+            .context("stopping retained Kubernetes pod sandboxes during rollback")?
+    } else {
+        cilium_identity
+    };
+    stop_orphaned_cilium_processes(installation, &cilium_identity)
+        .context("stopping retained Cilium processes during rollback")?;
+    Ok(())
 }
 
 /// Remove CRI pod sandboxes left behind after stopping the source Kubernetes

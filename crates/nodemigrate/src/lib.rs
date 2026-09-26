@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Error, Result};
 
 pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     let args: Vec<String> = args.into_iter().collect();
@@ -685,11 +685,14 @@ fn migrate_to_existing(
         }
     }
     if let Err(error) = service::activate(target) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("starting the retained target failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
-        }
-        return Err(error).context(format!(
-            "starting the retained target failed; nodestore was restored; recovery data is at {recovery_location}"
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            export.as_ref(),
+            host_path_snapshot.as_ref(),
+            error.context("starting the retained target failed"),
+            &recovery_location,
         ));
     }
     if request.stage_target {
@@ -700,21 +703,49 @@ fn migrate_to_existing(
         println!("Retained control plane staged: source nodestore services are disabled and '{}' is running. The destination API may remain unavailable until another retained control plane is started. API export retained at {recovery}", target.service_name);
         return Ok(());
     }
-    wait_for_api(&target_api).context(format!(
-        "retained destination API did not become ready; nodestore remains stopped and recovery data is at {recovery_location}"
-    ))?;
+    if let Err(error) = wait_for_api(&target_api) {
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            export.as_ref(),
+            host_path_snapshot.as_ref(),
+            error.context("retained destination API did not become ready"),
+            &recovery_location,
+        ));
+    }
     if let Some(export) = &export {
         if let Err(error) = target_api.import(export) {
-            bail!("destination started but API import failed: {error:#}; nodestore remains stopped and export is at {}", export.dir.display());
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                Some(export),
+                host_path_snapshot.as_ref(),
+                error.context("destination started but API import failed"),
+                &recovery_location,
+            ));
         }
     }
     let observed_replacement_state = if destination_node_exists || replace_existing_node {
-        remove_replaced_node(
+        match remove_replaced_node(
             &target_api,
             &returning_node_name,
             replace_existing_node,
-        )
-        .with_context(|| format!("preparing retained control-plane node; nodestore remains stopped and recovery data is at {recovery_location}"))?
+        ) {
+            Ok(state) => state,
+            Err(error) => {
+                return Err(rollback_reverse_migration(
+                    source,
+                    target,
+                    previous_service,
+                    export.as_ref(),
+                    host_path_snapshot.as_ref(),
+                    error.context("preparing retained control-plane node"),
+                    &recovery_location,
+                ));
+            }
+        }
     } else {
         None
     };
@@ -723,15 +754,32 @@ fn migrate_to_existing(
         observed_replacement_state,
         source_node_state,
     );
-    wait_for_node(&target_api, &returning_node_name).context(format!(
-        "retained destination node did not become Ready; recovery data is at {recovery_location}"
-    ))?;
-    restore_node_scheduling_state(
+    if let Err(error) = wait_for_node(&target_api, &returning_node_name) {
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            export.as_ref(),
+            host_path_snapshot.as_ref(),
+            error.context("retained destination node did not become Ready"),
+            &recovery_location,
+        ));
+    }
+    if let Err(error) = restore_node_scheduling_state(
         &target_api,
         &returning_node_name,
         replacement_state.as_ref(),
-    )
-    .context("restoring retained control-plane node labels and scheduling state")?;
+    ) {
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            export.as_ref(),
+            host_path_snapshot.as_ref(),
+            error.context("restoring retained control-plane node labels and scheduling state"),
+            &recovery_location,
+        ));
+    }
     if request.uninstall_after_migrate {
         service::uninstall_source(source).with_context(|| {
             format!("source uninstall failed; recovery data is at {recovery_location}")
@@ -763,6 +811,72 @@ fn migrate_to_existing(
         request.to
     );
     Ok(())
+}
+
+fn rollback_reverse_migration(
+    source: &detect::Installation,
+    target: &detect::Installation,
+    previous_service: service::PreviousServiceState,
+    export: Option<&transfer::Export>,
+    host_path_snapshot: Option<&transfer::HostPathSnapshot>,
+    cause: Error,
+    recovery_location: &str,
+) -> Error {
+    rollback_reverse_migration_with(
+        cause,
+        recovery_location,
+        || service::stop_reverse_migration_target(target),
+        || {
+            let mut failures = Vec::new();
+            if let Some(export) = export {
+                if let Err(error) = export.restore_host_paths() {
+                    failures.push(format!("export host-path restore failed ({error:#})"));
+                }
+            }
+            if let Some(snapshot) = host_path_snapshot {
+                if let Err(error) = snapshot.restore() {
+                    failures.push(format!("local-volume snapshot restore failed ({error:#})"));
+                }
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                bail!("{}", failures.join("; "))
+            }
+        },
+        || service::restore(source, previous_service),
+    )
+}
+
+fn rollback_reverse_migration_with(
+    cause: Error,
+    recovery_location: &str,
+    stop_target: impl FnOnce() -> Result<()>,
+    restore_payload: impl FnOnce() -> Result<()>,
+    restore_source: impl FnOnce() -> Result<()>,
+) -> Error {
+    if let Err(error) = stop_target() {
+        return cause.context(format!(
+            "rollback could not stop the retained target ({error:#}); nodestore remains stopped and recovery data is at {recovery_location}"
+        ));
+    }
+
+    let payload_result = restore_payload();
+    let source_result = restore_source();
+    match (payload_result, source_result) {
+        (Ok(()), Ok(())) => cause.context(format!(
+            "retained target was stopped and nodestore was restored; recovery data is at {recovery_location}"
+        )),
+        (Err(payload_error), Ok(())) => cause.context(format!(
+            "retained target was stopped and nodestore was restored, but local data restoration failed ({payload_error:#}); recovery data is at {recovery_location}"
+        )),
+        (Ok(()), Err(source_error)) => cause.context(format!(
+            "retained target was stopped, but nodestore restoration failed ({source_error:#}); recovery data is at {recovery_location}"
+        )),
+        (Err(payload_error), Err(source_error)) => cause.context(format!(
+            "retained target was stopped, but local data restoration failed ({payload_error:#}) and nodestore restoration failed ({source_error:#}); recovery data is at {recovery_location}"
+        )),
+    }
 }
 
 fn resume_export_import(
@@ -1354,7 +1468,7 @@ fn print_help() {
 mod tests {
     use super::{
         apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
-        migration_csi_staging_root, replacement_worker_args,
+        migration_csi_staging_root, replacement_worker_args, rollback_reverse_migration_with,
         reverse_node_replacement_state, validate_destination_node_replacement,
         validate_reverse_control_plane_options, validate_skip_api_import,
     };
@@ -1365,6 +1479,82 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::{io::Cursor, path::{Path, PathBuf}, process::Command};
+
+    #[test]
+    fn reverse_migration_rollback_stops_target_before_restoring_data_and_source() {
+        use std::cell::RefCell;
+
+        let actions = RefCell::new(Vec::new());
+        let error = rollback_reverse_migration_with(
+            anyhow::anyhow!("API import failed"),
+            "/var/lib/nodemigrate/exports/recovery",
+            || {
+                actions.borrow_mut().push("stop-target");
+                Ok(())
+            },
+            || {
+                actions.borrow_mut().push("restore-data");
+                Ok(())
+            },
+            || {
+                actions.borrow_mut().push("restore-source");
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            *actions.borrow(),
+            ["stop-target", "restore-data", "restore-source"]
+        );
+        let message = format!("{error:#}");
+        assert!(message.contains("API import failed"));
+        assert!(message.contains("nodestore was restored"));
+        assert!(message.contains("/var/lib/nodemigrate/exports/recovery"));
+    }
+
+    #[test]
+    fn reverse_migration_rollback_keeps_source_stopped_if_target_cannot_stop() {
+        use std::cell::Cell;
+
+        let source_restored = Cell::new(false);
+        let error = rollback_reverse_migration_with(
+            anyhow::anyhow!("API import failed"),
+            "/var/lib/nodemigrate/exports/recovery",
+            || Err(anyhow::anyhow!("target API port is still bound")),
+            || Ok(()),
+            || {
+                source_restored.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(!source_restored.get());
+        let message = format!("{error:#}");
+        assert!(message.contains("target API port is still bound"));
+        assert!(message.contains("nodestore remains stopped"));
+    }
+
+    #[test]
+    fn reverse_migration_rollback_restores_source_even_if_data_restore_fails() {
+        use std::cell::Cell;
+
+        let source_restored = Cell::new(false);
+        let error = rollback_reverse_migration_with(
+            anyhow::anyhow!("API import failed"),
+            "/var/lib/nodemigrate/exports/recovery",
+            || Ok(()),
+            || Err(anyhow::anyhow!("host path is read-only")),
+            || {
+                source_restored.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(source_restored.get());
+        let message = format!("{error:#}");
+        assert!(message.contains("nodestore was restored"));
+        assert!(message.contains("host path is read-only"));
+    }
 
     #[test]
     fn interactive_migration_requires_exact_yes() {

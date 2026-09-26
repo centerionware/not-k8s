@@ -2305,6 +2305,35 @@ main() {
     fi
     stop_target_forward_watch
     if [[ "$return_migration_status" -ne 0 ]]; then
+        echo "Return migration failed with status $return_migration_status; checking nodestore rollback"
+        local attempt
+        for attempt in $(seq 1 60); do
+            if systemctl is-active --quiet nodestore \
+                && systemctl is-active --quiet nodeapiserver \
+                && KUBECONFIG="$nodestore_kubeconfig" kubectl --request-timeout=2s \
+                    get --raw=/readyz >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+        done
+        systemctl is-active --quiet nodestore \
+            && systemctl is-active --quiet nodeapiserver || {
+            echo "FAIL: nodestore services were not restored after return migration failure" >&2
+            return 1
+        }
+        KUBECONFIG="$nodestore_kubeconfig" kubectl --request-timeout=5s \
+            get --raw=/readyz >/dev/null || {
+                echo "FAIL: nodestore API did not recover after return migration failure" >&2
+                return 1
+            }
+        local recovery_dir
+        recovery_dir="$(sed -n 's/^Protected API object export saved at //p' "$LOG" | tail -n 1)"
+        [[ -n "$recovery_dir" && -d "$recovery_dir" ]] || {
+            echo "FAIL: protected API export is missing after return migration failure" >&2
+            return 1
+        }
+        verify_stage nodestore "$nodestore_kubeconfig"
+        echo "PASS: nodestore API and fixture state recovered; protected export retained at $recovery_dir"
         return "$return_migration_status"
     fi
     CURRENT_KUBECONFIG="$SOURCE_KUBECONFIG"
