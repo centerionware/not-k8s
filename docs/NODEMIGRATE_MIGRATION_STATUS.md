@@ -87,6 +87,15 @@ status spelling; migration workflow validation
 [36266303223](https://github.com/centerionware/not-k8s/actions/runs/36266303223)
 passed at `428286d9`. The older K3s job remained active at 2026-09-26 19:31 UTC.
 
+Commit `c3be42bc` makes built-in API 404s permanent import failures while
+preserving bounded 404 retries for source-CRD custom resources. Focused
+nodemigrate tests [36266754129](https://github.com/centerionware/not-k8s/actions/runs/36266754129)
+and migration workflow validation
+[36266754130](https://github.com/centerionware/not-k8s/actions/runs/36266754130)
+passed. The behavior still needs runtime verification; it should expose the PV
+request path promptly without claiming the PV migration itself is fixed. The
+older K3s lane remained active at 2026-09-26 19:40 UTC.
+
 Commit `3f7c8873` closes a separate failure-recovery gap in reverse migration:
 before reporting an API/readiness/node-replacement failure, nodemigrate now
 stops the partial retained target, restores local PV payloads, and restores

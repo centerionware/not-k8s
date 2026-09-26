@@ -93,6 +93,16 @@ checks and migration workflow validation
 passed. Run `36260417450` still reports its K3s migration step in progress at
 2026-09-26 19:31 UTC.
 
+Commit `c3be42bc` changes the import retry classifier so 404s for built-in
+resources fail immediately, while source-CRD custom resources retain bounded
+404 retries for establishment races. The failing PV's destination request path
+will now be reported without a five-minute wait. Focused nodemigrate tests
+[36266754129](https://github.com/centerionware/not-k8s/actions/runs/36266754129)
+and migration workflow validation
+[36266754130](https://github.com/centerionware/not-k8s/actions/runs/36266754130)
+passed. The root cause and successful runtime recovery remain unverified; the
+older K3s lane was still active at 2026-09-26 19:40 UTC.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

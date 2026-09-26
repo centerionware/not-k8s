@@ -51,6 +51,17 @@ migration-workflow validation passed on `3f7c8873` in
 and [36264669587](https://github.com/centerionware/not-k8s/actions/runs/36264669587).
 Runtime verification is pending.
 
+Commit `c3be42bc` narrows import 404 retries to versions of custom resources
+declared by source CRDs. A 404 or missing-discovery error for a built-in API
+resource, such as the failing PersistentVolume, now fails immediately with the
+destination request path instead of consuming the five-minute transient retry
+window. Focused nodemigrate tests [36266754129](https://github.com/centerionware/not-k8s/actions/runs/36266754129)
+and migration workflow validation [36266754130](https://github.com/centerionware/not-k8s/actions/runs/36266754130)
+passed. This improves failure time and diagnosis; it does not establish why the
+PV route returned 404 or prove successful restoration. Runtime rerun remains
+pending, and run `36260417450` still reported K3s in progress at
+2026-09-26 19:40 UTC.
+
 ## Latest diagnostic update
 
 Migration run [36251890971](https://github.com/centerionware/not-k8s/actions/runs/36251890971)
