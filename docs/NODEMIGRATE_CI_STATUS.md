@@ -92,14 +92,15 @@ record. The assertion was corrected to filter by filesystem type `bpf`.
 
 Docker-only run [36276280017](https://github.com/centerionware/not-k8s/actions/runs/36276280017)
 at SHA `06ff3d3f9c9b936c74af6be636904ad90a6ce694` passed that assertion and
-reached Cilium, but the same containerd error remained. Containerd validates
-mount propagation by looking up the requested mount path, so the duplicate
-exact-path entries may cause it to select the private tmpfs instead of the
-shared bpffs. The worktree removes Docker's `/sys/fs/bpf` tmpfs so bpffs is
-mounted directly at that path. This cause is an inference from the captured
-mount table and matching error; the change needs a Docker-only rerun. Job log:
+reached Cilium, and no longer reported the `/sys/fs/bpf` propagation error.
+Instead, containerd rejected Cilium's default cgroup v2 root at
+`/run/cilium/cgroupv2` as not shared or slave. This confirms that removing the
+overlapping bpffs tmpfs fixed that mount handoff. The worktree now mounts a
+node-local cgroup2 filesystem at Cilium's default path, marks it recursively
+shared, and checks that mount before kubeadm. Job log:
 `/tmp/nodemigrate-36276280017-job.log`; artifact:
 `/tmp/nodemigrate-36276280017-artifact/nodemigrate-docker-preflight-36276280017/nodemigrate-docker-preflight.log`.
+The cgroup2 mount change is unverified; next step is another Docker-only run.
 
 Earlier Docker-only attempts are archived at these logs:
 `/tmp/nodemigrate-36272360238-job.log` and

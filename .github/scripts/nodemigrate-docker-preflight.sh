@@ -134,6 +134,22 @@ for index in "${!NODES[@]}"; do
             grep " /sys/fs/bpf " /proc/self/mountinfo >&2 || true
             exit 1
         fi
+        mkdir -p /run/cilium/cgroupv2
+        mount -t cgroup2 cgroup2 /run/cilium/cgroupv2 || {
+            echo "FAIL: mounting a private cgroup2 filesystem for Cilium is unavailable" >&2
+            exit 1
+        }
+        mount --make-rshared /run/cilium/cgroupv2 || {
+            echo "FAIL: making the private Cilium cgroup2 mount shared is unavailable" >&2
+            exit 1
+        }
+        findmnt -n -t cgroup2 -o TARGET,PROPAGATION,FSTYPE --target /run/cilium/cgroupv2
+        cgroup2_propagation="$(findmnt -n -t cgroup2 -o PROPAGATION --target /run/cilium/cgroupv2)"
+        if [ "$cgroup2_propagation" != shared ]; then
+            echo "FAIL: Cilium cgroup2 mount is not shared for nested Pods" >&2
+            grep " /run/cilium/cgroupv2 " /proc/self/mountinfo >&2 || true
+            exit 1
+        fi
         printf "%s\n" "$HOSTNAME" > /var/lib/nodemigrate-volume/node-identity || {
             echo "FAIL: node persistent volume is not writable" >&2
             exit 1
@@ -257,6 +273,8 @@ collect_node_diagnostics() {
             systemctl status --no-pager --full kubelet containerd || true
             findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf || true
             grep " /sys/fs/bpf " /proc/self/mountinfo || true
+            findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /run/cilium/cgroupv2 || true
+            grep " /run/cilium/cgroupv2 " /proc/self/mountinfo || true
             journalctl -u kubelet -u containerd -n 150 --no-pager || true
             ctr -n k8s.io tasks ls || true
             ctr -n k8s.io containers ls || true
