@@ -9,6 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration attempt
 
+Branch-runtime migration [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
+used runtime SHA `70d1a049` (workflow checkout also contained docs-only
+commit `ef20bbc2`). Both utility/runtime builds and the five-node Docker
+preflight passed. In K3s, replacement CSI Pods again used the target
+`/var/lib/nodelet` paths, confirming the old terminating-Pod blockage did not
+recur. Cilium started, then exhausted ten updates to
+`CiliumNode/runnervmtr4k5` with HTTP 409 “object has been modified” and exited
+fatally; the `agent-not-ready` taint remained and replacement CSI Pods could
+not schedule. The nodelet HTTP probe fix passed its focused quick-check, but
+the agent never reached stable Ready, so its runtime effect remains
+unverified. Upstream again rolled back after the cert-manager webhook could
+not be reached for `CertificateRequest/migration-test-1` (HTTP 500). Both
+source services recovered and protected exports remained. No target workload,
+return-migration, or parity checkpoint passed. General build/e2e gates were
+not run. The saved API server journal tail began after the CiliumNode failure
+window, so it did not establish whether the 409 came from a stale submitted
+resourceVersion or a storage compare-and-swap loss. The integration harness is
+being updated to retain matching CiliumNode journal entries from migration
+start. Logs: `/tmp/nodemigrate-36214776875-k3s.log` and
+`/tmp/nodemigrate-36214776875-kubernetes.log`.
+
 Branch-runtime migration [36212326763](https://github.com/centerionware/not-k8s/actions/runs/36212326763)
 used SHA `b2c4f8824faf2c490aa13bf61f0a7c4509a27d05`. Both scoped builds and
 five-node Docker preflight passed. In the K3s lane, the nodelet startup-gate
@@ -24,8 +45,8 @@ operator's repeated liveness failures and agent readiness failure are
 consistent with this confirmed probe defect. The fix and focused request tests
 passed nodelet quick-check [36214612947](https://github.com/centerionware/not-k8s/actions/runs/36214612947).
 Migration rerun [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
-is active; the five-node Docker preflight passed and both lane builds are
-running. Upstream again rolled back
+then exposed a fatal CiliumNode 409 before the agent reached stable Ready;
+runtime probe behavior remains unverified. Upstream again rolled back
 after the cert-manager webhook could not be reached for
 `CertificateRequest/migration-test-1` and the API returned HTTP 500. Source
 recovery and protected-export retention passed in both lanes. Neither lane

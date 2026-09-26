@@ -17,6 +17,7 @@ STATIC_PATH="$WORK/static-volume"
 CHECKPOINT_DIR="$WORK/checkpoints"
 SOURCE_KUBECONFIG=""
 CURRENT_KUBECONFIG=""
+MIGRATION_STARTED_AT=""
 
 if [[ "$LIBRARY_MODE" != true ]]; then
     exec > >(tee -a "$LOG") 2>&1
@@ -209,6 +210,12 @@ diagnostics() {
         KUBECONFIG="$CURRENT_KUBECONFIG" capture_cni_host_diagnostics || true
         echo "Cilium Envoy host-process ownership:"
         capture_cilium_envoy_process_owners || true
+        if [[ -n "$MIGRATION_STARTED_AT" ]]; then
+            echo "CiliumNode API requests since migration start ($MIGRATION_STARTED_AT):"
+            journalctl -b -u nodeapiserver --since "$MIGRATION_STARTED_AT" \
+                --no-pager -o cat 2>/dev/null \
+                | grep -Ei 'ciliumnode|/apis/cilium\.io/v2/ciliumnodes' || true
+        fi
         journalctl -b -u k3s -u kubelet -u containerd -u nodestore -u nodeapiserver \
             -u kube-apiserver --no-pager -n 250 || true
         echo "Target API server diagnostics:"
@@ -1772,6 +1779,7 @@ main() {
     export NOTK8S_BUILD_LAYOUT=combined
     export NODEBOOTSTRAP_REPO_ROOT="$ROOT"
     local nodestore_kubeconfig=/etc/nodebootstrap/admin.kubeconfig
+    MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
     echo "Migrating $SOURCE_DIST -> nodestore"
     local migration_status=0
     if NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG" \
@@ -1813,6 +1821,7 @@ main() {
     verify_stage nodestore "$nodestore_kubeconfig"
     assert_migratable_api_state_unchanged source nodestore
 
+    MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
     echo "Migrating nodestore -> $SOURCE_DIST"
     NODEMIGRATE_REPLACE_NODE=true \
     NODEMIGRATE_SOURCE_KUBECONFIG="$nodestore_kubeconfig" \

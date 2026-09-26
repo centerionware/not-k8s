@@ -15,6 +15,32 @@ new fixes.
 
 ## Latest branch-runtime result
 
+Branch-runtime migration [run 36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875)
+used runtime SHA `70d1a049` (workflow checkout included the later docs-only
+commit `ef20bbc2`). Both scoped utility/runtime builds and the five-node Docker
+preflight passed; both migration steps failed. In K3s, the nodelet CoreDNS
+gate teardown fix remained effective: the replacement CSI Pods used target
+`/var/lib/nodelet` paths. Cilium's agent started, but then exhausted ten
+`CiliumNode/runnervmtr4k5` update retries with HTTP 409 / “object has been
+modified” and exited fatally. The `agent-not-ready` taint remained, leaving
+CSI Pods unschedulable; no target storage/workload, reverse-migration, or
+parity checkpoint passed. No liveness-probe restarts were logged in this run,
+but the agent did not reach stable Ready, so end-to-end verification of the
+HTTP-probe fix remains pending. Upstream again failed importing
+`CertificateRequest/migration-test-1` because the cert-manager webhook was
+unreachable and returned HTTP 500. Rollback restored both source services and
+retained their protected exports. The focused nodelet quick-check passed at
+the same runtime SHA in [36214612947](https://github.com/centerionware/not-k8s/actions/runs/36214612947).
+The general build gate and full e2e were not run. Logs:
+`/tmp/nodemigrate-36214776875-k3s.log` and
+`/tmp/nodemigrate-36214776875-kubernetes.log`.
+
+The K3s failure artifact did not retain the API journal lines from the CiliumNode
+conflict window: its fixed 1,000-line tail began around 03:46:22Z, while Cilium
+failed at 03:44:16–03:44:26Z under heavy audit traffic. The integration harness
+now captures CiliumNode API journal entries from each migration's start; this
+diagnostic change still needs a migration rerun.
+
 Branch-runtime migration [run 36212326763](https://github.com/centerionware/not-k8s/actions/runs/36212326763)
 used SHA `b2c4f8824faf2c490aa13bf61f0a7c4509a27d05`. Both scoped utility and
 runtime builds and the five-node Docker isolation preflight passed; both
@@ -48,11 +74,12 @@ types, but nodelet quick-check [36214473328](https://github.com/centerionware/no
 found the header list is optional, not a nested vector. That was corrected at
 SHA `70d1a049`; nodelet quick-check
 [36214612947](https://github.com/centerionware/not-k8s/actions/runs/36214612947)
-passed. Migration runtime validation is running at the same SHA in
+passed. Migration runtime validation at the same SHA completed in
 [36214776875](https://github.com/centerionware/not-k8s/actions/runs/36214776875):
-the five-node Docker preflight passed and both lane builds are in progress.
-No result for either migration path is available yet. General build and e2e
-gates remain unrun.
+both builds and Docker preflight passed, but K3s then failed on repeated
+CiliumNode 409 conflicts and upstream failed the cert-manager webhook request.
+Neither migration path reached parity checks. General build and e2e gates
+remain unrun.
 
 Branch-runtime migration [run 36211105237](https://github.com/centerionware/not-k8s/actions/runs/36211105237)
 used diagnostic SHA `0bc658e76b58f4f29ce2d69c310826fab8fe9ea9`. Both scoped
