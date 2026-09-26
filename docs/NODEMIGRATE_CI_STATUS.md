@@ -162,6 +162,16 @@ and release-policy validation passed in
 No release was published. Runtime migration of the per-resource report is
 pending; the still-active run `36260417450` predates this change.
 
+The Docker five-node preflight now builds a real upstream kubeadm 1.35 cluster
+with three stacked-etcd control planes and two workers, installs Cilium, checks
+all five Nodes and Cilium agents Ready, then stops one control plane and
+verifies API readiness through a surviving control plane before restoring the
+fifth Node. The job timeout is 60 minutes for this cluster setup. This checks
+whether Docker models the topology and control-plane failure needed by the
+multi-node migration gate; it does not run nodemigrate or prove migration
+parity. `bash -n` and `git diff --check` pass locally. Docker image build and
+cluster simulation CI are pending.
+
 ## Earlier branch-runtime attempt
 
 The rerun after identity normalization,

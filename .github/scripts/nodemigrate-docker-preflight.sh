@@ -150,6 +150,137 @@ for left in "${NODES[@]}"; do
     done
 done
 
+node_container() {
+    printf '%s-%s' "$1" "$SUFFIX"
+}
+
+node_ip() {
+    docker inspect --format \
+        "{{with index .NetworkSettings.Networks \"$NETWORK\"}}{{.IPAddress}}{{end}}" \
+        "$(node_container "$1")"
+}
+
+echo "Configuring kubeadm and containerd on five isolated nodes"
+for node in "${NODES[@]}"; do
+    container="$(node_container "$node")"
+    docker exec "$container" bash -ec '
+        modprobe overlay
+        modprobe br_netfilter
+        cat >/etc/modules-load.d/kubernetes.conf <<EOF
+overlay
+br_netfilter
+EOF
+        cat >/etc/sysctl.d/99-kubernetes.conf <<EOF
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+net.ipv4.ip_forward=1
+EOF
+        sysctl --system >/dev/null
+        swapoff -a
+        containerd config default >/etc/containerd/config.toml
+        sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
+        systemctl restart containerd
+        systemctl enable kubelet
+        kubeadm version -o short
+        kubelet --version
+    '
+done
+
+cp1="$(node_container cp-1)"
+cp1_ip="$(node_ip cp-1)"
+echo "Initializing upstream Kubernetes control plane cp-1 at $cp1_ip"
+docker exec "$cp1" kubeadm init \
+    --kubernetes-version "$(docker exec "$cp1" kubeadm version -o short)" \
+    --control-plane-endpoint=cp-1:6443 \
+    --apiserver-advertise-address="$cp1_ip" \
+    --pod-network-cidr=10.244.0.0/16 \
+    --cri-socket=unix:///run/containerd/containerd.sock \
+    --upload-certs
+
+join_command="$(docker exec "$cp1" kubeadm token create --ttl 2h --print-join-command)"
+certificate_key="$(docker exec "$cp1" kubeadm init phase upload-certs --upload-certs \
+    | tail -n 1)"
+[[ "$certificate_key" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "kubeadm did not produce a usable control-plane certificate key"
+read -r -a join_args <<<"$join_command"
+[[ "${join_args[0]:-}" == kubeadm && "${join_args[1]:-}" == join ]] \
+    || fail "kubeadm returned an unexpected join command: $join_command"
+
+echo "Joining cp-2 and cp-3 to the stacked-etcd control plane"
+for node in cp-2 cp-3; do
+    node_ip="$(node_ip "$node")"
+    docker exec "$(node_container "$node")" "${join_args[@]}" \
+        --control-plane \
+        --certificate-key "$certificate_key" \
+        --apiserver-advertise-address="$node_ip" \
+        --cri-socket=unix:///run/containerd/containerd.sock
+done
+
+echo "Joining worker-1 and worker-2 to the upstream cluster"
+for node in worker-1 worker-2; do
+    docker exec "$(node_container "$node")" "${join_args[@]}" \
+        --cri-socket=unix:///run/containerd/containerd.sock
+done
+
+echo "Installing Helm and Cilium in the five-node upstream cluster"
+docker exec "$cp1" bash -ec '
+    curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz -o /tmp/helm.tgz
+    tar -xzf /tmp/helm.tgz -C /tmp
+    install -m0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    helm repo add cilium https://helm.cilium.io/ --force-update
+    helm repo update cilium
+    helm upgrade --install cilium cilium/cilium --version 1.20.2 \
+        --namespace kube-system \
+        --set ipam.mode=kubernetes \
+        --set cni.binPath=/opt/cni/bin \
+        --set kubeProxyReplacement=false \
+        --set operator.replicas=1 \
+        --set k8sServiceHost=cp-1 \
+        --set k8sServicePort=6443 \
+        --wait --timeout 10m
+    kubectl rollout status daemonset/cilium -n kube-system --timeout=10m
+    kubectl rollout status deployment/cilium-operator -n kube-system --timeout=10m
+    kubectl wait --for=condition=Ready node --all --timeout=10m
+    echo "Upstream versions:"
+    kubeadm version -o short
+    helm list -n kube-system --output json
+    kubectl get nodes -o wide
+    kubectl get nodes -o json | jq -e "
+      (.items | length) == 5 and
+      ([.items[] | select((.metadata.labels // {}) | has(\"node-role.kubernetes.io/control-plane\"))] | length) == 3 and
+      ([.items[] | select(((.metadata.labels // {}) | has(\"node-role.kubernetes.io/control-plane\")) | not)] | length) == 2
+    " >/dev/null
+    kubectl get daemonset cilium -n kube-system -o json | jq -e "
+      .status.desiredNumberScheduled == 5 and .status.numberReady == 5
+    " >/dev/null
+'
+
+echo "Verifying the three-member etcd control plane survives cp-1 loss"
+cp2="$(node_container cp-2)"
+docker exec "$cp2" kubectl config set-cluster kubernetes \
+    --server=https://cp-2:6443 --kubeconfig=/etc/kubernetes/admin.conf
+docker stop --time 2 "$cp1" >/dev/null
+docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl --request-timeout=20s get --raw=/readyz >/dev/null
+docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl --request-timeout=20s get nodes -o wide
+docker start "$cp1" >/dev/null
+wait_systemd "$cp1"
+for _ in $(seq 1 120); do
+    if docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl --request-timeout=5s wait --for=condition=Ready node --all --timeout=5s >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl --request-timeout=20s get nodes -o wide
+docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl get nodes -o json | jq -e '
+      (.items | length) == 5 and all(.items[]; any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+    ' >/dev/null || fail "the five-node upstream cluster did not recover after cp-1 restart"
+
 echo "Stopping cp-1 to verify failure isolation"
 docker stop --time 2 "cp-1-${SUFFIX}" >/dev/null
 for node in cp-2 cp-3 worker-1 worker-2; do
@@ -161,5 +292,6 @@ wait_systemd "cp-1-${SUFFIX}"
 docker exec "cp-1-${SUFFIX}" systemctl is-active --quiet containerd \
     || fail "cp-1 did not recover its CRI after restart"
 
-echo "PASS: five Docker nodes have distinct namespaces, CRI and BPF support, separate persistent volumes, inter-node reachability, and single-node failure isolation"
-echo "NOTE: this preflight does not establish Kubernetes, Cilium datapath, or migration parity; those require the five-node migration lane"
+echo "PASS: five Docker nodes ran a kubeadm 3-control-plane/2-worker cluster with Cilium, survived control-plane loss, and recovered all Nodes"
+echo "PASS: Docker isolation checks confirmed distinct namespaces, CRI/BPF support, separate storage, and inter-node reachability"
+echo "NOTE: this preflight validates the five-node Kubernetes/Cilium simulation only; nodemigrate runtime and migration parity remain unverified"

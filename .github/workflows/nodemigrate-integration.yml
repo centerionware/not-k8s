@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       docker_only:
-        description: Run only the isolated five-node Docker preflight
+        description: Run the isolated five-node kubeadm/Cilium preflight only
         required: false
         type: boolean
         default: false
@@ -67,7 +67,7 @@ jobs:
   docker-preflight:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -77,7 +77,7 @@ jobs:
       - name: Build node image
         run: docker build --pull --file .github/nodemigrate/five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
 
-      - name: Probe five nodes
+      - name: Probe kubeadm nodes
         env:
           NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
           NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
