@@ -186,6 +186,12 @@ The script now loads `overlay` and `br_netfilter` on the Docker host before
 starting privileged containers; the redundant container `kmod` dependency was
 removed. The Docker-only rerun is pending. No kubeadm cluster or Cilium result
 has passed yet.
+The rerun [36270087374](https://github.com/centerionware/not-k8s/actions/runs/36270087374)
+at SHA `2f35443e3b5b6e141aa03b47bf5e0fc041fe0d0d` successfully loaded the host
+modules and repeated all five container isolation checks, then exited 32 while
+configuring kubeadm prerequisites. The script had suppressed `sysctl --system`
+output, so the failing command is unknown. The current harness adds per-step
+markers and exposes sysctl output for the next targeted rerun.
 
 ## Earlier branch-runtime attempt
 

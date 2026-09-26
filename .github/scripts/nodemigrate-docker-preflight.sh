@@ -167,6 +167,7 @@ echo "Configuring kubeadm and containerd on five isolated nodes"
 for node in "${NODES[@]}"; do
     container="$(node_container "$node")"
     docker exec "$container" bash -ec '
+        echo "$HOSTNAME: writing kernel module and sysctl configuration"
         cat >/etc/modules-load.d/kubernetes.conf <<EOF
 overlay
 br_netfilter
@@ -176,11 +177,15 @@ net.bridge.bridge-nf-call-iptables=1
 net.bridge.bridge-nf-call-ip6tables=1
 net.ipv4.ip_forward=1
 EOF
-        sysctl --system >/dev/null
+        echo "$HOSTNAME: applying sysctls"
+        sysctl --system
+        echo "$HOSTNAME: disabling swap"
         swapoff -a
+        echo "$HOSTNAME: configuring and restarting containerd"
         containerd config default >/etc/containerd/config.toml
         sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
         systemctl restart containerd
+        echo "$HOSTNAME: enabling kubelet and checking Kubernetes tools"
         systemctl enable kubelet
         kubeadm version -o short
         kubelet --version
