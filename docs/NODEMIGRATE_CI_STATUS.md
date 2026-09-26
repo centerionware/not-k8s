@@ -100,7 +100,19 @@ node-local cgroup2 filesystem at Cilium's default path, marks it recursively
 shared, and checks that mount before kubeadm. Job log:
 `/tmp/nodemigrate-36276280017-job.log`; artifact:
 `/tmp/nodemigrate-36276280017-artifact/nodemigrate-docker-preflight-36276280017/nodemigrate-docker-preflight.log`.
-The cgroup2 mount change is unverified; next step is another Docker-only run.
+This direct cgroup2 mount was a pre-worktree proposal and is superseded by the
+latest run below.
+
+Docker-only run [36278041301](https://github.com/centerionware/not-k8s/actions/runs/36278041301)
+at SHA `ba2d2ff4058fa8e2a18951d5accb519c141ddd08` passed all five node
+isolation checks, including shared `/sys/fs/bpf` and `/run/cilium/cgroupv2`
+mounts, and formed the five-node kubeadm cluster. Cilium progressed past both
+paths, then containerd rejected `/var/run/netns` because its resolved mount
+was the private `/run` tmpfs. The worktree marks each node-local `/run` mount
+recursively shared and asserts its propagation before kubeadm; this next
+change is unverified. Job log: `/tmp/nodemigrate-36278041301-job.log` and
+artifact:
+`/tmp/nodemigrate-36278041301-artifact/nodemigrate-docker-preflight-36278041301/nodemigrate-docker-preflight.log`.
 
 Earlier Docker-only attempts are archived at these logs:
 `/tmp/nodemigrate-36272360238-job.log` and

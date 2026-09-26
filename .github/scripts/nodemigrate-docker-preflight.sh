@@ -130,8 +130,19 @@ for index in "${!NODES[@]}"; do
         findmnt -n -t bpf -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf
         bpffs_propagation="$(findmnt -n -t bpf -o PROPAGATION --target /sys/fs/bpf)"
         if [ "$bpffs_propagation" != shared ]; then
-            echo "FAIL: topmost node bpffs mount is not shared for nested Cilium Pods" >&2
+            echo "FAIL: node bpffs mount is not shared for nested Cilium Pods" >&2
             grep " /sys/fs/bpf " /proc/self/mountinfo >&2 || true
+            exit 1
+        fi
+        mount --make-rshared /run || {
+            echo "FAIL: making the private node /run mount shared is unavailable" >&2
+            exit 1
+        }
+        findmnt -n -o TARGET,PROPAGATION,FSTYPE --mountpoint /run
+        run_propagation="$(findmnt -n -o PROPAGATION --mountpoint /run)"
+        if [ "$run_propagation" != shared ]; then
+            echo "FAIL: node /run mount is not shared for Cilium netns mounts" >&2
+            grep " /run " /proc/self/mountinfo >&2 || true
             exit 1
         fi
         mkdir -p /run/cilium/cgroupv2
@@ -275,6 +286,8 @@ collect_node_diagnostics() {
             grep " /sys/fs/bpf " /proc/self/mountinfo || true
             findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /run/cilium/cgroupv2 || true
             grep " /run/cilium/cgroupv2 " /proc/self/mountinfo || true
+            findmnt -n -o TARGET,PROPAGATION,FSTYPE --mountpoint /run || true
+            grep " /run " /proc/self/mountinfo || true
             journalctl -u kubelet -u containerd -n 150 --no-pager || true
             ctr -n k8s.io tasks ls || true
             ctr -n k8s.io containers ls || true
