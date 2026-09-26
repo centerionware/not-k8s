@@ -21,8 +21,10 @@ reapplied with `/var/lib/nodelet` paths, but its previous Pods remained in
 minutes. They had no Pod IP or container status, and the nodelet journal did
 not record teardown/retry for either Pod. The nodelet journal shows it was still inside `wait_for_coredns()` at the
 failure and had not processed the ordinary terminating CSI Pods. The startup
-gate now starts teardown for locally assigned terminating Pods while it waits;
-a focused regression and next runtime run are pending. The CSI gate failed
+gate now starts teardown for locally assigned terminating Pods while it waits.
+The local-versus-remote startup-gate regression passed focused nodelet
+quick-check [36211663128](https://github.com/centerionware/not-k8s/actions/runs/36211663128);
+runtime verification is pending. The CSI gate failed
 before workload, reverse, or parity checks. Upstream again failed CertificateRequest restoration because
 the target cert-manager webhook was unreachable; rollback restored the source
 API and retained the protected export. Neither lane reached workload checks,

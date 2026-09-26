@@ -496,6 +496,8 @@ No local Cargo test/build was run.
 
 | Date | SHA | Check/lane | Result | Evidence |
 | --- | --- | --- | --- | --- |
+| 2026-09-26 | `f5efb03a` | Targeted quick-check: `nodelet` | Passed unit tests, including the new startup-gate predicate regression for local and remote terminating Pods. | [Run 36211663128](https://github.com/centerionware/not-k8s/actions/runs/36211663128) |
+
 | 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Targeted quick-check: `nodelet` | Passed unit tests for nested read-only managed-volume mountpoint preparation and external-volume non-mutation. | [Run 36093508613](https://github.com/centerionware/not-k8s/actions/runs/36093508613) |
 | 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Branch-runtime K3s + Cilium | Forward migration passed; prior runc mountpoint failure did not recur. Cilium Envoy still failed its startup probe and blocked CNI/workload/storage checks. | [Run 36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629) |
 | 2026-09-25 | `f048ae142d8dbfe6ee9fa28e6a7a2a8c4a51702c` | Branch-runtime Kubernetes + Cilium | Forward migration passed; old mountpoint failure did not recur, but Envoy startup probe failed and blocked CNI/workload/storage checks and reverse migration. | [Run 36093516629](https://github.com/centerionware/not-k8s/actions/runs/36093516629) |
