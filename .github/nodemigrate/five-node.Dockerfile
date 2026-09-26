@@ -17,6 +17,7 @@ RUN apt-get update \
         iptables \
         iputils-ping \
         jq \
+        kmod \
         llvm \
         linux-tools-common \
         linux-tools-generic \

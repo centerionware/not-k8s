@@ -177,7 +177,12 @@ migration job. The job log showed `curl: (77)` because
 `/etc/ssl/certs/ca-certificates.crt` was missing while fetching the Kubernetes
 signing key; GPG then reported no valid key data. The image now installs
 `ca-certificates` explicitly. No cluster or migration behavior was tested by
-that run; the Docker-only rerun is pending.
+that run; the Docker-only rerun at SHA `4c5af2adb01fb876409462f3054de1f38923f8e8`
+fixed the image build and passed five-container systemd, namespace, CRI, BPF,
+storage, and peer-network checks. It then failed because `modprobe` was absent
+while configuring kubeadm prerequisites. The image now also installs `kmod`;
+the next Docker-only preflight is pending. No kubeadm cluster or Cilium result
+has passed yet.
 
 ## Earlier branch-runtime attempt
 
