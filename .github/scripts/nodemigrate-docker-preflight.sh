@@ -253,6 +253,29 @@ collect_node_diagnostics() {
     done
 }
 
+collect_cluster_diagnostics() {
+    echo "Collecting Kubernetes, Cilium, and node runtime diagnostics"
+    docker exec "$cp1" bash -c '
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get nodes -o wide || true
+        kubectl get pods -A -o wide || true
+        kubectl get events -A --sort-by=.lastTimestamp | tail -n 120 || true
+        for pod in $(kubectl get pods -n kube-system -l k8s-app=cilium -o name 2>/dev/null); do
+            echo "Cilium Pod diagnostics: $pod"
+            kubectl describe "$pod" -n kube-system || true
+            kubectl logs "$pod" -n kube-system --all-containers --tail=120 || true
+            kubectl logs "$pod" -n kube-system --all-containers --previous --tail=120 || true
+        done
+        for pod in $(kubectl get pods -n kube-system -l io.cilium/app=operator -o name 2>/dev/null); do
+            echo "Cilium operator diagnostics: $pod"
+            kubectl describe "$pod" -n kube-system || true
+            kubectl logs "$pod" -n kube-system --all-containers --tail=120 || true
+            kubectl logs "$pod" -n kube-system --all-containers --previous --tail=120 || true
+        done
+    ' || true
+    collect_node_diagnostics
+}
+
 if ! docker exec "$cp1" kubeadm init \
     --kubernetes-version "$(docker exec "$cp1" kubeadm version -o short)" \
     --control-plane-endpoint=cp-1:6443 \
@@ -291,7 +314,7 @@ for node in worker-1 worker-2; do
 done
 
 echo "Installing Helm and Cilium in the five-node upstream cluster"
-docker exec "$cp1" bash -ec '
+if ! docker exec "$cp1" bash -ec '
     curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz -o /tmp/helm.tgz
     tar -xzf /tmp/helm.tgz -C /tmp
     install -m0755 /tmp/linux-amd64/helm /usr/local/bin/helm
@@ -322,7 +345,11 @@ docker exec "$cp1" bash -ec '
     kubectl get daemonset cilium -n kube-system -o json | jq -e "
       .status.desiredNumberScheduled == 5 and .status.numberReady == 5
     " >/dev/null
-'
+'; then
+    echo "Cilium installation or readiness checks failed; collecting diagnostics"
+    collect_cluster_diagnostics
+    exit 1
+fi
 
 echo "Verifying the three-member etcd control plane survives cp-1 loss"
 cp2="$(node_container cp-2)"

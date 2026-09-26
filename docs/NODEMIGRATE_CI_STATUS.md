@@ -36,7 +36,19 @@ lookup passed through the outer single-quoted `bash -ec` argument. Run
 reproduced the same quoting issue after the literal lookup was introduced; the
 appended config was printed in failure diagnostics. The lookup and value
 assertions now use escaped double quotes throughout. Shell syntax and a local
-nested-shell fixture pass. Another Docker-only run is pending. Logs:
+nested-shell fixture pass. Docker-only run
+[36272793413](https://github.com/centerionware/not-k8s/actions/runs/36272793413)
+at SHA `896bea4f2f55db1c7824aa23d9f6d2ce656df5e4` then passed the unpack
+mapping and all five node-container checks. kubeadm initialized cp-1, joined
+cp-2/cp-3 as stacked-etcd control planes, and joined worker-1/worker-2.
+Installing Cilium `1.20.2` with Helm timed out after ten minutes. No Cilium
+readiness, API survival under control-plane loss, restart recovery, or
+migration check passed. The next harness change captures all Nodes, Pods,
+events, Cilium agent/operator descriptions and logs, and containerd/kubelet
+state when Cilium setup fails. Runtime diagnosis and rerun are pending. Logs:
+`/tmp/nodemigrate-36272793413-job.log`.
+
+Another Docker-only run is pending. Logs:
 `/tmp/nodemigrate-36272360238-job.log` and
 `/tmp/nodemigrate-36272577668-job.log`.
 
