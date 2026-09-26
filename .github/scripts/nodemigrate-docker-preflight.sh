@@ -128,15 +128,13 @@ for index in "${!NODES[@]}"; do
             echo "FAIL: making the private node bpffs mount shared is unavailable" >&2
             exit 1
         }
-        mountinfo_line="$(grep " /sys/fs/bpf " /proc/self/mountinfo)"
-        case "$mountinfo_line" in
-            *" shared:"*) ;;
-            *)
-                echo "FAIL: node bpffs is not shared for nested Cilium Pods" >&2
-                printf "%s\n" "$mountinfo_line" >&2
-                exit 1
-                ;;
-        esac
+        findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf
+        bpffs_propagation="$(findmnt -n -o PROPAGATION --target /sys/fs/bpf)"
+        if [ "$bpffs_propagation" != shared ]; then
+            echo "FAIL: topmost node bpffs mount is not shared for nested Cilium Pods" >&2
+            grep " /sys/fs/bpf " /proc/self/mountinfo >&2 || true
+            exit 1
+        fi
         printf "%s\n" "$HOSTNAME" > /var/lib/nodemigrate-volume/node-identity || {
             echo "FAIL: node persistent volume is not writable" >&2
             exit 1
@@ -258,6 +256,8 @@ collect_node_diagnostics() {
         echo "Failure diagnostics for $node"
         docker exec "$container" bash -c '
             systemctl status --no-pager --full kubelet containerd || true
+            findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf || true
+            grep " /sys/fs/bpf " /proc/self/mountinfo || true
             journalctl -u kubelet -u containerd -n 150 --no-pager || true
             ctr -n k8s.io tasks ls || true
             ctr -n k8s.io containers ls || true

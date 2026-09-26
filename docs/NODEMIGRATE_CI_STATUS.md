@@ -69,6 +69,18 @@ expanded `$mountinfo_line` under `set -u`. The diagnostic wording now avoids
 apostrophes. Shell syntax and mountinfo fixture checks pass; a new Docker-only
 run is pending. Log: `/tmp/nodemigrate-36274819916-job.log`.
 
+Docker-only run [36274980364](https://github.com/centerionware/not-k8s/actions/runs/36274980364)
+at SHA `3f82684a1a0e6185296c13ab1ced14a54952f300` reached kubeadm/Cilium but
+still failed with `/sys/fs/bpf` reported not shared inside nested Pods. The
+previous check searched all mountinfo records and could have matched a lower
+overmounted entry while the topmost mount remained private. The harness now
+checks the topmost mount's `PROPAGATION` via `findmnt` and prints both findmnt
+and mountinfo state in failure diagnostics. This diagnosis is an inference
+from the mismatch between the old check and Cilium's runc error; the new
+findmnt evidence is pending. Log:
+`/tmp/nodemigrate-36274980364-job.log` and artifact
+`/tmp/nodemigrate-36274980364-artifact/nodemigrate-docker-preflight.log`.
+
 Another Docker-only run is pending. Logs:
 `/tmp/nodemigrate-36272360238-job.log` and
 `/tmp/nodemigrate-36272577668-job.log`.
