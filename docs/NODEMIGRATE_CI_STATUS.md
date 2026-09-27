@@ -15,28 +15,29 @@ new fixes.
 
 ## Most recent evidence
 
-Run [36292181731](https://github.com/centerionware/not-k8s/actions/runs/36292181731)
-at SHA `4bfc8fb84d049afcd5fd8afaea226c29b1647c5f` is complete and failed in
-both migration lanes after source and nodestore API readiness. The five-node
-Docker/kubeadm/Cilium preflight and both branch utility/runtime builds passed.
-K3s found that metrics-server could not write its self-signed cert to `/tmp`:
-the non-root, read-only-rootfs Pod uses `emptyDir`, but nodelet had made its
-host directory mode 0755. The current worktree changes emptyDir root
-permissions to kubelet's writable default and adds a fixture probe checked at
-each checkpoint. Nodelet quick-check and branch-runtime rerun are pending.
+Run [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293)
+at SHA `ad2ee6a016993c43effeab3d1aa83e9f6cf40f5e` completed with both
+migration lanes failing. Five-node Docker/kubeadm/Cilium preflight and both
+branch utility/runtime builds passed. Targeted nodelet quick-check
+[36293700468](https://github.com/centerionware/not-k8s/actions/runs/36293700468)
+passed. The new non-root, read-only-rootfs emptyDir fixture passed at source
+and nodestore checkpoints in both lanes. K3s then failed because
+`nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were missing: metrics-server
+was Ready and served its generated TLS cert, but its APIService discovery
+probe got HTTP 403. The worktree now passes the upstream `system:kube-aggregator`
+probe identity and front-proxy certificate to that nodeapiserver check;
+focused nodeapiserver quick-check and rerun are pending.
 
-In the upstream lane the all-object comparator also failed on target-only
-runtime objects and source-identity digest changes. The current worktree now
-compares all source identities and hashes, allows additional target identities
-to be reported separately, and still fails on any missing or changed source
-object. This is not a parity pass: the previous run showed changed hashes for
-same-identity objects including `Deployment/coredns`,
-`ClusterRole/system:coredns`, and system PriorityClasses. Those remain
-unresolved. The revised comparator emits identities and hashes without
-printing object or Secret contents. Its focused inventory script passes;
-runtime validation is pending. Full lane logs are saved at
-`/tmp/nodemigrate-36292181731-{k3s,kubernetes}-ci.log` and artifacts at
-`/tmp/nodemigrate-36292181731-artifacts/`.
+Upstream passed source and nodestore API readiness, then failed strict source
+object digest parity on same-identity objects including CoreDNS, CSI driver,
+ReplicaSets/StatefulSets, Cilium/CSI node state, Leases, system RBAC, and
+PriorityClasses. No return migration or round trip passed. The current
+worktree improves this checker to report destination-only identities
+separately and changed normalized field paths while still failing on every
+changed or missing source object; it does not print object or Secret values.
+Its expanded inventory-script check and next runtime run are pending. Full lane
+logs are saved at `/tmp/nodemigrate-36293700293-{k3s,kubernetes}-ci.log` and
+artifacts at `/tmp/nodemigrate-36293700293-artifacts/`.
 
 Branch-runtime run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
 at SHA `879a0a618efe933d084023300460128da446da17` completed. Docker's

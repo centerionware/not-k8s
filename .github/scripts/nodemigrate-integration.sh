@@ -2375,7 +2375,7 @@ capture_semantic_checkpoint() {
 capture_migratable_api_objects() {
     local output="$1"
     local resource_inventory="$2"
-    local resources resource list_json object_json normalized identity digest
+    local resources resource list_json object_json normalized identity digest fields
     kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u > "$resource_inventory"
     resources="$(cat "$resource_inventory")"
     [[ -n "$resources" ]] || {
@@ -2392,8 +2392,30 @@ capture_migratable_api_objects() {
             [[ -n "$normalized" ]] || continue
             identity="$(jq -cS '{apiGroup: ((.apiVersion | split("/")) | if length > 1 then .[0] else "" end), kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$normalized")"
             digest="$(printf '%s' "$normalized" | sha256sum | awk '{print $1}')"
+            fields="$(python3 -c '
+import hashlib
+import json
+import sys
+
+def walk(value, path, result):
+    if isinstance(value, dict) and value:
+        for key, child in value.items():
+            escaped = str(key).replace("~", "~0").replace("/", "~1")
+            walk(child, f"{path}/{escaped}", result)
+    elif isinstance(value, list) and value:
+        for index, child in enumerate(value):
+            walk(child, f"{path}/{index}", result)
+    else:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        result[path or "/"] = hashlib.sha256(canonical.encode()).hexdigest()
+
+result = {}
+walk(json.load(sys.stdin), "", result)
+json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
+' <<< "$normalized")"
             jq -cS -n --argjson identity "$identity" --arg digest "$digest" \
-                '{identity: $identity, sha256: $digest}' >> "$output"
+                --argjson fields "$fields" \
+                '{identity: $identity, sha256: $digest, fields: $fields}' >> "$output"
         done < <(jq -c '.items[]' <<< "$list_json")
     done <<< "$resources"
     LC_ALL=C sort -o "$output" "$output"
@@ -2446,6 +2468,10 @@ changed = sorted(
     if before[identity]["sha256"] != after[identity]["sha256"]
 )
 target_only = sorted(after.keys() - before.keys())
+print(f"Target-only objects: {len(target_only)}")
+if target_only:
+    print("Target-only API object identities:")
+    print("\n".join(target_only))
 if missing or changed:
     if missing:
         print("Source API objects missing on target:", file=sys.stderr)
@@ -2457,11 +2483,17 @@ if missing or changed:
             source_text, target_text,
             fromfile=f"source {identity}", tofile=f"target {identity}", lineterm="\n"
         ))
+        source_fields = before[identity].get("fields", {})
+        target_fields = after[identity].get("fields", {})
+        field_paths = sorted(
+            path for path in source_fields.keys() | target_fields.keys()
+            if source_fields.get(path) != target_fields.get(path)
+        )
+        if field_paths:
+            print(f"Changed normalized field paths for {identity}:", file=sys.stderr)
+            print("\n".join(field_paths), file=sys.stderr)
     sys.exit(1)
 print(f"Source objects preserved: {len(before)}; target-only objects: {len(target_only)}")
-if target_only:
-    print("Target-only API object identities:")
-    print("\n".join(target_only))
 PY
     then
         echo "Normalized source API object data changed between stages $source_stage and $target_stage:" >&2

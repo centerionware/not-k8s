@@ -2,30 +2,38 @@
 
 Last updated: 2026-09-27
 
-## Branch-runtime findings from run 36292181731
+## Branch-runtime findings from run 36293700293
 
-Run [36292181731](https://github.com/centerionware/not-k8s/actions/runs/36292181731)
-at SHA `4bfc8fb84d049afcd5fd8afaea226c29b1647c5f` built both utility/runtime
-lanes and passed the five-node Docker preflight. Both migrations passed their
-source and nodestore API checkpoints. K3s then exposed a real nodelet runtime
-defect: the metrics-server container (UID 1000, read-only root filesystem)
-could not create its self-signed certificate in `/tmp`, backed by an `emptyDir`
-whose host directory was mode 0755. Kubelet creates writable `emptyDir` roots
-with mode 0777. The worktree now sets that root mode and adds a non-root,
-read-only-rootfs write probe that is checked at every migration checkpoint.
-Focused nodelet quick-check and migration runtime verification are pending.
+Run [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293)
+at SHA `ad2ee6a016993c43effeab3d1aa83e9f6cf40f5e` passed the five-node
+Docker/kubeadm/Cilium preflight and both `nodemigrate` and branch-runtime
+builds. The nodelet fix passed targeted quick-check
+[36293700468](https://github.com/centerionware/not-k8s/actions/runs/36293700468).
+Both migration lanes passed the new non-root, read-only-rootfs `emptyDir` write
+probe at source and nodestore checkpoints, confirming that nodelet now gives
+emptyDir roots kubelet's writable mode 0777.
 
-The upstream lane exposed a comparator problem and unresolved parity changes.
-The old global equality treated target-only runtime objects (for example,
-newly reconciled ReplicaSets and EndpointSlices) as lost source state. The
-comparator now checks every source identity and normalized digest, reports
-target-only identities separately, and continues to fail if any source object
-is missing or changed. The prior run also showed same-identity digest changes,
-including `Deployment/coredns`, `ClusterRole/system:coredns`, and system
-PriorityClasses; these remain failures to investigate, not accepted runtime
-overrides. New diagnostics report changed identities and hashes without
-printing object contents or secret data. Inventory-script verification passes;
-runtime verification is pending.
+The K3s lane still lacks `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` at
+nodestore. Its metrics-server Pod is now Ready and creates its serving cert;
+the APIService reports `FailedDiscoveryCheck` with HTTP 403. The branch
+availability probe was not presenting the front-proxy identity. The worktree
+now gives the nodeapiserver probe the upstream `system:kube-aggregator` user,
+`system:masters` group, and configured proxy-client certificate. Focused
+nodeapiserver quick-check and runtime verification are pending.
+
+The upstream lane passed discovery and reached the object parity check, where
+same-identity normalized source digests still differ. Affected examples include
+`Deployment/coredns`, same-name ReplicaSets and StatefulSets, the hostPath CSI
+driver, `CiliumNode`, `CSINode`, Leases, CoreDNS RBAC, and system
+PriorityClasses. These remain failures; no source object is accepted as
+rewritten by target runtime without evidence. The previous comparator also
+treated target-only runtime objects as lost source state. Its current
+worktree revision compares every source identity and digest while reporting
+target-only identities independently, including when source objects have
+changed. It now records hashed per-field fingerprints and reports only changed
+field paths, never object or Secret values. Focused inventory-script checks
+and another branch-runtime migration are pending. Neither lane completed a
+return migration or parity gate.
 
 ## Branch-runtime run 36285968999
 

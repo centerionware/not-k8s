@@ -37,7 +37,7 @@ grep -Fqx 'widgets.example.io' <<< "$output" || {
 }
 
 cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
-{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"same"}
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"same","fields":{"/spec/replicas":"same"}}
 OBJECTS
 cp "$temporary_directory/source-objects.jsonl" "$temporary_directory/target-objects.jsonl"
 cat >> "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
@@ -58,7 +58,8 @@ grep -Fq 'target-only objects: 1' <<< "$output" || {
 }
 
 cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
-{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"changed"}
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"changed","fields":{"/spec/replicas":"changed"}}
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"target-runtime","namespace":"kube-system"},"sha256":"target-only"}
 OBJECTS
 if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
   source "$1/.github/scripts/nodemigrate-integration.sh"
@@ -69,6 +70,16 @@ if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
 fi
 grep -Fq '"Deployment"' <<< "$output" || {
     echo "API object comparison did not identify the changed resource" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+grep -Fq '/spec/replicas' <<< "$output" || {
+    echo "API object comparison did not report the changed normalized field path" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+grep -Fq 'target-runtime' <<< "$output" || {
+    echo "API object comparison hid target-only identities when source data changed" >&2
     printf '%s\n' "$output" >&2
     exit 1
 }
