@@ -140,7 +140,11 @@ Last updated: 2026-09-27
   comprehensions and regex validation) with CEL rule-cost estimation overflow.
   Both source PV/PVC/data checks passed, both protected exports were retained,
   and source rollback completed. Neither lane reached nodestore or the return
-  migration; no PV deletion was reported. Branch-runtime run
+  migration; no PV deletion was reported. The later latest-runtime run
+  [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
+  reproduced the overflow and related map/object CEL type errors in both lanes;
+  it also confirmed that source PV/PVC/data checks passed and rollback retained
+  both exports. Branch-runtime run
   [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
   accepted the Gateway API CRDs and reached nodestore, showing this failure is
   specific to the v0.8.0 API baseline. The newer full migration behavior at

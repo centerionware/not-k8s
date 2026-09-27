@@ -95,12 +95,25 @@ before/after evidence.
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
 was dispatched at PR #591 head `012f1b7351da10cd78bec309e1efc6a2e9de439e`
-with `runtime_source=release` and both source lanes enabled. At last inspection,
-the five-node Docker preflight had passed and both migration jobs had completed
-`Fetch latest runtime` successfully and entered `Run migration`; exact artifact
-version confirmation from the completed job log is pending. The K3s migration
-step has failed; upstream remains active. This is the current-head run
-containing the redacted Cilium CRI diagnostics, including the endpoint
+with `runtime_source=release` and both source lanes enabled. The five-node
+Docker preflight passed, and both lanes fetched the latest regular runtime
+before migration. The run is terminal failure. In both lanes, the source
+fixture passed its initial stage and the protected API export was written. The
+release runtime rejected Gateway API CRDs because CEL rule-cost estimation
+saturated at `u64::MAX` for bounded map and hostname expressions, with
+additional CEL type errors for object/map and TLS fields. Gateway CRDs could
+not be established, so Gateway objects became unavailable downstream. The
+upstream lane also saw HTTP 500 responses importing a CertificateRequest and a
+CSR. Both lanes restored their source service, stopped partial nodestore
+services, and retained the protected export; neither reached nodestore
+semantic checks or return migration. Source fixture PV/PVC/data checks passed
+in both lanes, and no PV deletion was reported. This is a release-baseline
+failure already tracked under the `nodeapiserver` CEL compatibility bugs, not
+evidence that PVs are part of migration cleanup. K3s artifact:
+`/tmp/nodemigrate-36332106663/nodemigrate-k3s-36332106663/nodemigrate-k3s.log`;
+upstream artifact:
+`/tmp/nodemigrate-36332106663/nodemigrate-kubernetes-36332106663/nodemigrate-kubernetes.log`.
+The run contains the redacted Cilium CRI diagnostics, including the endpoint
 selection fix for K3s source containerd. It is independent of
 branch-runtime run
 [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254):
@@ -2001,6 +2014,6 @@ later green run.
 | `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Latest regular release (`v0.8.0`) K3s+Cilium and upstream+Cilium migration | Run is terminal failure. K3s rejected Gateway API CRDs due CEL rule-cost overflow; upstream import rejected Gateway CRDs and returned HTTP 500 for CertificateRequest and CSR. Neither lane completed nodestore semantic checks or return migration; source PV/PVC/data checks passed and no PV deletion was reported. | [Migration 36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614); K3s log `/tmp/nodemigrate-36310054614/artifacts/nodemigrate-k3s.log`; upstream log `/tmp/nodemigrate-36310054614/upstream/nodemigrate-kubernetes.log` |
 | `4c319d08fccad2e506441802e929cd398e0bc764` | Branch-runtime K3s+Cilium and upstream+Cilium round trip | Preflight passed. Upstream failed forward Cilium readiness after `EROFS` on Cilium host sysctls and restored the source. K3s passed source and nodestore storage/parity checks and began return migration; job timed out at 180 minutes before returned-source verification. No PV deletion was reported. | [Migration 36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254); logs `/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log` and `/tmp/nodemigrate-36321804254-k3s/nodemigrate-k3s.log` |
 | `5ce3f3d613ec6caa08623e542ad79984c42c9bbc` | `nodemigrate` crate checks and migration-workflow validation | Focused crate tests passed; static migration validation passed. General build and migration runtime jobs were skipped for the PR event. | [Nodemigrate checks 36334107161](https://github.com/centerionware/not-k8s/actions/runs/36334107161); [workflow validation 36334107153](https://github.com/centerionware/not-k8s/actions/runs/36334107153) |
-| `012f1b7351da10cd78bec309e1efc6a2e9de439e` | Current-head release-backed migration | Five-node Docker preflight passed; `nodemigrate` built and latest-runtime fetch succeeded in both lanes; K3s migration failed and upstream migration is still in progress. Exact fetched tag and failure details await the completed run artifacts. | [Migration 36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) |
+| `012f1b7351da10cd78bec309e1efc6a2e9de439e` | Latest regular runtime, K3s+Cilium and upstream+Cilium | Run terminal failure after both source fixtures passed. Both lanes' source PV/PVC/data checks passed and protected exports were retained; no PV deletion was reported. Release runtime rejected Gateway API CRDs on CEL rule-cost overflow/type errors, preventing nodestore checks and return migration. Upstream also returned HTTP 500 for CertificateRequest and CSR imports. | [Migration 36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663); logs `/tmp/nodemigrate-36332106663/nodemigrate-k3s-36332106663/nodemigrate-k3s.log` and `/tmp/nodemigrate-36332106663/nodemigrate-kubernetes-36332106663/nodemigrate-kubernetes.log` |
 | `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks and reached nodestore verification, then failed because the hostpath `CSINode` lacked its Node owner reference. No nodestore storage checkpoint or return leg passed. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021); logs `/tmp/nodemigrate-36308845021/artifacts/` |
 | `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check and migration run | Focused `nodeapiserver` quick-check passed. Dedicated migration run failed both lanes after branch builds; five-node Docker preflight passed. K3s still omitted metrics resources even after APIService `Available=True`, disproving stale reflector state as the failure cause; both lanes also reproduced CSI NodeStageVolume volume-catalog misses. Neither lane completed a return migration. | [Quick-check 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); [migration 36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587); logs `/tmp/nodemigrate-36301989587/`. |
