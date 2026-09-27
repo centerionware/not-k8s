@@ -324,6 +324,25 @@ watch_migration_target_state() {
                     -l kubernetes.io/service-name=kubernetes || true
                 echo 'nodeproxy service state:'
                 systemctl is-active nodeproxy 2>&1 || true
+                echo 'kube-proxy DaemonSet readiness:'
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
+                        name: .metadata.name,
+                        selector: .spec.selector,
+                        desired: .status.desiredNumberScheduled,
+                        current: .status.currentNumberScheduled,
+                        ready: .status.numberReady,
+                        available: .status.numberAvailable,
+                        misscheduled: .status.numberMisscheduled
+                    }]' get daemonsets -n kube-system -l k8s-app=kube-proxy || true
+                echo 'kube-proxy Pods:'
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
+                        name: .metadata.name,
+                        phase: .status.phase,
+                        conditions: [.status.conditions[]? | {type, status, reason, message}],
+                        containers: [.status.containerStatuses[]? | {name, ready, restartCount, state}],
+                        podIP: .status.podIP,
+                        nodeName: .spec.nodeName
+                    }]' get pods -n kube-system -l k8s-app=kube-proxy || true
                 echo 'cert-manager webhook host-network probes:'
                 probe_webhook_route "$kubeconfig"
                 echo 'namespace service-account CA bundles match target API CA:'
