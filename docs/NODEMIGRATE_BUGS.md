@@ -14,9 +14,11 @@ Last updated: 2026-09-27
   PV/PVC identities, bindings, and StatefulSet payload checks passed. Both
   lanes failed strict source-object parity before return migration. The
   migration exporter sanitizes metadata/status but does not filter StatefulSet
-  volumes. A focused nodeapiserver schema-pruning regression is being added to
-  isolate whether the target's built-in schema path drops this valid volume;
-  the root cause is not yet confirmed. Keep the comparison strict. No PV, PVC,
+  volumes. The focused schema-pruning regression passed in nodeapiserver
+  quick-check [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827),
+  so built-in OpenAPI pruning is not the cause. A protobuf storage round-trip
+  regression is now being added to isolate the next step; the root cause is
+  not yet confirmed. Keep the comparison strict. No PV, PVC,
   or backing-volume deletion was reported. The five-node kubeadm/Cilium
   preflight passed but did not execute nodemigrate. Artifacts are at
   `/tmp/nodemigrate-36318123614-artifacts/`.

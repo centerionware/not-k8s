@@ -12,6 +12,38 @@ mod tests {
         assert!(decoded["preventPodSchedulingIfMissing"].as_bool().unwrap());
     }
 
+    #[test]
+    fn statefulset_protobuf_round_trip_preserves_hostpath_device_volume() {
+        let message = schema_for_gvk("apps", "v1", "StatefulSet").unwrap();
+        let volume = json!({
+            "name": "dev-dir",
+            "hostPath": {"path": "/dev", "type": "Directory"}
+        });
+        let value = json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": "csi-hostpathplugin", "namespace": "default"},
+            "spec": {
+                "selector": {"matchLabels": {"app": "csi-hostpathplugin"}},
+                "serviceName": "csi-hostpathplugin",
+                "template": {
+                    "metadata": {"labels": {"app": "csi-hostpathplugin"}},
+                    "spec": {
+                        "containers": [{"name": "hostpath", "image": "hostpath:test"}],
+                        "volumes": [volume]
+                    }
+                }
+            }
+        });
+
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(
+            decoded["spec"]["template"]["spec"]["volumes"][0],
+            value["spec"]["template"]["spec"]["volumes"][0]
+        );
+    }
+
     /// The real bug that motivated `is_inline_embedded_field`: found live
     /// via a `ValidatingAdmissionPolicy` round trip against a real
     /// `nodestore` -- `apiGroups`/`apiVersions`/`resources`/`operations`/

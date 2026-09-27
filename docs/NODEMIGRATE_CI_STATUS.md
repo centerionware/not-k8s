@@ -100,12 +100,19 @@ return. Artifacts were downloaded once to
 `/tmp/nodemigrate-36318123614-artifacts/`. This run used branch runtime, not
 regular release `v0.8.0`.
 
+The focused `nodeapiserver` quick-check
+[36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
+passed at SHA `e37f4c0f`, including the StatefulSet hostPath schema-pruning
+regression. This proves the built-in schema-pruning step retains the `/dev`
+volume, but does not isolate protobuf storage encoding or API write/read
+behavior. A protobuf storage round-trip regression is pending at the current
+SHA.
+
 The preceding focused Rust check is
 [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
 for nodemigrate SHA `17281efb42343ae2f934f681f57f031a59bc6016`. A focused
-nodeapiserver regression for preserving the valid StatefulSet hostPath volume
-through built-in schema pruning is added in the current worktree; its targeted
-quick-check is pending.
+nodeapiserver protobuf round-trip regression for the same volume is added in
+the current worktree; its targeted quick-check is pending.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

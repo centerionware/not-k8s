@@ -28,9 +28,12 @@ CSI data-root volume stayed the same. Neither lane reached return migration.
 No PV, PVC, or backing-volume deletion was reported. Logs are at
 `/tmp/nodemigrate-36318123614-artifacts/nodemigrate-k3s-36318123614/nodemigrate-k3s.log`
 and `/tmp/nodemigrate-36318123614-artifacts/nodemigrate-kubernetes-36318123614/nodemigrate-kubernetes.log`.
-The five-node job was a preflight only and did not migrate the cluster. A
-focused nodeapiserver schema-pruning regression is pending CI to help isolate
-the missing volume; the actual cause and return migration remain unverified.
+The five-node job was a preflight only and did not migrate the cluster. The
+nodeapiserver quick-check
+[36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
+passed the focused built-in schema-pruning regression; protobuf storage
+encoding and full API write/read behavior remain under investigation. Return
+migration remains unverified.
 
 The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),
