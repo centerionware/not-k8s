@@ -301,7 +301,16 @@ fn migrate_to_nodestore(
         source_node_state
     };
     if joins_existing {
-        let worker = replacement_worker_command(source, &migrating_node_name)?;
+        let cilium_kube_proxy_replacement = source
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+            && target_api.cilium_kube_proxy_replacement()?;
+        let worker = replacement_worker_command(
+            source,
+            &migrating_node_name,
+            cilium_kube_proxy_replacement,
+        )?;
         run_bootstrap(worker).with_context(|| format!(
             "installing the node agent on the joined replacement node; source remains disabled and the protected export is at {}",
             export.dir.display()
@@ -413,14 +422,24 @@ fn migrate_worker_to_nodestore(
     let replace_existing = replace_existing_node_requested()?;
     validate_destination_node_replacement(existing_node, replace_existing)
         .with_context(|| format!("destination already has node {name}"))?;
-    let worker = replacement_worker_command(source, &name)?;
+    let cilium_kube_proxy_replacement = source
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+        && target_api.cilium_kube_proxy_replacement()?;
+    let worker = replacement_worker_command(source, &name, cilium_kube_proxy_replacement)?;
     if request.plan_only {
         let cni = source
             .cluster
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        println!("Migration plan: {:?} worker -> existing nodestore cluster; node={name}; source CNI={cni}; replace-existing-node={existing_node}; source service '{}' will be disabled; cluster API objects are managed by the control-plane migration", request.from, source.service_name);
+        let service_proxy = if cilium_kube_proxy_replacement {
+            "Cilium eBPF; nodeproxy disabled"
+        } else {
+            "nodeproxy"
+        };
+        println!("Migration plan: {:?} worker -> existing nodestore cluster; node={name}; source CNI={cni}; target Service proxy={service_proxy}; replace-existing-node={existing_node}; source service '{}' will be disabled; cluster API objects are managed by the control-plane migration", request.from, source.service_name);
         return Ok(());
     }
 
@@ -1267,11 +1286,27 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
 fn replacement_worker_command(
     installation: &detect::Installation,
     node_name: &str,
+    cilium_kube_proxy_replacement: bool,
 ) -> Result<Command> {
     let config = installation
         .cluster
         .as_ref()
         .context("source cluster config was not detected")?;
+    if config.cni.as_deref() == Some("cilium") {
+        eprintln!(
+            "nodemigrate: Cilium kube-proxy replacement {}; {}",
+            if cilium_kube_proxy_replacement {
+                "is enabled"
+            } else {
+                "is disabled"
+            },
+            if cilium_kube_proxy_replacement {
+                "leaving nodeproxy disabled on the replacement worker"
+            } else {
+                "installing nodeproxy on the replacement worker"
+            }
+        );
+    }
     let kubeconfig = std::env::var_os("NODEBOOTSTRAP_WORKER_KUBECONFIG")
         .or_else(|| std::env::var_os("NODEMIGRATE_DESTINATION_KUBECONFIG"))
         .map(PathBuf::from)
@@ -1281,7 +1316,12 @@ fn replacement_worker_command(
                 .unwrap_or_else(|| PathBuf::from("/etc/nodebootstrap"))
                 .join("admin.kubeconfig")
         });
-    let args = replacement_worker_args(config, &kubeconfig, node_name);
+    let args = replacement_worker_args(
+        config,
+        &kubeconfig,
+        node_name,
+        cilium_kube_proxy_replacement,
+    );
     bootstrap_command_with_config(args, config)
 }
 
@@ -1310,6 +1350,7 @@ fn replacement_worker_args(
     config: &detect::ClusterConfig,
     kubeconfig: &std::path::Path,
     node_name: &str,
+    cilium_kube_proxy_replacement: bool,
 ) -> Vec<String> {
     let mut args = vec![
         "--release".to_string(),
@@ -1326,6 +1367,9 @@ fn replacement_worker_args(
     ];
     if let Some(domain) = &config.cluster_domain {
         args.push(format!("--cluster-domain={domain}"));
+    }
+    if cilium_kube_proxy_replacement {
+        args.push("--proxy=none".to_string());
     }
     args
 }
@@ -1724,6 +1768,7 @@ mod tests {
             &config,
             Path::new("/etc/nodebootstrap/admin.kubeconfig"),
             "old-node",
+            false,
         );
         assert!(args.iter().any(|arg| arg == "--worker"));
         assert!(args
@@ -1739,15 +1784,33 @@ mod tests {
     #[test]
     fn joined_replacement_preserves_explicit_flannel_setup() {
         let config = cluster(Some("flannel"), Some("vxlan"));
-        let args = replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node");
+        let args =
+            replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node", false);
         assert!(args.iter().any(|arg| arg == "--cni=flannel"));
     }
 
     #[test]
     fn joined_replacement_does_not_replace_non_vxlan_or_external_cni() {
         let config = cluster(Some("flannel"), Some("wireguard-native"));
-        let args = replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node");
+        let args =
+            replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node", false);
         assert!(args.iter().any(|arg| arg == "--cni=none"));
+    }
+
+    #[test]
+    fn joined_cilium_worker_disables_nodeproxy_when_cilium_replaces_kube_proxy() {
+        let config = cluster(Some("cilium"), None);
+        let args =
+            replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node", true);
+        assert!(args.iter().any(|arg| arg == "--proxy=none"));
+    }
+
+    #[test]
+    fn joined_cilium_worker_keeps_nodeproxy_when_cilium_kpr_is_disabled() {
+        let config = cluster(Some("cilium"), None);
+        let args =
+            replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node", false);
+        assert!(!args.iter().any(|arg| arg == "--proxy=none"));
     }
 
     #[test]

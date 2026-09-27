@@ -277,6 +277,27 @@ impl KubeApi {
         })
     }
 
+    /// Read Cilium's cluster-wide Service datapath setting from the ConfigMap
+    /// that its agent consumes. Cilium defaults this setting to false when
+    /// the ConfigMap omits it.
+    pub fn cilium_kube_proxy_replacement(&self) -> Result<bool> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let config_maps: Api<ConfigMap> = Api::namespaced(client, "kube-system");
+            let config = config_maps
+                .get_opt("cilium-config")
+                .await
+                .context("reading kube-system/cilium-config Service datapath mode")?;
+            parse_cilium_kube_proxy_replacement(
+                config
+                    .as_ref()
+                    .and_then(|config| config.data.as_ref())
+                    .and_then(|data| data.get("kube-proxy-replacement"))
+                    .map(String::as_str),
+            )
+        })
+    }
+
     pub fn node_count(&self) -> Result<usize> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
@@ -1081,6 +1102,14 @@ impl KubeApi {
             })?;
             Ok(())
         })
+    }
+}
+
+fn parse_cilium_kube_proxy_replacement(value: Option<&str>) -> Result<bool> {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("false") => Ok(false),
+        Some("true" | "strict") => Ok(true),
+        Some(other) => bail!("unrecognized Cilium kube-proxy-replacement setting '{other}'"),
     }
 }
 
@@ -2630,17 +2659,26 @@ mod tests {
     use super::{
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
-        object_type_label, persistent_host_paths, preserve_discovered_type_meta,
-        remapped_node_owner_references, restore_cni_path_backups, retryable_import_error,
-        same_group_kind, sanitize, service_account_token_secret_patch, skip_kind_reason,
-        skip_object, snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest,
-        ApiResource, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
-        SkipReason,
+        object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
+        preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
+        retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
+        skip_kind_reason, skip_object, snapshot_k3s_cni_paths, summarize_import_failures,
+        write_export_manifest, ApiResource, DynamicObject, Export, ExportedObject, KubeApi,
+        NodeSchedulingState, SkipReason,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn parses_cilium_service_proxy_mode() {
+        assert!(!parse_cilium_kube_proxy_replacement(None).unwrap());
+        assert!(!parse_cilium_kube_proxy_replacement(Some("false")).unwrap());
+        assert!(parse_cilium_kube_proxy_replacement(Some("true")).unwrap());
+        assert!(parse_cilium_kube_proxy_replacement(Some("strict")).unwrap());
+        assert!(parse_cilium_kube_proxy_replacement(Some("unknown")).is_err());
+    }
 
     #[test]
     fn node_owner_references_wait_for_the_replacement_node_uid() {
