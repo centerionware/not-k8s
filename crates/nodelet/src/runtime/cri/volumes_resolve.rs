@@ -80,7 +80,7 @@ impl CriRuntime {
                     Err(e) => warn!(volume = %v.name, secret = %name, error = ?e, "failed to fetch Secret for volume"),
                 }
             } else if let Some(empty_dir) = &v.empty_dir {
-                if let Err(e) = std::fs::create_dir_all(&vol_dir) {
+                if let Err(e) = prepare_empty_dir(&vol_dir) {
                     warn!(volume = %v.name, error = ?e, "failed to create emptyDir volume");
                     continue;
                 }

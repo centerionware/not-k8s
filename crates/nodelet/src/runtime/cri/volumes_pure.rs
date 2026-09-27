@@ -629,6 +629,16 @@ pub(crate) fn is_memory_medium_empty_dir(source: &k8s_openapi::api::core::v1::Em
     source.medium.as_deref() == Some("Memory")
 }
 
+/// Prepare the host-backed directory for an `emptyDir` mount. Kubelet gives
+/// emptyDir roots mode 0777 so containers running as a non-root image user
+/// can write to them (for example, metrics-server's `/tmp` volume).
+pub(crate) fn prepare_empty_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o777))
+}
+
 
 /// Build `mount -t tmpfs [-o size=<bytes>] tmpfs <path>`'s arguments —
 /// pure so the command construction is unit-testable without actually
@@ -668,6 +678,34 @@ pub(crate) fn mount_tmpfs_empty_dir(dir: &std::path::Path, size_limit_bytes: Opt
         anyhow::bail!("mount -t tmpfs exited with {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod empty_dir_tests {
+    use super::prepare_empty_dir;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn empty_dir_root_is_world_writable_like_kubelet() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nodelet-emptydir-mode-{unique}"));
+        std::fs::create_dir(&path).expect("create test directory");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("make the existing test directory restrictive");
+
+        prepare_empty_dir(&path).expect("prepare the emptyDir root");
+
+        let mode = std::fs::metadata(&path)
+            .expect("read the emptyDir root metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        std::fs::remove_dir(&path).expect("remove test directory");
+        assert_eq!(mode, 0o777);
+    }
 }
 
 

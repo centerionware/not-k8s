@@ -40,10 +40,22 @@ cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
 {"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"same"}
 OBJECTS
 cp "$temporary_directory/source-objects.jsonl" "$temporary_directory/target-objects.jsonl"
+cat >> "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"target-runtime","namespace":"kube-system"},"sha256":"target-only"}
+OBJECTS
 NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
   source "$1/.github/scripts/nodemigrate-integration.sh"
   assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source target
 ' _ "$ROOT" "$temporary_directory"
+output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source target
+' _ "$ROOT" "$temporary_directory")"
+grep -Fq 'target-only objects: 1' <<< "$output" || {
+    echo "API object comparison did not report target-only runtime objects" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
 
 cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
 {"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"changed"}

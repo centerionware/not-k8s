@@ -15,6 +15,29 @@ new fixes.
 
 ## Most recent evidence
 
+Run [36292181731](https://github.com/centerionware/not-k8s/actions/runs/36292181731)
+at SHA `4bfc8fb84d049afcd5fd8afaea226c29b1647c5f` is complete and failed in
+both migration lanes after source and nodestore API readiness. The five-node
+Docker/kubeadm/Cilium preflight and both branch utility/runtime builds passed.
+K3s found that metrics-server could not write its self-signed cert to `/tmp`:
+the non-root, read-only-rootfs Pod uses `emptyDir`, but nodelet had made its
+host directory mode 0755. The current worktree changes emptyDir root
+permissions to kubelet's writable default and adds a fixture probe checked at
+each checkpoint. Nodelet quick-check and branch-runtime rerun are pending.
+
+In the upstream lane the all-object comparator also failed on target-only
+runtime objects and source-identity digest changes. The current worktree now
+compares all source identities and hashes, allows additional target identities
+to be reported separately, and still fails on any missing or changed source
+object. This is not a parity pass: the previous run showed changed hashes for
+same-identity objects including `Deployment/coredns`,
+`ClusterRole/system:coredns`, and system PriorityClasses. Those remain
+unresolved. The revised comparator emits identities and hashes without
+printing object or Secret contents. Its focused inventory script passes;
+runtime validation is pending. Full lane logs are saved at
+`/tmp/nodemigrate-36292181731-{k3s,kubernetes}-ci.log` and artifacts at
+`/tmp/nodemigrate-36292181731-artifacts/`.
+
 Branch-runtime run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
 at SHA `879a0a618efe933d084023300460128da446da17` completed. Docker's
 five-node kubeadm/Cilium preflight, both `nodemigrate` builds, and both branch

@@ -1345,6 +1345,47 @@ spec:
   - port: 80
     targetPort: 80
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-emptydir-nonroot
+  namespace: migration-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-emptydir-nonroot
+  template:
+    metadata:
+      labels:
+        app: migration-emptydir-nonroot
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: write-test
+        image: busybox:1.36.1
+        command: [sh, -c, 'printf emptydir-write-ok > /tmp/marker; exec sleep 36000']
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+        readinessProbe:
+          exec:
+            command: [sh, -c, 'test "$(cat /tmp/marker)" = emptydir-write-ok']
+          periodSeconds: 2
+        volumeMounts:
+        - name: temporary
+          mountPath: /tmp
+      volumes:
+      - name: temporary
+        emptyDir: {}
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -1455,6 +1496,7 @@ YAML
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=10m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed --timeout=10m
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    kubectl rollout status -n migration-apps deployment/migration-emptydir-nonroot --timeout=5m
     kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
     kubectl wait -n migration-apps --for=condition=Programmed gateways.gateway.networking.k8s.io/migration-traefik --timeout=2m
     wait_for_httproute_condition migration-apps migration-nginx Accepted
@@ -1858,6 +1900,18 @@ verify_stage() {
         echo "nodemigrate changed user Node labels, annotations, or taints at stage $stage" >&2
         return 1
     }
+    kubectl rollout status -n migration-apps deployment/migration-emptydir-nonroot --timeout=5m
+    emptydir_pod="$(kubectl get pods -n migration-apps -l app=migration-emptydir-nonroot \
+        -o json | jq -r '[.items[] | select(.status.phase == "Running") | .metadata.name][0] // empty')"
+    [[ -n "$emptydir_pod" ]] || {
+        echo "non-root emptyDir probe Pod is not running at stage $stage" >&2
+        return 1
+    }
+    [[ "$(kubectl exec -n migration-apps "$emptydir_pod" -- cat /tmp/marker)" == emptydir-write-ok ]] || {
+        echo "non-root emptyDir marker is not writable at stage $stage" >&2
+        return 1
+    }
+    echo "PASS non-root read-only-rootfs emptyDir write at stage=$stage"
     local nginx_pod eviction_response pdb_deadline
     pdb_deadline=$((SECONDS + 120))
     while (( SECONDS < pdb_deadline )); do
@@ -2376,18 +2430,38 @@ import difflib
 
 def records(path):
     with open(path, encoding="utf-8") as source:
-        return sorted(
-            json.dumps([row["identity"], row["sha256"]], sort_keys=True)
-            for row in map(json.loads, source)
-        )
+        result = {}
+        for row in map(json.loads, source):
+            identity = json.dumps(row["identity"], sort_keys=True)
+            if identity in result:
+                raise ValueError(f"duplicate API object identity: {identity}")
+            result[identity] = row
+        return result
 
 before = records(sys.argv[1])
 after = records(sys.argv[2])
-if before != after:
-    sys.stderr.writelines(difflib.unified_diff(
-        before, after, fromfile="source API objects", tofile="target API objects", lineterm="\n"
-    ))
+missing = sorted(before.keys() - after.keys())
+changed = sorted(
+    identity for identity in before.keys() & after.keys()
+    if before[identity]["sha256"] != after[identity]["sha256"]
+)
+target_only = sorted(after.keys() - before.keys())
+if missing or changed:
+    if missing:
+        print("Source API objects missing on target:", file=sys.stderr)
+        print("\n".join(missing), file=sys.stderr)
+    for identity in changed:
+        source_text = [f"sha256: {before[identity]['sha256']}\n"]
+        target_text = [f"sha256: {after[identity]['sha256']}\n"]
+        sys.stderr.writelines(difflib.unified_diff(
+            source_text, target_text,
+            fromfile=f"source {identity}", tofile=f"target {identity}", lineterm="\n"
+        ))
     sys.exit(1)
+print(f"Source objects preserved: {len(before)}; target-only objects: {len(target_only)}")
+if target_only:
+    print("Target-only API object identities:")
+    print("\n".join(target_only))
 PY
     then
         echo "Normalized source API object data changed between stages $source_stage and $target_stage:" >&2

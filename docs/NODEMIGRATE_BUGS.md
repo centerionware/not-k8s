@@ -2,6 +2,31 @@
 
 Last updated: 2026-09-27
 
+## Branch-runtime findings from run 36292181731
+
+Run [36292181731](https://github.com/centerionware/not-k8s/actions/runs/36292181731)
+at SHA `4bfc8fb84d049afcd5fd8afaea226c29b1647c5f` built both utility/runtime
+lanes and passed the five-node Docker preflight. Both migrations passed their
+source and nodestore API checkpoints. K3s then exposed a real nodelet runtime
+defect: the metrics-server container (UID 1000, read-only root filesystem)
+could not create its self-signed certificate in `/tmp`, backed by an `emptyDir`
+whose host directory was mode 0755. Kubelet creates writable `emptyDir` roots
+with mode 0777. The worktree now sets that root mode and adds a non-root,
+read-only-rootfs write probe that is checked at every migration checkpoint.
+Focused nodelet quick-check and migration runtime verification are pending.
+
+The upstream lane exposed a comparator problem and unresolved parity changes.
+The old global equality treated target-only runtime objects (for example,
+newly reconciled ReplicaSets and EndpointSlices) as lost source state. The
+comparator now checks every source identity and normalized digest, reports
+target-only identities separately, and continues to fail if any source object
+is missing or changed. The prior run also showed same-identity digest changes,
+including `Deployment/coredns`, `ClusterRole/system:coredns`, and system
+PriorityClasses; these remain failures to investigate, not accepted runtime
+overrides. New diagnostics report changed identities and hashes without
+printing object contents or secret data. Inventory-script verification passes;
+runtime verification is pending.
+
 ## Branch-runtime run 36285968999
 
 Run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
