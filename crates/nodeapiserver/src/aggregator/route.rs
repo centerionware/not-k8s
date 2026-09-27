@@ -106,19 +106,19 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<
             continue;
         }
 
-        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("");
-        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("");
+        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("").to_string();
+        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let port = service_ref.get("port").and_then(Value::as_i64).unwrap_or(443);
 
-        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace), name).await? {
+        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace.as_str()), name.as_str()).await? {
             rest::GetOutcome::Found(object) => Some(object),
             rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource => None,
         };
-        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace), &format!("kubernetes.io/service-name={name}"), "", 0, "").await? {
+        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace.as_str()), &format!("kubernetes.io/service-name={name}"), "", 0, "").await? {
             rest::ListOutcome::Found(list) => list.get("items").and_then(Value::as_array).cloned().unwrap_or_default(),
             rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => Vec::new(),
         };
-        if availability::preflight_check(namespace, name, port, service.as_ref(), &endpoint_slices).is_ok() {
+        if availability::preflight_check(namespace.as_str(), name.as_str(), port, service.as_ref(), &endpoint_slices).is_ok() {
             out.push((group.to_string(), version.to_string()));
         }
     }
@@ -148,10 +148,10 @@ pub async fn fetch_discovery_resource_lists(
             continue;
         }
         let Some(service_ref) = api_service.pointer("/spec/service") else { continue };
-        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("");
-        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("");
+        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("").to_string();
+        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let port = service_ref.get("port").and_then(Value::as_i64).unwrap_or(443);
-        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace), name).await {
+        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace.as_str()), name.as_str()).await {
             Ok(rest::GetOutcome::Found(service)) => service,
             Ok(rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource) => continue,
             Err(error) => {
@@ -159,7 +159,7 @@ pub async fn fetch_discovery_resource_lists(
                 continue;
             }
         };
-        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace), &format!("kubernetes.io/service-name={name}"), "", 0, "").await {
+        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace.as_str()), &format!("kubernetes.io/service-name={name}"), "", 0, "").await {
             Ok(rest::ListOutcome::Found(list)) => list.get("items").and_then(Value::as_array).cloned().unwrap_or_default(),
             Ok(rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken) => continue,
             Err(error) => {
@@ -167,7 +167,7 @@ pub async fn fetch_discovery_resource_lists(
                 continue;
             }
         };
-        if availability::preflight_check(namespace, name, port, Some(&service), &endpoint_slices).is_err() {
+        if availability::preflight_check(namespace.as_str(), name.as_str(), port, Some(&service), &endpoint_slices).is_err() {
             continue;
         }
         let path = format!("/apis/{group}/{version}");
