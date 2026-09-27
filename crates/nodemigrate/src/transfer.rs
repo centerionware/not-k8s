@@ -54,7 +54,7 @@ enum SkipReason {
     CsiReattachment,
     ApiServiceRouting,
     ControllerManagedEndpoints,
-    DestinationCaBundle,
+    DestinationTrustBundle,
     NodeHeartbeatLease,
     StaticPodMirror,
     ControllerOwnedPod,
@@ -81,8 +81,8 @@ impl SkipReason {
             Self::ControllerManagedEndpoints => {
                 "the owning service controller recalculates endpoint state"
             }
-            Self::DestinationCaBundle => {
-                "the destination regenerates this bundle from its own API CA"
+            Self::DestinationTrustBundle => {
+                "the destination regenerates this control-plane trust bundle from its own PKI"
             }
             Self::NodeHeartbeatLease => {
                 "the destination kubelet creates a lease for the re-registered node"
@@ -2041,14 +2041,20 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
     if let Some(reason) = regenerated_endpoint_skip_reason(object, kind) {
         return Some(reason);
     }
-    // This per-namespace bundle is derived from the destination cluster CA.
-    // Copying the source value makes in-cluster clients reject the target API
-    // certificate after cutover; import seeds the destination value before
-    // applying workload controllers.
+    // These ConfigMaps contain control-plane trust material. Carrying source
+    // certificates into the destination would make aggregated API servers
+    // reject the destination front-proxy identity. The destination apiserver
+    // and nodebootstrap publish the corresponding local trust bundles.
+    let config_map_name = object.pointer("/metadata/name").and_then(Value::as_str);
+    let config_map_namespace = object
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str);
     if kind == "ConfigMap"
-        && object.pointer("/metadata/name").and_then(Value::as_str) == Some("kube-root-ca.crt")
+        && (config_map_name == Some("kube-root-ca.crt")
+            || (config_map_namespace == Some("kube-system")
+                && config_map_name == Some("extension-apiserver-authentication")))
     {
-        return Some(SkipReason::DestinationCaBundle);
+        return Some(SkipReason::DestinationTrustBundle);
     }
     // Kubelets renew these node-heartbeat Leases continuously; the target
     // kubelet must create a fresh Lease for its newly registered Node. Other
@@ -2233,12 +2239,12 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
-        namespace_ca_bundle_matches, node_scheduling_patch, object_skip_reason, object_type_label,
-        object_rank, persistent_host_paths, preserve_discovered_type_meta,
-        restore_cni_path_backups,
-        retryable_import_error, same_group_kind, sanitize, skip_kind_reason, skip_object,
-        snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest, ApiResource,
-        Export, ExportedObject, KubeApi, NodeSchedulingState, SkipReason,
+        namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
+        object_type_label, persistent_host_paths, preserve_discovered_type_meta,
+        restore_cni_path_backups, retryable_import_error, same_group_kind, sanitize,
+        skip_kind_reason, skip_object, snapshot_k3s_cni_paths, summarize_import_failures,
+        write_export_manifest, ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        SkipReason,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -2628,18 +2634,33 @@ current-context: test
     }
 
     #[test]
-    fn migration_export_regenerates_namespace_root_ca_configmaps() {
+    fn migration_export_regenerates_destination_control_plane_trust_configmaps() {
         let object = serde_json::json!({
             "apiVersion": "v1",
             "kind": "ConfigMap",
-            "metadata": {"name": "kube-root-ca.crt", "namespace": "apps"},
+            "metadata": {"name": "kube-root-ca.crt", "namespace": "kube-system"},
             "data": {"ca.crt": "source-cluster-ca"}
         });
         assert_eq!(
             object_skip_reason(&object),
-            Some(SkipReason::DestinationCaBundle)
+            Some(SkipReason::DestinationTrustBundle)
         );
         assert!(sanitize(object).is_none());
+
+        let extension_auth = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "extension-apiserver-authentication",
+                "namespace": "kube-system"
+            },
+            "data": {"requestheader-client-ca-file": "source-front-proxy-ca"}
+        });
+        assert_eq!(
+            object_skip_reason(&extension_auth),
+            Some(SkipReason::DestinationTrustBundle)
+        );
+        assert!(sanitize(extension_auth).is_none());
 
         assert!(!skip_object(&serde_json::json!({
             "apiVersion": "v1",

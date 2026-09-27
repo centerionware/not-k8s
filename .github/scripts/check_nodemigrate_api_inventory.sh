@@ -84,4 +84,24 @@ grep -Fq 'target-runtime' <<< "$output" || {
     exit 1
 }
 
+output="$(jq -c -f "$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq" <<'OBJECT'
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"extension-apiserver-authentication","namespace":"kube-system"},"data":{"requestheader-client-ca-file":"source-front-proxy-ca"}}
+OBJECT
+)"
+[[ -z "$output" ]] || {
+    echo "snapshot comparison treated destination-generated apiserver trust as source data" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+
+output="$(jq -c -f "$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq" <<'OBJECT'
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"user-settings","namespace":"apps"},"data":{"setting":"must-be-preserved"}}
+OBJECT
+)"
+grep -Fq 'must-be-preserved' <<< "$output" || {
+    echo "snapshot comparison filtered an ordinary user ConfigMap" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+
 echo "nodemigrate API inventory checks passed"

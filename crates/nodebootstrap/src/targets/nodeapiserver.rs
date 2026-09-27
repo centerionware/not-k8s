@@ -4,8 +4,10 @@
 //! node-side services, and the API listener all share one trust domain.
 
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::Namespace;
-use kube::api::{Api, PostParams};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::{Api, Patch, PatchParams, PostParams};
+use std::collections::BTreeMap;
 
 use crate::config::Config;
 use crate::service_mgr::{self, SupervisedService};
@@ -56,6 +58,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     // namespaced writes into a missing namespace, so create these before the
     // first namespaced RBAC object is applied below.
     ensure_system_namespaces(cfg)?;
+    ensure_extension_apiserver_authentication(cfg)?;
 
     // The bootstrap objects are written through the admin kubeconfig. Start
     // without the replacement authorizer, install the RBAC bootstrap policy,
@@ -75,6 +78,66 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         wait_for_readyz(cfg)?;
     }
     Ok(())
+}
+
+fn ensure_extension_apiserver_authentication(cfg: &Config) -> Result<()> {
+    let pki_dir = cfg.pki_dir();
+    let client_ca = std::fs::read_to_string(pki_dir.join("ca.crt"))
+        .context("reading the destination client CA for aggregated API authentication")?;
+    let requestheader_ca = std::fs::read_to_string(pki_dir.join("front-proxy-ca.crt"))
+        .context("reading the destination front-proxy CA for aggregated API authentication")?;
+    let config_map = extension_apiserver_authentication_config_map(client_ca, requestheader_ca)?;
+    let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
+    crate::kube_api::block_on(&kubeconfig, move |client| async move {
+        let config_maps: Api<ConfigMap> = Api::namespaced(client, "kube-system");
+        config_maps
+            .patch(
+                "extension-apiserver-authentication",
+                &PatchParams::apply("nodebootstrap").force(),
+                &Patch::Apply(&config_map),
+            )
+            .await
+            .context("publishing destination CA trust for aggregated API servers")?;
+        Ok(())
+    })
+}
+
+fn extension_apiserver_authentication_config_map(
+    client_ca: String,
+    requestheader_ca: String,
+) -> Result<ConfigMap> {
+    let headers = |values: &[&str]| {
+        serde_json::to_string(values).context("encoding request-header configuration")
+    };
+    let data = BTreeMap::from([
+        ("client-ca-file".to_string(), client_ca),
+        ("requestheader-client-ca-file".to_string(), requestheader_ca),
+        (
+            "requestheader-allowed-names".to_string(),
+            headers(&["front-proxy-client"])?,
+        ),
+        (
+            "requestheader-username-headers".to_string(),
+            headers(&["X-Remote-User"])?,
+        ),
+        (
+            "requestheader-group-headers".to_string(),
+            headers(&["X-Remote-Group"])?,
+        ),
+        (
+            "requestheader-extra-headers-prefix".to_string(),
+            headers(&["X-Remote-Extra-"])?,
+        ),
+    ]);
+    Ok(ConfigMap {
+        metadata: ObjectMeta {
+            name: Some("extension-apiserver-authentication".to_string()),
+            namespace: Some("kube-system".to_string()),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    })
 }
 
 fn ensure_system_namespaces(cfg: &Config) -> Result<()> {
@@ -120,10 +183,7 @@ fn install_service(
     let mut values = vec![
         ("NODEAPISERVER_BIND_ADDR", "0.0.0.0:6443".to_string()),
         ("NODEAPISERVER_NODESTORE_ENDPOINT", etcd_servers.to_string()),
-        (
-            "NODEAPISERVER_SERVICE_CLUSTER_IP_RANGE",
-            cfg.service_cidr(),
-        ),
+        ("NODEAPISERVER_SERVICE_CLUSTER_IP_RANGE", cfg.service_cidr()),
         (
             "NODEAPISERVER_NODESTORE_CA_FILE",
             etcd_ca.to_string_lossy().into_owned(),
@@ -238,7 +298,10 @@ pub fn enable_nodelet_proxy(_cfg: &Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{external_cni_advertise_address, SYSTEM_NAMESPACES};
+    use super::{
+        extension_apiserver_authentication_config_map, external_cni_advertise_address,
+        SYSTEM_NAMESPACES,
+    };
 
     #[test]
     fn replacement_apiserver_seeds_the_standard_namespaces() {
@@ -259,6 +322,34 @@ mod tests {
         assert_eq!(
             external_cni_advertise_address(Some("10.1.0.61".to_string())).unwrap(),
             "10.1.0.61"
+        );
+    }
+
+    #[test]
+    fn extension_apiserver_auth_uses_destination_cas_and_standard_headers() {
+        let config_map = extension_apiserver_authentication_config_map(
+            "destination-client-ca".to_string(),
+            "destination-front-proxy-ca".to_string(),
+        )
+        .expect("authentication ConfigMap");
+        let data = config_map.data.expect("ConfigMap data");
+        assert_eq!(data["client-ca-file"], "destination-client-ca");
+        assert_eq!(
+            data["requestheader-client-ca-file"],
+            "destination-front-proxy-ca"
+        );
+        assert_eq!(
+            data["requestheader-allowed-names"],
+            r#"["front-proxy-client"]"#
+        );
+        assert_eq!(
+            data["requestheader-username-headers"],
+            r#"["X-Remote-User"]"#
+        );
+        assert_eq!(data["requestheader-group-headers"], r#"["X-Remote-Group"]"#);
+        assert_eq!(
+            data["requestheader-extra-headers-prefix"],
+            r#"["X-Remote-Extra-"]"#
         );
     }
 }

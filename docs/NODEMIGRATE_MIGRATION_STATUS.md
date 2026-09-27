@@ -1,6 +1,6 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-26
+Last updated: 2026-09-27
 
 This is the living implementation status record for the full scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
@@ -8,6 +8,21 @@ that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
+
+Run [36295890192](https://github.com/centerionware/not-k8s/actions/runs/36295890192)
+at SHA `57fd9ca6305ecb79c45b31513e82de4a3ce46c59` passed Docker five-node
+preflight and both utility/runtime builds. The K3s lane migrated through the
+nodestore workload checkpoint, then failed source API discovery parity because
+`nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were unavailable: metrics-server
+could not authenticate to the destination API using the source
+`extension-apiserver-authentication` ConfigMap's old front-proxy CA. The
+current worktree regenerates this destination-owned ConfigMap from destination
+PKI and classifies source trust bundles as destination-generated state. The
+upstream lane reached strict object parity and found same-identity differences
+in CoreDNS, ReplicaSets/StatefulSets, Leases, system RBAC/PriorityClasses, CSI,
+and Cilium node state. These remain failures until their behavior/lifecycle is
+verified; no return migration or round-trip comparison passed. The current
+trust fix has not yet run in CI.
 
 Run [36258945785](https://github.com/centerionware/not-k8s/actions/runs/36258945785)
 used branch SHA `bb6d20a99d31c6e015dee5bf65d1188ff3bf7e43`. Both migration
@@ -864,6 +879,18 @@ directly, its required regeneration and equivalent behavior must be asserted.
 | Nodestore → retained upstream Kubernetes | Implemented; target must already be installed locally | No real migration run recorded |
 | Keep source installed and disabled by default | Implemented | No real service-manager cutover run recorded |
 | Explicit source uninstall for K3s, kubeadm, or nodebootstrap | Implemented | Not yet exercised; use only in a disposable integration VM |
+
+### Persistent-volume deletion invariant
+
+Migration must preserve source PVs, PVCs, bindings, reclaim policies, backing
+volumes, and payloads. Source review of `crates/nodemigrate/src` found one
+Kubernetes API delete operation: it removes a stale same-name `Node` only after
+an expected-UID precondition. The migration harness deletes temporary Jobs
+and Pods but does not delete PVCs or PVs. The PV reclaim behavior recorded in
+the bug tracker is a separate `nodecontroller` test that deliberately deletes
+its disposable PVC to exercise the `Delete` reclaim policy; it is not a
+migration action. No migration or fixture cleanup may delete a source PV/PVC
+or backing volume.
 
 ## Dedicated integration workflow
 

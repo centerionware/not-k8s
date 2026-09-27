@@ -38,6 +38,11 @@ select(
   ))
 | select((.kind != "Lease") or (.metadata.namespace != "kube-node-lease"))
 | select((.kind != "ConfigMap") or (.metadata.name != "kube-root-ca.crt"))
+# nodebootstrap regenerates request-header trust from the destination PKI;
+# the fixture separately requires metrics API discovery to work after cutover.
+| select((.kind != "ConfigMap") or
+    (.metadata.namespace != "kube-system" or
+     .metadata.name != "extension-apiserver-authentication"))
 | select(controller_regenerated_pod | not)
 | select(regenerated_system_addon_replica_set | not)
 | select((.kind != "Secret") or (.type != "kubernetes.io/service-account-token"))

@@ -1,6 +1,6 @@
 # nodemigrate full migration goal
 
-Last updated: 2026-09-26
+Last updated: 2026-09-27
 
 This document defines the complete intended scope and acceptance criteria for
 the standalone `nodemigrate` utility. It is the task-specific authority for
@@ -71,6 +71,12 @@ bump the regular release version. This is a target, not publication authority.
   is required. Do not exclude a volume class by assumption. If a concrete
   provider prerequisite prevents a safe move, report the exact prerequisite
   and recovery state instead of silently dropping or rebinding the volume.
+  Migration must not delete source PersistentVolumes, PersistentVolumeClaims,
+  or backing volumes as a cleanup or cutover step. Preserve each PV's reclaim
+  policy and each claim-to-volume binding; deleting a claim can trigger a
+  provisioner's `Delete` reclaim policy and destroy the payload. Any disposable
+  reclaim-policy test must use separately created test resources and must not
+  be part of a migration checkpoint or cleanup path.
   For an in-place runtime replacement, preserve the source kubelet's CSI
   global staging path and make it visible to the replacement CSI node plugin.
   Reuse the existing provider stage where valid; do not ask a CSI driver to
@@ -297,5 +303,7 @@ repository-wide merge policy for other work.
   coverage, behavior evidence, and migration risks.
 - [CI and integration status](NODEMIGRATE_CI_STATUS.md) — workflow design,
   permitted checks, run IDs, and per-lane runtime checkpoints.
+- [Bug and fix tracker](NODEMIGRATE_BUGS.md) — confirmed defects, owning
+  components, fixes, and focused verification evidence.
 - [Release status](NODEMIGRATE_RELEASE_STATUS.md) — version source, package
   separation, release readiness, and publication record.
