@@ -18,6 +18,37 @@ mod tests {
     }
 
     #[test]
+    fn statefulset_schema_preserves_hostpath_device_volume() {
+        let schema = crate::codegen::openapi_schema_for_gvk("apps", "v1", "StatefulSet")
+            .expect("built-in StatefulSet schema");
+        let input = json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": "csi-hostpathplugin", "namespace": "default"},
+            "spec": {
+                "selector": {"matchLabels": {"app": "csi-hostpathplugin"}},
+                "serviceName": "csi-hostpathplugin",
+                "template": {
+                    "metadata": {"labels": {"app": "csi-hostpathplugin"}},
+                    "spec": {
+                        "containers": [{"name": "hostpath", "image": "hostpath:test"}],
+                        "volumes": [{
+                            "name": "dev-dir",
+                            "hostPath": {"path": "/dev", "type": "Directory"}
+                        }]
+                    }
+                }
+            }
+        });
+
+        let pruned = crate::apiextensions::schema_pruning::prune(&schema, &input);
+        assert_eq!(
+            pruned["spec"]["template"]["spec"]["volumes"],
+            input["spec"]["template"]["spec"]["volumes"]
+        );
+    }
+
+    #[test]
     fn paginated_list_does_not_advance_its_snapshot_when_the_store_changes() {
         let snapshot = list_snapshot_revision(0, Some(7));
         let token = encode_continue_token(b"/registry/configmaps/default/a\0", snapshot);

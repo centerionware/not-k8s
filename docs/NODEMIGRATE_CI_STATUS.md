@@ -87,12 +87,25 @@ before/after evidence.
 
 ## Most recent evidence
 
-The latest Rust-focused check is [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
-for utility SHA `17281efb42343ae2f934f681f57f031a59bc6016`. Latest migration
-run [36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
-used code SHA `b69ef4e73c0587b98f715aafe49321c27d710996`, with branch-built
-runtime binaries. It passed source and nodestore checks and failed strict CSI
-StatefulSet parity before return. It did not test regular release `v0.8.0`.
+Latest migration run
+[36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614)
+tested code SHA `a95833a4a32122ba2b91b4d3c95f40db5363e491`. The five-node Docker
+preflight passed its kubeadm 3-control-plane/2-worker Cilium cluster,
+control-plane loss, and recovery checks; it did not run nodemigrate. Both
+single-node lanes built the utility and branch runtime, passed the source and
+nodestore checkpoints, verified PV/PVC bindings and payloads, then failed
+strict parity because the source CSI StatefulSet's `/dev` `dev-dir` volume was
+absent on target. Its CSI data-root volume matched. Neither lane reached
+return. Artifacts were downloaded once to
+`/tmp/nodemigrate-36318123614-artifacts/`. This run used branch runtime, not
+regular release `v0.8.0`.
+
+The preceding focused Rust check is
+[36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
+for nodemigrate SHA `17281efb42343ae2f934f681f57f031a59bc6016`. A focused
+nodeapiserver regression for preserving the valid StatefulSet hostPath volume
+through built-in schema pruning is added in the current worktree; its targeted
+quick-check is pending.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

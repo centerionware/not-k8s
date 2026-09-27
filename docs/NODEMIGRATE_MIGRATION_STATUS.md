@@ -16,20 +16,21 @@ The fixture failure at
 was fixed at SHA `b69ef4e7` by creating the legacy token Secret with its
 required ServiceAccount annotations.
 
-At SHA `b69ef4e73c0587b98f715aafe49321c27d710996`, branch-runtime migration
-[36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
-passed Docker preflight and the K3s/upstream source and nodestore stages. PV,
-PVC, StatefulSet payload, ServiceAccount token/RBAC, ingress, certificate,
-and 119-resource API inventory checks passed at nodestore. Strict source-object
-parity then failed on `default/csi-hostpathplugin` volume index 5's name and
-hostPath path/type. Neither lane reached return. Logs are under
-`/tmp/nodemigrate-36316498148-k3s-artifact/` and
-`/tmp/nodemigrate-36316498148-kubernetes-artifact/`. No PV or PVC deletion was
-reported. The CSI volume mismatch remains unresolved and is kept strict while
-we establish the actual source and target values. The worktree adds a narrow
-diagnostic that prints only this fixture StatefulSet's volume names and
-hostPath path/types on failure; another migration run is needed to get these
-values.
+At code SHA `a95833a4a32122ba2b91b4d3c95f40db5363e491`, branch-runtime
+migration [36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614)
+passed the five-node Docker kubeadm/Cilium preflight and both single-node
+source and nodestore checkpoints. PV/PVC bindings, StatefulSet data,
+ServiceAccount token/RBAC, ingress, certificate, and 119-resource API
+inventory checks passed at nodestore in both K3s and upstream lanes. Strict
+parity then found the source hostPath CSI `default/csi-hostpathplugin` includes
+a `dev-dir` `/dev` mount (`type: Directory`) absent on the not-k8s target; the
+CSI data-root volume stayed the same. Neither lane reached return migration.
+No PV, PVC, or backing-volume deletion was reported. Logs are at
+`/tmp/nodemigrate-36318123614-artifacts/nodemigrate-k3s-36318123614/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-36318123614-artifacts/nodemigrate-kubernetes-36318123614/nodemigrate-kubernetes.log`.
+The five-node job was a preflight only and did not migrate the cluster. A
+focused nodeapiserver schema-pruning regression is pending CI to help isolate
+the missing volume; the actual cause and return migration remain unverified.
 
 The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),

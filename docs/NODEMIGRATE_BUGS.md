@@ -4,23 +4,22 @@ Last updated: 2026-09-27
 
 ## Current source-review finding
 
-- **`nodemigrate` / CSI parity: hostPath CSI StatefulSet data volume differs
-  after forward migration.** Run
-  [36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
-  at SHA `b69ef4e7` passed source and nodestore storage checks in both lanes,
-  including stable PVC/PV bindings, StatefulSet data, and token/RBAC probes.
-  It then found changed normalized fields at
-  `default/csi-hostpathplugin` `/spec/template/spec/volumes/5`: volume name,
-  hostPath path, and hostPath type. Neither lane reached return migration. The
-  CSI catalog location stays strict because it holds provider state needed to
-  stage existing volume handles; do not normalize it as a generic runtime
-  path. Current artifacts give hashes and field paths but not actual before
-  and after values. The worktree now adds a narrow diagnostic for this test-
-  only StatefulSet's volume names and hostPath path/types while retaining the
-  strict comparison. Rerun to establish whether fixture reinstall changed the
-  catalog root or reordered volumes. No PV or PVC deletion was reported. Logs are under
-  `/tmp/nodemigrate-36316498148-k3s-artifact/` and
-  `/tmp/nodemigrate-36316498148-kubernetes-artifact/`.
+- **Target apiserver or migration write/read path / CSI StatefulSet volume
+  lost during forward migration.** Run
+  [36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614)
+  at SHA `a95833a4` reported identical normalized changes in K3s and upstream:
+  source `default/csi-hostpathplugin` includes a `dev-dir` hostPath volume for
+  `/dev` (`type: Directory`), while the not-k8s target omits that final volume.
+  The CSI catalog volume `/var/lib/nodemigrate-csi-hostpath-data` is unchanged;
+  PV/PVC identities, bindings, and StatefulSet payload checks passed. Both
+  lanes failed strict source-object parity before return migration. The
+  migration exporter sanitizes metadata/status but does not filter StatefulSet
+  volumes. A focused nodeapiserver schema-pruning regression is being added to
+  isolate whether the target's built-in schema path drops this valid volume;
+  the root cause is not yet confirmed. Keep the comparison strict. No PV, PVC,
+  or backing-volume deletion was reported. The five-node kubeadm/Cilium
+  preflight passed but did not execute nodemigrate. Artifacts are at
+  `/tmp/nodemigrate-36318123614-artifacts/`.
 
 - **Migration harness / ServiceAccount token fixture was rejected before
   migration.** In run
