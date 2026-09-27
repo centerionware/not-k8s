@@ -4,6 +4,24 @@ Last updated: 2026-09-27
 
 ## Current source-review finding
 
+- **`nodemigrate` / CSI parity: hostPath CSI StatefulSet data volume differs
+  after forward migration.** Run
+  [36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
+  at SHA `b69ef4e7` passed source and nodestore storage checks in both lanes,
+  including stable PVC/PV bindings, StatefulSet data, and token/RBAC probes.
+  It then found changed normalized fields at
+  `default/csi-hostpathplugin` `/spec/template/spec/volumes/5`: volume name,
+  hostPath path, and hostPath type. Neither lane reached return migration. The
+  CSI catalog location stays strict because it holds provider state needed to
+  stage existing volume handles; do not normalize it as a generic runtime
+  path. Current artifacts give hashes and field paths but not actual before
+  and after values. The worktree now adds a narrow diagnostic for this test-
+  only StatefulSet's volume names and hostPath path/types while retaining the
+  strict comparison. Rerun to establish whether fixture reinstall changed the
+  catalog root or reordered volumes. No PV or PVC deletion was reported. Logs are under
+  `/tmp/nodemigrate-36316498148-k3s-artifact/` and
+  `/tmp/nodemigrate-36316498148-kubernetes-artifact/`.
+
 - **Migration harness / ServiceAccount token fixture was rejected before
   migration.** In run
   [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317),
@@ -44,10 +62,11 @@ Last updated: 2026-09-27
   Focused export/patch tests and snapshot normalization checks are added.
   Targeted nodemigrate quick-check
   [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
-  passed at SHA `17281efb42343ae2f934f681f57f031a59bc6016`; run
-  [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
-  failed in fixture setup before nodemigrate, so no passing token-Secret
-  round trip is claimed yet.
+  passed at SHA `17281efb42343ae2f934f681f57f031a59bc6016`. In run
+  [36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
+  at `b69ef4e7`, allowed and denied token/RBAC probes passed at source and
+  nodestore. No return-stage result is claimed because CSI parity stopped the
+  lanes first.
 
 ## Latest runtime findings
 

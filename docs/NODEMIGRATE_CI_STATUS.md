@@ -59,30 +59,40 @@ replacement and repairs Node-owned object references after replacement Node
 registration. Its focused Rust quick-check passed; live round-trip acceptance
 did not. At SHA `17281efb42343ae2f934f681f57f031a59bc6016`, targeted nodemigrate
 quick-check [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
-passed, including crate unit tests. Branch-runtime migration
+passed, including crate unit tests. Migration run
 [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
-is active at this SHA for both K3s and upstream lanes. It tests destination-
-bound legacy ServiceAccount token Secret preservation and allowed/denied token
-requests at each checkpoint. The run completed with both migration lanes
-failing in initial fixture setup: `kubectl create secret` rejected the
-`migration-legacy-token` Secret because the required
-`kubernetes.io/service-account.name` annotation was added only afterward.
-Nodemigrate was not reached, and no migration checkpoint or token behavior was
-tested. The five-node kubeadm/Cilium preflight passed. Artifacts are saved at
-`/tmp/nodemigrate-36315595317-k3s-artifact/nodemigrate-k3s.log`,
-`/tmp/nodemigrate-36315595317-kubernetes-artifact/nodemigrate-kubernetes.log`,
-and `/tmp/nodemigrate-36315595317/` for preflight.
+failed both lanes during initial fixture setup before nodemigrate ran. The
+fixture failure was fixed in SHA `b69ef4e7` by submitting the required
+ServiceAccount annotations in the Secret's initial create request. The
+corrected fixture's source and nodestore token/RBAC probes passed in run
+[36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148).
+
+At SHA `b69ef4e73c0587b98f715aafe49321c27d710996`, migration run
+[36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
+passed Docker preflight, utility/runtime builds, and both `stage=source` and
+`stage=nodestore` checkpoints in the K3s and upstream lanes. PV/PVC identities,
+bindings, and StatefulSet data passed at both stages. The legacy ServiceAccount
+token's allowed and denied RBAC checks passed at source and nodestore. All 119
+source-discovered listable APIs remained exposed at nodestore. Both lanes then
+failed strict object parity on `default/csi-hostpathplugin` volume index 5
+(volume name and hostPath path/type); neither reached the return migration.
+The exact field values are not in the current artifact, so this is tracked as
+an unresolved CSI object mismatch, not normalized away. No PV or PVC deletion
+was reported. Logs are saved at
+`/tmp/nodemigrate-36316498148-k3s-artifact/nodemigrate-k3s.log` and
+`/tmp/nodemigrate-36316498148-kubernetes-artifact/nodemigrate-kubernetes.log`.
+The current worktree adds a restricted diagnostic for the fixture CSI volume
+names and hostPath values; the next migration run must supply the missing
+before/after evidence.
 
 ## Most recent evidence
 
-The latest focused run is [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
-and the latest migration runtime run is
-[36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317),
-both for code SHA `17281efb42343ae2f934f681f57f031a59bc6016`. The migration
-run ended with failure in source fixture setup before nodemigrate executed;
-its Docker five-node preflight passed. It used branch-built runtime binaries
-and did not test the regular `v0.8.0` release baseline. The fixture annotation
-ordering is fixed in the current worktree and is pending a rerun.
+The latest Rust-focused check is [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
+for utility SHA `17281efb42343ae2f934f681f57f031a59bc6016`. Latest migration
+run [36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
+used code SHA `b69ef4e73c0587b98f715aafe49321c27d710996`, with branch-built
+runtime binaries. It passed source and nodestore checks and failed strict CSI
+StatefulSet parity before return. It did not test regular release `v0.8.0`.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

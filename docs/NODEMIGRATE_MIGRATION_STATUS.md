@@ -9,17 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
-At code SHA `17281efb42343ae2f934f681f57f031a59bc6016`, targeted nodemigrate
-quick-check [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
-passed. Branch-runtime migration [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
-passed the five-node kubeadm/Cilium preflight and built the utility and
-combined runtime, then both source lanes failed before nodemigrate ran. The
-fixture's legacy token Secret was rejected because its required ServiceAccount
-name annotation was added after creation. No migration checkpoint or
-ServiceAccount token behavior was tested. The fixture fix is in the current
-worktree and awaits a rerun; artifacts are at
-`/tmp/nodemigrate-36315595317-k3s-artifact/` and
-`/tmp/nodemigrate-36315595317-kubernetes-artifact/`.
+The nodemigrate quick-check passed at utility SHA `17281efb42343ae2f934f681f57f031a59bc6016`
+in [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874).
+The fixture failure at
+[36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
+was fixed at SHA `b69ef4e7` by creating the legacy token Secret with its
+required ServiceAccount annotations.
+
+At SHA `b69ef4e73c0587b98f715aafe49321c27d710996`, branch-runtime migration
+[36316498148](https://github.com/centerionware/not-k8s/actions/runs/36316498148)
+passed Docker preflight and the K3s/upstream source and nodestore stages. PV,
+PVC, StatefulSet payload, ServiceAccount token/RBAC, ingress, certificate,
+and 119-resource API inventory checks passed at nodestore. Strict source-object
+parity then failed on `default/csi-hostpathplugin` volume index 5's name and
+hostPath path/type. Neither lane reached return. Logs are under
+`/tmp/nodemigrate-36316498148-k3s-artifact/` and
+`/tmp/nodemigrate-36316498148-kubernetes-artifact/`. No PV or PVC deletion was
+reported. The CSI volume mismatch remains unresolved and is kept strict while
+we establish the actual source and target values. The worktree adds a narrow
+diagnostic that prints only this fixture StatefulSet's volume names and
+hostPath path/types on failure; another migration run is needed to get these
+values.
 
 The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),
@@ -38,9 +48,9 @@ Node-owned references after target Node registration. The checkpoint
 normalizer treats only documented controller/default/API version fields as
 lifecycle differences; source object specs and user rollout history remain
 checked. SHA `17281efb` also preserves and reissues legacy ServiceAccount
-token Secrets and exercises their RBAC at each checkpoint. Its targeted
-quick-check passed, but the first live run stopped during test fixture setup
-before nodemigrate executed.
+token Secrets and exercises their RBAC at each checkpoint. The corrected
+fixture let the current run verify token/RBAC behavior at source and nodestore;
+no return-stage token result is claimed because CSI parity stopped both lanes.
 
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the five-node

@@ -2583,6 +2583,26 @@ row = {
     "sha256": hashlib.sha256(raw.encode()).hexdigest(),
     "fields": fields,
 }
+if (
+    obj.get("kind") == "StatefulSet"
+    and metadata.get("namespace") == "default"
+    and metadata.get("name") == "csi-hostpathplugin"
+):
+    # The CSI catalog root is migration-critical and must stay strict. Keep a
+    # narrow, non-secret diagnostic so parity failures show whether the named
+    # fixture volume moved or only changed order in the PodSpec list.
+    spec = obj.get("spec") or {}
+    pod_spec = ((spec.get("template") or {}).get("spec") or {})
+    row["csiVolumeDiagnostics"] = [
+        {
+            "name": volume.get("name"),
+            "hostPath": {
+                "path": ((volume.get("hostPath") or {}).get("path")),
+                "type": ((volume.get("hostPath") or {}).get("type")),
+            } if "hostPath" in volume else None,
+        }
+        for volume in pod_spec.get("volumes", [])
+    ]
 json.dump(row, sys.stdout, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 print()
 ' <<< "$normalized" >> "$output"
@@ -2664,6 +2684,13 @@ if missing or changed:
         if field_paths:
             print(f"Changed normalized field paths for {identity}:", file=sys.stderr)
             print("\n".join(field_paths), file=sys.stderr)
+        if "csiVolumeDiagnostics" in before[identity] or "csiVolumeDiagnostics" in after[identity]:
+            print(f"CSI test volume values for {identity}:", file=sys.stderr)
+            print("source:", file=sys.stderr)
+            json.dump(before[identity].get("csiVolumeDiagnostics", []), sys.stderr, indent=2)
+            print("\ntarget:", file=sys.stderr)
+            json.dump(after[identity].get("csiVolumeDiagnostics", []), sys.stderr, indent=2)
+            print(file=sys.stderr)
     sys.exit(1)
 print(f"Source objects preserved: {len(before)}; target-only objects: {len(target_only)}")
 PY
