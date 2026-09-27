@@ -51,8 +51,15 @@ DaemonSet remains. Workflow validation passed at `027ee68d` in
 [36342627911](https://github.com/centerionware/not-k8s/actions/runs/36342627911);
 nodemigrate crate tests passed in
 [36342627913](https://github.com/centerionware/not-k8s/actions/runs/36342627913).
-The KPR-enabled live migration has not yet run; the previous two-lane migration
-workflow is still active at its older SHA.
+The KPR-enabled live migration is running at `7f1c53f1` in
+[36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296).
+While it runs, code review found that the first control-plane bootstrap also
+needs to disable nodeproxy when the imported Cilium config enables KPR; the
+existing change covered joined workers only. The initial-bootstrap path now
+reads this setting from the live source API or protected export, passes
+`--proxy=none`, and reports the selected mode. Focused unit coverage and a
+post-fix KPR-enabled migration run are pending. The active run predates this
+fix and is evidence only for the prior implementation.
 
 The staged reverse control-plane export change is at `3f807ba8`. Its first
 crate run, [36340951765](https://github.com/centerionware/not-k8s/actions/runs/36340951765),

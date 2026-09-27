@@ -124,6 +124,15 @@ fn migrate_to_nodestore(
     } else {
         Some(transfer::KubeApi::source(source)?)
     };
+    let cilium_kube_proxy_replacement = source
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+        && match (&source_api, &export) {
+            (Some(api), _) => api.cilium_kube_proxy_replacement()?,
+            (_, Some(export)) => export.cilium_kube_proxy_replacement()?,
+            _ => false,
+        };
     let source_nodes = if let Some(api) = &source_api {
         api.node_count()?
     } else {
@@ -159,7 +168,7 @@ fn migrate_to_nodestore(
     } else {
         None
     };
-    let bootstrap = bootstrap_command(source)?;
+    let bootstrap = bootstrap_command(source, cilium_kube_proxy_replacement)?;
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     let destination_node_exists = if joins_existing {
         target_api.ready().context(
@@ -189,8 +198,33 @@ fn migrate_to_nodestore(
         let replacement = replacement_member_id
             .map(|id| format!("; replace existing member {id} after the new node is Ready"))
             .unwrap_or_default();
-        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
+        let proxy = if cilium_kube_proxy_replacement {
+            "Cilium kube-proxy replacement enabled; nodeproxy disabled"
+        } else {
+            "nodeproxy enabled"
+        };
+        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
+    }
+
+    if source
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        eprintln!(
+            "nodemigrate: Cilium kube-proxy replacement {}; {}",
+            if cilium_kube_proxy_replacement {
+                "is enabled"
+            } else {
+                "is disabled"
+            },
+            if cilium_kube_proxy_replacement {
+                "leaving nodeproxy disabled during bootstrap"
+            } else {
+                "using nodeproxy during bootstrap"
+            }
+        );
     }
 
     if let Some(api) = &source_api {
@@ -351,7 +385,7 @@ fn migrate_to_nodestore(
             "post-uninstall restore failed: persistent-path error={host_path_error:#?}; CNI-path error={cni_path_error:#?}; recovery export retained at {}",
             export.dir.display()
         );
-        run_bootstrap(bootstrap_command(source)?)
+        run_bootstrap(bootstrap_command(source, cilium_kube_proxy_replacement)?)
             .context("reconciling nodestore after source uninstall")?;
         wait_for_api(&target_api)
             .context("destination failed API readiness after K3s uninstall cleanup")?;
@@ -1251,7 +1285,10 @@ fn node_name(installation: &detect::Installation) -> String {
         .unwrap_or_else(hostname)
 }
 
-fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
+fn bootstrap_command(
+    installation: &detect::Installation,
+    cilium_kube_proxy_replacement: bool,
+) -> Result<Command> {
     let mut args = vec!["--release".to_string()];
     if let Some(endpoint) = std::env::var_os("NODEBOOTSTRAP_JOIN_ENDPOINT") {
         let endpoint = endpoint.to_string_lossy();
@@ -1277,6 +1314,7 @@ fn bootstrap_command(installation: &detect::Installation) -> Result<Command> {
             "--cni=none".to_string()
         },
     );
+    append_nodeproxy_mode(&mut args, config, cilium_kube_proxy_replacement);
     if let Some(node_name) = &config.node_name {
         args.push(format!("--node-name={node_name}"));
     }
@@ -1368,10 +1406,18 @@ fn replacement_worker_args(
     if let Some(domain) = &config.cluster_domain {
         args.push(format!("--cluster-domain={domain}"));
     }
-    if cilium_kube_proxy_replacement {
+    append_nodeproxy_mode(&mut args, config, cilium_kube_proxy_replacement);
+    args
+}
+
+fn append_nodeproxy_mode(
+    args: &mut Vec<String>,
+    config: &detect::ClusterConfig,
+    cilium_kube_proxy_replacement: bool,
+) {
+    if config.cni.as_deref() == Some("cilium") && cilium_kube_proxy_replacement {
         args.push("--proxy=none".to_string());
     }
-    args
 }
 
 fn bootstrap_command_with_config(
@@ -1611,7 +1657,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
+        append_nodeproxy_mode, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
         migration_csi_staging_root, replacement_worker_args, reverse_node_replacement_state,
         rollback_reverse_migration_with, validate_destination_node_replacement,
         validate_reverse_control_plane_options, validate_skip_api_import,
@@ -1810,6 +1856,26 @@ mod tests {
         let config = cluster(Some("cilium"), None);
         let args =
             replacement_worker_args(&config, Path::new("/tmp/admin.kubeconfig"), "node", false);
+        assert!(!args.iter().any(|arg| arg == "--proxy=none"));
+    }
+
+    #[test]
+    fn initial_cilium_bootstrap_disables_nodeproxy_when_kpr_is_enabled() {
+        let config = cluster(Some("cilium"), None);
+        let mut args = vec!["--release".to_string()];
+
+        append_nodeproxy_mode(&mut args, &config, true);
+
+        assert!(args.iter().any(|arg| arg == "--proxy=none"));
+    }
+
+    #[test]
+    fn initial_cilium_bootstrap_keeps_nodeproxy_when_kpr_is_disabled() {
+        let config = cluster(Some("cilium"), None);
+        let mut args = vec!["--release".to_string()];
+
+        append_nodeproxy_mode(&mut args, &config, false);
+
         assert!(!args.iter().any(|arg| arg == "--proxy=none"));
     }
 

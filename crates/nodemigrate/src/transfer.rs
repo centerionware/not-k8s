@@ -1481,6 +1481,32 @@ impl Export {
         self.node_states.get(name)
     }
 
+    /// Read Cilium's Service datapath mode from a protected source export.
+    /// Missing configuration uses Cilium's default, which keeps kube-proxy
+    /// replacement disabled.
+    pub(crate) fn cilium_kube_proxy_replacement(&self) -> Result<bool> {
+        for object in &self.objects {
+            let value: Value =
+                serde_json::from_slice(&fs::read(&object.path).with_context(|| {
+                    format!("reading migration object {}", object.path.display())
+                })?)
+                .with_context(|| format!("decoding migration object {}", object.path.display()))?;
+            if value.get("kind").and_then(Value::as_str) != Some("ConfigMap")
+                || value.pointer("/metadata/namespace").and_then(Value::as_str)
+                    != Some("kube-system")
+                || value.pointer("/metadata/name").and_then(Value::as_str) != Some("cilium-config")
+            {
+                continue;
+            }
+            return parse_cilium_kube_proxy_replacement(
+                value
+                    .pointer("/data/kube-proxy-replacement")
+                    .and_then(Value::as_str),
+            );
+        }
+        Ok(false)
+    }
+
     pub(crate) fn control_plane_node_names(&self) -> Vec<String> {
         self.node_states
             .iter()
@@ -2678,6 +2704,30 @@ mod tests {
         assert!(parse_cilium_kube_proxy_replacement(Some("true")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("strict")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn reads_cilium_service_proxy_mode_from_protected_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let object_path = directory.path().join("000001.json");
+        fs::write(
+            &object_path,
+            br#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"namespace":"kube-system","name":"cilium-config"},"data":{"kube-proxy-replacement":"strict"}}"#,
+        )
+        .unwrap();
+        let export = Export {
+            dir: directory.path().to_path_buf(),
+            objects: vec![ExportedObject {
+                path: object_path,
+                source_uid: None,
+            }],
+            node_states: BTreeMap::new(),
+            host_paths: Vec::new(),
+            host_path_backups: Vec::new(),
+            cni_path_backups: Vec::new(),
+        };
+
+        assert!(export.cilium_kube_proxy_replacement().unwrap());
     }
 
     #[test]
