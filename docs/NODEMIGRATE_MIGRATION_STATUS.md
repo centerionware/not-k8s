@@ -9,29 +9,31 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
-At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, targeted nodemigrate
-quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
-passed in 1m28s. Branch-runtime migration
-[36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
+Latest branch SHA `17281efb42343ae2f934f681f57f031a59bc6016` passed targeted
+nodemigrate quick-check [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874).
+Branch-runtime migration [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
+is active for both K3s and upstream lanes. It has not produced checkpoint
+evidence yet; a completed utility build alone does not verify migration.
+
+The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
+[36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),
 completed with both migration jobs failing after Docker preflight and the
-utility/runtime builds passed. GitHub's job-log endpoint is returning a
-connection error, so logs were retrieved through the authorized GitHub CLI.
-Both lanes passed source and nodestore stages, including PV/PVC binding, data,
-and all 119 source-discovered API resources. Strict object comparison failed
-on the test driver's nodelet-root CSI paths/source-stage mount and the
-regenerated `CiliumNode.spec.health.ipv4`; neither lane reached return
-migration. No PV deletion was reported. Logs are at
-`/tmp/nodemigrate-36313589064-k3s.log` and
+utility/runtime builds passed. Both lanes passed source and nodestore stages,
+including PV/PVC binding, data, and all 119 source-discovered API resources.
+Strict object comparison failed on the test driver's nodelet-root CSI
+paths/source-stage mount and regenerated `CiliumNode.spec.health.ipv4`;
+neither lane reached return migration. No PV deletion was reported. Logs are
+at `/tmp/nodemigrate-36313589064-k3s.log` and
 `/tmp/nodemigrate-36313589064-kubernetes.log`.
 
-The branch now replaces same-name destination objects with an
-optimistic full update so omitted source fields do not survive as hybrid
-objects, and repairs Node-owned references after target Node registration.
-The checkpoint normalizer now treats only documented controller/default/API
-version fields as lifecycle differences; source object specs and user rollout
-history remain checked. The current worktree also preserves and reissues
-legacy ServiceAccount token Secrets and exercises their RBAC at each
-checkpoint; its targeted validation is pending.
+The branch replaces same-name destination objects with an optimistic full
+update so omitted source fields do not survive as hybrid objects, and repairs
+Node-owned references after target Node registration. The checkpoint
+normalizer treats only documented controller/default/API version fields as
+lifecycle differences; source object specs and user rollout history remain
+checked. SHA `17281efb` also preserves and reissues legacy ServiceAccount
+token Secrets and exercises their RBAC at each checkpoint. Its targeted
+quick-check passed; live migration verification is active.
 
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the five-node

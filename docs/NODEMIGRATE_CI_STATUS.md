@@ -57,11 +57,22 @@ reached return migration. Job logs are saved at
 This SHA changes existing-object imports from SSA to resource-version-checked
 replacement and repairs Node-owned object references after replacement Node
 registration. Its focused Rust quick-check passed; live round-trip acceptance
-did not. The current worktree adds destination-bound legacy ServiceAccount
-token Secret preservation and a source/nodestore/return authentication check;
-that change is not yet pushed or verified.
+did not. At SHA `17281efb42343ae2f934f681f57f031a59bc6016`, targeted nodemigrate
+quick-check [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
+passed, including crate unit tests. Branch-runtime migration
+[36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
+is active at this SHA for both K3s and upstream lanes. It tests destination-
+bound legacy ServiceAccount token Secret preservation and allowed/denied token
+requests at each checkpoint; do not claim runtime verification until it ends.
 
 ## Most recent evidence
+
+The latest focused run is [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
+and the latest migration runtime run is
+[36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317),
+both for SHA `17281efb42343ae2f934f681f57f031a59bc6016`. The migration run is
+still active and uses branch-built runtime binaries; it does not test the
+regular `v0.8.0` release baseline.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

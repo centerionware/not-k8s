@@ -27,9 +27,12 @@ Last updated: 2026-09-27
   ServiceAccount UID annotation in the same Secret while preserving other
   Secret data. The integration fixture now checks token-authenticated allowed
   and denied API requests at source, nodestore, and returned-source stages.
-  Focused export/patch tests and snapshot normalization checks are added; the
-  Rust quick-check and live migration verification are pending. No passing
-  token-Secret round trip is claimed yet.
+  Focused export/patch tests and snapshot normalization checks are added.
+  Targeted nodemigrate quick-check
+  [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
+  passed at SHA `17281efb42343ae2f934f681f57f031a59bc6016`; branch-runtime
+  migration [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
+  is active, so no passing token-Secret round trip is claimed yet.
 
 ## Latest runtime findings
 
