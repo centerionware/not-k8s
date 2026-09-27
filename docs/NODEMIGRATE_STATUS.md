@@ -32,7 +32,7 @@ separate living documents below.
   confirms the pre-fix dual-proxy runtime bug. The current ownership fix has
   not yet run against a live migration target.
 
-- At current PR head `3cb608ab7276a1cfcd1dd012f5f17c3f2d584711`, targeted
+- At code SHA `3cb608ab7276a1cfcd1dd012f5f17c3f2d584711`, targeted
   nodemigrate crate checks passed in
   [36347577818](https://github.com/centerionware/not-k8s/actions/runs/36347577818)
   and migration workflow validation passed in
