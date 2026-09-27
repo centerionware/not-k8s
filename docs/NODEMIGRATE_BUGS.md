@@ -25,22 +25,26 @@ at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` built the migration utility
 and branch runtime and passed the Docker kubeadm/Cilium preflight. Both lanes
 completed forward migration but failed before return migration.
 
-- **`nodelet` / `nodebootstrap`: CSI driver registration is not restored at
-  cutover.** In the K3s target lane, `nodelet` repeatedly logged that no CSI
-  driver was configured for `hostpath.csi.k8s.io`, followed by failed
-  `NodeStageVolume` calls while the unchanged CSI workload was present. The
-  migration passes its registrar directory, but the target runtime does not
-  have the driver's endpoint in `NODELET_CSI_DRIVERS` and plugin registration
-  did not populate it. Preserve/discover the existing driver endpoint and
-  prove a bound PVC mounts and reads its original data at all checkpoints.
-  This finding is from the live branch runtime; the fix is not implemented.
-- **`nodecontroller`: Deployment `/scale` behavior failed at the K3s target
+- **`nodelet`: CSI staging failed during the K3s target checkpoint.** The
+  target initially logged that `hostpath.csi.k8s.io` was not configured, then
+  dynamically registered the driver at 05:59:47. After registration, the
+  stateful PVC still logged failed `NodeStageVolume` mounts. The captured
+  node-driver-registrar logs show successful CSI RPCs for the earlier staging
+  path but do not identify why later staging failed; the run's final failure
+  diagnostics do not include the error chain from `NodeStageVolume`. The
+  driver endpoint therefore was eventually discovered, and the remaining
+  storage failure is unresolved. Add the full CSI status/error chain to
+  nodelet logs and verify the same bound PVC mounts and reads its original
+  data at every checkpoint. This live finding is not fixed.
+- **`nodecontroller` / migration harness: Deployment `/scale` check failed at the K3s target
   checkpoint.** The target accepted `kubectl scale --replicas=2` and the
   fixture's rollout command returned success, but its follow-up assertion did
   not observe both requested replicas as available. The current failure
-  diagnostic does not print the Deployment/ReplicaSet states, so the exact
-  controller state transition is not yet established. Add that state to the
-  failure output, then fix and verify the owning Deployment reconciliation.
+  diagnostic did not print Deployment/ReplicaSet state, so the exact
+  controller state transition is not yet established. The integration script
+  now emits Deployment, ReplicaSet, Pod, and event state on this failure; the
+  change is not yet runtime-verified. Use that evidence to identify and fix the
+  owning reconciliation behavior.
 - **`nodelet` / `nodebootstrap`: metrics-server cannot verify the target
   kubelet serving certificate.** Regenerating the aggregated-API trust bundle
   worked: the K3s `v1beta1.metrics.k8s.io` APIService reports `Available=True`

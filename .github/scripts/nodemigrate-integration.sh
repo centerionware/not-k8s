@@ -1974,6 +1974,14 @@ verify_stage() {
       .spec.replicas == 2 and (.status.availableReplicas // 0) == 2
     ' >/dev/null || {
         echo "Deployment /scale did not reconcile two available replicas at stage $stage" >&2
+        echo "Deployment state:" >&2
+        kubectl get deployment migration-nginx -n migration-apps -o yaml >&2 || true
+        echo "ReplicaSet state:" >&2
+        kubectl get replicasets -n migration-apps -l app=migration-nginx -o wide >&2 || true
+        kubectl get replicasets -n migration-apps -l app=migration-nginx -o yaml >&2 || true
+        echo "Pod state:" >&2
+        kubectl get pods -n migration-apps -l app=migration-nginx -o wide >&2 || true
+        kubectl get events -n migration-apps --sort-by=.metadata.creationTimestamp >&2 || true
         return 1
     }
     kubectl scale -n migration-apps deployment/migration-nginx --replicas=1
