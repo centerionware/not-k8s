@@ -66,6 +66,74 @@ capture_cilium_agent_logs() {
         -l k8s-app=cilium -o name 2>/dev/null || true)
 }
 
+# Record only the API-requested security settings and selected OCI runtime
+# fields for Cilium's agent. Do not print the full CRI inspect response: it can
+# contain environment values and other credentials unrelated to this probe.
+capture_cilium_agent_cri_security() {
+    local kubeconfig="${1:-${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}}"
+    local container_json pod_records pod_record pod_uid pod_name agent_ids container_id
+    container_json="$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json 2>/dev/null)" || {
+        echo "Unable to list CRI containers for Cilium agent security diagnostics"
+        return 0
+    }
+    pod_records="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o json 2>/dev/null | jq -c '
+          .items[]? | {
+            uid: .metadata.uid,
+            name: .metadata.name,
+            hostNetwork: (.spec.hostNetwork // false),
+            agent: ([.spec.containers[]? | select(.name == "cilium-agent") | {
+              securityContext: {
+                privileged: (.securityContext.privileged // false),
+                allowPrivilegeEscalation: .securityContext.allowPrivilegeEscalation,
+                procMount: (.securityContext.procMount // "Default"),
+                readOnlyRootFilesystem: (.securityContext.readOnlyRootFilesystem // false),
+                capabilities: .securityContext.capabilities
+              }
+            }][0] // null)
+          }')" || return 0
+    while IFS= read -r pod_record; do
+        [[ -n "$pod_record" ]] || continue
+        pod_uid="$(jq -r '.uid' <<< "$pod_record")"
+        pod_name="$(jq -r '.name' <<< "$pod_record")"
+        agent_ids="$(jq -r --arg uid "$pod_uid" '
+            .containers[]?
+            | select((.labels["nodelet.dev/pod-uid"] // .labels["io.kubernetes.pod.uid"]) == $uid)
+            | select((.labels["nodelet.dev/container-name"] // .labels["io.kubernetes.container.name"]) == "cilium-agent")
+            | .id // empty
+          ' <<< "$container_json")"
+        if [[ -z "$agent_ids" ]]; then
+            printf 'Cilium agent CRI security pod=%s api=%s runtime=container-not-found\n' \
+                "$pod_name" "$(jq -cS . <<< "$pod_record")"
+            continue
+        fi
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            printf 'Cilium agent CRI security pod=%s api=%s runtime=' \
+                "$pod_name" "$(jq -cS . <<< "$pod_record")"
+            crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
+                inspect "$container_id" 2>/dev/null | jq -cS '
+                  .info.runtimeSpec as $spec
+                  | {
+                      id: .status.id,
+                      readonlyRootfs: ($spec.root.readonly // false),
+                      maskedPaths: ($spec.linux.maskedPaths // []),
+                      readonlyPaths: ($spec.linux.readonlyPaths // []),
+                      capabilities: ($spec.process.capabilities // {}),
+                      noNewPrivileges: ($spec.process.noNewPrivileges // false),
+                      procMounts: [
+                        $spec.mounts[]?
+                        | select((.destination // "") == "/proc" or
+                                 ((.destination // "") | startswith("/proc/sys")) or
+                                 (.destination // "") == "/host/proc/sys/net")
+                        | {destination, source, options}
+                      ]
+                    }
+                ' || echo '{"error":"CRI inspect did not expose the expected runtime fields"}'
+        done <<< "$agent_ids"
+    done <<< "$pod_records"
+}
+
 capture_cilium_init_container_diagnostics() {
     local kubeconfig="${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}"
     local container_json pod_records pod_uid pod_name init_containers container_id container_name task_row task_pid proc_file
@@ -267,6 +335,7 @@ watch_migration_target_state() {
                     KUBECONFIG="$kubeconfig" kubectl logs -n kube-system \
                         -l k8s-app=kube-dns --all-containers --tail=100 2>&1 || true
                     echo "Target Cilium agent logs:"
+                    capture_cilium_agent_cri_security "$kubeconfig"
                     KUBECONFIG="$kubeconfig" kubectl logs -n kube-system \
                         -l k8s-app=cilium -c cilium-agent --tail=100 2>&1 || true
                     echo "Target cert-manager webhook logs:"
@@ -446,6 +515,7 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system \
                 -l k8s-app=kube-dns --all-containers --tail=200 || true
             capture_cilium_agent_logs
+            capture_cilium_agent_cri_security "$CURRENT_KUBECONFIG"
             capture_cilium_init_container_diagnostics
         fi
         for cni_path in /etc/cni/net.d /opt/cni/bin \
@@ -685,6 +755,7 @@ install_hostpath_driver() {
         kubectl get pods -A -o wide >&2 || true
         kubectl get pods -n kube-system -l k8s-app=cilium -o yaml >&2 || true
         capture_cilium_agent_logs >&2 || true
+        capture_cilium_agent_cri_security "${KUBECONFIG:-$CURRENT_KUBECONFIG}" >&2 || true
         capture_cilium_init_container_diagnostics >&2 || true
         kubectl get pods -A -l app.kubernetes.io/instance=hostpath.csi.k8s.io -o yaml >&2 || true
         kubectl get events -A --sort-by=.metadata.creationTimestamp >&2 || true
@@ -1949,6 +2020,7 @@ verify_stage() {
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
+    capture_cilium_agent_cri_security "$CURRENT_KUBECONFIG"
     verify_ingress_spec "$stage"
     local expected_ca_b64 expected_namespace_count deadline trust_bundles
     expected_ca_b64="$(kubectl config view --raw --flatten --minify -o json \

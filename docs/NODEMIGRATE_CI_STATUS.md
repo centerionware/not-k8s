@@ -87,6 +87,25 @@ before/after evidence.
 
 ## Most recent evidence
 
+Branch-runtime migration run
+[36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254)
+tests SHA `4c319d08` with source CNI Cilium. Its Docker five-node topology
+preflight passed. The upstream Kubernetes source fixture passed its storage
+checkpoint: the four source PVCs and PVs (including the StatefulSet payload)
+were present and bound before migration. Forward export captured 574 API
+objects and the target accepted all 55 CRDs. The target Cilium agent then
+repeatedly exited because writes to
+`/proc/sys/net/ipv6/conf/cilium_host/forwarding` returned `EROFS`; Cilium never
+became ready and cert-manager webhook requests subsequently failed. The lane
+rolled the source back and retained the protected export; it did not reach a
+nodestore workload checkpoint or reverse migration. This is a target CNI
+startup failure; the nodelet CRI security context and isolation/mount setup
+remain under diagnosis, so no owning-component defect is asserted yet. The
+completed upstream artifact is saved at
+`/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log`.
+The K3s lane in the same run is still active; update this entry with its
+terminal result before treating the run as complete.
+
 Latest branch-runtime migration run
 [36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)
 tested SHA `ad861cdc7f57876c1c865a7d0b42a2b52bd3b8d4`. The five-node Docker
