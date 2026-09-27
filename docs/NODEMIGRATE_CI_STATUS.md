@@ -92,6 +92,16 @@ before/after evidence.
 
 ## Most recent evidence
 
+At code SHA `59b38a9604e20cae478d35ce737ef4c189960bf2`, the node-private
+protected-export copy fix passed the focused `nodemigrate` crate tests in
+[36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916).
+Migration-workflow validation passed in
+[36348554980](https://github.com/centerionware/not-k8s/actions/runs/36348554980),
+including shell, snapshot, Helm, API inventory, and diagnostics checks. Its
+Docker preflight and migration jobs were skipped because this was a pull
+request event. The fix has unit/static evidence only; no multi-node migration
+has run with it.
+
 Branch-runtime migration run
 [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
 was dispatched at SHA `f186930d7333a0b1c96967f2418b9be18b1155d6` with both

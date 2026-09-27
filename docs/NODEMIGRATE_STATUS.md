@@ -12,7 +12,7 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Run 36335580680 confirmed an imported kube-proxy Pod and nodeproxy active together with Cilium KPR disabled. Fix `7bad3b91` selects one Service router and passed focused nodemigrate tests [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648); runtime verification remains pending. The nodelet emptyDir and nodeapiserver aggregate-discovery fixes and their existing evidence remain tracked below. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Run 36335580680 confirmed an imported kube-proxy Pod and nodeproxy active together with Cilium KPR disabled. Fix `7bad3b91` selects one Service router and passed focused nodemigrate tests [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648); runtime verification remains pending. SHA `59b38a96` makes per-node protected-export copies and passed focused crate tests [36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916); the five-node runtime gate remains unverified. The nodelet emptyDir and nodeapiserver aggregate-discovery fixes and their existing evidence remain tracked below. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
@@ -22,6 +22,14 @@ separate living documents below.
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- At code SHA `59b38a9604e20cae478d35ce737ef4c189960bf2`, the export-copy
+  regression passed in focused nodemigrate crate run
+  [36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916).
+  Migration workflow validation passed in
+  [36348554980](https://github.com/centerionware/not-k8s/actions/runs/36348554980);
+  its Docker and migration jobs were skipped for the pull-request event.
+  The copy isolation has no multi-node runtime evidence yet.
 
 - At PR code SHA `7bad3b9145dd5a6b0612d8eeeca2ef0fd06bbdcf`, the proxy ownership
   fix and KPR `sudo` environment forwarding passed targeted nodemigrate crate

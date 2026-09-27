@@ -14,8 +14,11 @@ Last updated: 2026-09-27
   only to that node's copy, while workers keep their separate local-volume
   snapshot. The original remains available to later nodes. A focused unit
   regression checks that changing one node's copy cannot alter another copy or
-  the source export.
-  Targeted CI verification is pending.
+  the source export. The unit tests passed at code SHA `59b38a96` in run
+  [36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916);
+  migration workflow static validation passed in
+  [36348554980](https://github.com/centerionware/not-k8s/actions/runs/36348554980).
+  Multi-node runtime verification remains pending.
 
 - **`nodemigrate`: kube-proxy and nodeproxy could both own Service
   routing when Cilium KPR is disabled.** The upstream lane in run

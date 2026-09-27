@@ -66,9 +66,11 @@ forward worker, and staged reverse control-plane paths now deep-copy a supplied
 `source-export=` into a new mode-restricted node-local export before use. The
 first export remains intact for remaining nodes; each control-plane's PV/CNI
 backup is attached only to its private copy, while each worker keeps its
-separate local-volume snapshot. A focused unit regression covers export-copy
-isolation. Targeted nodemigrate CI and multi-node runtime verification are
-pending.
+separate local-volume snapshot. A focused unit regression and migration
+workflow static validation passed at code SHA `59b38a96` in runs
+[36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916)
+and [36348554980](https://github.com/centerionware/not-k8s/actions/runs/36348554980).
+Multi-node runtime verification remains pending.
 
 The dedicated integration workflow now accepts `cilium_kpr=false|true`.
 For `true`, it disables the K3s kube-proxy or skips kubeadm's kube-proxy
