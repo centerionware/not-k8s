@@ -92,6 +92,15 @@ before/after evidence.
 
 ## Most recent evidence
 
+At code SHA `f5bcadbbff5029c6128544a771ca2bd1ba1114ca`, the strengthened
+node-private export test also verifies copied node UID, labels, annotations,
+and control-plane role. Focused crate tests passed in
+[36349107771](https://github.com/centerionware/not-k8s/actions/runs/36349107771).
+Migration-workflow validation passed in
+[36349107726](https://github.com/centerionware/not-k8s/actions/runs/36349107726);
+the Docker and migration jobs were skipped for the pull-request event. The
+five-node runtime gate remains pending.
+
 At code SHA `59b38a9604e20cae478d35ce737ef4c189960bf2`, the node-private
 protected-export copy fix passed the focused `nodemigrate` crate tests in
 [36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916).

@@ -70,6 +70,11 @@ separate local-volume snapshot. A focused unit regression and migration
 workflow static validation passed at code SHA `59b38a96` in runs
 [36348554916](https://github.com/centerionware/not-k8s/actions/runs/36348554916)
 and [36348554980](https://github.com/centerionware/not-k8s/actions/runs/36348554980).
+The strengthened regression also checks copied Node identity/scheduling
+metadata and passed at SHA `f5bcadbb` in
+[36349107771](https://github.com/centerionware/not-k8s/actions/runs/36349107771);
+workflow validation passed in
+[36349107726](https://github.com/centerionware/not-k8s/actions/runs/36349107726).
 Multi-node runtime verification remains pending.
 
 The dedicated integration workflow now accepts `cilium_kpr=false|true`.
