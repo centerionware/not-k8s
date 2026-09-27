@@ -18,7 +18,9 @@ Last updated: 2026-09-27
   exited attempts, and wrong-name filtering. This is the leading explanation
   for the fixture failures. Quick-check [36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
   found selector visibility and ownership compile errors; both are corrected
-  locally, but the correction and live migration confirmation are pending CI.
+  in commit `8f7df53e`. Focused `nodelet` quick-check passed at that SHA in
+  [36359755288](https://github.com/centerionware/not-k8s/actions/runs/36359755288);
+  live migration confirmation is pending.
 
 - **Five-node CI: setup-script copy collided with its `/tmp` source.** The same
   run passed Docker's five-node kubeadm/Cilium setup and control-plane-loss

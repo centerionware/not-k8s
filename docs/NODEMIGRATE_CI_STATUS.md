@@ -48,13 +48,19 @@ Both single-node migration lanes reached the nodestore fixture and failed its
 non-root `emptyDir` exec check. Code inspection points to CRI lookups choosing
 stale sandboxes or container attempts. Nodelet now selects by current Pod UID
 when available and prefers ready sandboxes and running container attempts;
-focused regressions are added, while nodelet quick-check and live migration
-verification are pending. The first nodelet quick-check
+focused regressions are added. Quick-check
 [36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
-failed to compile two parts of the new selector (sibling test visibility and a
-borrow/move conflict); both are corrected in the next branch commit. Artifacts
-are in
+at SHA `846a5a94` failed because the selector was private to a sibling test
+module and its closure borrowed a sandbox while moving it. Commit `8f7df53e`
+corrects both issues, and focused `nodelet` quick-check
+[36359755288](https://github.com/centerionware/not-k8s/actions/runs/36359755288)
+passed at that SHA. Live migration verification remains pending. Artifacts are in
 `/tmp/nodemigrate-36357521280/`.
+
+Migration run [36359505599](https://github.com/centerionware/not-k8s/actions/runs/36359505599)
+at SHA `846a5a94` failed before migration execution: the K3s/upstream branch
+runtime builds and five-node combined-runtime build hit those compile errors.
+The corrected code needs a new branch-runtime migration run.
 
 Branch-runtime migration run
 [36352851628](https://github.com/centerionware/not-k8s/actions/runs/36352851628)

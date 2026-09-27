@@ -34,8 +34,10 @@ separate living documents below.
   lookups choosing stale sandboxes or container attempts. Nodelet now selects
   by current Pod UID when available and prefers ready sandboxes and running
   container attempts. Quick-check [36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
-  found selector visibility and borrow/move compile errors, now corrected in
-  the working tree; live migration validation is pending. Logs
+  found selector visibility and borrow/move compile errors; both were corrected
+  in `8f7df53e`, and `nodelet` quick-check passed in
+  [36359755288](https://github.com/centerionware/not-k8s/actions/runs/36359755288).
+  The migration rerun is pending. Logs
   are saved under `/tmp/nodemigrate-36357521280/`. No general build or full
   e2e gate was run.
 
