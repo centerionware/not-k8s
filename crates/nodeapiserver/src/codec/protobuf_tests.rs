@@ -3,6 +3,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn csidriver_spec_round_trips_prevent_pod_scheduling_if_missing() {
+        let message = "io.k8s.api.storage.v1.CSIDriverSpec";
+        let value = json!({"preventPodSchedulingIfMissing": true});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert!(decoded["preventPodSchedulingIfMissing"].as_bool().unwrap());
+    }
+
     /// The real bug that motivated `is_inline_embedded_field`: found live
     /// via a `ValidatingAdmissionPolicy` round trip against a real
     /// `nodestore` -- `apiGroups`/`apiVersions`/`resources`/`operations`/

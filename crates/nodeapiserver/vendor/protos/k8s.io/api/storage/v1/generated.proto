@@ -225,6 +225,14 @@ message CSIDriverSpec {
   // +featureGate=MutableCSINodeAllocatableCount
   // +optional
   optional int64 nodeAllocatableUpdatePeriodSeconds = 9;
+
+  // preventPodSchedulingIfMissing indicates that the CSI driver wants to
+  // prevent pod scheduling if the CSI driver on the node is missing.
+  //
+  // This is an additive compatibility backport from Kubernetes v1.37.1.
+  // +featureGate=VolumeLimitScaling
+  // +optional
+  optional bool preventPodSchedulingIfMissing = 11;
 }
 
 // CSINode holds information about all CSI drivers installed on a node.
@@ -633,4 +641,3 @@ message VolumeNodeResources {
   // +optional
   optional int32 count = 1;
 }
-

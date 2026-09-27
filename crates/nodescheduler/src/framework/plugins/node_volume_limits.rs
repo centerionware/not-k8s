@@ -39,6 +39,9 @@ pub const NAME: &str = "NodeVolumeLimits";
 const ATTACHED_KEY: &str = "NodeVolumeLimits/attached";
 /// A third key for each node's own reported per-driver ceiling.
 const LIMITS_KEY: &str = "NodeVolumeLimits/limits";
+/// CSI drivers which explicitly require registration on a node before a pod
+/// using them can be scheduled there.
+const REQUIRED_DRIVERS_KEY: &str = "NodeVolumeLimits/required-drivers";
 
 /// Unique volume identity -> CSI driver.
 struct WantedVolumes(HashMap<String, String>);
@@ -50,6 +53,7 @@ struct AttachedVolumesByNode(HashMap<String, HashMap<String, String>>);
 /// against — that is a mount-time failure for the driver to report, not a
 /// scheduling-time one.
 struct LimitsByNodeAndDriver(HashMap<String, std::collections::BTreeMap<String, Option<i32>>>);
+struct RequiredDrivers(std::collections::HashSet<String>);
 
 #[derive(Default)]
 pub struct NodeVolumeLimits;
@@ -80,7 +84,11 @@ impl Plugin for NodeVolumeLimits {
             // node starts with none attached at all.
             ClusterEventWithHint::always(ClusterEvent::new(
                 EventResource::CsiNode,
-                ActionType::ADD | ActionType::UPDATE,
+                ActionType::ADD | ActionType::UPDATE | ActionType::DELETE,
+            )),
+            ClusterEventWithHint::always(ClusterEvent::new(
+                EventResource::CsiDriver,
+                ActionType::ADD | ActionType::UPDATE | ActionType::DELETE,
             )),
             ClusterEventWithHint::always(ClusterEvent::new(
                 EventResource::VolumeAttachment,
@@ -174,9 +182,19 @@ impl PreFilterPlugin for NodeVolumeLimits {
             state.skip_filter(NAME);
             return (Status::skip(), None);
         }
+        let required_drivers = wanted
+            .values()
+            .filter(|driver| {
+                snapshot
+                    .csi_driver(driver)
+                    .is_some_and(|info| info.prevent_pod_scheduling_if_missing)
+            })
+            .cloned()
+            .collect();
         state.write(NAME, WantedVolumes(wanted));
         state.write(ATTACHED_KEY, AttachedVolumesByNode(attached_volumes_by_node(snapshot)));
         state.write(LIMITS_KEY, LimitsByNodeAndDriver(limits_by_node(snapshot)));
+        state.write(REQUIRED_DRIVERS_KEY, RequiredDrivers(required_drivers));
         (Status::success(), None)
     }
 }
@@ -190,10 +208,23 @@ impl FilterPlugin for NodeVolumeLimits {
             // and PreFilter already skipped Filter entirely.
             return Status::success();
         };
-        let Some(limits) = state.read::<LimitsByNodeAndDriver>(LIMITS_KEY).and_then(|l| l.0.get(&node.name))
-        else {
-            // No CSINode for this node at all: nothing reported a ceiling, so
-            // there is nothing to enforce.
+        let required = state
+            .read::<RequiredDrivers>(REQUIRED_DRIVERS_KEY)
+            .map(|drivers| &drivers.0);
+        let limits = state
+            .read::<LimitsByNodeAndDriver>(LIMITS_KEY)
+            .and_then(|l| l.0.get(&node.name));
+        for driver in required.into_iter().flatten() {
+            if !limits.is_some_and(|node_limits| node_limits.contains_key(driver)) {
+                return Status::unschedulable(
+                    NAME,
+                    format!("node(s) do not have CSI driver {driver:?} registered"),
+                );
+            }
+        }
+        let Some(limits) = limits else {
+            // No CSINode and no CSIDriver opting into missing-driver
+            // scheduling protection: no attachment ceiling can be enforced.
             return Status::success();
         };
         let attached = state.read::<AttachedVolumesByNode>(ATTACHED_KEY).and_then(|a| a.0.get(&node.name));

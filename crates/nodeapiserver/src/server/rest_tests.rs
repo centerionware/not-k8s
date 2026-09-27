@@ -4,6 +4,20 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn csidriver_schema_preserves_prevent_pod_scheduling_if_missing() {
+        let schema = crate::codegen::openapi_schema_for_gvk("storage.k8s.io", "v1", "CSIDriver")
+            .expect("built-in CSIDriver schema");
+        let input = json!({
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "CSIDriver",
+            "metadata": {"name": "example.csi.test"},
+            "spec": {"preventPodSchedulingIfMissing": true}
+        });
+        let pruned = crate::apiextensions::schema_pruning::prune(&schema, &input);
+        assert!(pruned["spec"]["preventPodSchedulingIfMissing"].as_bool().unwrap());
+    }
+
+    #[test]
     fn paginated_list_does_not_advance_its_snapshot_when_the_store_changes() {
         let snapshot = list_snapshot_revision(0, Some(7));
         let token = encode_continue_token(b"/registry/configmaps/default/a\0", snapshot);

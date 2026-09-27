@@ -56,10 +56,16 @@ live scenarios before treating them as settled.
   identifies `/spec/preventPodSchedulingIfMissing` on
   `CSIDriver/hostpath.csi.k8s.io`; that field was added for Kubernetes 1.37's
   CSI-aware scheduling. The destination schema does not declare it, and the
-  target object loses it. Do not normalize this difference away. Support the
-  field and its scheduling behavior or otherwise align the target API/scheduler
-  version, then verify source, target, and returned-source object behavior.
-  No fix has been applied yet.
+  target object loses it. A narrow optional-field overlay now retains it in the
+  1.34-based OpenAPI and protobuf schemas. `nodescheduler` watches CSIDriver
+  dynamically so a newer typed field is not discarded, and enforces driver
+  registration on a node when this flag is true. Focused API-pruning,
+  protobuf-round-trip, dynamic-projection, and scheduler tests have been added;
+  they still require the authorized remote quick-check. This does not change
+  the advertised base API version to 1.37 or claim full 1.37 compatibility.
+  Migration run [36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021)
+  at SHA `7ba45556` predates this fix. Rerun both migration lanes at the fix
+  SHA to verify preservation on both migration legs.
 
 Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
 at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node

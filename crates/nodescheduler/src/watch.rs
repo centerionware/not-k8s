@@ -73,6 +73,9 @@ use crate::framework::ChangedObject;
 use crate::queue::SchedulingQueue;
 use futures::{stream::BoxStream, StreamExt};
 use k8s_openapi::api::core::v1::{Node, Pod};
+use kube::api::DynamicObject;
+use kube::core::GroupVersionKind;
+use kube::discovery::ApiResource;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -335,7 +338,7 @@ type Pv = k8s_openapi::api::core::v1::PersistentVolume;
 type Pvc = k8s_openapi::api::core::v1::PersistentVolumeClaim;
 type Sc = k8s_openapi::api::storage::v1::StorageClass;
 type CsiNode = k8s_openapi::api::storage::v1::CSINode;
-type CsiDriver = k8s_openapi::api::storage::v1::CSIDriver;
+type CsiDriver = DynamicObject;
 type CsiStorageCapacity = k8s_openapi::api::storage::v1::CSIStorageCapacity;
 type VolumeAttachment = k8s_openapi::api::storage::v1::VolumeAttachment;
 type ResourceClaim = crate::cache::dra::RawResourceClaim;
@@ -412,7 +415,15 @@ fn watch_csi_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<
     watcher(Api::<CsiNode>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_drivers(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiDriver>>> {
-    watcher(Api::<CsiDriver>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    // Keep this watch dynamic: the target's generated typed client is based
+    // on Kubernetes 1.34, while newer API servers may serve additive fields
+    // on CSIDriver. Decoding through the older typed struct would discard
+    // fields needed by scheduler behavior.
+    let gvk = GroupVersionKind::gvk("storage.k8s.io", "v1", "CSIDriver");
+    let resource = ApiResource::from_gvk(&gvk);
+    watcher(Api::<CsiDriver>::all_with(client.clone(), &resource), watcher::Config::default())
+        .backoff(WatchBackoffPolicy::default())
+        .boxed()
 }
 fn watch_csi_storage_capacities(
     client: &Client,
