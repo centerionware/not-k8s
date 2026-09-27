@@ -122,6 +122,18 @@ These checks do not exercise the watcher against a live target. Run
 36335580680 remains active in its K3s lane and predates this instrumentation;
 no duplicate migration run has been dispatched.
 
+Cilium kube-proxy replacement run
+[36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+was dispatched at `7f1c53f1531383e6ef3b9b73fe36f1fe3301216c` with
+`cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 19:25 UTC,
+the five-node Docker preflight and both utility/combined-runtime builds had
+passed; the K3s and upstream `Run migration` steps were still in progress.
+This SHA predates the initial control-plane `--proxy=none` fix and the
+nodeproxy-inactive integration assertion, so it is baseline evidence only for
+KPR-enabled source and fixture setup. Do not claim target proxy selection or
+post-fix migration behavior from this run. A matching KPR-enabled branch run
+at the fixed code SHA is pending after the older run becomes terminal.
+
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
 was dispatched at PR #591 head `012f1b7351da10cd78bec309e1efc6a2e9de439e`
