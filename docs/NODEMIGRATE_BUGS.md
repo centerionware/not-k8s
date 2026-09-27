@@ -88,17 +88,17 @@ Last updated: 2026-09-27
 - **`nodeapiserver` in regular release `v0.8.0`: Gateway API CRD CEL rules are
   rejected during import.** The latest-release migration run
   [36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614)
-  resolved `v0.8.0`; its K3s source fixture passed and nodemigrate retained
-  the protected export, but the release API rejected
-  `gateways.gateway.networking.k8s.io` rules under
+  resolved `v0.8.0`; both the K3s and upstream source fixtures passed, but the
+  release API rejected `gateways.gateway.networking.k8s.io` rules under
   `spec.infrastructure.annotations` and `labels` (including map-key
-  comprehensions and regex validation). The source PV/PVC/data checks passed;
-  no PV deletion was reported. Source rollback completed. The upstream lane is
-  still running; current branch-runtime acceptance is being checked by
-  [36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619)
-  and [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956).
-  This release-baseline failure does not yet establish whether the branch fix
-  covers the live Gateway API schema.
+  comprehensions and regex validation) with CEL rule-cost estimation overflow.
+  Both source PV/PVC/data checks passed, both protected exports were retained,
+  and source rollback completed. Neither lane reached nodestore or the return
+  migration; no PV deletion was reported. Branch-runtime run
+  [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
+  accepted the Gateway API CRDs and reached nodestore, showing this failure is
+  specific to the v0.8.0 API baseline. The newer full migration behavior at
+  `f9356dad` is under test in [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064).
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

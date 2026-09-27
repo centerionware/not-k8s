@@ -27,11 +27,15 @@ hostPath driver had no CSINode owner reference to the current Node. That SHA
 predates the Nodelet owner-reference repair. Neither lane completed its
 return migration.
 Latest-release run [36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614)
-successfully fetched regular release `v0.8.0`; its K3s lane failed during
-Gateway API CRD CEL validation after source PVC/PV/data checks passed and
-restored the source with the protected export retained. The upstream lane was
-still running at the last status check. No nodestore checkpoint or return
-migration has passed in this release-baseline run.
+successfully fetched regular release `v0.8.0`; both K3s and upstream lanes
+failed while importing Gateway API CRDs. CEL rule-cost estimation overflowed
+on `gateways.gateway.networking.k8s.io` metadata CEL rules. Both source fixtures
+passed PV/PVC/data checks; neither reached nodestore or return migration, and
+both protected exports were retained through source rollback. No PV deletion
+was reported. The branch runtime at `42162ef2` accepted the Gateway API CRDs
+and reached nodestore, so this failure is specific to the v0.8.0 apiserver
+baseline. Upstream artifact log: `/tmp/nodemigrate-36310054614/upstream/`;
+K3s artifact log: `/tmp/nodemigrate-36310054614/artifacts/`.
 
 At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, nodemigrate quick-check
 [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
