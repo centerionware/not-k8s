@@ -9,11 +9,14 @@ this objective.
 
 Release-backed migration run
 [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258)
-was dispatched at branch SHA `55978b86` with `runtime_source=release` and
-`cilium_kpr=true`, exercising the regular `v0.8.0` runtime. At last inspection,
-the Docker preflight and both source lanes were still active; the lanes were
-building `nodemigrate` and had not reached migration results. This run does not
-enable the full build or general e2e workflows.
+at branch SHA `55978b86`, with `runtime_source=release` and
+`cilium_kpr=true`, is terminal failure against regular `v0.8.0`. Docker
+preflight passed. The K3s lane's import rejected three Gateway API CRDs on CEL
+type and estimated-cost validation; two dependent Gateway objects remained
+unavailable after 59 five-second retries. The upstream lane also failed during
+import. Neither lane reached return migration, so this run does not validate
+retained-API readiness or either round trip. It did not enable general build or
+e2e workflows.
 
 Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
 at SHA `7f1c53f1` is terminal `cancelled`. Its K3s lane completed forward
@@ -22,12 +25,13 @@ stalled inside retained-API readiness for over an hour. The final log artifact
 is `/tmp/nodemigrate-36343008296-k3s/nodemigrate-k3s.log`; it ends immediately
 after `waiting for retained destination API readiness`, so the underlying API
 failure is not known. A timeout and per-probe error logging were added;
-focused `nodemigrate` and `nodebootstrap` tests pass at the fix SHA `2d98e05e`
+focused `nodemigrate` and `nodebootstrap` tests passed at fix SHA `2d98e05e`
 in [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684);
 the PR's targeted `nodemigrate` test also passed at SHA `c9007b9c` in
 [run 36350708110](https://github.com/centerionware/not-k8s/actions/runs/36350708110).
-The probe failure cause and runtime fix remain unverified. The paired upstream
-lane failed and is not evidence for the current branch.
+The bounded probe implementation passed focused CI, but a live post-fix
+branch-runtime return migration remains unverified. The paired upstream lane
+failed earlier and is not evidence for the current branch.
 
 The [bug and fix tracker](NODEMIGRATE_BUGS.md) lists confirmed defects by
 owning component, branch fix, and focused test evidence. The target is the

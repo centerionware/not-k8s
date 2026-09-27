@@ -16,7 +16,7 @@ separate living documents below.
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) failed both lanes on v0.8.0 Gateway API CRD compatibility, before nodestore checkpoints. Branch run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680) passed upstream source/nodestore storage checks but failed return import on the cert-manager webhook ClusterIP; its K3s lane was cancelled at timeout. Its logs also confirm kube-proxy and nodeproxy ran together with Cilium KPR disabled. Fix `7bad3b91` chooses one Service router; targeted tests and workflow validation passed [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648) and [36347140725](https://github.com/centerionware/not-k8s/actions/runs/36347140725). KPR-enabled run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296) failed upstream before the latest bootstrap fix; its K3s lane remains active. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed run [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258) is terminal failure: both lanes rejected Gateway API CRDs against released `v0.8.0` before reaching round-trip checkpoints. Earlier branch-runtime run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296) passed K3s forward migration then was cancelled after the return leg stalled at retained API readiness. Each API probe is now bounded to ten seconds and the overall wait to five minutes; focused `nodemigrate,nodebootstrap` checks passed [36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684), but a post-fix branch-runtime round trip remains unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed [36345278305](https://github.com/centerionware/not-k8s/actions/runs/36345278305) at SHA `74068255` with Cilium KPR enabled: five isolated kubeadm nodes, Cilium ready without kube-proxy, and recovery after a control-plane loss. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
@@ -25,9 +25,14 @@ separate living documents below.
 
 - Release-backed run
   [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258)
-  was dispatched at SHA `55978b86` against released `v0.8.0`, with Cilium KPR
-  enabled. Both K3s and upstream lanes plus the Docker preflight were still
-  running at last check; no migration outcome is claimed yet.
+  at SHA `55978b86` against released `v0.8.0` and Cilium KPR enabled is
+  terminal failure. The K3s lane exhausted 59 five-second retries while two
+  restored Gateway API objects remained unavailable because the destination
+  rejected three Gateway API CRDs: CEL validation reported invalid map/object
+  comprehension types and estimated-cost overflow. The upstream lane also
+  failed during import. This run did not exercise the retained-API return wait
+  or complete either round trip; it is release-baseline evidence, not a test of
+  branch nodeapiserver fixes.
 
 - At code SHA `2d98e05edc709b7aeec145d652b29aa1fe0137a9`, focused
   `nodemigrate` and `nodebootstrap` tests passed in
@@ -76,8 +81,8 @@ separate living documents below.
   is now cancelled: the K3s lane passed forward migration then stalled for over
   an hour waiting for retained API readiness during return; the upstream lane
   failed earlier. The K3s artifact ends at the readiness wait, without an API
-  probe error. The new per-probe timeout and diagnostics are pending focused
-  CI validation.
+  probe error. Later focused CI validated the bounded probe at SHA `2d98e05e`
+  in run `36350477684`; a live post-fix return remains pending.
 
 - At branch SHA `bb32d6c86dfe614b87fa66edf26d313b3b1fa5ad`, the migration
   watcher now records kube-proxy DaemonSet and Pod readiness during target

@@ -10,10 +10,23 @@ NODES=(cp-1 cp-2 cp-3 worker-1 worker-2)
 CONTAINERS=()
 VOLUMES=()
 CILIUM_KPR="${NODEMIGRATE_CILIUM_KPR:-false}"
+FIVE_NODE_MIGRATION="${NODEMIGRATE_FIVE_NODE_MIGRATION:-false}"
 [[ "$CILIUM_KPR" == false || "$CILIUM_KPR" == true ]] || {
     echo "NODEMIGRATE_CILIUM_KPR must be false or true, got '$CILIUM_KPR'" >&2
     exit 2
 }
+[[ "$FIVE_NODE_MIGRATION" == false || "$FIVE_NODE_MIGRATION" == true ]] || {
+    echo "NODEMIGRATE_FIVE_NODE_MIGRATION must be false or true, got '$FIVE_NODE_MIGRATION'" >&2
+    exit 2
+}
+WORKSPACE_MOUNT=()
+if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
+    [[ -x "$ROOT/target/release/notk8s" && -x "$ROOT/target/release/nodemigrate" ]] \
+        || { echo "five-node migration requires the focused notk8s and nodemigrate binaries" >&2; exit 2; }
+    [[ -r "${NODEMIGRATE_HOSTPATH_SETUP:-}" ]] \
+        || { echo "five-node migration requires NODEMIGRATE_HOSTPATH_SETUP" >&2; exit 2; }
+    WORKSPACE_MOUNT=(--volume "$ROOT:/workspace/not-k8s:ro")
+fi
 
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
@@ -75,8 +88,13 @@ for node in "${NODES[@]}"; do
         --volume /boot:/boot:ro \
         --volume /lib/modules:/lib/modules:ro \
         --volume "$volume:/var/lib/nodemigrate-volume" \
+        "${WORKSPACE_MOUNT[@]}" \
         "$IMAGE" >/dev/null
 done
+if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
+    docker cp "$NODEMIGRATE_HOSTPATH_SETUP" \
+        "cp-1-${SUFFIX}:/tmp/nodemigrate-hostpath-setup.sh" >/dev/null
+fi
 
 wait_systemd() {
     local container="$1" state=""
@@ -448,4 +466,12 @@ docker exec "cp-1-${SUFFIX}" systemctl is-active --quiet containerd \
 
 echo "PASS: five Docker nodes ran a kubeadm 3-control-plane/2-worker cluster with Cilium, survived control-plane loss, and recovered all Nodes"
 echo "PASS: Docker isolation checks confirmed distinct namespaces, CRI/BPF support, separate storage, and inter-node reachability"
-echo "NOTE: this preflight validates the five-node Kubernetes/Cilium simulation only; nodemigrate runtime and migration parity remain unverified"
+if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
+    echo "Running the full nodemigrate five-node source, target, and return checkpoints"
+    NODEMIGRATE_DOCKER_SUFFIX="$SUFFIX" \
+        NODEMIGRATE_NODE_IMAGE="$IMAGE" \
+        NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
+        bash "$ROOT/.github/scripts/nodemigrate-five-node-integration.sh"
+else
+    echo "NOTE: this preflight validates the five-node Kubernetes/Cilium simulation only; nodemigrate runtime and migration parity remain unverified"
+fi

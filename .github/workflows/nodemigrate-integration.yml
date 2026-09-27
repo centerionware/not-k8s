@@ -24,6 +24,11 @@ on:
           - "false"
           - "true"
         default: "false"
+      five_node_migration:
+        description: Run the full upstream 3-control-plane/2-worker round trip
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
@@ -31,6 +36,8 @@ on:
       - '.github/scripts/check_nodemigrate_api_inventory.sh'
       - '.github/scripts/check_nodemigrate_diagnostics.sh'
       - '.github/scripts/nodemigrate-docker-preflight.sh'
+      - '.github/scripts/nodemigrate-five-node-fixture.sh'
+      - '.github/scripts/nodemigrate-five-node-integration.sh'
       - '.github/scripts/nodemigrate-snapshot-normalize.jq'
       - '.github/scripts/nodemigrate-application-snapshot.jq'
       - '.github/scripts/check_nodemigrate_snapshot_filter.sh'
@@ -63,6 +70,8 @@ jobs:
         run: |
           bash -n .github/scripts/nodemigrate-integration.sh
           bash -n .github/scripts/nodemigrate-docker-preflight.sh
+          bash -n .github/scripts/nodemigrate-five-node-fixture.sh
+          bash -n .github/scripts/nodemigrate-five-node-integration.sh
           bash -n .github/scripts/check_nodemigrate_diagnostics.sh
 
       - name: Check snapshot jq
@@ -80,12 +89,31 @@ jobs:
   docker-preflight:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Setup toolchain
+        if: inputs.five_node_migration
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build nodemigrate
+        if: inputs.five_node_migration
+        run: cargo build --release -p nodemigrate
+
+      - name: Build notk8s
+        if: inputs.five_node_migration
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch hostpath setup
+        if: inputs.five_node_migration
+        run: |
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+          grep -q '^# ── DRA: ' "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
 
       - name: Build node image
         run: docker build --pull --file .github/nodemigrate/five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
@@ -95,6 +123,8 @@ jobs:
           NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
           NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
           NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
+          NODEMIGRATE_FIVE_NODE_MIGRATION: ${{ inputs.five_node_migration }}
+          NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
         run: bash .github/scripts/nodemigrate-docker-preflight.sh
 
       - name: Upload probe log

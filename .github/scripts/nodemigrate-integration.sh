@@ -807,8 +807,12 @@ install_cilium() {
 install_hostpath_driver() {
     local kubelet_data_dir="${1:?missing kubelet data directory}"
     local skip_snapshot_crds="${2:-false}"
-    git -C "$ROOT" fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
-    git -C "$ROOT" show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodemigrate-hostpath-setup.sh
+    if [[ -n "${NODEMIGRATE_HOSTPATH_SETUP:-}" ]]; then
+        cp -- "$NODEMIGRATE_HOSTPATH_SETUP" /tmp/nodemigrate-hostpath-setup.sh
+    else
+        git -C "$ROOT" fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+        git -C "$ROOT" show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodemigrate-hostpath-setup.sh
+    fi
     if ! grep -q '^# ── DRA: ' /tmp/nodemigrate-hostpath-setup.sh; then
         echo "archived e2e setup no longer marks the end of its CSI setup section" >&2
         return 1

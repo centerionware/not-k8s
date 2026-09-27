@@ -21,6 +21,7 @@ RUN apt-get update \
         llvm \
         linux-tools-common \
         linux-tools-generic \
+        openssl \
         systemd \
         systemd-sysv \
         util-linux \
