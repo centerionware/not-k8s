@@ -157,6 +157,36 @@ impl NodeSchedulingState {
     }
 }
 
+fn remapped_node_owner_references(
+    source_references: &[Value],
+    destination_references: &[Value],
+    node_name: &str,
+    source_uid: &str,
+    destination_uid: &str,
+) -> Vec<Value> {
+    let mut references = destination_references.to_vec();
+    for source_reference in source_references {
+        let is_migrating_node = source_reference.get("kind").and_then(Value::as_str)
+            == Some("Node")
+            && source_reference.get("name").and_then(Value::as_str) == Some(node_name)
+            && source_reference.get("uid").and_then(Value::as_str) == Some(source_uid);
+        if !is_migrating_node {
+            continue;
+        }
+        let mut reference = source_reference.clone();
+        reference["uid"] = Value::String(destination_uid.to_owned());
+        let already_present = references.iter().any(|existing| {
+            existing.get("kind") == reference.get("kind")
+                && existing.get("name") == reference.get("name")
+                && existing.get("uid") == reference.get("uid")
+        });
+        if !already_present {
+            references.push(reference);
+        }
+    }
+    references
+}
+
 fn node_scheduling_patch(state: &NodeSchedulingState) -> Value {
     let mut patch = serde_json::json!({
         "metadata": {
@@ -375,6 +405,153 @@ impl KubeApi {
                 .await
                 .with_context(|| format!("restoring scheduling state for node {name}"))?;
             Ok(())
+        })
+    }
+
+    /// Restore owner references to a source Node after the replacement Node is
+    /// registered. Nodes are regenerated rather than imported, so their child
+    /// objects cannot be safely rebound until the destination Node has a new
+    /// UID. The protected export retains the source UID for this repair.
+    pub fn restore_node_owner_references(&self, export: &Export, node_name: &str) -> Result<usize> {
+        let Some(source_uid) = export
+            .node_state(node_name)
+            .and_then(|state| state.uid.as_deref())
+        else {
+            return Ok(0);
+        };
+        let source_uid = source_uid.to_owned();
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering APIs before restoring Node owner references")?;
+            let (node_resource, node_capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("destination Kubernetes API does not expose Node")?;
+            ensure!(
+                node_capabilities.supports_operation(verbs::GET),
+                "destination Kubernetes API cannot read the replacement Node"
+            );
+            let nodes: Api<DynamicObject> = Api::all_with(client.clone(), &node_resource);
+            let node = nodes
+                .get_opt(node_name)
+                .await
+                .with_context(|| format!("reading replacement Node {node_name}"))?
+                .with_context(|| format!("replacement Node {node_name} is not registered"))?;
+            let destination_uid = node.metadata.uid.context("replacement Node has no UID")?;
+
+            let mut repaired = 0;
+            for exported in &export.objects {
+                let source: Value = serde_json::from_slice(
+                    &fs::read(&exported.path)
+                        .with_context(|| format!("reading {}", exported.path.display()))?,
+                )
+                .context("decoding protected object while restoring Node owner references")?;
+                let source_references = source
+                    .pointer("/metadata/ownerReferences")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                if !source_references.iter().any(|reference| {
+                    reference.get("kind").and_then(Value::as_str) == Some("Node")
+                        && reference.get("name").and_then(Value::as_str) == Some(node_name)
+                        && reference.get("uid").and_then(Value::as_str) == Some(source_uid.as_str())
+                }) {
+                    continue;
+                }
+                let api_version = source
+                    .get("apiVersion")
+                    .and_then(Value::as_str)
+                    .context("protected object has no apiVersion")?;
+                let kind = source
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .context("protected object has no kind")?;
+                let (resource, capabilities) = find_resource(&discovery, kind, api_version)
+                    .or_else(|| find_compatible_resource(&discovery, kind, api_version))
+                    .with_context(|| format!("destination does not expose {api_version}/{kind}"))?;
+                ensure!(
+                    capabilities.supports_operation(verbs::GET)
+                        && capabilities.supports_operation(verbs::PATCH),
+                    "destination cannot repair owner references on {kind} objects"
+                );
+                let name = source
+                    .pointer("/metadata/name")
+                    .and_then(Value::as_str)
+                    .context("protected object has no metadata.name")?;
+                let api: Api<DynamicObject> = if let Some(namespace) = source
+                    .pointer("/metadata/namespace")
+                    .and_then(Value::as_str)
+                {
+                    Api::namespaced_with(client.clone(), namespace, &resource)
+                } else {
+                    Api::all_with(client.clone(), &resource)
+                };
+                let mut completed = false;
+                for attempt in 0..3 {
+                    let current = api
+                        .get_opt(name)
+                        .await
+                        .with_context(|| format!("reading migrated {kind} {name}"))?
+                        .with_context(|| format!("migrated {kind} {name} is missing"))?;
+                    let current: Value = serde_json::to_value(current)
+                        .context("serializing migrated object owner references")?;
+                    let existing_references = current
+                        .pointer("/metadata/ownerReferences")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    let references = remapped_node_owner_references(
+                        source_references,
+                        existing_references,
+                        node_name,
+                        &source_uid,
+                        &destination_uid,
+                    );
+                    if references.len() == existing_references.len()
+                        && references
+                            .iter()
+                            .zip(existing_references)
+                            .all(|(left, right)| left == right)
+                    {
+                        completed = true;
+                        break;
+                    }
+                    let resource_version = current
+                        .pointer("/metadata/resourceVersion")
+                        .and_then(Value::as_str)
+                        .context("migrated object has no resourceVersion")?;
+                    let patch = serde_json::json!({
+                        "metadata": {
+                            "resourceVersion": resource_version,
+                            "ownerReferences": references
+                        }
+                    });
+                    match api
+                        .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+                        .await
+                    {
+                        Ok(_) => {
+                            repaired += 1;
+                            completed = true;
+                            break;
+                        }
+                        Err(kube::Error::Api(response)) if response.code == 409 && attempt < 2 => {
+                            // Re-read and recompute the complete reference list.
+                        }
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("repairing Node owner reference on {kind} {name}")
+                            });
+                        }
+                    }
+                }
+                ensure!(
+                    completed,
+                    "migrated {kind} {name} kept changing during Node reference repair"
+                );
+            }
+            Ok(repaired)
         })
     }
 
@@ -1735,8 +1912,8 @@ async fn apply_object(
             format!("destination does not expose {type_meta}/{kind} or another version of it")
         })?;
     ensure!(
-        capabilities.supports_operation(verbs::PATCH),
-        "destination does not allow applying {kind}"
+        capabilities.supports_operation(verbs::GET),
+        "destination does not allow reading existing {kind} objects before migration"
     );
     let mut apply_value = value.clone();
     if resource.api_version != type_meta {
@@ -1775,26 +1952,54 @@ async fn apply_object(
     } else {
         format!("{api_root}/{}/{name}", resource.plural)
     };
-    if kind == "CustomResourceDefinition" {
-        match api.create(&PostParams::default(), &object).await {
-            Ok(created) => return Ok(created),
-            Err(kube::Error::Api(response)) if response.code == 409 => {
-                // Existing destination definitions are updated by apply below.
+    // SSA only replaces fields owned by this field manager. On a destination
+    // with a same-name bootstrap object (for example, CoreDNS), omitted source
+    // fields remain behind and silently produce a hybrid object. Use an
+    // optimistic, full-object update for collisions so the source object is
+    // authoritative; use a normal create for objects that are absent.
+    const WRITE_ATTEMPTS: usize = 3;
+    for attempt in 0..WRITE_ATTEMPTS {
+        let existing = api
+            .get_opt(name)
+            .await
+            .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
+        let result = if let Some(existing) = existing {
+            ensure!(
+                capabilities.supports_operation(verbs::UPDATE),
+                "destination does not allow replacing existing {kind} objects"
+            );
+            ensure!(
+                existing.metadata.deletion_timestamp.is_none(),
+                "destination {type_meta}/{kind} {name} is terminating"
+            );
+            let mut replacement = object.clone();
+            replacement.metadata.uid = existing.metadata.uid;
+            replacement.metadata.resource_version = existing.metadata.resource_version;
+            api.replace(name, &PostParams::default(), &replacement)
+                .await
+        } else {
+            ensure!(
+                capabilities.supports_operation(verbs::CREATE),
+                "destination does not allow creating {kind} objects"
+            );
+            api.create(&PostParams::default(), &object).await
+        };
+        match result {
+            Ok(applied) => return Ok(applied),
+            Err(kube::Error::Api(response))
+                if response.code == 409 && attempt + 1 < WRITE_ATTEMPTS =>
+            {
+                // Re-read before retrying: a concurrent create/update changed
+                // the object version used by the preceding write.
             }
             Err(error) => {
-                return Err(error).with_context(|| format!("creating {type_meta}/{kind} {name}"));
+                return Err(error).with_context(|| {
+                    format!("migrating {type_meta}/{kind} {name} via {api_path}")
+                });
             }
         }
     }
-    let applied = api
-        .patch(
-            name,
-            &PatchParams::apply("nodemigrate").force(),
-            &Patch::Apply(&object),
-        )
-        .await
-        .with_context(|| format!("applying {type_meta}/{kind} {name} via {api_path}"))?;
-    Ok(applied)
+    bail!("destination kept changing {type_meta}/{kind} {name} during migration")
 }
 
 fn custom_resource_gvks(value: &Value) -> BTreeSet<(String, String, String)> {
@@ -2241,15 +2446,54 @@ mod tests {
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, persistent_host_paths, preserve_discovered_type_meta,
-        restore_cni_path_backups, retryable_import_error, same_group_kind, sanitize,
-        skip_kind_reason, skip_object, snapshot_k3s_cni_paths, summarize_import_failures,
-        write_export_manifest, ApiResource, Export, ExportedObject, KubeApi, NodeSchedulingState,
-        SkipReason,
+        remapped_node_owner_references, restore_cni_path_backups, retryable_import_error,
+        same_group_kind, sanitize, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
+        summarize_import_failures, write_export_manifest, ApiResource, Export, ExportedObject,
+        KubeApi, NodeSchedulingState, SkipReason,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+
+    #[test]
+    fn node_owner_references_wait_for_the_replacement_node_uid() {
+        let source_references = [
+            serde_json::json!({
+                "apiVersion": "v1", "kind": "Node", "name": "worker-a",
+                "uid": "old-node-uid", "controller": true
+            }),
+            serde_json::json!({
+                "apiVersion": "v1", "kind": "Secret", "name": "node-credential",
+                "uid": "source-secret-uid"
+            }),
+            serde_json::json!({
+                "apiVersion": "v1", "kind": "Node", "name": "worker-b",
+                "uid": "other-node-uid"
+            }),
+        ];
+        let destination_references = [serde_json::json!({
+            "apiVersion": "v1", "kind": "Secret", "name": "node-credential",
+            "uid": "destination-secret-uid"
+        })];
+
+        let remapped = remapped_node_owner_references(
+            &source_references,
+            &destination_references,
+            "worker-a",
+            "old-node-uid",
+            "new-node-uid",
+        );
+
+        assert_eq!(remapped.len(), 2);
+        assert_eq!(remapped[0], destination_references[0]);
+        assert_eq!(remapped[1]["kind"], "Node");
+        assert_eq!(remapped[1]["name"], "worker-a");
+        assert_eq!(remapped[1]["uid"], "new-node-uid");
+        assert!(!remapped.iter().any(|reference| {
+            reference.get("name").and_then(serde_json::Value::as_str) == Some("worker-b")
+        }));
+    }
 
     #[test]
     fn namespace_ca_bundle_must_match_destination_ca_exactly() {

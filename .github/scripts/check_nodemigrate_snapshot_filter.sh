@@ -127,5 +127,52 @@ ctb_beta_identity="$(jq -cS '{apiGroup: ((.apiVersion | split("/")) | if length 
     echo "served API versions did not retain the same Kubernetes object identity" >&2
     exit 1
 }
+[[ "$(jq -cS -f "$FILTER" <<< "$cluster_trust_bundle_v1")" == "$(jq -cS -f "$FILTER" <<< "$cluster_trust_bundle_beta")" ]] || {
+    echo "served ClusterTrustBundle API version changed its durable trust data" >&2
+    exit 1
+}
+cluster_trust_bundle_changed="${cluster_trust_bundle_beta/source/source-changed}"
+[[ "$(jq -cS -f "$FILTER" <<< "$cluster_trust_bundle_v1")" != "$(jq -cS -f "$FILTER" <<< "$cluster_trust_bundle_changed")" ]] || {
+    echo "ClusterTrustBundle trust contents were normalized away with its served API version" >&2
+    exit 1
+}
+
+stateful_source='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"database","namespace":"apps"},"spec":{"minReadySeconds":0,"volumeClaimTemplates":[{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"]}}]}}'
+stateful_target='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"database","namespace":"apps"},"spec":{"volumeClaimTemplates":[{"metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"]}}]}}'
+[[ "$(jq -cS -f "$FILTER" <<< "$stateful_source")" == "$(jq -cS -f "$FILTER" <<< "$stateful_target")" ]] || {
+    echo "default minReadySeconds or nested PVC template type metadata changed StatefulSet semantics" >&2
+    exit 1
+}
+stateful_changed='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"database","namespace":"apps"},"spec":{"minReadySeconds":1,"volumeClaimTemplates":[{"metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"]}}]}}'
+[[ "$(jq -cS -f "$FILTER" <<< "$stateful_source")" != "$(jq -cS -f "$FILTER" <<< "$stateful_changed")" ]] || {
+    echo "non-default StatefulSet minReadySeconds was normalized away" >&2
+    exit 1
+}
+
+owned_rs_source='{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps","ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"web","controller":true}]},"spec":{"replicas":2,"selector":{"matchLabels":{"app":"web"}},"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"name":"web","image":"web:v1"}]}}}}'
+owned_rs_target="${owned_rs_source/\"replicas\":2/\"replicas\":0}"
+[[ "$(jq -cS -f "$FILTER" <<< "$owned_rs_source")" == "$(jq -cS -f "$FILTER" <<< "$owned_rs_target")" ]] || {
+    echo "Deployment-owned ReplicaSet scale was not treated as controller-managed state" >&2
+    exit 1
+}
+standalone_rs_source='{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"standalone","namespace":"apps"},"spec":{"replicas":2}}'
+standalone_rs_target="${standalone_rs_source/\"replicas\":2/\"replicas\":0}"
+[[ "$(jq -cS -f "$FILTER" <<< "$standalone_rs_source")" != "$(jq -cS -f "$FILTER" <<< "$standalone_rs_target")" ]] || {
+    echo "standalone ReplicaSet desired replica count was normalized away" >&2
+    exit 1
+}
+
+cilium_node_source='{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a","labels":{"node.kubernetes.io/instance-type":"k3s","nodelet.dev/managed":"true","operator.example/pool":"blue"}},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}]}}'
+cilium_node_target="${cilium_node_source/k3s/nodelet}"
+cilium_node_target="${cilium_node_target/true/false}"
+[[ "$(jq -cS -f "$FILTER" <<< "$cilium_node_source")" == "$(jq -cS -f "$FILTER" <<< "$cilium_node_target")" ]] || {
+    echo "nodelet-generated CiliumNode labels changed normalized state" >&2
+    exit 1
+}
+cilium_node_target="${cilium_node_target/192.0.2.10/192.0.2.11}"
+[[ "$(jq -cS -f "$FILTER" <<< "$cilium_node_source")" != "$(jq -cS -f "$FILTER" <<< "$cilium_node_target")" ]] || {
+    echo "CiliumNode spec was normalized away with runtime labels" >&2
+    exit 1
+}
 
 echo "migration snapshot normalization checks passed"

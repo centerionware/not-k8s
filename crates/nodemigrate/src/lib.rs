@@ -314,6 +314,13 @@ fn migrate_to_nodestore(
         replacement_state.as_ref(),
     )
     .context("restoring destination control-plane node labels and scheduling state")?;
+    let repaired_owner_references =
+        target_api.restore_node_owner_references(&export, &migrating_node_name)?;
+    if repaired_owner_references > 0 {
+        eprintln!(
+            "nodemigrate: restored {repaired_owner_references} owner reference(s) to replacement Node {migrating_node_name}"
+        );
+    }
     if joins_existing {
         if let Some(old_member_id) = replacement_member_id {
             run_bootstrap(replace_member_command(&old_member_id.to_string())?).with_context(|| format!(
@@ -384,8 +391,12 @@ fn migrate_worker_to_nodestore(
     let name = node_name(source);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     target_api.ready()?;
-    let local_node_state = if let Some(path) = request.source_export.as_ref() {
-        let export = transfer::Export::load(path)?;
+    let source_export = request
+        .source_export
+        .as_ref()
+        .map(transfer::Export::load)
+        .transpose()?;
+    let local_node_state = if let Some(export) = source_export.as_ref() {
         Some(
             export
                 .node_state(&name)
@@ -476,6 +487,14 @@ fn migrate_worker_to_nodestore(
     ))?;
     restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
         .context("restoring replacement worker labels and scheduling state")?;
+    if let Some(export) = source_export.as_ref() {
+        let repaired_owner_references = target_api.restore_node_owner_references(export, &name)?;
+        if repaired_owner_references > 0 {
+            eprintln!(
+                "nodemigrate: restored {repaired_owner_references} owner reference(s) to replacement Node {name}"
+            );
+        }
+    }
     if request.uninstall_after_migrate {
         if let Err(uninstall_error) = service::uninstall_source(source) {
             let host_path_error = host_path_snapshot.restore().err();
@@ -779,6 +798,15 @@ fn migrate_to_existing(
             error.context("restoring retained control-plane node labels and scheduling state"),
             &recovery_location,
         ));
+    }
+    if let Some(export) = export.as_ref() {
+        let repaired_owner_references =
+            target_api.restore_node_owner_references(export, &returning_node_name)?;
+        if repaired_owner_references > 0 {
+            eprintln!(
+                "nodemigrate: restored {repaired_owner_references} owner reference(s) to replacement Node {returning_node_name}"
+            );
+        }
     }
     if request.uninstall_after_migrate {
         service::uninstall_source(source).with_context(|| {

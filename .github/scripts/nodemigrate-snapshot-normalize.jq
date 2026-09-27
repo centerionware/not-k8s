@@ -26,6 +26,12 @@ def system_coredns_rbac_bootstrap_metadata:
   (.kind == "ClusterRole" or .kind == "ClusterRoleBinding") and
   .metadata.name == "system:coredns";
 
+def deployment_owned_replicaset:
+  .kind == "ReplicaSet" and
+  any((.metadata.ownerReferences // [])[]?;
+    .controller == true and .kind == "Deployment"
+  );
+
 def default_kubernetes_service_endpoint:
   .metadata.namespace == "default" and (
     .metadata.name == "kubernetes" or
@@ -72,6 +78,22 @@ select(
   else . end
 | if .spec.claimRef then .spec.claimRef |= del(.uid) else . end
 | if .kind == "PriorityClass" and .globalDefault == false then del(.globalDefault) else . end
+| if .kind == "StatefulSet" and .spec.volumeClaimTemplates then
+    .spec.volumeClaimTemplates |= map(del(.apiVersion, .kind))
+  else . end
+| if .kind == "StatefulSet" and .spec.minReadySeconds == 0 then
+    .spec |= del(.minReadySeconds)
+  else . end
+| if deployment_owned_replicaset then .spec |= del(.replicas) else . end
+| if .kind == "CiliumNode" then
+    .metadata.labels = ((.metadata.labels // {})
+      | del(."node.kubernetes.io/instance-type", ."nodelet.dev/managed"))
+  else . end
+| if .kind == "ClusterTrustBundle" then
+    # Kubernetes 1.37 serves certificates.k8s.io/v1 while the current target
+    # serves v1beta1. Compare the durable signer and bundle under one identity.
+    .apiVersion = "certificates.k8s.io/migration"
+  else . end
 | if system_coredns_rbac_bootstrap_metadata then
     (if (.metadata.labels | type) == "object" then
        .metadata.labels |= del(."kubernetes.io/bootstrapping")
